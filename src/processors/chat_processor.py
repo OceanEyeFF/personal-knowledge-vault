@@ -120,7 +120,12 @@ class ChatProcessor(BaseProcessor):
         return self._parse_text_chat(raw_text)
 
     def _parse_text_chat(self, raw_text: str) -> List[ChatMessage]:
-        """Parse plain text chat logs into message objects."""
+        """Parse plain text chat logs into message objects.
+
+        Supports two formats:
+        1. Standard format: "YYYY-MM-DD HH:MM Sender\nMessage"
+        2. WeChat email format: "Sender HH:MM\n\nMessage"
+        """
         messages: List[ChatMessage] = []
 
         blocks = re.split(r"\n\s*\n", raw_text.strip())
@@ -134,13 +139,41 @@ class ChatProcessor(BaseProcessor):
             timestamp = ""
             sender = ""
 
+            # 尝试解析不同格式
+            # 格式 1: "YYYY-MM-DD HH:MM Sender" (标准格式)
+            # 格式 2: "Sender HH:MM" (微信邮件格式)
+
             if len(tokens) >= 3:
-                timestamp = " ".join(tokens[:2])
-                sender = " ".join(tokens[2:])
+                # 检查是否是标准格式 (日期 时间 发送者)
+                if re.match(r"\d{4}-\d{2}-\d{2}", tokens[0]):
+                    # 标准格式: "YYYY-MM-DD HH:MM Sender"
+                    timestamp = " ".join(tokens[:2])
+                    sender = " ".join(tokens[2:])
+                else:
+                    # 微信邮件格式: "Sender HH:MM" (发送者可能包含多个词)
+                    # 最后一个 token 是时间，其他是发送者
+                    if re.match(r"\d{1,2}:\d{2}", tokens[-1]):
+                        timestamp = tokens[-1]
+                        sender = " ".join(tokens[:-1])
+                    else:
+                        # 无法识别格式，假设全是发送者名称
+                        sender = " ".join(tokens)
             elif len(tokens) == 2:
-                timestamp, sender = tokens
+                # 两个 token: 可能是 "Sender HH:MM" 或 "HH:MM Sender"
+                if re.match(r"\d{1,2}:\d{2}", tokens[0]):
+                    # "HH:MM Sender"
+                    timestamp = tokens[0]
+                    sender = tokens[1]
+                elif re.match(r"\d{1,2}:\d{2}", tokens[1]):
+                    # "Sender HH:MM" (微信邮件格式)
+                    sender = tokens[0]
+                    timestamp = tokens[1]
+                else:
+                    # 两个词都不是时间，假设是发送者名称
+                    sender = " ".join(tokens)
             else:
-                sender = tokens[0]
+                # 只有一个 token，假设是发送者
+                sender = tokens[0] if tokens else "Unknown"
 
             message = "\n".join(lines[1:]).strip()
             messages.append(ChatMessage(timestamp=timestamp, sender=sender, message=message))
