@@ -1,0 +1,99 @@
+{
+  "description": "Milestone 3 处理器集成测试 - 真实链接配置",
+  "version": "1.0",
+  "last_updated": "2026-02-14",
+  "test_cases": {
+    "wechat": [
+      {
+        "url": "https://mp.weixin.qq.com/s/example1",
+        "description": "技术文章示例 - 请替换为真实链接",
+        "expected": {
+          "has_title": true,
+          "has_author": true,
+          "has_publish_time": true,
+          "has_content": true,
+          "min_content_length": 500
+        },
+        "notes": "可以使用任何微信公众号文章链接，建议选择技术博客"
+      },
+      {
+        "url": "https://mp.weixin.qq.com/s/example2",
+        "description": "包含代码块的文章 - 请替换为真实链接",
+        "expected": {
+          "has_title": true,
+          "has_code_blocks": true,
+          "min_content_length": 1000
+        },
+        "notes": "用于测试代码块格式保留"
+      }
+    ],
+    "zhihu": [
+      {
+        "url": "https://www.zhihu.com/question/12345678",
+        "description": "知乎问题页示例 - 请替换为真实链接",
+        "expected": {
+          "has_title": true,
+          "has_author": true,
+          "has_content": true,
+          "min_content_length": 500
+        },
+        "notes": "用于测试问题页处理和最佳答案选择"
+      },
+      {
+        "url": "https://zhuanlan.zhihu.com/p/12345678",
+        "description": "知乎专栏文章示例 - 请替换为真实链接",
+        "expected": {
+          "has_title": true,
+          "has_author": true,
+          "has_content": true,
+          "min_content_length": 500
+        },
+        "notes": "用于测试专栏文章处理"
+      }
+    ],
+    "generic": [
+      {
+        "url": "https://www.example.com/blog/article1",
+        "description": "个人博客文章 - 请替换为真实链接",
+        "expected": {
+          "has_title": true,
+          "has_content": true,
+          "min_content_length": 300
+        },
+        "notes": "用于测试通用网页处理器的内容提取能力"
+      },
+      {
+        "url": "https://docs.python.org/3/library/asyncio.html",
+        "description": "Python 官方文档",
+        "expected": {
+          "has_title": true,
+          "has_content": true,
+          "min_content_length": 1000
+        },
+        "notes": "用于测试技术文档页面处理"
+      }
+    ]
+  },
+  "usage_instructions": {
+    "step1": "将上述示例链接替换为真实有效的链接",
+    "step2": "确保链接可以正常访问（不需要登录、不被墙）",
+    "step3": "运行测试脚本: python tests/manual_test_processors.py --use-config",
+    "step4": "查看测试结果，验证处理器功能"
+  },
+  "recommended_sources": {
+    "wechat": [
+      "技术公众号: 阮一峰的网络日志、美团技术团队等",
+      "新闻类: 人民日报、新华社等",
+      "教程类: Python之禅、编程随想等"
+    ],
+    "zhihu": [
+      "技术问题: 搜索「分布式系统」「数据库原理」等",
+      "专栏文章: 知乎官方技术专栏、个人技术博客等"
+    ],
+    "generic": [
+      "个人博客: 可使用 GitHub Pages、Medium、简书等",
+      "技术文档: Python、Node.js、React 等官方文档",
+      "新闻网站: 科技媒体如 36kr、InfoQ 等"
+    ]
+  }
+}

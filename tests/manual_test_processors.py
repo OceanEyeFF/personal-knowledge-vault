@@ -5,11 +5,15 @@ Milestone 3 处理器集成测试脚本
 用于测试真实链接的处理能力。
 
 使用方法:
-    python tests/manual_test_processors.py
+    python tests/manual_test_processors.py [--use-config]
+
+参数:
+    --use-config: 从 tests/fixtures/test_urls.json 读取测试链接
 """
 
 import asyncio
 import sys
+import json
 from pathlib import Path
 
 # 添加项目根目录到 Python 路径
@@ -18,69 +22,41 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.processors import get_processor
 
 
-async def test_wechat_processor():
+def load_test_urls():
+    """从 JSON 配置文件加载测试链接"""
+    config_path = Path(__file__).parent / "fixtures" / "test_urls.json"
+
+    if not config_path.exists():
+        print(f"[!] 配置文件不存在: {config_path}")
+        return None
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        return config.get("test_cases", {})
+    except Exception as e:
+        print(f"[X] 加载配置文件失败: {e}")
+        return None
+
+
+async def test_wechat_processor(test_urls=None):
     """测试微信文章处理器"""
     print("\n" + "="*80)
     print("测试 1: 微信文章处理器")
     print("="*80)
 
-    # 测试链接（请替换为真实的微信文章链接）
-    url = "https://mp.weixin.qq.com/s/example"  # 替换为真实链接
+    # 从配置文件加载或使用默认链接
+    if test_urls and "wechat" in test_urls:
+        urls = [case["url"] for case in test_urls["wechat"]]
+    else:
+        urls = ["https://mp.weixin.qq.com/s/example"]  # 默认链接
 
-    print("\n[!] 请先替换测试脚本中的 url 变量为真实的微信文章链接")
-    print(f"当前链接: {url}")
-    print("跳过此测试...\n")
-    return True  # 默认通过，避免报错
-
-    try:
-        processor = get_processor(url)
-        print(f"[OK] 识别为: {processor.__class__.__name__}")
-
-        print(f"\n正在处理: {url}")
-        entry = await processor.process(url)
-
-        # 验证结果
-        assert entry.title, "[X] 标题为空"
-        assert entry.content, "[X] 内容为空"
-        assert entry.metadata.get("source") == url, "[X] 来源 URL 不匹配"
-
-        print(f"\n[OK] 处理成功:")
-        print(f"  标题: {entry.title}")
-        print(f"  内容长度: {len(entry.content)} 字符")
-        print(f"  作者: {entry.metadata.get('author', '未知')}")
-        print(f"  发布时间: {entry.metadata.get('published_time', '未知')}")
-        print(f"  来源类型: {entry.metadata.get('source_type', '未知')}")
-
-        # 显示内容预览（前 500 字符）
-        print(f"\n内容预览:")
-        print(entry.content[:500])
-        print("...")
-
-        return True
-
-    except Exception as e:
-        print(f"[X] 测试失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-async def test_zhihu_processor():
-    """测试知乎内容处理器"""
-    print("\n" + "="*80)
-    print("测试 2: 知乎内容处理器")
-    print("="*80)
-
-    # 测试链接（请替换为真实的知乎链接）
-    urls = [
-        "https://www.zhihu.com/question/12345678",  # 问题页
-        "https://zhuanlan.zhihu.com/p/12345678",    # 文章页
-    ]
-
-    print("\n[!]  请先替换测试脚本中的 urls 列表为真实的知乎链接")
-    print(f"当前链接: {urls}")
-    print("跳过此测试...\n")
-    return True  # 默认通过，避免报错
+    # 检查是否为示例链接
+    if all("example" in url for url in urls):
+        print("\n[!] 请先在 tests/fixtures/test_urls.json 中配置真实的微信文章链接")
+        print(f"当前链接: {urls}")
+        print("跳过此测试...\n")
+        return True  # 默认通过，避免报错
 
     success_count = 0
 
@@ -95,7 +71,68 @@ async def test_zhihu_processor():
             # 验证结果
             assert entry.title, "[X] 标题为空"
             assert entry.content, "[X] 内容为空"
-            assert entry.metadata.get("source") == url, "[X] 来源 URL 不匹配"
+            source_url = entry.metadata.get("source_url") or entry.metadata.get("source")
+            assert source_url == url, "[X] 来源 URL 不匹配"
+
+            print(f"[OK] 处理成功:")
+            print(f"  标题: {entry.title}")
+            print(f"  内容长度: {len(entry.content)} 字符")
+            print(f"  作者: {entry.metadata.get('author', '未知')}")
+            print(f"  发布时间: {entry.metadata.get('published_time', '未知')}")
+            print(f"  来源类型: {entry.metadata.get('source_type', '未知')}")
+
+            # 显示内容预览（前 500 字符）
+            print(f"\n内容预览:")
+            print(entry.content[:500])
+            print("...")
+
+            success_count += 1
+
+        except Exception as e:
+            print(f"[X] 测试失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+    return success_count == len(urls)
+
+
+async def test_zhihu_processor(test_urls=None):
+    """测试知乎内容处理器"""
+    print("\n" + "="*80)
+    print("测试 2: 知乎内容处理器")
+    print("="*80)
+
+    # 从配置文件加载或使用默认链接
+    if test_urls and "zhihu" in test_urls:
+        urls = [case["url"] for case in test_urls["zhihu"]]
+    else:
+        urls = [
+            "https://www.zhihu.com/question/12345678",
+            "https://zhuanlan.zhihu.com/p/12345678",
+        ]
+
+    # 检查是否为示例链接
+    if all("12345678" in url for url in urls):
+        print("\n[!] 请先在 tests/fixtures/test_urls.json 中配置真实的知乎链接")
+        print(f"当前链接: {urls}")
+        print("跳过此测试...\n")
+        return True  # 默认通过，避免报错
+
+    success_count = 0
+
+    for url in urls:
+        print(f"\n正在处理: {url}")
+        try:
+            processor = get_processor(url)
+            print(f"[OK] 识别为: {processor.__class__.__name__}")
+
+            entry = await processor.process(url)
+
+            # 验证结果
+            assert entry.title, "[X] 标题为空"
+            assert entry.content, "[X] 内容为空"
+            source_url = entry.metadata.get("source_url") or entry.metadata.get("source")
+            assert source_url == url, "[X] 来源 URL 不匹配"
 
             print(f"[OK] 处理成功:")
             print(f"  标题: {entry.title}")
@@ -118,22 +155,27 @@ async def test_zhihu_processor():
     return success_count == len(urls)
 
 
-async def test_generic_processor():
+async def test_generic_processor(test_urls=None):
     """测试通用网页处理器"""
     print("\n" + "="*80)
     print("测试 3: 通用网页处理器")
     print("="*80)
 
-    # 测试链接（各种类型的网页）
-    urls = [
-        "https://www.example.com/article",  # 替换为真实的博客文章
-        "https://docs.python.org/3/",       # 技术文档
-    ]
+    # 从配置文件加载或使用默认链接
+    if test_urls and "generic" in test_urls:
+        urls = [case["url"] for case in test_urls["generic"]]
+    else:
+        urls = [
+            "https://www.example.com/article",
+            "https://docs.python.org/3/library/asyncio.html",
+        ]
 
-    print("\n[!]  请先替换测试脚本中的 urls 列表为真实的网页链接")
-    print(f"当前链接: {urls}")
-    print("跳过此测试...\n")
-    return True  # 默认通过，避免报错
+    # 检查是否为示例链接
+    if any("example.com" in url for url in urls):
+        print("\n[!] 请先在 tests/fixtures/test_urls.json 中配置真实的网页链接")
+        print(f"当前链接: {urls}")
+        print("跳过此测试...\n")
+        return True  # 默认通过，避免报错
 
     success_count = 0
 
@@ -148,7 +190,8 @@ async def test_generic_processor():
             # 验证结果
             assert entry.title, "[X] 标题为空"
             assert entry.content, "[X] 内容为空"
-            assert entry.metadata.get("source") == url, "[X] 来源 URL 不匹配"
+            source_url = entry.metadata.get("source_url") or entry.metadata.get("source")
+            assert source_url == url, "[X] 来源 URL 不匹配"
 
             print(f"[OK] 处理成功:")
             print(f"  标题: {entry.title}")
@@ -232,19 +275,34 @@ async def main():
     print("\n" + "="*80)
     print("Milestone 3: 内容处理器 - 集成测试")
     print("="*80)
-    print("\n[!]  注意:")
-    print("  1. 请先替换测试脚本中的真实链接再运行完整测试")
-    print("  2. 确保 .env 文件中已配置 DEEPSEEK_API_KEY 和 OPENAI_API_KEY")
-    print("  3. 确保已安装 Playwright 浏览器: python -m playwright install chromium")
-    print("\n当前仅运行聊天记录处理器测试（使用测试 Fixtures）\n")
+
+    # 检查是否使用配置文件
+    use_config = "--use-config" in sys.argv
+
+    test_urls = None
+    if use_config:
+        print("\n[*] 从配置文件加载测试链接...")
+        test_urls = load_test_urls()
+        if not test_urls:
+            print("[X] 无法加载配置文件，使用默认测试")
+            use_config = False
+
+    if not use_config:
+        print("\n[!] 注意:")
+        print("  1. 当前使用默认测试链接（示例链接将被跳过）")
+        print("  2. 使用 --use-config 参数从 tests/fixtures/test_urls.json 读取真实链接")
+        print("  3. 确保 .env 文件中已配置 DEEPSEEK_API_KEY 和 OPENAI_API_KEY")
+        print("  4. 确保已安装 Playwright 浏览器: python -m playwright install chromium")
+        print("\n当前仅运行聊天记录处理器测试（使用测试 Fixtures）\n")
 
     results = []
 
     # 运行各个测试
-    # 取消注释以下行来运行真实链接测试
-    # results.append(("微信文章处理器", await test_wechat_processor()))
-    # results.append(("知乎内容处理器", await test_zhihu_processor()))
-    # results.append(("通用网页处理器", await test_generic_processor()))
+    if use_config or "--all" in sys.argv:
+        results.append(("微信文章处理器", await test_wechat_processor(test_urls)))
+        results.append(("知乎内容处理器", await test_zhihu_processor(test_urls)))
+        results.append(("通用网页处理器", await test_generic_processor(test_urls)))
+
     results.append(("聊天记录处理器", await test_chat_processor()))
 
     # 输出测试总结
