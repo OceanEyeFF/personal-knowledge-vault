@@ -1,12 +1,12 @@
 {
   "description": "Milestone 3 处理器集成测试 - 真实链接配置",
-  "version": "1.0",
+  "version": "1.1",
   "last_updated": "2026-02-14",
   "test_cases": {
     "wechat": [
       {
-        "url": "https://mp.weixin.qq.com/s/example1",
-        "description": "技术文章示例 - 请替换为真实链接",
+        "url": "https://mp.weixin.qq.com/s/ZET927baoFCj3In_11fKeA",
+        "description": "微信文章 1",
         "expected": {
           "has_title": true,
           "has_author": true,
@@ -14,63 +14,125 @@
           "has_content": true,
           "min_content_length": 500
         },
-        "notes": "可以使用任何微信公众号文章链接，建议选择技术博客"
+        "notes": "真实微信公众号文章"
       },
       {
-        "url": "https://mp.weixin.qq.com/s/example2",
-        "description": "包含代码块的文章 - 请替换为真实链接",
+        "url": "https://mp.weixin.qq.com/s/mqB-vPut4doNN0PS76q-TA",
+        "description": "微信文章 2",
         "expected": {
           "has_title": true,
-          "has_code_blocks": true,
-          "min_content_length": 1000
+          "has_author": true,
+          "has_publish_time": true,
+          "has_content": true,
+          "min_content_length": 500
         },
-        "notes": "用于测试代码块格式保留"
+        "notes": "真实微信公众号文章"
       }
     ],
     "zhihu": [
       {
-        "url": "https://www.zhihu.com/question/12345678",
-        "description": "知乎问题页示例 - 请替换为真实链接",
+        "url": "https://www.zhihu.com/question/2005725246167147371/answer/2005744873660233633",
+        "description": "知乎回答：杭州一创业者开 1 人公司，团队完全由 AI 智能体组成",
         "expected": {
           "has_title": true,
           "has_author": true,
           "has_content": true,
           "min_content_length": 500
         },
-        "notes": "用于测试问题页处理和最佳答案选择"
+        "notes": "测试知乎回答页处理和最佳答案选择"
       },
       {
-        "url": "https://zhuanlan.zhihu.com/p/12345678",
-        "description": "知乎专栏文章示例 - 请替换为真实链接",
+        "url": "https://zhuanlan.zhihu.com/p/1989702804772758028",
+        "description": "知乎专栏：中国正在发起一场影响人类文明走向的革命",
         "expected": {
           "has_title": true,
           "has_author": true,
           "has_content": true,
           "min_content_length": 500
         },
-        "notes": "用于测试专栏文章处理"
+        "notes": "测试知乎专栏文章处理"
       }
     ],
     "generic": [
       {
-        "url": "https://www.example.com/blog/article1",
-        "description": "个人博客文章 - 请替换为真实链接",
+        "url": "https://blog.csdn.net/u012045365/article/details/157808330",
+        "description": "CSDN 博客文章",
         "expected": {
           "has_title": true,
           "has_content": true,
           "min_content_length": 300
         },
-        "notes": "用于测试通用网页处理器的内容提取能力"
+        "notes": "测试 CSDN 博客平台内容提取"
       },
       {
-        "url": "https://docs.python.org/3/library/asyncio.html",
-        "description": "Python 官方文档",
+        "url": "https://www.cnblogs.com/NickYao/p/18984826",
+        "description": "博客园文章",
         "expected": {
           "has_title": true,
           "has_content": true,
-          "min_content_length": 1000
+          "min_content_length": 300
         },
-        "notes": "用于测试技术文档页面处理"
+        "notes": "测试博客园平台内容提取"
+      },
+      {
+        "url": "https://api-docs.deepseek.com/zh-cn/news/news251201",
+        "description": "DeepSeek 模型发布文档",
+        "expected": {
+          "has_title": true,
+          "has_content": true,
+          "min_content_length": 300
+        },
+        "notes": "测试 DeepSeek 官方文档处理"
+      },
+      {
+        "url": "https://chat.deepseek.com/share/vahhw1mjct2lrdbojv",
+        "description": "DeepSeek 问答分享链接",
+        "expected": {
+          "has_title": true,
+          "has_content": true,
+          "min_content_length": 300
+        },
+        "notes": "测试 DeepSeek 分享页面处理"
+      },
+      {
+        "url": "https://www.aiposthub.com/anthropic-claude-for-financial-services-excel/",
+        "description": "AI 知识文章",
+        "expected": {
+          "has_title": true,
+          "has_content": true,
+          "min_content_length": 300
+        },
+        "notes": "测试 AI 知识网站内容提取"
+      },
+      {
+        "url": "https://docs.unity3d.com/cn/2022.2/Manual/UnityYAML.html",
+        "description": "Unity 文档单一页面",
+        "expected": {
+          "has_title": true,
+          "has_content": true,
+          "min_content_length": 500
+        },
+        "notes": "测试 Unity 官方文档处理"
+      },
+      {
+        "url": "https://zread.ai/legions-developer/evilcharts",
+        "description": "Zread.AI GitHub 仓库解析",
+        "expected": {
+          "has_title": true,
+          "has_content": true,
+          "min_content_length": 300
+        },
+        "notes": "测试复杂页面处理"
+      },
+      {
+        "url": "https://docs.unity3d.com/cn/2022.2/Manual/index.html",
+        "description": "Unity 2022 文档索引",
+        "expected": {
+          "has_title": true,
+          "has_content": true,
+          "min_content_length": 500
+        },
+        "notes": "测试文档索引页处理"
       }
     ]
   },
