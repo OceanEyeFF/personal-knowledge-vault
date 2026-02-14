@@ -137,6 +137,61 @@ class TextProcessor:
         return chinese_count + english_count
 
 
+def split_text_into_chunks(
+    text: str,
+    chunk_size: int = 500,
+    chunk_overlap: int = 50,
+) -> List[str]:
+    """
+    将文本分割成多个分块（用于向量化）
+
+    Args:
+        text: 原始文本
+        chunk_size: 每个分块的字符数
+        chunk_overlap: 分块之间的重叠字符数
+
+    Returns:
+        分块列表
+
+    Example:
+        >>> chunks = split_text_into_chunks("长文本...", chunk_size=500, chunk_overlap=50)
+        >>> assert all(len(chunk) <= 550 for chunk in chunks)  # chunk_size + chunk_overlap
+    """
+    if not text or not text.strip():
+        return []
+
+    if chunk_size <= 0:
+        raise ValueError("chunk_size 必须大于 0")
+
+    if chunk_overlap < 0:
+        raise ValueError("chunk_overlap 不能为负数")
+
+    if chunk_overlap >= chunk_size:
+        raise ValueError("chunk_overlap 必须小于 chunk_size")
+
+    chunks = []
+    start = 0
+
+    while start < len(text):
+        end = start + chunk_size
+        chunk = text[start:end].strip()
+
+        if chunk:
+            chunks.append(chunk)
+
+        # 下一个分块的起始位置（带重叠）
+        start = end - chunk_overlap
+
+        # 如果剩余文本不足一个分块，直接添加
+        if start + chunk_size >= len(text) and end < len(text):
+            chunk = text[start:].strip()
+            if chunk and chunk not in chunks:
+                chunks.append(chunk)
+            break
+
+    return chunks
+
+
 # 全局文本处理器实例
 _text_processor_instance = None
 
