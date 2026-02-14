@@ -87,18 +87,20 @@
 
 ## 🏗️ 开发里程碑（Milestones）
 
-### Milestone 1: 基础设施层 (Week 1, Day 1-3)
+> **当前进度**: ✅ M1-M3 已完成 | 🚧 M3.5 进行中 | ⏳ M4-M7 待开始
+
+### ✅ Milestone 1: 基础设施层 (Week 1, Day 1-3) - **已完成**
 
 **目标**: 搭建数据存储和配置基础
 
 **交付物**:
-- [ ] `src/storage/markdown_store.py` - Markdown 文件管理
-- [ ] `src/storage/sqlite_store.py` - SQLite 数据库封装
-- [ ] `src/storage/vector_store.py` - hnswlib 向量索引
-- [ ] `src/utils/config.py` - 配置加载器
-- [ ] `config/config.yaml` - 主配置文件
-- [ ] `.env.example` - 环境变量模板
-- [ ] `tests/unit/test_storage_*.py` - 存储层单元测试
+- [x] `src/storage/markdown_store.py` - Markdown 文件管理
+- [x] `src/storage/sqlite_store.py` - SQLite 数据库封装
+- [x] `src/storage/vector_store.py` - hnswlib 向量索引
+- [x] `src/utils/config.py` - 配置加载器
+- [x] `config/config.yaml` - 主配置文件
+- [x] `.env.example` - 环境变量模板
+- [x] `tests/unit/test_storage_*.py` - 存储层单元测试
 
 **验收标准**:
 ```python
@@ -122,17 +124,17 @@ assert loaded.title == "测试"
 
 ---
 
-### Milestone 2: AI 服务封装 (Week 1, Day 3-4)
+### ✅ Milestone 2: AI 服务封装 (Week 1, Day 3-4) - **已完成**
 
 **目标**: 封装 DeepSeek 和 OpenAI API
 
 **交付物**:
-- [ ] `src/ai/deepseek_client.py` - DeepSeek API 封装
-- [ ] `src/ai/openai_client.py` - OpenAI Embedding 封装
-- [ ] `src/ai/embedder.py` - 统一向量化接口
-- [ ] `src/ai/prompts/summarize.txt` - 摘要生成提示词
-- [ ] `src/ai/prompts/extract_tags.txt` - 标签提取提示词
-- [ ] `tests/unit/test_ai_*.py` - AI 服务单元测试
+- [x] `src/ai/deepseek_client.py` - DeepSeek API 封装
+- [x] `src/ai/openai_client.py` - OpenAI Embedding 封装
+- [x] `src/ai/embedder.py` - 统一向量化接口
+- [x] `src/ai/prompts/summarize.txt` - 摘要生成提示词
+- [x] `src/ai/prompts/extract_tags.txt` - 标签提取提示词
+- [x] `tests/unit/test_ai_*.py` - AI 服务单元测试
 
 **验收标准**:
 ```python
@@ -156,19 +158,19 @@ assert len(tags) >= 3 and len(tags) <= 5
 
 ---
 
-### Milestone 3: 内容处理器 (Week 1, Day 5 - Week 2, Day 1)
+### ✅ Milestone 3: 内容处理器 (Week 1, Day 5 - Week 2, Day 1) - **已完成**
 
 **目标**: 实现微信、知乎、通用网页处理器
 
 **交付物**:
-- [ ] `src/processors/base.py` - 处理器基类
-- [ ] `src/processors/wechat_processor.py` - 微信文章处理器
-- [ ] `src/processors/zhihu_processor.py` - 知乎内容处理器
-- [ ] `src/processors/generic_processor.py` - 通用网页处理器
-- [ ] `src/processors/chat_processor.py` - 聊天记录处理器
-- [ ] `src/processors/__init__.py` - 处理器注册
-- [ ] `tests/unit/test_processors_*.py` - 处理器单元测试
-- [ ] `tests/fixtures/sample_*.html` - 测试用 HTML 样本
+- [x] `src/processors/base.py` - 处理器基类
+- [x] `src/processors/wechat_processor.py` - 微信文章处理器
+- [x] `src/processors/zhihu_processor.py` - 知乎内容处理器
+- [x] `src/processors/generic_processor.py` - 通用网页处理器
+- [x] `src/processors/chat_processor.py` - 聊天记录处理器
+- [x] `src/processors/__init__.py` - 处理器注册
+- [x] `tests/unit/test_processors_*.py` - 处理器单元测试
+- [x] `tests/fixtures/sample_*.html` - 测试用 HTML 样本
 
 **验收标准**:
 ```python
@@ -189,6 +191,79 @@ assert content.metadata["source"] == url
 2. HTML 转 Markdown 保留关键格式（标题、列表、代码块）
 3. 元数据提取完整（作者、发布时间、来源）
 4. 异常处理：网络错误、解析失败、反爬虫
+
+**已知限制**:
+- ❌ 知乎问答页面（question+answer 格式）暂不支持（动态跳转+严格反爬虫）
+- ⚠️ 建议使用知乎专栏链接（zhuanlan.zhihu.com）替代
+
+---
+
+### Milestone 3.5: AI 对话处理器与文本 Fallback (新增)
+
+**目标**: 支持 AI 对话导出格式和纯文本 Fallback 机制
+
+**背景**:
+- DeepSeek/ChatGPT 对话导出是知识整理的重要来源
+- 需要 Fallback 机制处理直接复制粘贴的文本内容
+
+**交付物**:
+- [ ] `src/processors/ai_chat_processor.py` - AI 对话处理器
+  - 支持 ChatGPT HTML 导出格式（包含 `data-turn` 属性）
+  - 支持 ChatGPT Markdown 导出格式（`**You:**` / `**ChatGPT:**`）
+  - 支持 ChatGPT TXT 导出格式
+  - 支持 DeepSeek HTML 导出格式（包含 `message user`/`assistant` 类）
+  - 支持 DeepSeek Markdown 导出格式（`### 用户` / `### DeepSeek AI`）
+  - 支持 DeepSeek TXT 导出格式（`user:` / `assistant:`）
+- [ ] `src/processors/text_fallback_processor.py` - 纯文本 Fallback 处理器
+  - 智能检测文本类型（对话 vs 文章）
+  - 处理直接复制粘贴的内容
+  - 提取关键信息（无严格格式要求）
+  - 优雅降级（格式不明确时）
+- [ ] `tests/fixtures/AI_ChatContexts/` - AI 对话样本数据
+- [ ] `tests/unit/test_ai_chat_processor.py` - AI 对话处理器单元测试
+- [ ] `tests/unit/test_text_fallback_processor.py` - 文本 Fallback 单元测试
+- [ ] `tests/fixtures/test_urls.json` - 更新测试配置（新增 AI 对话测试用例）
+
+**验收标准**:
+```python
+from src.processors import get_processor
+
+# AI 对话处理器 - ChatGPT HTML
+processor = get_processor("path/to/chatgpt_export.html")
+assert processor.__class__.__name__ == "AIChatProcessor"
+
+entry = await processor.process("path/to/chatgpt_export.html")
+assert entry.title  # 从对话第一条或 <title> 提取
+assert entry.content  # Markdown 格式的对话记录
+assert "ChatGPT" in entry.metadata.get("ai_platform", "")
+
+# AI 对话处理器 - DeepSeek Markdown
+processor = get_processor("path/to/deepseek_export.md")
+entry = await processor.process("path/to/deepseek_export.md")
+assert "DeepSeek" in entry.metadata.get("ai_platform", "")
+
+# 文本 Fallback 处理器
+processor = get_processor("直接复制的文本内容...")
+assert processor.__class__.__name__ == "TextFallbackProcessor"
+
+entry = await processor.process("一段没有明确格式的文本...")
+assert entry.content  # 原文本内容
+assert entry.abstract or entry.summary_100_words  # AI 生成摘要
+```
+
+**白盒测试检查点**:
+1. AI 对话处理器能正确识别 6 种格式（ChatGPT/DeepSeek × HTML/MD/TXT）
+2. 对话角色提取准确（User/Assistant）
+3. 对话轮次分隔正确
+4. 标题生成合理（从第一条用户消息或文件标题提取）
+5. 文本 Fallback 处理器能智能区分对话 vs 文章
+6. Fallback 处理器能处理无格式文本
+7. 所有处理器集成到 `get_processor()` 路由
+
+**实现优先级**:
+1. **高优先级**: AI 对话处理器（B）
+2. **高优先级**: 文本 Fallback 处理器（D）
+3. **中优先级**: 更新文档标注知乎限制（C）
 
 ---
 
@@ -470,6 +545,15 @@ python src/main.py search "分布式系统"
 - [ ] `docs/API变更日志.md` - API 文档
 - [ ] `CHANGELOG.md` - 版本历史
 
+**Milestone 完成报告（已完成）**:
+- [x] `docs/MILESTONE1_COMPLETE.md` - M1 完成报告
+- [x] `docs/MILESTONE2_COMPLETE.md` - M2 完成报告
+- [x] `docs/MILESTONE2_REVIEW.md` - M2 审查报告
+- [x] `docs/MILESTONE3_COMPLETE.md` - M3 完成报告
+- [x] `docs/MILESTONE3_REVIEW.md` - M3 审查报告
+- [x] `docs/MILESTONE3_TEST_RESULTS.md` - M3 集成测试结果报告
+- [x] `docs/MILESTONE3_TESTING_GUIDE.md` - M3 测试指南
+
 ### 数据和脚本
 - [ ] `scripts/init_db.py` - 数据库初始化脚本
 - [ ] `scripts/backup.sh` - 备份脚本
@@ -536,15 +620,22 @@ mkdir -p .data/{db,vectors,vault,logs,tmp}
 
 ## ✅ 验收标准总结
 
-**MVP 完成的标志**:
-1. ✅ 能够归档微信、知乎、通用网页内容
-2. ✅ 能够归档聊天记录和新闻
-3. ✅ AI 自动生成摘要和标签
-4. ✅ 混合检索准确率 ≥ 85%
-5. ✅ 整理时间 ≤ 5 分钟（人机对话部分）
-6. ✅ 查询时间 ≤ 1 分钟
-7. ✅ 单元测试覆盖率 ≥ 70%
-8. ✅ 使用文档和维护文档完整
+**当前已完成（M1-M3）**:
+1. ✅ 基础设施层：存储、数据库、配置（M1）
+2. ✅ AI 服务封装：DeepSeek、OpenAI、向量化（M2）
+3. ✅ 内容处理器：微信、知乎专栏、通用网页、聊天记录（M3）
+4. ✅ 单元测试覆盖率 96.7%（M3，64 个测试全部通过）
+5. ✅ 简单网页处理成功率 81.8%（9/11）
+
+**进行中（M3.5）**:
+- 🚧 AI 对话处理器（ChatGPT/DeepSeek 导出格式）
+- 🚧 纯文本 Fallback 处理器
+
+**待完成（M4-M7 - MVP 完成标志）**:
+1. ⏳ 混合检索准确率 ≥ 85%
+2. ⏳ 整理时间 ≤ 5 分钟（人机对话部分）
+3. ⏳ 查询时间 ≤ 1 分钟
+4. ⏳ 使用文档和维护文档完整
 
 ---
 
