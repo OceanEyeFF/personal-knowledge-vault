@@ -1,0 +1,9 @@
+2026-01-01 10:00 Alice
+Hello Bob
+
+2026-01-01 10:01 Bob
+Hi Alice.
+Let's discuss the plan.
+
+2026-01-01 10:02 Alice
+Sounds good.

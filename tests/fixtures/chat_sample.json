@@ -1,0 +1,12 @@
+[
+  {
+    "timestamp": "2026-01-02 09:00",
+    "sender": "Carol",
+    "message": "JSON message one."
+  },
+  {
+    "timestamp": "2026-01-02 09:01",
+    "sender": "Dave",
+    "message": "JSON message two."
+  }
+]
