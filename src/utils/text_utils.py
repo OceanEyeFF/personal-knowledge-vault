@@ -1,0 +1,154 @@
+"""
+文本处理工具
+
+提供 jieba 分词、文本清洗等功能
+"""
+
+import re
+import jieba
+from typing import List
+from pathlib import Path
+
+
+class TextProcessor:
+    """文本处理器"""
+
+    def __init__(self, custom_dict_path: str = "config/custom_dict.txt"):
+        """
+        初始化文本处理器
+
+        Args:
+            custom_dict_path: jieba 自定义词典路径
+        """
+        # 加载自定义词典
+        dict_path = Path(custom_dict_path)
+        if dict_path.exists():
+            jieba.load_userdict(str(dict_path))
+
+    @staticmethod
+    def tokenize_chinese(text: str) -> str:
+        """
+        使用 jieba 对中文文本进行分词，返回空格分隔的字符串
+
+        Args:
+            text: 原始文本
+
+        Returns:
+            空格分隔的分词结果
+
+        Example:
+            >>> processor = TextProcessor()
+            >>> processor.tokenize_chinese("人工智能的未来")
+            "人工智能 的 未来"
+        """
+        if not text:
+            return ""
+
+        # 使用 jieba 分词
+        words = jieba.cut(text)
+
+        # 转换为空格分隔字符串
+        return " ".join(words)
+
+    @staticmethod
+    def prepare_fts5_data(title: str, summary: str, keywords: List[str], tags: List[str]) -> dict:
+        """
+        准备 FTS5 虚拟表的数据（预分词）
+
+        Args:
+            title: 标题
+            summary: 摘要
+            keywords: 关键词列表
+            tags: 标签列表
+
+        Returns:
+            包含预分词后字段的字典
+        """
+        return {
+            "title": TextProcessor.tokenize_chinese(title),
+            "summary_100_words": TextProcessor.tokenize_chinese(summary),
+            "keywords": TextProcessor.tokenize_chinese(" ".join(keywords)),
+            "tags": TextProcessor.tokenize_chinese(" ".join(tags)),
+        }
+
+    @staticmethod
+    def sanitize_filename(title: str, max_length: int = 100) -> str:
+        """
+        清理文件名，移除非法字符
+
+        Args:
+            title: 原始标题
+            max_length: 最大长度
+
+        Returns:
+            清理后的文件名
+
+        Example:
+            >>> TextProcessor.sanitize_filename("AI驱动的知识管理?")
+            "AI驱动的知识管理？"
+        """
+        # 替换规则
+        replacements = {
+            "/": "-",
+            "?": "？",
+            ":": "：",
+            "*": "×",
+            '"': "'",
+            "<": "",
+            ">": "",
+            "|": "",
+        }
+
+        for old, new in replacements.items():
+            title = title.replace(old, new)
+
+        # 移除非法字符
+        title = re.sub(r'[<>|]', '', title)
+
+        # 限制长度
+        return title[:max_length]
+
+    @staticmethod
+    def calculate_word_count(text: str) -> int:
+        """
+        计算文本字数 (中英文混合)
+
+        Args:
+            text: 文本内容
+
+        Returns:
+            字数
+
+        Example:
+            >>> TextProcessor.calculate_word_count("Hello 世界")
+            3
+        """
+        # 移除空白字符
+        text = re.sub(r'\s+', '', text)
+
+        # 计算中文字符数
+        chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
+        chinese_count = len(chinese_chars)
+
+        # 计算英文单词数
+        english_words = re.findall(r'[a-zA-Z]+', text)
+        english_count = len(english_words)
+
+        return chinese_count + english_count
+
+
+# 全局文本处理器实例
+_text_processor_instance = None
+
+
+def get_text_processor() -> TextProcessor:
+    """
+    获取全局文本处理器实例 (单例)
+
+    Returns:
+        TextProcessor 实例
+    """
+    global _text_processor_instance
+    if _text_processor_instance is None:
+        _text_processor_instance = TextProcessor()
+    return _text_processor_instance

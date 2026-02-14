@@ -1,0 +1,37 @@
+# ===========================
+# Personal Knowledge Vault - Dependencies
+# ===========================
+
+# Core Dependencies
+python-dotenv==1.0.0        # 环境变量管理
+pyyaml==6.0.1              # YAML 解析
+click==8.1.7               # CLI 框架
+rich==13.7.0               # 终端 UI
+
+# Storage & Database
+hnswlib==0.8.0             # 向量检索 (HNSW 算法)
+
+# Text Processing
+jieba==0.42.1              # 中文分词
+beautifulsoup4==4.12.3     # HTML 解析
+lxml==5.3.0                # XML/HTML 解析器 (Python 3.13 兼容)
+html2text==2020.1.16       # HTML 转 Markdown
+python-frontmatter==1.1.0  # YAML Front Matter 解析
+
+# AI Services
+openai==1.12.0             # OpenAI API (Embedding)
+httpx==0.26.0              # HTTP 客户端 (用于 DeepSeek API)
+
+# Web Scraping (Phase 1 需要)
+playwright==1.48.0         # 网页自动化 (Python 3.13 兼容)
+requests==2.31.0           # HTTP 请求
+
+# Testing
+pytest==7.4.4              # 测试框架 (兼容 pytest-asyncio<8 要求)
+pytest-cov==4.1.0          # 测试覆盖率
+pytest-asyncio==0.23.4     # 异步测试支持
+
+# Development Tools
+black==24.1.1              # 代码格式化
+flake8==7.0.0              # 代码检查
+mypy==1.8.0                # 类型检查
