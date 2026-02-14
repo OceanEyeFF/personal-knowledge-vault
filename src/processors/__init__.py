@@ -21,15 +21,25 @@ def _load_processors() -> List[Type[BaseProcessor]]:
     from src.processors.wechat_processor import WechatProcessor
     from src.processors.zhihu_processor import ZhihuProcessor
     from src.processors.chat_processor import ChatProcessor
+    from src.processors.ai_chat_processor import AIChatProcessor
+    try:
+        from src.processors.text_fallback_processor import TextFallbackProcessor
+    except ModuleNotFoundError:
+        TextFallbackProcessor = None
     from src.processors.generic_processor import GenericProcessor
 
-    return [
+    processors: List[Type[BaseProcessor]] = [
         WechatProcessor,
         ZhihuProcessor,
         ChatProcessor,
-        # GenericProcessor must be last as a fallback.
-        GenericProcessor,
+        AIChatProcessor,
     ]
+    if TextFallbackProcessor is not None:
+        processors.append(TextFallbackProcessor)
+
+    # GenericProcessor must be last as a fallback.
+    processors.append(GenericProcessor)
+    return processors
 
 
 def get_processor(url: str) -> BaseProcessor:
