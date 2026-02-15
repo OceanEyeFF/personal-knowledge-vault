@@ -68,6 +68,61 @@ class Config:
 
         return value
 
+    def get_workflow_config(self, workflow_name: str) -> Dict[str, Any]:
+        """
+        获取工作流配置（优先加载 config/workflows 下的 YAML）。
+
+        Args:
+            workflow_name: 工作流名称
+
+        Returns:
+            工作流配置字典
+
+        Raises:
+            ValueError: workflow_name 为空
+            FileNotFoundError: 未找到工作流配置
+        """
+        if not workflow_name or not workflow_name.strip():
+            raise ValueError("workflow_name 不能为空")
+
+        workflow_dir = self._project_root / "config" / "workflows"
+        name_variants = [
+            workflow_name,
+            workflow_name.replace("_", "-"),
+            workflow_name.replace("-", "_"),
+        ]
+
+        for name in dict.fromkeys(name_variants):
+            workflow_path = workflow_dir / f"{name}.yaml"
+            if workflow_path.exists():
+                with open(workflow_path, "r", encoding="utf-8") as f:
+                    return yaml.safe_load(f) or {}
+
+        # 兼容 config.yaml 中的 workflows 配置
+        workflow_key = workflow_name.replace("-", "_")
+        legacy_config = self.get(f"workflows.{workflow_key}")
+        if legacy_config is None:
+            raise FileNotFoundError(f"工作流配置不存在: {workflow_name}")
+
+        steps = legacy_config.get("steps")
+        if isinstance(steps, list) and steps and isinstance(steps[0], str):
+            step_type_map = {
+                "fetch": "fetch_content",
+                "analyze": "ai_analyze",
+                "sharpen": "idea_sharpen",
+                "store": "store_entry",
+            }
+            steps = [
+                {"id": step_name, "type": step_type_map.get(step_name, step_name)}
+                for step_name in steps
+            ]
+
+        merged_config = {"name": workflow_name}
+        merged_config.update(legacy_config)
+        if steps is not None:
+            merged_config["steps"] = steps
+        return merged_config
+
     def get_env(self, key: str, default: Optional[str] = None) -> Optional[str]:
         """
         获取环境变量
@@ -166,3 +221,16 @@ def get_config() -> Config:
         _config_instance = Config()
         _config_instance.ensure_dirs()
     return _config_instance
+
+
+def get_workflow_config(workflow_name: str) -> Dict[str, Any]:
+    """
+    获取工作流配置（快捷入口）。
+
+    Args:
+        workflow_name: 工作流名称
+
+    Returns:
+        工作流配置字典
+    """
+    return get_config().get_workflow_config(workflow_name)

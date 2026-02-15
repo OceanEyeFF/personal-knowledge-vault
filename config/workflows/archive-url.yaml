@@ -1,0 +1,72 @@
+# Archive URL Workflow Configuration
+# 归档 URL 工作流配置
+#
+# 用途: 自动抓取、分析、优化并存储网页内容
+# 触发方式: CLI 命令 `pkv archive <url>`
+#
+# 数据流:
+#   输入 URL → 内容抓取 → AI 分析 → idea Sharpen → 持久化存储
+#
+# 工作流步骤说明:
+# 1. fetch_content: 使用 processors 抓取网页内容
+# 2. ai_analyze: 使用 DeepSeek 生成摘要和标签
+# 3. idea_sharpen: 人机交互优化（可选，根据触发规则）
+# 4. store_entry: 存储到 Markdown + SQLite + Vector
+
+name: archive-url
+description: "智能归档网页内容工作流"
+
+# 工作流步骤（顺序执行）
+steps:
+  - id: fetch_content
+    type: fetch_content
+    config:
+      timeout: 30  # 抓取超时时间（秒）
+      retry: 3     # 重试次数
+    on_error: fail  # 抓取失败则终止工作流
+
+  - id: ai_analyze
+    type: ai_analyze
+    config:
+      model: deepseek-chat  # AI 模型
+      max_tokens: 2000      # 最大生成 token 数
+      temperature: 0.7      # 生成温度
+    on_error: continue      # AI 失败则跳过，使用默认值
+
+  - id: idea_sharpen
+    type: idea_sharpen
+    config:
+      timeout: 300          # 交互超时时间（秒）
+      # idea Sharpen 触发规则（满足任一即触发）
+      trigger_rules:
+        - content_length_gt: 3000          # 内容长度 > 3000 字
+        - core_concepts_ge: 5              # AI 识别出 ≥5 个核心概念
+        - content_type_in:                 # 内容类型匹配
+            - "讨论记录"
+            - "深度分析"
+        - contains_keywords:               # 包含关键词
+            - "观点对比"
+            - "立场分析"
+    on_error: continue      # 超时或跳过则使用 AI 默认分析
+
+  - id: store_entry
+    type: store_entry
+    config:
+      targets:  # 修复：字段名应为 "targets" 而非 "storage_backends"
+        - markdown      # Markdown Front Matter (主存储)
+        - sqlite        # SQLite FTS5 索引
+        - vector_index  # hnswlib 向量索引
+    on_error: fail  # 存储失败则终止工作流
+
+# 全局配置
+global:
+  log_level: INFO
+  enable_metrics: true  # 启用性能指标收集
+
+# 验收标准
+acceptance_criteria:
+  max_duration: 300  # 最大执行时间（秒）
+  required_outputs:
+    - markdown_file
+    - sqlite_record
+    - vector_index

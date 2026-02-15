@@ -1,0 +1,81 @@
+# Search Workflow Configuration
+# 搜索工作流配置
+#
+# 用途: 智能检索知识库内容
+# 触发方式: CLI 命令 `pkv search <query>`
+#
+# 数据流:
+#   查询文本 → 查询路由 → 检索执行 → 结果格式化
+#
+# 工作流步骤说明:
+# 1. route_query: 根据查询长度选择检索策略
+# 2. execute_retrieval: 执行 BM25/Vector/Hybrid 检索
+# 3. format_results: 格式化并高亮结果
+
+name: search
+description: "智能检索知识库工作流"
+
+# 工作流步骤（顺序执行）
+steps:
+  - id: route_query
+    type: route_query
+    config:
+      # 查询路由策略
+      routing_rules:
+        - token_count_lt: 10
+          strategy: bm25     # 短查询 (<10 tokens) 使用 BM25
+        - token_count_ge: 10
+          strategy: vector   # 长查询 (≥10 tokens) 使用向量检索
+      default_strategy: hybrid  # 默认使用混合检索
+    on_error: fail
+
+  - id: execute_retrieval
+    type: execute_retrieval
+    config:
+      # BM25 参数（关键词检索）
+      bm25:
+        k1: 1.5              # 词频饱和参数
+        b: 0.75              # 文档长度归一化
+        top_k: 10            # 返回 Top K 结果
+
+      # Vector 参数（向量检索）
+      vector:
+        top_k: 10            # 返回 Top K 结果
+        ef_search: 50        # HNSW 搜索深度
+        embedding_model: text-embedding-3-small
+
+      # Hybrid 参数（混合检索）
+      hybrid:
+        bm25_weight: 0.4     # BM25 权重
+        vector_weight: 0.6   # 向量权重
+        rrf_k: 60            # RRF 算法参数
+        top_k: 10            # 最终返回 Top K
+
+    on_error: fail
+
+  - id: format_results
+    type: format_results
+    config:
+      # 结果格式化选项
+      highlight: true         # 高亮关键词
+      show_score: true        # 显示相关性分数
+      show_metadata: true     # 显示元数据（标签、时间）
+      snippet_length: 200     # 摘要长度（字符）
+      output_format: console  # 输出格式: console | json | markdown
+    on_error: continue        # 格式化失败则返回原始结果
+
+# 全局配置
+global:
+  log_level: INFO
+  enable_metrics: true
+  max_results: 10  # 最大返回结果数
+
+# 性能要求
+performance:
+  max_latency: 2000  # 最大延迟（毫秒）
+  cache_enabled: true  # 启用查询缓存
+
+# 验收标准
+acceptance_criteria:
+  min_precision: 0.7   # 最小精确率（需要人工评估数据集）
+  max_response_time: 2  # 最大响应时间（秒）
