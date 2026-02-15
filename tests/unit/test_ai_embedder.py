@@ -182,15 +182,18 @@ class TestEmbedBatchDocuments:
         """测试成功批量向量化"""
         texts = ["doc1", "doc2", "doc3"]
 
-        mock_openai_client.embed_batch_numpy.return_value = np.array(
-            [[0.1] * 1536, [0.2] * 1536, [0.3] * 1536], dtype=np.float32
-        )
+        # 模拟 embed_numpy 返回单个向量
+        mock_openai_client.embed_numpy.side_effect = [
+            np.array([0.1] * 1536, dtype=np.float32),
+            np.array([0.2] * 1536, dtype=np.float32),
+            np.array([0.3] * 1536, dtype=np.float32),
+        ]
 
         vectors = embedder.embed_batch_documents(texts)
 
         assert isinstance(vectors, np.ndarray)
         assert vectors.shape == (3, 1536)
-        mock_openai_client.embed_batch_numpy.assert_called_once()
+        assert mock_openai_client.embed_numpy.call_count == 3
 
     def test_embed_batch_documents_empty_list(self, embedder):
         """测试空列表时抛出异常"""
@@ -201,9 +204,11 @@ class TestEmbedBatchDocuments:
         """测试过滤空文本"""
         texts = ["doc1", "", "   ", "doc2"]
 
-        mock_openai_client.embed_batch_numpy.return_value = np.array(
-            [[0.1] * 1536, [0.2] * 1536], dtype=np.float32
-        )
+        # 模拟 embed_numpy 返回单个向量
+        mock_openai_client.embed_numpy.side_effect = [
+            np.array([0.1] * 1536, dtype=np.float32),
+            np.array([0.2] * 1536, dtype=np.float32),
+        ]
 
         vectors = embedder.embed_batch_documents(texts)
 
@@ -211,22 +216,30 @@ class TestEmbedBatchDocuments:
         assert vectors.shape == (2, 1536)
 
     def test_embed_batch_documents_truncate_long(self, embedder, mock_openai_client):
-        """测试截断过长文本"""
+        """测试长文档使用分块取平均策略（与 embed_document 一致）"""
         long_text = "a" * 9000
         texts = ["short", long_text]
 
-        mock_openai_client.embed_batch_numpy.return_value = np.array(
-            [[0.1] * 1536, [0.2] * 1536], dtype=np.float32
-        )
+        # 模拟短文本的单个向量
+        short_vector = np.array([0.1] * 1536, dtype=np.float32)
 
-        embedder.embed_batch_documents(texts)
+        # 模拟长文本分块后的批量向量（_embed_long_document 会调用 embed_batch_numpy）
+        chunk_vectors = np.array([[0.2] * 1536, [0.3] * 1536], dtype=np.float32)
 
-        # 检查传递给 API 的文本（长文本应该被截断）
-        call_args = mock_openai_client.embed_batch_numpy.call_args
-        processed_texts = call_args[0][0]
+        # 设置 mock 返回值：第一次是短文本，第二次是分块向量
+        mock_openai_client.embed_numpy.return_value = short_vector
+        mock_openai_client.embed_batch_numpy.return_value = chunk_vectors
 
-        assert processed_texts[0] == "short"
-        assert len(processed_texts[1]) == 8000  # 截断到 8000
+        vectors = embedder.embed_batch_documents(texts)
+
+        # 验证结果形状
+        assert vectors.shape == (2, 1536)
+
+        # 验证短文本调用了 embed_numpy
+        assert mock_openai_client.embed_numpy.call_count == 1
+
+        # 验证长文本调用了 embed_batch_numpy（分块）
+        assert mock_openai_client.embed_batch_numpy.call_count == 1
 
 
 class TestCosineSimilarity:

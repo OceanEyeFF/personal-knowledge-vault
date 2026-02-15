@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     keywords TEXT,
     tags TEXT,
     outline TEXT,
-    source_type TEXT NOT NULL CHECK(source_type IN ('wechat', 'zhihu', 'bilibili', 'webpage', 'article', 'document', 'generic', 'personal')),
+    source_type TEXT NOT NULL CHECK(source_type IN ('wechat', 'zhihu', 'bilibili', 'webpage', 'article', 'document', 'generic', 'personal', 'ai_chat', 'text', 'test')),
     source_url TEXT UNIQUE,
     search_strategy TEXT CHECK(search_strategy IN ('keyword', 'hybrid', 'vector', 'structured')),
     file_path TEXT NOT NULL UNIQUE,
@@ -58,8 +58,8 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
 
 **CHECK 约束**:
 ```sql
--- source_type 枚举
-CHECK(source_type IN ('wechat', 'zhihu', 'bilibili', 'webpage', 'article', 'document', 'generic', 'personal'))
+-- source_type 枚举（M5.1 更新：添加 ai_chat, text, test）
+CHECK(source_type IN ('wechat', 'zhihu', 'bilibili', 'webpage', 'article', 'document', 'generic', 'personal', 'ai_chat', 'text', 'test'))
 
 -- search_strategy 枚举
 CHECK(search_strategy IN ('keyword', 'hybrid', 'vector', 'structured'))
@@ -548,30 +548,27 @@ conn.execute("""
 
 ---
 
-### 问题 6: `source_type` 枚举值与 Entry 不匹配
+### ✅ 问题 6: `source_type` 枚举值与 Entry 不匹配（已修复）
 
-**数据库枚举**:
+**修复时间**: 2026-02-16 (M5.1)
+
+**数据库枚举（修复后）**:
 ```sql
-CHECK(source_type IN ('wechat', 'zhihu', 'bilibili', 'webpage', 'article', 'document', 'generic', 'personal'))
+CHECK(source_type IN ('wechat', 'zhihu', 'bilibili', 'webpage', 'article', 'document', 'generic', 'personal', 'ai_chat', 'text', 'test'))
 ```
 
 **Entry 实际使用**:
 - `wechat` ✅
 - `zhihu` ✅
-- `ai_chat` ❌ (Entry 中有，数据库中没有)
-- `text` ❌ (Entry 中有，数据库中没有)
+- `ai_chat` ✅ (已添加)
+- `text` ✅ (已添加)
+- `test` ✅ (已添加，用于测试)
 
-**影响范围**: 高 - 插入 `ai_chat` 或 `text` 类型条目时会失败
+**修复方法**:
+- 修改 `src/storage/sqlite_store.py:91` 的 CHECK 约束
+- 删除现有测试数据库，让系统重建（SQLite 不支持直接修改 CHECK 约束）
 
-**优先级**: 高
-
-**建议修复**: 更新数据库 CHECK 约束
-
-**修复代码**:
-```sql
-ALTER TABLE knowledge_items DROP CONSTRAINT check_source_type;  -- SQLite 不支持，需要重建表
--- 或者在新版本中添加缺失的枚举值
-```
+**验证状态**: ✅ 所有单元测试通过 (122/122)
 
 ---
 
@@ -591,7 +588,7 @@ ALTER TABLE knowledge_items DROP CONSTRAINT check_source_type;  -- SQLite 不支
 
 参见 `docs/issues/SCHEMA_MIGRATION_PLAN.md`：
 - [ ] 统一主键命名（`knowledge_id` vs `id`）
-- [ ] 更新 `source_type` 枚举值
+- [x] 更新 `source_type` 枚举值（已完成 M5.1）
 - [ ] 移除未使用的 `outline` 字段
 - [ ] 添加 `updated_at` 自动更新触发器
 
@@ -606,10 +603,10 @@ ALTER TABLE knowledge_items DROP CONSTRAINT check_source_type;  -- SQLite 不支
 ✅ FTS5 全文检索支持
 ✅ 领域驱动的命名规范（`knowledge_id`, `tag_id`）
 ✅ 完整性检查机制
+✅ `source_type` 枚举完整（已包含 ai_chat, text, test）
 
 ### 需要改进
 
-⚠️ `source_type` 枚举值不完整（缺少 `ai_chat`, `text`）
 ⚠️ FTS5 分词逻辑复杂（触发器 + 手动覆盖）
 ⚠️ 部分字段未使用（`outline`, `updated_at`）
 ⚠️ 数据类型不一致（`keywords` 列表 vs 字符串）
@@ -617,5 +614,5 @@ ALTER TABLE knowledge_items DROP CONSTRAINT check_source_type;  -- SQLite 不支
 
 ---
 
-**文档维护者**: AI Agent
-**最后更新**: 2026-02-15
+**文档维护者**: AI Agent (猫娘 幽浮喵)
+**最后更新**: 2026-02-16

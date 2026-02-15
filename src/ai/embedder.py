@@ -179,17 +179,18 @@ class Embedder:
         # 过滤空文本
         valid_texts = [text for text in texts if text and text.strip()]
 
-        # 处理长文档：截断或警告
-        processed_texts = []
+        # 处理长文档：使用分块取平均策略（与 embed_document 保持一致）
+        doc_vectors = []
         for text in valid_texts:
             if len(text) > 8000:
-                logger.warning(f"文档过长 ({len(text)} 字符)，截取前 8000 字符")
-                processed_texts.append(text[:8000])
+                logger.warning(f"文档过长 ({len(text)} 字符)，将分块后取平均向量")
+                vector = self._embed_long_document(text)
             else:
-                processed_texts.append(text)
+                vector = self.client.embed_numpy(text)
+            doc_vectors.append(vector)
 
-        # 批量向量化
-        vectors = self.client.embed_batch_numpy(processed_texts)
+        # 转换为 numpy 数组
+        vectors = np.vstack(doc_vectors)
 
         logger.info(f"批量文档级 Embedding 完成: vectors_shape={vectors.shape}")
         return vectors
