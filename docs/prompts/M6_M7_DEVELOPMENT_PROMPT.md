@@ -2,45 +2,116 @@
 
 > **目标**: 完成 CLI 入口、命令行界面和完整文档
 >
-> **前置条件**: M1-M5 整理复盘已完成
-> **版本**: 1.0
+> **前置条件**: ✅ M1-M5 已完成 | ✅ M5.1 Bug 修复已完成
+> **版本**: 2.0
 > **创建日期**: 2026-02-15
+> **最后更新**: 2026-02-16
 > **适用对象**: Claude Code/CodeX 等 AI 开发工具
+
+---
+
+## 📊 当前项目状态
+
+### ✅ 已完成里程碑
+
+- **M1**: 基础设施层（存储、配置）
+- **M2**: AI 服务层（DeepSeek、OpenAI Embedding）
+- **M3**: 内容处理器（微信、知乎、通用网页、聊天）
+- **M3.5**: AI 聊天处理器与文本 Fallback
+- **M4**: 检索引擎（BM25、向量、混合检索）
+- **M5**: 工作流引擎（编排、步骤、上下文）
+- **M5.1**: Bug 修复（3 个关键问题已修复）✨ **NEW**
+
+### 🎯 当前任务
+
+- **M6**: CLI 入口与交互界面（即将开始）
+- **M7**: 文档完善与交付
+
+### ✨ M5.1 重要更新
+
+**修复时间**: 2026-02-16
+**测试结果**: 122/122 单元测试通过 (100%)
+
+**已修复问题**:
+1. ✅ **source_type CHECK 约束不完整** (高优先级)
+   - 添加 `ai_chat`, `text`, `test` 枚举值
+   - 修复 AIChatProcessor 和 TextFallbackProcessor 保存失败
+
+2. ✅ **长文档向量化策略不一致** (中优先级)
+   - 统一为分块取平均策略
+   - 保留更多文档信息
+
+3. ✅ **DeepSeek JSON 解析脆弱** (中优先级)
+   - 改进 Prompt 明确要求纯 JSON
+   - 实现三层降级解析策略
+
+**详细报告**: [`docs/milestones/M5_1_BUGFIX_COMPLETE.md`](../milestones/M5_1_BUGFIX_COMPLETE.md)
 
 ---
 
 ## 🎯 开发目标
 
-基于 M1-M5 的完整功能模块，开发用户友好的 CLI 工具，并提供完善的使用文档。
+基于 M1-M5.1 的**稳定功能模块**，开发用户友好的 CLI 工具，并提供完善的使用文档。
 
 **核心交付物**:
-1. ✅ CLI 入口和命令定义（M6）
-2. ✅ 终端 UI 和交互体验（M6）
-3. ✅ 使用手册和维护文档（M7）
-4. ✅ 版本管理和变更日志（M7）
+1. ⏳ CLI 入口和命令定义（M6）
+2. ⏳ 终端 UI 和交互体验（M6）
+3. ⏳ 使用手册和维护文档（M7）
+4. ⏳ 版本管理和变更日志（M7）
 
 ---
 
 ## 📚 前置知识
 
-### 必读文档（按顺序）
+### 必读文档（按优先级顺序）
 
-**M5 完成文档**（必须先读）:
-1. `docs/M5_COMPLETION_SUMMARY.md` - M5 完整总结（93% 测试覆盖率，6 项技术决策）
-2. `docs/M5_REAL_ENV_TEST_REPORT.md` - 真实环境测试报告（发现并修复 2 个关键 Bug）
-3. `docs/M5_WORKFLOW_ENGINE_DESIGN.md` - M5 设计文档
-4. `docs/M5_TEST_SUMMARY.md` - 测试总结
+#### 🔥 第一优先级：M5.1 Bug 修复（必读）
 
-**复盘文档**（必须先读）:
-1. `docs/refactor/M1-M5整理复盘总结.md` - 整体总结
-2. `docs/refactor/WorkflowEngine接口规范.md` - 工作流引擎 API
-3. `docs/refactor/归档流程数据流图.md` - 端到端数据流
-4. `docs/refactor/配置文件规范.md` - 配置管理
-5. `docs/refactor/Bug修复记录.md` - 已知问题和修复记录
+**为什么必读**：M5.1 修复了 3 个影响 CLI 集成的关键问题，避免开发时踩坑
 
-**设计文档**:
-1. `docs/personal-knowledge-vault-prd.md` - 核心需求（重点阅读 CLI 部分）
-2. `docs/架构设计.md` - 工作流驱动架构
+1. **[`docs/milestones/M5_1_BUGFIX_COMPLETE.md`](../milestones/M5_1_BUGFIX_COMPLETE.md)** ✨ **NEW**
+   - M5.1 完成报告
+   - 3 个 Bug 详细修复方案
+   - 测试结果 (122/122 通过)
+
+2. **[`docs/refactor/Bug修复记录.md`](../refactor/Bug修复记录.md)**
+   - 已修复问题清单（5 个已修复，3 个待修复）
+   - 技术债务优先级
+
+#### 📖 第二优先级：M1-M5 复盘文档（必读）
+
+**为什么必读**：提供系统化的架构理解和接口规范
+
+1. **[`docs/refactor/M1-M5整理复盘总结.md`](../refactor/M1-M5整理复盘总结.md)**
+   - 整体架构总结
+   - 主要问题清单（M5.1 已全部解决近期修复任务）
+
+2. **[`docs/refactor/WorkflowEngine接口规范.md`](../refactor/WorkflowEngine接口规范.md)**
+   - 工作流引擎 API
+   - **CLI 集成关键**: `WorkflowEngine.execute()` 接口
+
+3. **[`docs/refactor/归档流程数据流图.md`](../refactor/归档流程数据流图.md)**
+   - 端到端数据流
+   - **CLI 集成关键**: State 传递约定
+
+4. **[`docs/refactor/Storage接口规范.md`](../refactor/Storage接口规范.md)**
+   - 三层存储架构
+   - **CLI 集成关键**: `SQLiteStore.query_*()` 方法
+
+5. **[`docs/refactor/Retrieval检索引擎规范.md`](../refactor/Retrieval检索引擎规范.md)**
+   - 检索策略设计
+   - **CLI 集成关键**: `QueryRouter.search()` 接口
+
+#### 📋 第三优先级：设计文档（参考）
+
+1. **[`docs/core/personal-knowledge-vault-prd.md`](../core/personal-knowledge-vault-prd.md)**
+   - 核心需求（重点阅读 CLI 部分）
+
+2. **[`docs/core/架构设计.md`](../core/架构设计.md)**
+   - 工作流驱动架构
+
+3. **[`CLAUDE.md`](../../CLAUDE.md)**
+   - 项目索引和模块导航
 
 ---
 
@@ -437,11 +508,112 @@ pkv archive <url> --debug
 
 ---
 
-### 6.7 与工作流引擎集成（重要！）
+### ⚠️ 6.7 M5.1 关键修复后的注意事项 ✨ **NEW**
+
+**说明**: M5.1 修复了 3 个关键问题，CLI 开发时需要注意以下要点
+
+#### 6.7.1 source_type 枚举值已更新
+
+**背景**: M5.1 添加了 `ai_chat`, `text`, `test` 到 CHECK 约束
+
+**CLI 影响**:
+```python
+# ✅ 现在支持的 source_type（已修复）
+VALID_SOURCE_TYPES = [
+    'wechat', 'zhihu', 'bilibili', 'webpage',
+    'article', 'document', 'generic', 'personal',
+    'ai_chat',  # ✨ 新增：AI 对话
+    'text',     # ✨ 新增：纯文本 Fallback
+    'test'      # ✨ 新增：测试数据
+]
+
+# ✅ 正确：使用这些类型不会失败
+entry = Entry(title="...", source_type="ai_chat", ...)
+sqlite_store.insert_entry(entry, file_path)  # ✅ 成功
+
+# ❌ 错误：使用未定义的类型会失败
+entry = Entry(title="...", source_type="unknown", ...)
+sqlite_store.insert_entry(entry, file_path)  # ❌ CHECK 约束错误
+```
+
+**CLI 使用场景**:
+- `pkv archive <file.html>` - 可能识别为 `ai_chat` 类型（ChatGPT/DeepSeek 导出）
+- `pkv archive "纯文本内容"` - 可能识别为 `text` 类型（TextFallbackProcessor）
+
+#### 6.7.2 长文档向量化策略已统一
+
+**背景**: M5.1 统一了 `embed_document()` 和 `embed_batch_documents()` 的长文档处理策略
+
+**CLI 影响**:
+```python
+# ✅ 现在统一为分块取平均策略（已修复）
+from src.ai.embedder import Embedder
+
+embedder = Embedder()
+
+# 短文档 (< 8000 字符): 直接向量化
+short_text = "..." * 1000  # 1000 字符
+vector = embedder.embed_document(short_text)  # 直接 embed
+
+# 长文档 (≥ 8000 字符): 分块后取平均
+long_text = "..." * 10000  # 10000 字符
+vector = embedder.embed_document(long_text)  # 自动分块取平均
+
+# 批量处理: 同样的策略
+texts = [short_text, long_text]
+vectors = embedder.embed_batch_documents(texts)  # 统一策略
+```
+
+**CLI 使用场景**:
+- 归档长文章（如技术博客、论文）时，向量表示更准确
+- 搜索长文档时，语义检索结果更一致
+
+#### 6.7.3 DeepSeek JSON 解析更鲁棒
+
+**背景**: M5.1 增强了 DeepSeek 标签提取的 JSON 解析（三层降级）
+
+**CLI 影响**:
+```python
+# ✅ 现在支持多种 JSON 返回格式（已修复）
+
+# 格式 1: 纯 JSON 数组（最理想）
+response = '["Python", "AI", "教程"]'
+tags = deepseek_client.extract_tags(content)  # ✅ 策略 1
+
+# 格式 2: 包含说明文字（降级处理）
+response = '以下是标签：["Python", "AI", "教程"]'
+tags = deepseek_client.extract_tags(content)  # ✅ 策略 2（JSON 数组模式）
+
+# 格式 3: 引号分隔（最后降级）
+response = '"Python" "AI" "教程"'
+tags = deepseek_client.extract_tags(content)  # ✅ 策略 3（正则提取）
+```
+
+**CLI 使用场景**:
+- `pkv archive <url>` - AI 标签提取更稳定，减少失败率
+- 用户看到的标签更一致，体验更好
+
+#### 6.7.4 数据库重建提醒
+
+**重要**: M5.1 修改了 SQLite CHECK 约束，需要重建测试数据库
+
+```bash
+# ✅ 首次开发 CLI 前，确认测试数据库已重建
+rm -f .data/db/knowledge_vault.db  # 删除旧数据库
+python -m pytest tests/unit/ -v     # 自动重建
+
+# ✅ 如果遇到 CHECK 约束错误
+# Error: CHECK constraint failed: source_type IN (...)
+# 解决: 删除 .data/db/knowledge_vault.db 并重新运行
+```
+
+---
+
+### 6.8 与工作流引擎集成（重要！）
 
 **说明**: M6 CLI 的核心功能依赖 M5 WorkflowEngine，必须正确集成
 
-#### 6.7.1 archive 命令集成
+#### 6.8.1 archive 命令集成
 
 **核心代码模式**:
 ```python
@@ -504,7 +676,7 @@ def archive(url_or_path, skip_sharpen, tags):
 
 ---
 
-#### 6.7.2 search 命令集成
+#### 6.8.2 search 命令集成
 
 **核心代码模式**:
 ```python
@@ -547,7 +719,7 @@ def search(query, strategy, limit):
 
 ---
 
-#### 6.7.3 进度显示集成
+#### 6.8.3 进度显示集成
 
 **方案 1: 轮询日志**（推荐）
 
@@ -598,7 +770,7 @@ with Live(Panel("初始化..."), refresh_per_second=4) as live:
 
 ---
 
-#### 6.7.4 错误处理和友好提示
+#### 6.8.4 错误处理和友好提示
 
 **工作流错误处理**:
 
@@ -645,7 +817,7 @@ except asyncio.TimeoutError:
 
 ---
 
-#### 6.7.5 idea Sharpen 交互集成
+#### 6.8.5 idea Sharpen 交互集成
 
 **关键问题**: 如何在 CLI 中显示 IdeaSharpenStep 的交互？
 
@@ -678,7 +850,7 @@ def archive(url_or_path, quiet, ...):
 
 ---
 
-#### 6.7.6 配置访问
+#### 6.8.6 配置访问
 
 **CLI 和 WorkflowEngine 共享配置**:
 
@@ -703,7 +875,7 @@ db_path = config.db_path
 
 ---
 
-#### 6.7.7 关键依赖关系
+#### 6.8.7 关键依赖关系
 
 **CLI 依赖清单**:
 
@@ -735,7 +907,7 @@ from rich.prompt import Prompt, Confirm
 
 ---
 
-### 6.8 测试要求
+### 6.9 测试要求
 
 #### 单元测试
 - 每个命令必须有单元测试
@@ -884,18 +1056,54 @@ pkv search "Python 教程"
 ```markdown
 # Changelog
 
-## [1.0.0] - 2026-02-15
+## [Unreleased] - M6+M7
 
 ### Added
 - CLI 入口和命令定义
 - 归档、搜索、查看、配置等核心命令
 - Rich 终端 UI
-- 工作流引擎
-- 混合检索引擎（BM25 + Vector）
+
+---
+
+## [0.5.1] - 2026-02-16 (M5.1 Bug Fix)
 
 ### Fixed
-- 配置字段名统一（targets）
-- 引擎传参错误修复
+- **source_type CHECK 约束不完整** (#3)
+  - 添加 `ai_chat`, `text`, `test` 枚举值到 SQLite CHECK 约束
+  - 修复 AIChatProcessor 和 TextFallbackProcessor 保存失败问题
+  - 位置: `src/storage/sqlite_store.py:91`
+
+- **长文档向量化策略不一致** (#4)
+  - 统一 `embed_document()` 和 `embed_batch_documents()` 为分块取平均策略
+  - 改进长文档（≥8000 字符）的向量表示质量
+  - 位置: `src/ai/embedder.py:153-195`
+
+- **DeepSeek JSON 解析脆弱** (#5)
+  - 改进 Prompt 明确要求纯 JSON 输出
+  - 实现三层降级解析策略（纯 JSON → JSON 数组模式 → 正则提取）
+  - 提高标签提取成功率
+  - 位置: `src/ai/deepseek_client.py:267-320`
+
+### Changed
+- 更新测试用例匹配新的 `embed_batch_documents()` 行为
+- 完善错误处理和日志记录
+
+### Tests
+- 单元测试: 122/122 通过 (100%)
+- 集成测试: 网络环境问题（非代码 Bug）
+
+---
+
+## [0.5.0] - 2026-02-15 (M5)
+
+### Added
+- 工作流引擎（WorkflowEngine）
+- 混合检索引擎（BM25 + Vector + RRF）
+- idea Sharpen 交互步骤
+
+### Fixed
+- 配置字段名统一（`targets` 字段）
+- 引擎传参错误修复（提取 `config` 字段）
 
 ### Changed
 - 数据库 Schema 优化
@@ -905,35 +1113,52 @@ pkv search "Python 教程"
 
 ## 📦 最终交付清单
 
+### ✅ M5.1 交付物（已完成）✨ **NEW**
+
+**Bug 修复**:
+- [x] source_type CHECK 约束修复 (`src/storage/sqlite_store.py`)
+- [x] 长文档向量化策略统一 (`src/ai/embedder.py`)
+- [x] DeepSeek JSON 解析增强 (`src/ai/deepseek_client.py`)
+
+**测试**:
+- [x] 单元测试全部通过 (122/122)
+- [x] 测试用例更新 (`tests/unit/test_ai_embedder.py`)
+
+**文档**:
+- [x] M5.1 完成报告 (`docs/milestones/M5_1_BUGFIX_COMPLETE.md`)
+- [x] Bug 修复记录更新 (`docs/refactor/Bug修复记录.md`)
+
+---
+
 ### M6 交付物
 
 **代码**:
-- [x] `src/main.py` - CLI 入口
-- [x] `src/cli/commands.py` - 命令定义
-- [x] `src/cli/ui.py` - 终端 UI
-- [x] `src/cli/formatters.py` - 输出格式化
+- [ ] `src/main.py` - CLI 入口
+- [ ] `src/cli/commands.py` - 命令定义
+- [ ] `src/cli/ui.py` - 终端 UI
+- [ ] `src/cli/formatters.py` - 输出格式化
 
 **测试**:
-- [x] `tests/unit/test_cli_*.py` - 单元测试
-- [x] `tests/integration/test_cli_e2e.py` - 集成测试
+- [ ] `tests/unit/test_cli_*.py` - 单元测试
+- [ ] `tests/integration/test_cli_e2e.py` - 集成测试
 
 **文档**:
-- [x] CLI 命令参考（README 或单独文档）
+- [ ] CLI 命令参考（README 或单独文档）
 
 ---
 
 ### M7 交付物
 
 **文档**:
-- [x] `docs/使用手册.md` - 用户文档
-- [x] `docs/维护指南.md` - 维护文档
-- [x] `docs/API文档.md` - API 文档
-- [x] `CHANGELOG.md` - 版本历史
+- [ ] `docs/使用手册.md` - 用户文档
+- [ ] `docs/维护指南.md` - 维护文档
+- [ ] `docs/API文档.md` - API 文档
+- [ ] `CHANGELOG.md` - 版本历史
 
 **辅助文件**:
-- [x] `.env.example` - 环境变量模板
-- [x] `scripts/init_db.py` - 数据库初始化脚本
-- [x] `scripts/backup.sh` - 备份脚本
+- [ ] `.env.example` - 环境变量模板
+- [ ] `scripts/init_db.py` - 数据库初始化脚本
+- [ ] `scripts/backup.sh` - 备份脚本
 
 ---
 
@@ -942,10 +1167,14 @@ pkv search "Python 教程"
 ### Step 1: 阅读复盘文档
 
 ```bash
-# 必读文档
-1. docs/refactor/M1-M5整理复盘总结.md
-2. docs/refactor/Workflow接口规范.md
-3. docs/refactor/归档流程数据流图.md
+# 🔥 第一优先级：M5.1 Bug 修复（必读）
+1. docs/milestones/M5_1_BUGFIX_COMPLETE.md  # ✨ NEW
+2. docs/refactor/Bug修复记录.md
+
+# 📖 第二优先级：M1-M5 复盘（必读）
+3. docs/refactor/M1-M5整理复盘总结.md
+4. docs/refactor/WorkflowEngine接口规范.md
+5. docs/refactor/归档流程数据流图.md
 ```
 
 ### Step 2: 创建 CLI 基础结构
@@ -999,6 +1228,38 @@ touch src/cli/formatters.py
 **开发负责人**: AI Agent (Claude Code/CodeX)
 **开发周期**: M6 (2-3天) + M7 (1-2天)
 **质量要求**: 测试覆盖率 ≥ 80%，文档完整性 100%
+
+---
+
+## 📝 Prompt 版本历史
+
+### v2.0 (2026-02-16) ✨ **CURRENT**
+
+**更新内容**:
+- 添加 M5.1 完成状态和重要更新说明
+- 新增"M5.1 关键修复后的注意事项"章节（6.7）
+- 重组"必读文档"为三级优先级结构
+- 更新 CHANGELOG 示例，包含 M5.1 修复记录
+- 更新最终交付清单，标注 M5.1 完成状态
+- 修正 Section 编号（6.7.2-6.7.7 → 6.8.2-6.8.7）
+
+**关键新增**:
+- source_type 枚举值更新说明（`ai_chat`, `text`, `test`）
+- 长文档向量化策略统一说明
+- DeepSeek JSON 解析增强说明
+- 数据库重建提醒
+
+---
+
+### v1.0 (2026-02-15)
+
+**初始版本**:
+- M6 CLI 入口和命令行界面开发指引
+- M7 文档完善和交付要求
+- 基于 M1-M5 复盘文档的架构设计
+- 6 个核心 CLI 命令定义
+- 与工作流引擎集成方案
+- 测试和文档要求
 
 ---
 
