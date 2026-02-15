@@ -44,59 +44,117 @@
 
 ```
 personal-knowledge-vault/
-├── README.md                 # 本文件
-├── docs/                     # 📚 设计文档
-│   ├── 项目立项文档.md       # 愿景与核心决策
-│   ├── 架构设计.md           # 系统架构与数据流
-│   ├── 数据规范.md           # Markdown Front Matter 标准
-│   ├── 技术选型.md           # 技术栈与检索策略
-│   └── 开发计划.md           # 里程碑与风险管理
-├── src/                      # 源代码
-├── .claude/                  # Claude Code 工作流配置
-└── config/                   # 配置文件
+├── README.md                    # 本文件
+├── docs/                        # 📚 设计文档
+│   ├── 项目立项文档.md          # 愿景与核心决策
+│   ├── 架构设计.md              # 系统架构与数据流
+│   ├── 数据规范.md              # Markdown Front Matter 标准
+│   ├── 技术选型.md              # 技术栈与检索策略
+│   ├── 数据库Schema设计.md      # SQLite + hnswlib 完整设计
+│   └── 开发计划.md              # 里程碑与风险管理
+├── src/                         # 源代码
+├── pkv/                         # Python 包
+│   ├── storage/                 # 数据存储模块
+│   │   ├── db_init.py          # 数据库初始化
+│   │   ├── vector_index.py     # 向量索引管理
+│   │   └── vector_operations.py # 向量操作接口
+│   ├── retrieval/               # 检索引擎
+│   └── utils/                   # 工具函数
+├── .claude/                     # Claude Code 工作流配置
+├── config/                      # 配置文件
+├── pkv_index.db                 # SQLite 索引数据库（运行时生成）
+└── pkv_vectors/                 # 向量索引目录（运行时生成）
+    ├── doc_vectors.idx          # 文档级向量
+    └── chunk_vectors.idx        # 分块级向量
 ```
 
 ## 🚀 快速开始
 
 ### 环境要求
-- Python 3.11+
-- PostgreSQL 15+ (带 pgvector 扩展)
-- 必需 API Keys:
-  - DeepSeek API (推荐)
-  - OpenAI API (embedding)
-  - Whisper API (可选，视频转录)
 
-### 安装步骤
+**推荐配置** (避免兼容性问题):
+- **Conda** (Miniconda 或 Anaconda) 🌟
+- Python 3.11 (通过 Conda 自动创建)
+- SQLite 3.35+ (支持 FTS5，通常系统自带)
 
-```bash
+**或传统配置**:
+- Python 3.11 (⚠️ 不推荐 3.13，存在依赖兼容性问题)
+- SQLite 3.35+ (支持 FTS5，通常系统自带)
+
+**必需 API Keys**:
+- DeepSeek API (推荐，用于摘要生成)
+- OpenAI API (用于 Embedding)
+- Whisper API (可选，用于视频转录)
+
+### 快速安装 (推荐：Conda 方式)
+
+```powershell
 # 1. 克隆仓库
 git clone https://github.com/yourusername/personal-knowledge-vault.git
 cd personal-knowledge-vault
 
-# 2. 安装依赖
-pip install -r requirements.txt
+# 2. 运行 Conda 安装脚本（自动创建 Python 3.11 环境并安装依赖）
+.\scripts\setup-conda.ps1
 
-# 3. 配置数据库
-createdb knowledge_vault
-psql knowledge_vault -c "CREATE EXTENSION vector;"
+# 3. 配置 API Keys
+notepad .env
+# 填入你的 DeepSeek 和 OpenAI API Keys
 
-# 4. 配置 API Keys
-cp config/example.env config/.env
-# 编辑 .env 填入你的 API Keys
+# 4. 运行验证测试
+.\scripts\test-conda.ps1
 
-# 5. 运行
-python src/main.py
+# 5. 每次使用前激活环境
+conda activate pkv-py311
 ```
+
+### 传统安装 (venv 方式)
+
+```powershell
+# 1. 克隆仓库
+git clone https://github.com/yourusername/personal-knowledge-vault.git
+cd personal-knowledge-vault
+
+# 2. 运行安装脚本
+.\scripts\setup.ps1
+
+# 3. 配置 API Keys
+notepad .env
+
+# 4. 运行验证测试
+.\scripts\test.ps1
+```
+
+### 详细指南
+
+- 📖 [RUN_ME_FIRST.md](RUN_ME_FIRST.md) - 快速开始（推荐首次使用）
+- 📖 [docs/QUICKSTART.md](docs/QUICKSTART.md) - 详细安装指南
+- 📖 [docs/VALIDATION_REPORT.md](docs/VALIDATION_REPORT.md) - 验证报告
 
 ## 📖 文档索引
 
+### 快速开始
+| 文档 | 内容 |
+|------|------|
+| [RUN_ME_FIRST.md](RUN_ME_FIRST.md) | 3 步快速开始 |
+| [QUICKSTART.md](docs/QUICKSTART.md) | 详细安装指南 |
+
+### 设计文档
 | 文档 | 内容 | 适合读者 |
 |------|------|---------|
-| [项目立项文档](docs/项目立项文档.md) | 为什么做？怎么做？核心理念 | 决策者、回顾愿景 |
-| [架构设计](docs/架构设计.md) | 工作流架构、目录结构、数据流 | 开发者 |
-| [数据规范](docs/数据规范.md) | Markdown Front Matter 标准、文件命名、目录结构 | 开发者、内容编辑 |
-| [技术选型](docs/技术选型.md) | 技术栈对比、检索策略、数据模型 | 开发者 |
-| [开发计划](docs/开发计划.md) | 里程碑、成本估算、风险管理 | 项目管理者 |
+| [项目立项文档](docs/项目立项文档.md) | 愿景与核心理念 | 决策者 |
+| [架构设计](docs/架构设计.md) | 系统架构与数据流 | 开发者 |
+| [数据规范](docs/数据规范.md) | Markdown 标准 | 开发者 |
+| [技术选型](docs/技术选型.md) | 技术栈对比 | 开发者 |
+| [数据库Schema](docs/数据库Schema设计.md) | SQLite + hnswlib | 开发者 |
+| [开发环境搭建](docs/开发环境搭建.md) | 环境配置 | 开发者 |
+
+### 项目管理
+| 文档 | 内容 |
+|------|------|
+| [STARTER_PROMPT.md](docs/STARTER_PROMPT.md) | 完整开发计划 |
+| [CHANGELOG.md](docs/CHANGELOG.md) | 更新日志 |
+| [MILESTONE1_COMPLETE.md](docs/MILESTONE1_COMPLETE.md) | Milestone 1 完成报告 |
+| [VALIDATION_REPORT.md](docs/VALIDATION_REPORT.md) | 验证测试报告 |
 
 ## 💡 设计亮点
 
@@ -104,6 +162,14 @@ python src/main.py
 - **主仓库**: 代码 + 配置（可公开分享）
 - **内容仓库** (`docs/`): 个人知识内容（独立管理）
 - 完全隔离，各自独立版本控制
+
+### 双重存储策略
+- **主存储**: Markdown + YAML Front Matter（数据主权，人类可读）
+- **辅助存储**: SQLite + hnswlib（元数据索引，全文搜索，向量检索）
+- **技术栈**:
+  - SQLite FTS5 + jieba 中文分词（关键词检索）
+  - hnswlib HNSW 算法（向量检索，独立文件存储）
+  - 所有数据可从 Markdown 完全重建，辅助存储仅为缓存
 
 ### 智能检索策略
 | 内容类型 | 策略 | 原因 |
@@ -117,14 +183,24 @@ python src/main.py
 
 ## 📊 项目状态
 
-**当前阶段**: 📝 设计阶段（Phase 0）
+**当前阶段**: ✅ Milestone 1 完成 - 基础设施层
 
-- [x] 完成立项文档
-- [x] 完成架构设计
-- [ ] Phase 0: 原型验证（3-5天）
-- [ ] Phase 1: 网页归档 MVP（2周）
-- [ ] Phase 2: B站视频处理（2周）
-- [ ] Phase 3: 智能检索优化（2周）
+**Milestone 1: 基础设施层** ✅ (已完成)
+- [x] 配置系统 (YAML + 环境变量)
+- [x] Markdown 存储 (YAML Front Matter)
+- [x] SQLite 存储 (完整 Schema + FTS5)
+- [x] 向量存储 (hnswlib HNSW)
+- [x] 文本处理 (jieba 中文分词)
+- [x] 安装脚本 (Conda + venv 双方案)
+- [x] 验证测试
+
+**后续里程碑**:
+- [ ] Milestone 2: AI 服务层（DeepSeek、OpenAI）
+- [ ] Milestone 3: 内容处理器（微信、知乎、通用网页）
+- [ ] Milestone 4: 检索引擎（BM25、向量、混合检索）
+- [ ] Milestone 5: 工作流引擎
+- [ ] Milestone 6: CLI 入口
+- [ ] Milestone 7: 文档和交付
 
 ## 🤝 贡献指南
 
@@ -139,4 +215,8 @@ MIT License
 
 **项目代号**: Personal Knowledge Vault
 **创建日期**: 2026-01-27
-**文档版本**: v1.3
+**文档版本**: v1.5
+**最后更新**: 2026-02-14
+- Milestone 1 基础设施层完成
+- 新增 Conda 安装方案（解决 Python 3.13 兼容性问题）
+- 完成配置、存储、向量、文本处理模块
