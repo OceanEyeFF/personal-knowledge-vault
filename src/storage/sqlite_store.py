@@ -88,7 +88,7 @@ class SQLiteStore:
                 keywords TEXT,
                 tags TEXT,
                 outline TEXT,
-                source_type TEXT NOT NULL CHECK(source_type IN ('wechat', 'zhihu', 'bilibili', 'webpage', 'article', 'document', 'generic', 'personal')),
+                source_type TEXT NOT NULL CHECK(source_type IN ('wechat', 'zhihu', 'bilibili', 'webpage', 'article', 'document', 'generic', 'personal', 'ai_chat', 'text', 'test')),
                 source_url TEXT UNIQUE,
                 search_strategy TEXT CHECK(search_strategy IN ('keyword', 'hybrid', 'vector', 'structured')),
                 file_path TEXT NOT NULL UNIQUE,

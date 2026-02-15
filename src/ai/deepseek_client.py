@@ -264,9 +264,9 @@ class DeepSeekClient:
             max_tokens=200,  # 标签提取不需要太多 tokens
         )
 
-        # 解析 JSON 响应
+        # 解析 JSON 响应，使用多层降级策略
         try:
-            # 尝试直接解析 JSON
+            # 策略 1: 尝试直接解析 JSON
             tags = json.loads(response)
 
             if not isinstance(tags, list):
@@ -286,16 +286,34 @@ class DeepSeekClient:
             return tags
 
         except json.JSONDecodeError as e:
-            logger.error(f"标签 JSON 解析失败: {e}, response={response}")
-            # 降级处理：尝试提取类似数组的内容
-            # 例如：["tag1", "tag2", "tag3"] 或者 tag1, tag2, tag3
+            logger.warning(f"直接 JSON 解析失败: {e}, response={response}")
+
+            # 策略 2: 查找 JSON 数组模式（可能包含说明文字）
             import re
 
-            # 提取引号中的内容
+            # 匹配 JSON 数组模式: ["tag1", "tag2", "tag3"]
+            json_array_match = re.search(r'\[.*?\]', response, re.DOTALL)
+            if json_array_match:
+                try:
+                    json_str = json_array_match.group(0)
+                    tags = json.loads(json_str)
+
+                    if isinstance(tags, list):
+                        tags = [str(tag).strip() for tag in tags if tag]
+
+                        if len(tags) >= 3:
+                            tags = tags[:5]
+                            logger.info(f"使用 JSON 数组模式提取标签: tags={tags}")
+                            return tags
+
+                except json.JSONDecodeError:
+                    logger.warning(f"JSON 数组模式解析失败: {json_str}")
+
+            # 策略 3: 提取引号中的内容（最后的降级方案）
             matches = re.findall(r'["\']([^"\']+)["\']', response)
             if matches and len(matches) >= 3:
                 tags = matches[:5]
-                logger.info(f"使用降级方案提取标签: tags={tags}")
+                logger.info(f"使用正则提取标签（降级方案）: tags={tags}")
                 return tags
 
             # 完全失败
