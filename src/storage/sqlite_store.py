@@ -30,6 +30,7 @@ class SQLiteStore:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
+        self.text_processor = TextProcessor()  # 用于 FTS5 分词
         logger.info(f"SQLite 存储初始化: {self.db_path}")
 
     @contextmanager
@@ -79,7 +80,7 @@ class SQLiteStore:
         # knowledge_items (主知识表)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS knowledge_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                knowledge_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
                 content TEXT,
                 summary_one_sentence TEXT,
@@ -87,7 +88,7 @@ class SQLiteStore:
                 keywords TEXT,
                 tags TEXT,
                 outline TEXT,
-                source_type TEXT NOT NULL CHECK(source_type IN ('wechat', 'zhihu', 'bilibili', 'generic', 'personal')),
+                source_type TEXT NOT NULL CHECK(source_type IN ('wechat', 'zhihu', 'bilibili', 'webpage', 'article', 'document', 'generic', 'personal')),
                 source_url TEXT UNIQUE,
                 search_strategy TEXT CHECK(search_strategy IN ('keyword', 'hybrid', 'vector', 'structured')),
                 file_path TEXT NOT NULL UNIQUE,
@@ -100,7 +101,7 @@ class SQLiteStore:
         # content_chunks (长文本分块表)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS content_chunks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 knowledge_id INTEGER NOT NULL,
                 chunk_index INTEGER NOT NULL,
                 chunk_text TEXT NOT NULL,
@@ -108,7 +109,7 @@ class SQLiteStore:
                 context_after TEXT,
                 section_title TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (knowledge_id) REFERENCES knowledge_items(id) ON DELETE CASCADE,
+                FOREIGN KEY (knowledge_id) REFERENCES knowledge_items(knowledge_id) ON DELETE CASCADE,
                 UNIQUE(knowledge_id, chunk_index)
             )
         """)
@@ -116,7 +117,7 @@ class SQLiteStore:
         # tags (标签表)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS tags (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 tag_group TEXT,
                 count INTEGER DEFAULT 0,
@@ -131,21 +132,21 @@ class SQLiteStore:
                 tag_id INTEGER NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (knowledge_id, tag_id),
-                FOREIGN KEY (knowledge_id) REFERENCES knowledge_items(id) ON DELETE CASCADE,
-                FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+                FOREIGN KEY (knowledge_id) REFERENCES knowledge_items(knowledge_id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id) REFERENCES tags(tag_id) ON DELETE CASCADE
             )
         """)
 
         # video_timestamps (视频时间轴表, Phase 2)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS video_timestamps (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 knowledge_id INTEGER NOT NULL,
                 timestamp_seconds INTEGER NOT NULL,
                 segment_text TEXT NOT NULL,
                 chapter_title TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (knowledge_id) REFERENCES knowledge_items(id) ON DELETE CASCADE,
+                FOREIGN KEY (knowledge_id) REFERENCES knowledge_items(knowledge_id) ON DELETE CASCADE,
                 UNIQUE(knowledge_id, timestamp_seconds)
             )
         """)
@@ -194,7 +195,7 @@ class SQLiteStore:
                 keywords,
                 tags,
                 content=knowledge_items,
-                content_rowid=id
+                content_rowid=knowledge_id
             )
         """)
 
@@ -202,23 +203,23 @@ class SQLiteStore:
         conn.execute("""
             CREATE TRIGGER IF NOT EXISTS knowledge_items_ai AFTER INSERT ON knowledge_items BEGIN
                 INSERT INTO knowledge_items_fts(rowid, title, summary_100_words, keywords, tags)
-                VALUES (new.id, new.title, new.summary_100_words, new.keywords, new.tags);
+                VALUES (new.knowledge_id, new.title, new.summary_100_words, new.keywords, new.tags);
             END
         """)
 
         # 创建触发器: 删除
         conn.execute("""
             CREATE TRIGGER IF NOT EXISTS knowledge_items_ad AFTER DELETE ON knowledge_items BEGIN
-                DELETE FROM knowledge_items_fts WHERE rowid = old.id;
+                DELETE FROM knowledge_items_fts WHERE rowid = old.knowledge_id;
             END
         """)
 
         # 创建触发器: 更新
         conn.execute("""
             CREATE TRIGGER IF NOT EXISTS knowledge_items_au AFTER UPDATE ON knowledge_items BEGIN
-                DELETE FROM knowledge_items_fts WHERE rowid = old.id;
+                DELETE FROM knowledge_items_fts WHERE rowid = old.knowledge_id;
                 INSERT INTO knowledge_items_fts(rowid, title, summary_100_words, keywords, tags)
-                VALUES (new.id, new.title, new.summary_100_words, new.keywords, new.tags);
+                VALUES (new.knowledge_id, new.title, new.summary_100_words, new.keywords, new.tags);
             END
         """)
 
@@ -256,16 +257,8 @@ class SQLiteStore:
             插入的条目 ID
         """
         with self.get_connection() as conn:
-            # 准备 FTS5 数据 (jieba 分词)
-            text_processor = TextProcessor()
-            fts5_data = text_processor.prepare_fts5_data(
-                entry.title,
-                entry.summary_100_words,
-                entry.keywords,
-                entry.tags
-            )
-
-            # 插入主表
+            # 插入主表（使用原始数据，不分词）
+            # FTS5 虚拟表会通过触发器自动同步并分词
             cursor = conn.execute("""
                 INSERT INTO knowledge_items (
                     title, content, summary_one_sentence, summary_100_words,
@@ -273,12 +266,12 @@ class SQLiteStore:
                     file_path, word_count, archived_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                fts5_data["title"],  # 使用分词后的标题
+                entry.title,  # 使用原始标题（修复：不再分词）
                 entry.content,
                 entry.summary_one_sentence,
-                fts5_data["summary_100_words"],
-                fts5_data["keywords"],
-                fts5_data["tags"],
+                entry.summary_100_words,  # 使用原始摘要（修复：不再分词）
+                entry.keywords,  # 使用原始关键词（修复：不再分词）
+                ",".join(entry.tags) if isinstance(entry.tags, list) else entry.tags,  # 转换列表为字符串
                 entry.source_type,
                 entry.source_url,
                 entry.search_strategy,
@@ -288,6 +281,30 @@ class SQLiteStore:
             ))
 
             knowledge_id = cursor.lastrowid
+
+            # 手动更新 FTS5 表（使用分词后的数据）
+            # 注意：触发器会自动插入原始数据，我们需要用分词后的数据覆盖
+            fts5_data = self.text_processor.prepare_fts5_data(
+                entry.title,
+                entry.summary_100_words or "",
+                entry.keywords or "",
+                ",".join(entry.tags) if isinstance(entry.tags, list) else (entry.tags or "")
+            )
+
+            # 删除触发器自动插入的原始数据
+            conn.execute("DELETE FROM knowledge_items_fts WHERE rowid = ?", (knowledge_id,))
+
+            # 插入分词后的数据
+            conn.execute("""
+                INSERT INTO knowledge_items_fts(rowid, title, summary_100_words, keywords, tags)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                knowledge_id,
+                fts5_data["title"],
+                fts5_data["summary_100_words"],
+                fts5_data["keywords"],
+                fts5_data["tags"]
+            ))
 
             # 插入标签关联
             self._insert_tags(conn, knowledge_id, entry.tags)
@@ -299,13 +316,13 @@ class SQLiteStore:
         """插入标签关联"""
         for tag_name in tags:
             # 获取或创建标签
-            cursor = conn.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
+            cursor = conn.execute("SELECT tag_id FROM tags WHERE name = ?", (tag_name,))
             row = cursor.fetchone()
 
             if row:
                 tag_id = row[0]
                 # 更新计数
-                conn.execute("UPDATE tags SET count = count + 1 WHERE id = ?", (tag_id,))
+                conn.execute("UPDATE tags SET count = count + 1 WHERE tag_id = ?", (tag_id,))
             else:
                 # 创建新标签
                 cursor = conn.execute("INSERT INTO tags (name, count) VALUES (?, 1)", (tag_name,))
@@ -328,7 +345,7 @@ class SQLiteStore:
             字典形式的条目数据
         """
         with self.get_connection() as conn:
-            cursor = conn.execute("SELECT * FROM knowledge_items WHERE id = ?", (knowledge_id,))
+            cursor = conn.execute("SELECT * FROM knowledge_items WHERE knowledge_id = ?", (knowledge_id,))
             row = cursor.fetchone()
 
             if row:
