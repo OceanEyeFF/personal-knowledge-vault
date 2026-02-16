@@ -4,6 +4,87 @@
 
 ---
 
+## [v0.6.1] - 2026-02-16 (AI 安全 + 数据库迁移)
+
+### ✨ 新增功能
+
+#### AI 安全测试功能 ✅
+
+- ✅ **AI 安全规则** ([.ai-safety-rules.md](.ai-safety-rules.md))
+  - 禁止操作生产数据目录 (.data/)
+  - 强制使用测试环境 (run-test.ps1)
+  - 备份要求和典型场景处理
+
+- ✅ **Claude 忽略文件** ([.claudeignore](.claudeignore))
+  - 防止 AI 访问 .data/ 生产数据
+  - 防止 AI 访问 .env 敏感配置
+  - 防止 AI 修改 .data-backup/ 备份
+
+- ✅ **环境检测脚本** ([scripts/check-environment.ps1](scripts/check-environment.ps1))
+  - 自动检测生产/测试环境
+  - 显示数据库统计信息
+  - 给出安全建议
+
+- ✅ **测试环境文档**
+  - [docs/AI安全与数据库升级完整方案.md](docs/AI安全与数据库升级完整方案.md) - 总结文档
+  - [docs/测试环境隔离指南.md](docs/测试环境隔离指南.md) - 完整指南
+  - [docs/测试环境快速开始.md](docs/测试环境快速开始.md) - 3 分钟入门
+  - [docs/测试环境演示.md](docs/测试环境演示.md) - 完整演示
+
+#### 数据库增量迁移系统 ✅
+
+- ✅ **迁移管理器** ([src/storage/migration_manager.py](src/storage/migration_manager.py))
+  - 获取当前数据库版本
+  - 扫描待执行的迁移脚本
+  - 自动执行迁移（支持自动备份）
+  - 语义化版本号比较
+
+- ✅ **命令行迁移工具** ([scripts/migrate.py](scripts/migrate.py))
+  - 交互式升级（python scripts/migrate.py）
+  - 自动升级（--auto）
+  - Dry-run 模式（--dry-run）
+  - 版本查看（--version）
+
+- ✅ **迁移脚本目录** ([scripts/migrations/](scripts/migrations/))
+  - 001_initial_schema.sql (v1.0.0) - M1 初始 Schema
+  - 002_add_cli_tables.sql (v1.1.0) - M6 CLI 统计表
+  - README.md - 迁移脚本说明
+
+- ✅ **Schema 版本管理表**
+  - schema_version 表追踪升级历史
+  - 记录版本号、描述、应用时间
+
+- ✅ **数据库迁移文档** ([docs/数据库迁移指南.md](docs/数据库迁移指南.md))
+  - 版本管理机制
+  - 迁移脚本标准
+  - 完整升级流程
+  - 回滚程序
+
+#### 测试脚本 ✅
+
+- ✅ **手动测试脚本** ([tests/manual_test_text_archive_safe.py](tests/manual_test_text_archive_safe.py))
+  - 环境检测演示
+  - 纯文本归档测试（知乎回答样本）
+  - 生产环境验证
+
+### 🐛 Bug 修复
+
+- ✅ **TextFallbackProcessor** ([src/processors/text_fallback_processor.py](src/processors/text_fallback_processor.py))
+  - 修复 source_type：`"text_fallback"` → `"text"`
+  - 符合 M5.1 Bug 修复规范
+
+### 📝 变更
+
+- .gitignore - 添加 .env.test, .data-test/, .data-backup/ 排除
+- docs/文档分类清单.md - 更新文档统计（60 份文档）
+
+### 📚 文档更新
+
+- 新增 7 份核心文档（测试环境 + 数据库迁移）
+- 更新文档分类清单（从 53 份增至 60 份）
+
+---
+
 ## [v0.6.0] - 2026-02-16 (M6+M7)
 
 ### ✨ 新增功能

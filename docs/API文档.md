@@ -3,8 +3,9 @@
 > Personal Knowledge Vault - API Reference
 > 核心模块接口定义与数据流转协议
 
-**文档版本**: v1.0
+**文档版本**: v2.1
 **创建日期**: 2026-02-14
+**最后更新**: 2026-02-16 17:35
 **目标读者**: AI Agent / 开发者
 
 ---
@@ -15,8 +16,10 @@
 2. [内容处理器 API](#内容处理器-api)
 3. [检索引擎 API](#检索引擎-api)
 4. [存储层 API](#存储层-api)
-5. [数据结构](#数据结构)
-6. [错误处理](#错误处理)
+5. [数据库迁移 API](#数据库迁移-api) ⭐ **NEW**
+6. [CLI 命令参考](#cli-命令参考)
+7. [数据结构](#数据结构)
+8. [错误处理](#错误处理)
 
 ---
 
@@ -602,6 +605,208 @@ if __name__ == "__main__":
 
 ---
 
+## 数据库迁移 API
+
+> **新增于 v0.6.1**: 数据库增量升级系统
+
+### MigrationManager
+
+**职责**: 管理数据库 Schema 的版本升级和回滚
+
+#### `__init__(db_path: Path, migrations_dir: Path)`
+
+初始化迁移管理器。
+
+**参数**:
+- `db_path` (Path): 数据库文件路径
+- `migrations_dir` (Path): 迁移脚本目录路径
+
+**示例**:
+
+```python
+from pathlib import Path
+from src.storage.migration_manager import MigrationManager
+
+manager = MigrationManager(
+    db_path=Path(".data/db/knowledge_vault.db"),
+    migrations_dir=Path("scripts/migrations")
+)
+```
+
+---
+
+#### `get_current_version() -> str`
+
+获取当前数据库版本。
+
+**返回**:
+- `str`: 版本号字符串（如 "1.0.0"），如果数据库未初始化返回 "0.0.0"
+
+**示例**:
+
+```python
+version = manager.get_current_version()
+print(f"当前版本: {version}")  # 输出: 当前版本: 1.0.0
+```
+
+---
+
+#### `get_pending_migrations() -> List[Tuple[str, Path]]`
+
+获取待执行的迁移脚本。
+
+**返回**:
+- `List[Tuple[str, Path]]`: (版本号, 脚本路径) 的列表，按版本号升序排列
+
+**示例**:
+
+```python
+pending = manager.get_pending_migrations()
+for version, migration_file in pending:
+    print(f"待迁移: {migration_file.name} (v{version})")
+```
+
+---
+
+#### `apply_migration(migration_file: Path, auto_backup: bool = True)`
+
+执行迁移脚本。
+
+**参数**:
+- `migration_file` (Path): 迁移脚本文件路径
+- `auto_backup` (bool): 是否自动备份数据库，默认 True
+
+**异常**:
+- `Exception`: 迁移执行失败
+
+**示例**:
+
+```python
+migration_file = Path("scripts/migrations/002_add_cli_tables.sql")
+manager.apply_migration(migration_file, auto_backup=True)
+```
+
+---
+
+#### `apply_all_pending(auto_backup: bool = True) -> int`
+
+执行所有待迁移脚本。
+
+**参数**:
+- `auto_backup` (bool): 是否自动备份，默认 True
+
+**返回**:
+- `int`: 成功执行的迁移脚本数量
+
+**异常**:
+- `Exception`: 迁移执行失败
+
+**示例**:
+
+```python
+success_count = manager.apply_all_pending(auto_backup=True)
+print(f"成功执行 {success_count} 个迁移脚本")
+```
+
+---
+
+### 命令行工具
+
+#### migrate.py
+
+**位置**: [scripts/migrate.py](../scripts/migrate.py)
+
+**用法**:
+
+```bash
+# 交互式升级
+python scripts/migrate.py
+
+# 自动升级（无需确认）
+python scripts/migrate.py --auto
+
+# 仅检查待迁移脚本（不执行）
+python scripts/migrate.py --dry-run
+
+# 查看当前版本
+python scripts/migrate.py --version
+
+# 跳过自动备份（不推荐）
+python scripts/migrate.py --auto --no-backup
+```
+
+**完整升级流程示例**:
+
+```bash
+# 1. 检查当前版本
+python scripts/migrate.py --version
+
+# 2. 查看待迁移脚本
+python scripts/migrate.py --dry-run
+
+# 3. 在测试环境验证
+export DB_PATH=".data-test/db/knowledge_vault.db"
+python scripts/migrate.py --auto
+
+# 4. 备份生产数据
+./scripts/backup-data.ps1 -Message "v1.1.0 升级前备份"
+
+# 5. 执行生产环境迁移
+python scripts/migrate.py  # 输入 YES 确认
+
+# 6. 验证结果
+python -m src.main stats
+```
+
+---
+
+### 迁移脚本格式
+
+**位置**: [scripts/migrations/](../scripts/migrations/)
+
+**命名规范**: `{序号}_{描述}.sql`，例如：
+- `001_initial_schema.sql`
+- `002_add_cli_tables.sql`
+
+**脚本结构**:
+
+```sql
+-- Migration: 002_add_cli_tables.sql
+-- Version: 1.1.0
+-- Description: 新增 CLI 使用统计表
+-- Author: 幽浮酱
+-- Date: 2026-02-16
+
+-- ========================================
+-- 向上迁移（Upgrade）
+-- ========================================
+
+CREATE TABLE IF NOT EXISTS cli_command_history (
+    command_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    command TEXT NOT NULL,
+    ...
+);
+
+-- 更新版本号
+INSERT INTO schema_version (version, description)
+VALUES ('1.1.0', '新增 CLI 使用统计表');
+
+-- ========================================
+-- 向下迁移（Rollback）
+-- ========================================
+
+-- DROP TABLE IF EXISTS cli_command_history;
+-- DELETE FROM schema_version WHERE version = '1.1.0';
+```
+
+**关键要求**:
+- 使用 `IF NOT EXISTS` / `IF EXISTS` 保证幂等性
+- 新增列时设置默认值（向后兼容）
+- 避免删除列（SQLite 不支持且会丢失数据）
+- 提供回滚 SQL（可选）
+
+---
+
 ## CLI 命令参考
 
 > **新增于 v0.6.0 (M6)**: 完整的命令行界面
@@ -897,6 +1102,6 @@ search_results = json.loads(result.stdout)
 
 ---
 
-**文档版本**: v2.0 (更新于 2026-02-16, M6+M7)
+**文档版本**: v2.1 (更新于 2026-02-16 17:35, M6+M7+数据库迁移)
 
 *API 设计遵循 KISS 原则，保持简洁清晰*

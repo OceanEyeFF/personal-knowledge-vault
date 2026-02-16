@@ -41,9 +41,12 @@ env/
 .env
 .env.local
 .env.*.local
+.env.test            # 测试环境配置（包含敏感信息）
 
 # Data Directory (Generated at Runtime)
 .data/
+.data-test/          # 测试环境数据目录
+.data-backup/        # 数据备份目录
 pkv_index.db
 pkv_vectors/
 

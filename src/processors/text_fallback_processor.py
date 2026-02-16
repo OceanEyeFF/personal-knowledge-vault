@@ -125,7 +125,7 @@ class TextFallbackProcessor(BaseProcessor):
 
         entry = Entry(
             title=title,
-            source_type="text_fallback",
+            source_type="text",
             source_url=source_url,
             abstract=summary,
             summary_one_sentence=summary_one_sentence,
@@ -135,7 +135,7 @@ class TextFallbackProcessor(BaseProcessor):
         )
 
         entry.metadata = {
-            "source_type": "text_fallback",
+            "source_type": "text",
             "source_url": source_url,
             "text_type": text_type,
             "message_count": len(messages) if messages else 0,
@@ -434,7 +434,7 @@ class TextFallbackProcessor(BaseProcessor):
         title = source_path.stem if source_path else "未命名文本"
         entry = Entry(
             title=title,
-            source_type="text_fallback",
+            source_type="text",
             source_url=source_url,
             abstract="内容为空。",
             summary_one_sentence="内容为空。",
@@ -443,7 +443,7 @@ class TextFallbackProcessor(BaseProcessor):
             content="",
         )
         entry.metadata = {
-            "source_type": "text_fallback",
+            "source_type": "text",
             "source_url": source_url,
             "text_type": "empty",
             "message_count": 0,

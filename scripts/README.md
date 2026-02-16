@@ -87,6 +87,115 @@
 
 ---
 
+### 测试环境管理 🧪
+
+#### `run-test.ps1` - 测试环境运行脚本
+
+**用途**: 使用隔离的测试数据库运行 PKV 命令（不影响生产数据）
+
+**运行方式**:
+```powershell
+# 在测试环境归档网页
+.\scripts\run-test.ps1 archive "https://example.com"
+
+# 在测试环境搜索
+.\scripts\run-test.ps1 search "AI"
+
+# 查看测试环境统计
+.\scripts\run-test.ps1 stats
+```
+
+**功能**:
+- ✅ 自动加载 `.env.test` 测试配置
+- ✅ 隔离测试数据到 `.data-test/` 目录
+- ✅ 自动创建测试目录结构
+- ✅ 显示测试环境状态
+
+**使用场景**:
+- 测试新功能而不影响生产数据
+- 验证数据库变更
+- 开发调试
+
+---
+
+#### `backup-data.ps1` - 数据备份脚本
+
+**用途**: 备份生产数据到 `.data-backup/` 目录
+
+**运行方式**:
+```powershell
+# 手动备份
+.\scripts\backup-data.ps1
+
+# 带说明的备份
+.\scripts\backup-data.ps1 -Message "重要更新前的备份"
+```
+
+**功能**:
+- ✅ 完整备份 `.data/` 目录
+- ✅ 生成备份信息文件（时间戳、大小、说明）
+- ✅ 显示最近的 5 个备份
+- ✅ 自动计算备份大小和文件数
+
+**最佳实践**:
+- 重要变更前先备份
+- 定期清理旧备份（手动）
+
+---
+
+#### `restore-data.ps1` - 数据恢复脚本
+
+**用途**: 从备份恢复数据
+
+**运行方式**:
+```powershell
+# 交互式选择备份恢复
+.\scripts\restore-data.ps1
+
+# 恢复指定时间戳的备份
+.\scripts\restore-data.ps1 -BackupTimestamp "20260216-143000"
+```
+
+**功能**:
+- ✅ 列出所有可用备份（含详细信息）
+- ✅ 交互式选择备份版本
+- ✅ 安全确认机制（需输入 YES）
+- ✅ 自动验证恢复结果
+
+**警告**:
+- ⚠️ 恢复操作会**完全替换**当前 `.data/` 目录
+- ⚠️ 建议先备份当前数据再恢复
+
+---
+
+#### `.env.test.example` - 测试环境配置模板
+
+**用途**: 测试环境配置示例文件
+
+**使用方式**:
+```powershell
+# 复制模板文件
+copy .env.test.example .env.test
+
+# 编辑配置
+notepad .env.test
+```
+
+**配置项**:
+```env
+# 数据库路径（使用测试专用目录）
+DB_PATH=.data-test/db/knowledge_vault.db
+
+# 测试用 API Keys（可选）
+DEEPSEEK_API_KEY=sk-test-your-key
+OPENAI_API_KEY=sk-test-your-key
+
+# 日志级别（DEBUG 获取详细日志）
+LOG_LEVEL=DEBUG
+```
+
+---
+
 ## ⚠️ 常见问题
 
 ### Q1: PowerShell 提示"无法加载脚本"
