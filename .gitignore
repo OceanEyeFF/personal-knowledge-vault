@@ -59,6 +59,7 @@ logs/
 .coverage
 htmlcov/
 .tox/
+.data-test/db/knowledge_vault.db
 
 # Temporary Files
 *.tmp
