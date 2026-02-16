@@ -206,7 +206,7 @@ fatal error C1189: #error: "this header requires Py_BUILD_CORE define"
 
 - 📖 [项目立项文档](docs/项目立项文档.md) - 了解项目愿景
 - 📖 [架构设计](docs/架构设计.md) - 深入理解系统架构
-- 📖 [开发计划](docs/STARTER_PROMPT.md) - 完整开发计划
+- 📖 [Phase 1 开发计划](docs/core/PHASE1_DEV_PROMPT.md) - Phase 1 开发计划（已归档）
 - 📖 [完成报告](docs/MILESTONE1_COMPLETE.md) - Milestone 1 成果
 
 ---
