@@ -3,7 +3,7 @@
 > **目标**: 完成 CLI 入口、命令行界面和完整文档
 >
 > **前置条件**: ✅ M1-M5 已完成 | ✅ M5.1 Bug 修复已完成
-> **版本**: 2.0
+> **版本**: 3.0 ✨ **NEW**
 > **创建日期**: 2026-02-15
 > **最后更新**: 2026-02-16
 > **适用对象**: Claude Code/CodeX 等 AI 开发工具
@@ -20,7 +20,8 @@
 - **M3.5**: AI 聊天处理器与文本 Fallback
 - **M4**: 检索引擎（BM25、向量、混合检索）
 - **M5**: 工作流引擎（编排、步骤、上下文）
-- **M5.1**: Bug 修复（3 个关键问题已修复）✨ **NEW**
+- **M5.1**: Bug 修复（3 个关键问题已修复）✨
+- **M1-M5 复盘**: 整理完成（11 份规范文档）✨ **NEW**
 
 ### 🎯 当前任务
 
@@ -30,6 +31,7 @@
 ### ✨ M5.1 重要更新
 
 **修复时间**: 2026-02-16
+**Git 分支**: `milestone5-1-bugfix` → 已合并到 `claude-main`
 **测试结果**: 122/122 单元测试通过 (100%)
 
 **已修复问题**:
@@ -47,6 +49,20 @@
 
 **详细报告**: [`docs/milestones/M5_1_BUGFIX_COMPLETE.md`](../milestones/M5_1_BUGFIX_COMPLETE.md)
 
+### ✨ M1-M5 复盘完成 ✨ **NEW**
+
+**完成时间**: 2026-02-16
+**Git 提交**: `8de9120 docs: 完成 M1-M5 整理复盘文档 (11 份核心规范)`
+
+**完成内容**:
+- ✅ **3 份数据模型规范**: Entry, SQLite Schema, Workflow
+- ✅ **5 份接口规范**: Processors, AI 服务, Storage, Retrieval, WorkflowEngine
+- ✅ **2 份数据流文档**: 归档流程数据流图, 检索流程
+- ✅ **1 份总结报告**: M1-M5 整理复盘总结
+- ✅ **1 份问题记录**: Bug 修复记录
+
+**详细报告**: [`docs/refactor/M1-M5整理复盘总结.md`](../refactor/M1-M5整理复盘总结.md)
+
 ---
 
 ## 🎯 开发目标
@@ -63,44 +79,69 @@
 
 ## 📚 前置知识
 
-### 必读文档（按优先级顺序）
+### 必读文档（按优先级顺序）✨ **UPDATED**
 
-#### 🔥 第一优先级：M5.1 Bug 修复（必读）
+#### 🔥 第一优先级：API 文档和复盘总结（核心必读）
 
-**为什么必读**：M5.1 修复了 3 个影响 CLI 集成的关键问题，避免开发时踩坑
+**为什么必读**：提供完整的 API 接口定义和系统化架构理解
 
-1. **[`docs/milestones/M5_1_BUGFIX_COMPLETE.md`](../milestones/M5_1_BUGFIX_COMPLETE.md)** ✨ **NEW**
+1. **[`docs/API文档.md`](../API文档.md)** ✨ **NEW**
+   - **完整的 API 接口定义**（工作流、处理器、检索、存储）
+   - **数据结构规范**（Entry, ProcessedContent, SearchResult, WorkflowResult）
+   - **错误处理规范**（异常层次、错误码）
+   - **完整工作流示例**（端到端代码）
+   - 🎯 **CLI 开发关键参考**
+
+2. **[`docs/refactor/M1-M5整理复盘总结.md`](../refactor/M1-M5整理复盘总结.md)** ✨ **NEW**
+   - **整体架构总结**（11 份规范文档索引）
+   - **主要问题清单**（M5.1 已全部解决）
+   - **系统化的模块概览**
+   - 🎯 **架构理解必读**
+
+3. **[`docs/milestones/M5_1_BUGFIX_COMPLETE.md`](../milestones/M5_1_BUGFIX_COMPLETE.md)** ✨
    - M5.1 完成报告
    - 3 个 Bug 详细修复方案
    - 测试结果 (122/122 通过)
+   - 🎯 **避免踩坑必读**
 
-2. **[`docs/refactor/Bug修复记录.md`](../refactor/Bug修复记录.md)**
-   - 已修复问题清单（5 个已修复，3 个待修复）
+#### 📖 第二优先级：接口规范文档（详细参考）
+
+**为什么必读**：提供各模块的详细接口规范和集成指南
+
+1. **[`docs/refactor/WorkflowEngine接口规范.md`](../refactor/WorkflowEngine接口规范.md)** ✨ **NEW**
+   - WorkflowEngine 核心 API
+   - BaseStep 抽象接口
+   - 配置规范化规则
+   - 🎯 **CLI archive 命令关键**
+
+2. **[`docs/refactor/Retrieval检索引擎规范.md`](../refactor/Retrieval检索引擎规范.md)** ✨ **NEW**
+   - QueryRouter 路由规则（< 10 tokens → BM25, ≥ 10 → Vector）
+   - BM25/Vector/Hybrid Retriever 接口
+   - RRF 算法（k=60）
+   - 🎯 **CLI search 命令关键**
+
+3. **[`docs/refactor/Storage接口规范.md`](../refactor/Storage接口规范.md)** ✨ **NEW**
+   - 三层存储架构（Markdown + SQLite + Vector）
+   - SQLiteStore 查询接口
+   - MarkdownStore 读写规范
+   - 🎯 **CLI show/list 命令关键**
+
+4. **[`docs/refactor/归档流程数据流图.md`](../refactor/归档流程数据流图.md)** ✨ **NEW**
+   - 端到端数据流（Fetch → Analyze → Sharpen → Store）
+   - State 传递约定
+   - 步骤间数据键名
+   - 🎯 **理解工作流执行过程**
+
+5. **[`docs/refactor/Entry数据模型规范.md`](../refactor/Entry数据模型规范.md)** ✨ **NEW**
+   - Entry 字段详解（必填/可选）
+   - 字段类型和约束
+   - 🎯 **数据结构理解**
+
+6. **[`docs/refactor/Bug修复记录.md`](../refactor/Bug修复记录.md)** ✨ **NEW**
+   - 已修复问题清单（5 个已修复）
+   - 遗留问题（3 个待修复）
    - 技术债务优先级
-
-#### 📖 第二优先级：M1-M5 复盘文档（必读）
-
-**为什么必读**：提供系统化的架构理解和接口规范
-
-1. **[`docs/refactor/M1-M5整理复盘总结.md`](../refactor/M1-M5整理复盘总结.md)**
-   - 整体架构总结
-   - 主要问题清单（M5.1 已全部解决近期修复任务）
-
-2. **[`docs/refactor/WorkflowEngine接口规范.md`](../refactor/WorkflowEngine接口规范.md)**
-   - 工作流引擎 API
-   - **CLI 集成关键**: `WorkflowEngine.execute()` 接口
-
-3. **[`docs/refactor/归档流程数据流图.md`](../refactor/归档流程数据流图.md)**
-   - 端到端数据流
-   - **CLI 集成关键**: State 传递约定
-
-4. **[`docs/refactor/Storage接口规范.md`](../refactor/Storage接口规范.md)**
-   - 三层存储架构
-   - **CLI 集成关键**: `SQLiteStore.query_*()` 方法
-
-5. **[`docs/refactor/Retrieval检索引擎规范.md`](../refactor/Retrieval检索引擎规范.md)**
-   - 检索策略设计
-   - **CLI 集成关键**: `QueryRouter.search()` 接口
+   - 🎯 **已知问题追踪**
 
 #### 📋 第三优先级：设计文档（参考）
 
@@ -112,6 +153,7 @@
 
 3. **[`CLAUDE.md`](../../CLAUDE.md)**
    - 项目索引和模块导航
+   - 快速参考指南
 
 ---
 
@@ -609,13 +651,33 @@ python -m pytest tests/unit/ -v     # 自动重建
 
 ---
 
-### 6.8 与工作流引擎集成（重要！）
+### 6.8 与工作流引擎集成（重要！）✨ **UPDATED**
 
 **说明**: M6 CLI 的核心功能依赖 M5 WorkflowEngine，必须正确集成
 
+**参考文档**:
+- 📖 [`docs/API文档.md`](../API文档.md) - 完整 API 接口定义
+- 📖 [`docs/refactor/WorkflowEngine接口规范.md`](../refactor/WorkflowEngine接口规范.md) - 详细接口规范
+
 #### 6.8.1 archive 命令集成
 
-**核心代码模式**:
+**核心 API**: `WorkflowEngine.execute(workflow_name, input_data) -> WorkflowResult`
+
+**参数定义**（来自 API 文档）:
+- `workflow_name` (str): 工作流名称，对应 `config/workflows/{name}.yaml`
+- `input_data` (dict): 输入数据，根据工作流类型不同而变化
+
+**返回值**（WorkflowResult）:
+```python
+@dataclass
+class WorkflowResult:
+    success: bool                # 是否成功
+    data: dict                   # 输出数据
+    error: Optional[str] = None  # 错误信息（如果失败）
+    logs: List[str] = field(default_factory=list)  # 执行日志
+```
+
+**实现代码**:
 ```python
 from src.workflow.engine import WorkflowEngine
 from src.utils.config import Config
@@ -648,16 +710,25 @@ def archive(url_or_path, skip_sharpen, tags):
     # 4. 执行工作流（同步包装）
     result = asyncio.run(engine.execute_async("archive-url", input_data))
 
-    # 5. 处理结果
+    # 5. 处理结果（参考 WorkflowResult 数据结构）
     if result.success:
-        knowledge_id = result.data.get("knowledge_id")
+        knowledge_id = result.data.get("knowledge_id")  # 从 data 字典提取
         file_path = result.data.get("file_path")
         console.print(f"[green]✅ 归档成功! ID: {knowledge_id}[/green]")
         console.print(f"   文件: {file_path}")
     else:
         console.print(f"[red]❌ 归档失败[/red]")
-        for error in result.errors:
-            console.print(f"   - {error}")
+        console.print(f"   错误: {result.error}")  # 使用 error 字段
+        for log in result.logs:  # 显示详细日志
+            console.print(f"   [dim]{log}[/dim]")
+```
+
+**关键数据键名**（来自归档流程数据流图）:
+- `url` - 输入 URL
+- `skip_sharpen` - 跳过 idea Sharpen 标志
+- `manual_tags` - 手动指定的标签列表
+- `knowledge_id` - 输出的条目 ID
+- `file_path` - 输出的 Markdown 文件路径
 ```
 
 **关键集成点**:
@@ -678,12 +749,34 @@ def archive(url_or_path, skip_sharpen, tags):
 
 #### 6.8.2 search 命令集成
 
-**核心代码模式**:
+**核心 API**: `HybridSearch.search(query, top_k, strategy) -> List[SearchResult]`
+
+**参数定义**（来自 API 文档）:
+- `query` (str): 用户查询
+- `top_k` (int): 返回结果数量，默认 10
+- `strategy` (str): 检索策略，可选 `"auto"` / `"bm25"` / `"vector"` / `"hybrid"`
+
+**返回值**（SearchResult）:
 ```python
-from src.retrieval.hybrid_retriever import HybridRetriever
+@dataclass
+class SearchResult:
+    entry_id: str                # 条目 ID（注意：这里是 entry_id，不是 knowledge_id）
+    title: str                   # 标题
+    snippet: str                 # 摘要/片段（高亮匹配部分）
+    score: float                 # 相关性分数（0-1）
+    metadata: dict               # 元数据
+
+    # 可选字段
+    highlights: List[str] = field(default_factory=list)  # 匹配的关键词
+```
+
+**实现代码**:
+```python
+from src.retrieval.hybrid_search import HybridSearch
 from src.retrieval.query_router import QueryRouter
-from src.storage.sqlite_store import SQLiteStore
-from src.storage.vector_store import VectorStore
+from src.retrieval.bm25_retriever import BM25Retriever
+from src.retrieval.vector_retriever import VectorRetriever
+from src.utils.config import Config
 
 @click.command()
 @click.argument('query')
@@ -694,10 +787,11 @@ def search(query, strategy, limit):
 
     config = Config()
 
-    # 1. 初始化检索器
+    # 1. 初始化检索器（根据 strategy 选择）
     if strategy == 'auto':
+        # 使用 QueryRouter 自动选择最优策略
         router = QueryRouter(config)
-        retriever = router.get_retriever(query)
+        retriever = router.get_retriever(query)  # 返回 BM25Retriever 或 VectorRetriever
     elif strategy == 'bm25':
         retriever = BM25Retriever(config)
     elif strategy == 'vector':
@@ -706,16 +800,21 @@ def search(query, strategy, limit):
         retriever = HybridRetriever(config)
 
     # 2. 执行搜索
-    results = retriever.search(query, top_k=limit)
+    results = retriever.search(query, top_k=limit)  # 返回 List[SearchResult]
 
     # 3. 格式化输出
-    table = format_search_results(results)
+    table = format_search_results(results)  # 使用 cli/formatters.py 中的函数
     console.print(table)
 ```
 
-**关键问题**:
-- ❓ 如果没有工作流配置，search 命令也能工作吗？**答案**：能，search 命令直接使用 Retrieval 模块
-- ❓ HybridRetriever 需要 VectorStore 和 SQLiteStore 初始化吗？**答案**：是的，需要传递配置
+**QueryRouter 路由规则**（来自 Retrieval 检索引擎规范）:
+- Token 数量 < 10: 使用 BM25（关键词检索）
+- Token 数量 ≥ 10: 使用 Vector（语义检索）
+- 使用 jieba 分词统计 token 数量
+
+**关键注意事项**:
+- ⚠️ 检索结果使用 `entry_id`，而数据库查询使用 `knowledge_id`（当前命名不一致）
+- ⚠️ 需要确保 HybridRetriever 初始化时传递 config（包含 VectorStore 和 SQLiteStore 配置）
 
 ---
 
@@ -1052,7 +1151,8 @@ pkv search "Python 教程"
 
 ### 7.4 版本管理
 
-#### CHANGELOG.md
+#### CHANGELOG.md ✨ **UPDATED**
+
 ```markdown
 # Changelog
 
@@ -1062,6 +1162,29 @@ pkv search "Python 教程"
 - CLI 入口和命令定义
 - 归档、搜索、查看、配置等核心命令
 - Rich 终端 UI
+- 完整的使用手册和维护指南
+
+---
+
+## [0.5.2] - 2026-02-16 (M1-M5 复盘)
+
+### Added
+- **M1-M5 整理复盘文档**（11 份规范文档）
+  - 3 份数据模型规范：Entry, SQLite Schema, Workflow
+  - 5 份接口规范：Processors, AI 服务, Storage, Retrieval, WorkflowEngine
+  - 2 份数据流文档：归档流程数据流图, 检索流程
+  - 1 份总结报告：M1-M5 整理复盘总结
+  - 1 份问题记录：Bug 修复记录
+  - Commit: `8de9120 docs: 完成 M1-M5 整理复盘文档 (11 份核心规范)`
+
+- **文档分类清单** (`docs/文档分类清单.md`)
+  - 53 份文档的系统化分类
+  - 明确的文档优先级
+  - Commit: `e599f22 docs: 重组文档目录结构 - 按类型分类整理`
+
+### Changed
+- 重组文档目录结构（`docs/core/`, `docs/refactor/`, `docs/milestones/`, `docs/prompts/`）
+- 更新 M6-M7 开发 Prompt（v3.0）
 
 ---
 
@@ -1072,6 +1195,7 @@ pkv search "Python 教程"
   - 添加 `ai_chat`, `text`, `test` 枚举值到 SQLite CHECK 约束
   - 修复 AIChatProcessor 和 TextFallbackProcessor 保存失败问题
   - 位置: `src/storage/sqlite_store.py:91`
+  - Commit: `2e2f4c2 fix: 完成 M5.1 Bug 修复 - 修复 3 个关键问题`
 
 - **长文档向量化策略不一致** (#4)
   - 统一 `embed_document()` 和 `embed_batch_documents()` 为分块取平均策略
@@ -1092,6 +1216,10 @@ pkv search "Python 教程"
 - 单元测试: 122/122 通过 (100%)
 - 集成测试: 网络环境问题（非代码 Bug）
 
+### Branch
+- Merged: `milestone5-1-bugfix` → `claude-main`
+- Merge Commit: `780a047 Merge Milestone 5.1: Bug 修复`
+
 ---
 
 ## [0.5.0] - 2026-02-15 (M5)
@@ -1100,13 +1228,48 @@ pkv search "Python 教程"
 - 工作流引擎（WorkflowEngine）
 - 混合检索引擎（BM25 + Vector + RRF）
 - idea Sharpen 交互步骤
+- 4 个核心工作流步骤：Fetch, Analyze, IdeaSharpen, Store
+- YAML 驱动的工作流配置（`archive-url.yaml`, `search.yaml`）
 
 ### Fixed
 - 配置字段名统一（`targets` 字段）
 - 引擎传参错误修复（提取 `config` 字段）
 
+### Tests
+- 测试覆盖率: 93%（26/26 测试通过）
+- 真实环境测试验证成功
+
+### Branch
+- Branch: `milestone5-workflow-engine`
+- Merge Commit: `6db9699 Merge Milestone 5: 工作流引擎`
+
 ### Changed
 - 数据库 Schema 优化
+- Config 类增强（支持工作流配置加载）
+
+---
+
+## [0.4.0] - 2026-02-14 (M4)
+
+### Added
+- 检索引擎核心模块
+  - BM25 全文检索（FTS5 + jieba 分词）
+  - 向量语义检索（hnswlib + OpenAI Embedding）
+  - 混合检索（RRF 算法，k=60）
+  - QueryRouter 自动路由（< 10 tokens → BM25, ≥ 10 → Vector）
+
+### Branch
+- Branch: `milestone4-retrieval-engine`
+- Merge Commit: `53d614f Merge Milestone 4: 检索引擎`
+
+---
+
+## Earlier Versions
+
+- **M3.5**: AI 对话处理器与文本 Fallback
+- **M3**: 内容处理器（微信、知乎、通用网页、聊天）
+- **M2**: AI 服务层（DeepSeek、OpenAI Embedding）
+- **M1**: 基础设施层（存储、配置、SQLite）
 ```
 
 ---
@@ -1233,7 +1396,49 @@ touch src/cli/formatters.py
 
 ## 📝 Prompt 版本历史
 
-### v2.0 (2026-02-16) ✨ **CURRENT**
+### v3.0 (2026-02-16) ✨ **CURRENT**
+
+**更新摘要**: 基于 M1-M5 复盘成果和 API 文档的重大更新
+
+**更新内容**:
+
+1. **项目状态更新**:
+   - ✅ 添加 M1-M5 复盘完成状态（11 份规范文档）
+   - ✅ 更新 Git 分支信息（milestone5-1-bugfix 已合并）
+   - ✅ 添加文档重组信息（docs/ 目录结构优化）
+
+2. **必读文档重组**（重要！）:
+   - 🔥 **第一优先级**：API 文档 + 复盘总结 + M5.1 报告
+   - 📖 **第二优先级**：6 份接口规范文档（WorkflowEngine, Retrieval, Storage, 归档流程, Entry, Bug 记录）
+   - 📋 **第三优先级**：设计文档（PRD, 架构设计, CLAUDE.md）
+   - 新增：[`docs/API文档.md`](../API文档.md) - 完整 API 接口定义 ⭐ 核心参考
+
+3. **CLI 集成要点增强**（6.8 节）:
+   - ✅ 基于 API 文档更新 archive 命令集成（WorkflowResult 数据结构）
+   - ✅ 基于 API 文档更新 search 命令集成（SearchResult 数据结构）
+   - ✅ 明确关键数据键名（来自归档流程数据流图）
+   - ✅ 添加 QueryRouter 路由规则说明（< 10 tokens → BM25）
+
+4. **CHANGELOG 示例更新**:
+   - ✅ 添加 v0.5.2（M1-M5 复盘）版本记录
+   - ✅ 更新 v0.5.1（M5.1 Bugfix）完整信息（包含 Git 分支信息）
+   - ✅ 更新 v0.5.0（M5）完整信息（测试覆盖率 93%）
+   - ✅ 添加 v0.4.0（M4）版本记录
+
+**关键新增信息**:
+- API 文档作为核心参考（WorkflowResult, SearchResult 数据结构）
+- 复盘文档索引（11 份规范文档完整列表）
+- Git 提交记录（Merge Commit 和 Branch 信息）
+- 文档目录结构说明（docs/core/, docs/refactor/, docs/milestones/, docs/prompts/）
+
+**文档依赖更新**:
+- 新增 [`docs/API文档.md`](../API文档.md) 依赖
+- 新增 [`docs/文档分类清单.md`](../文档分类清单.md) 参考
+- 新增 11 份 [`docs/refactor/*.md`](../refactor/) 规范文档引用
+
+---
+
+### v2.0 (2026-02-16)
 
 **更新内容**:
 - 添加 M5.1 完成状态和重要更新说明
