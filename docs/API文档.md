@@ -602,16 +602,301 @@ if __name__ == "__main__":
 
 ---
 
+## CLI 命令参考
+
+> **新增于 v0.6.0 (M6)**: 完整的命令行界面
+
+### 概述
+
+Personal Knowledge Vault 提供了 6 个核心命令，涵盖归档、搜索、查看、配置等功能。
+
+**安装后使用**:
+```bash
+python -m src.main <command> [options]
+```
+
+**全局参数**:
+- `--verbose`: 显示详细日志
+- `--debug`: 显示调试日志
+- `--version`: 显示版本信息
+- `--help`: 显示帮助信息
+
+---
+
+### pkv archive - 归档内容
+
+归档网页、聊天记录等内容到知识库。
+
+**基本用法**:
+```bash
+python -m src.main archive <url_or_path> [options]
+```
+
+**参数**:
+- `url_or_path` (必填): URL 或文件路径
+- `--type` (可选): 内容类型（auto/webpage/chat/news），默认 auto
+- `--skip-sharpen` (可选): 跳过 idea Sharpen 交互
+- `--tags` (可选): 手动指定标签（逗号分隔）
+- `--quiet` (可选): 静默模式（最小化输出）
+
+**示例**:
+```bash
+# 归档网页
+python -m src.main archive "https://example.com/article"
+
+# 跳过 idea Sharpen
+python -m src.main archive "https://example.com" --skip-sharpen
+
+# 手动指定标签
+python -m src.main archive "https://example.com" --tags "AI,技术,教程"
+
+# 静默模式
+python -m src.main archive "https://example.com" --quiet
+```
+
+**集成接口**:
+- 调用 `WorkflowEngine.execute_async("archive-url", input_data)`
+- `input_data` 键名：`url`, `skip_sharpen`, `manual_tags`
+- 返回 `WorkflowResult` 包含 `knowledge_id`, `file_path`
+
+---
+
+### pkv search - 搜索知识库
+
+搜索知识库中的内容。
+
+**基本用法**:
+```bash
+python -m src.main search <query> [options]
+```
+
+**参数**:
+- `query` (必填): 搜索关键词
+- `--strategy` (可选): 检索策略（auto/bm25/vector/hybrid），默认 auto
+- `--limit` (可选): 结果数量，默认 10
+- `--format` (可选): 输出格式（table/json/markdown），默认 table
+
+**示例**:
+```bash
+# 基本搜索
+python -m src.main search "Python 异步编程"
+
+# 指定 BM25 策略
+python -m src.main search "Python" --strategy bm25
+
+# JSON 输出
+python -m src.main search "AI" --format json --limit 5
+```
+
+**检索策略**:
+- `auto`: 自动选择（< 10 tokens → BM25, ≥ 10 → Vector）
+- `bm25`: 关键词检索（精确匹配）
+- `vector`: 语义检索（语义理解）
+- `hybrid`: 混合检索（RRF k=60）
+
+**集成接口**:
+- 使用 `QueryRouter.get_retriever(query)` 自动路由
+- 返回 `List[SearchResult]` 包含 `entry_id`, `title`, `snippet`, `score`
+
+---
+
+### pkv show - 显示条目详情
+
+显示单个知识条目的详细信息。
+
+**基本用法**:
+```bash
+python -m src.main show <id_or_url> [options]
+```
+
+**参数**:
+- `id_or_url` (可选): knowledge_id 或 URL
+- `--url` (可选): 通过 URL 查询
+- `--raw` (可选): 输出原始 Markdown 内容
+
+**示例**:
+```bash
+# 通过 ID 查看
+python -m src.main show 42
+
+# 通过 URL 查看
+python -m src.main show --url "https://example.com/article"
+
+# 输出原始 Markdown
+python -m src.main show 42 --raw
+```
+
+**集成接口**:
+- 调用 `SQLiteStore.get_entry_by_id(knowledge_id)`
+- 调用 `SQLiteStore.get_entry_by_url(url)`
+- 使用 `MarkdownStore.read(file_path)` 读取原始内容
+
+---
+
+### pkv list - 列出条目
+
+列出知识库中的所有条目。
+
+**基本用法**:
+```bash
+python -m src.main list [options]
+```
+
+**参数**:
+- `--tag` (可选): 按标签过滤
+- `--sort` (可选): 排序字段（time/title/id），默认 time
+- `--desc` (可选): 降序排列
+- `--limit` (可选): 结果数量，默认 20
+
+**示例**:
+```bash
+# 列出所有条目
+python -m src.main list
+
+# 按标签过滤
+python -m src.main list --tag Python
+
+# 按时间降序排列
+python -m src.main list --sort time --desc --limit 10
+```
+
+**集成接口**:
+- 调用 `SQLiteStore.query_entries(filters, order_by, desc, limit)`
+
+---
+
+### pkv config - 配置管理
+
+管理系统配置（查看、查询、设置）。
+
+**子命令**:
+
+#### config show - 显示所有配置
+```bash
+python -m src.main config show
+```
+
+#### config get - 查询单个配置
+```bash
+python -m src.main config get <key>
+```
+
+**示例**:
+```bash
+# 查询 DeepSeek 模型
+python -m src.main config get ai.deepseek.model
+
+# 查询数据库路径
+python -m src.main config get db_path
+```
+
+#### config set - 设置配置
+```bash
+python -m src.main config set <key> <value>
+```
+
+**示例**:
+```bash
+# 设置 API Key
+python -m src.main config set DEEPSEEK_API_KEY sk-xxxxx
+
+# 设置日志级别
+python -m src.main config set LOG_LEVEL DEBUG
+```
+
+**集成接口**:
+- 读取 `Config` 对象属性
+- 修改 `.env` 文件（set 命令）
+
+---
+
+### pkv stats - 统计信息
+
+显示知识库统计信息。
+
+**基本用法**:
+```bash
+python -m src.main stats
+```
+
+**输出内容**:
+- 总条目数（按类型分组）
+- 存储大小（Markdown + SQLite）
+- Top 10 标签
+
+**示例输出**:
+```
+📊 知识库统计
+
+总条目数: 156
+  ├─ webpage: 89
+  ├─ chat: 45
+  └─ news: 22
+
+存储大小:
+  ├─ Markdown: 12.5 MB
+  └─ SQLite: 8.3 MB
+
+标签统计 (Top 10):
+  1. Python (42)
+  2. AI (38)
+  3. 技术 (35)
+  ...
+```
+
+**集成接口**:
+- 调用 `SQLiteStore.count_entries()`
+- 调用 `SQLiteStore.count_entries_by_source_type()`
+- 调用 `SQLiteStore.get_top_tags(limit=10)`
+
+---
+
+### 从 Python 代码调用 CLI
+
+如果需要在 Python 脚本中调用 CLI 命令：
+
+```python
+import subprocess
+
+# 归档 URL
+result = subprocess.run(
+    ['python', '-m', 'src.main', 'archive', 'https://example.com'],
+    capture_output=True,
+    text=True
+)
+
+if result.returncode == 0:
+    print("归档成功")
+    print(result.stdout)
+else:
+    print("归档失败")
+    print(result.stderr)
+
+# 搜索知识库
+result = subprocess.run(
+    ['python', '-m', 'src.main', 'search', 'Python', '--format', 'json'],
+    capture_output=True,
+    text=True
+)
+
+import json
+search_results = json.loads(result.stdout)
+```
+
+---
+
 ## 下一步
 
 了解 API 接口后，建议阅读：
 
+- [使用手册](./使用手册.md) - CLI 命令详细使用指南 ✨ **NEW**
+- [维护指南](./维护指南.md) - 系统维护和扩展开发 ✨ **NEW**
 - [工作流开发指南](./工作流开发指南.md) - 如何扩展功能
-- [项目结构说明](./项目结构说明.md) - 模块组织方式
+- [项目结构说明](./core/项目结构说明.md) - 模块组织方式
 - [数据库Schema设计](./数据库Schema设计.md) - 数据模型详解
 
 ---
 
-**文档结束**
+**文档版本**: v2.0 (更新于 2026-02-16, M6+M7)
 
 *API 设计遵循 KISS 原则，保持简洁清晰*

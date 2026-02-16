@@ -270,7 +270,7 @@ class SQLiteStore:
                 entry.content,
                 entry.summary_one_sentence,
                 entry.summary_100_words,  # 使用原始摘要（修复：不再分词）
-                entry.keywords,  # 使用原始关键词（修复：不再分词）
+                ",".join(entry.keywords) if isinstance(entry.keywords, list) else entry.keywords,  # 转换列表为字符串
                 ",".join(entry.tags) if isinstance(entry.tags, list) else entry.tags,  # 转换列表为字符串
                 entry.source_type,
                 entry.source_url,

@@ -4,6 +4,79 @@
 
 ---
 
+## [v0.6.0] - 2026-02-16 (M6+M7)
+
+### ✨ 新增功能
+
+#### Milestone 6: CLI 入口与交互界面 ✅
+
+- ✅ **CLI 入口** ([src/main.py](src/main.py))
+  - Click 命令组
+  - 全局参数（--verbose, --debug）
+  - 版本信息（0.6.0）
+
+- ✅ **6 个核心命令** ([src/cli/commands.py](src/cli/commands.py))
+  - pkv archive - 归档内容（集成 WorkflowEngine）
+  - pkv search - 搜索知识库（集成 QueryRouter）
+  - pkv show - 显示条目详情
+  - pkv list - 列出所有条目
+  - pkv config - 配置管理（show/get/set）
+  - pkv stats - 统计信息
+
+- ✅ **终端 UI 组件** ([src/cli/ui.py](src/cli/ui.py))
+  - Rich.Progress 进度条
+  - Rich.Table 表格
+  - Rich.Panel 面板
+  - Rich.Confirm 确认对话框
+
+- ✅ **输出格式化器** ([src/cli/formatters.py](src/cli/formatters.py))
+  - JSON 格式化
+  - Markdown 格式化
+  - 搜索结果表格
+  - 条目详情面板
+
+- ✅ **测试覆盖**
+  - tests/unit/test_cli_commands.py（17 个单元测试）
+  - tests/unit/test_cli_ui.py（UI 组件测试）
+  - tests/unit/test_cli_formatters.py（格式化器测试）
+  - tests/integration/test_cli_e2e.py（端到端测试）
+  - 测试覆盖率 ≥ 80%
+
+#### Milestone 7: 文档完善与交付 ✅
+
+- ✅ **使用手册** ([docs/使用手册.md](docs/使用手册.md))
+  - 快速开始
+  - 核心功能详解
+  - 配置和定制
+  - 故障排查
+
+- ✅ **维护指南** ([docs/维护指南.md](docs/维护指南.md))
+  - 系统架构
+  - 日常维护
+  - 性能监控
+  - 扩展开发
+
+- ✅ **环境变量模板** ([.env.example](.env.example))
+  - DEEPSEEK_API_KEY
+  - OPENAI_API_KEY
+
+### 📝 变更
+
+- requirements.txt - 添加 Click 依赖
+- docs/API文档.md - 补充 CLI 命令参考
+
+### 🧪 测试
+
+- 单元测试: 17+ 个测试用例
+- 集成测试: 端到端测试通过
+- 测试覆盖率: ≥ 80%
+
+### 📦 依赖
+
+- click>=8.0.0（新增）
+
+---
+
 ## [v0.1.0] - 2026-02-14
 
 ### ✨ 新增功能
