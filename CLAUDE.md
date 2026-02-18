@@ -474,7 +474,10 @@ CREATE TABLE IF NOT EXISTS new_feature (
 
 | 文件 | 说明 |
 |------|------|
-| [docs/core/PHASE1_DEV_PROMPT.md](./docs/core/PHASE1_DEV_PROMPT.md) | Phase 1 开发计划（已归档） |
+| [docs/archive/PHASE1_DEV_PROMPT.md](./docs/archive/PHASE1_DEV_PROMPT.md) | Phase 1 开发计划（已归档） |
+| [docs/core/PHASE2_DEV_PROMPT.md](./docs/core/PHASE2_DEV_PROMPT.md) | Phase 2 总览（约束/原则/里程碑索引） |
+| [docs/core/PHASE2A_MCP_PROMPT.md](./docs/core/PHASE2A_MCP_PROMPT.md) | Phase 2A 执行 Prompt — MCP 服务 (M8+M9) |
+| [docs/core/PHASE2B_GUI_PROMPT.md](./docs/core/PHASE2B_GUI_PROMPT.md) | Phase 2B 执行 Prompt — GUI 应用 (M10~M13) |
 | [docs/core/personal-knowledge-vault-prd.md](./docs/core/personal-knowledge-vault-prd.md) | 产品需求文档 |
 | [docs/core/架构设计.md](./docs/core/架构设计.md) | 工作流驱动架构设计 |
 | [docs/core/技术选型.md](./docs/core/技术选型.md) | 技术栈选型说明 |
@@ -644,7 +647,7 @@ CREATE TABLE IF NOT EXISTS new_feature (
 ## 相关链接
 
 - [GitHub Repository](https://github.com/yourusername/personal-knowledge-vault)
-- [Phase 1 开发计划](./docs/core/PHASE1_DEV_PROMPT.md)
+- [Phase 1 开发计划](./docs/archive/PHASE1_DEV_PROMPT.md)
 - [更新日志](./docs/CHANGELOG.md)
 - [问题跟踪](./docs/refactor/Bug修复记录.md)
 - [文档索引](./docs/文档分类清单.md)

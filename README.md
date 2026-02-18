@@ -129,7 +129,7 @@ personal-knowledge-vault/
 │
 ├── docs/                              # 文档 (60+ 文件)
 │   ├── core/                          # 核心文档
-│   │   ├── PHASE1_DEV_PROMPT.md       # Phase 1 开发计划（已归档）
+│   │   ├── (归档至 docs/archive/)     # Phase 1 开发计划（已归档）
 │   │   ├── personal-knowledge-vault-prd.md  # PRD
 │   │   ├── 架构设计.md                # 架构设计
 │   │   ├── QUICKSTART.md              # 详细指南
@@ -251,7 +251,7 @@ python src/main.py --help
 
 | 文档 | 内容 |
 |------|------|
-| [docs/core/PHASE1_DEV_PROMPT.md](docs/core/PHASE1_DEV_PROMPT.md) | Phase 1 开发计划（已归档） |
+| [docs/archive/PHASE1_DEV_PROMPT.md](docs/archive/PHASE1_DEV_PROMPT.md) | Phase 1 开发计划（已归档） |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | 更新日志 |
 | [docs/文档分类清单.md](docs/文档分类清单.md) | 60+ 文档索引 |
 | [docs/refactor/Bug修复记录.md](docs/refactor/Bug修复记录.md) | 问题跟踪 |

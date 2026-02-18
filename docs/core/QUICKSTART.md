@@ -112,7 +112,7 @@ python src\utils\verify_setup.py
 3. **阅读完整文档**:
    - [架构设计](docs/架构设计.md)
    - [数据规范](docs/数据规范.md)
-   - [Phase 1 开发计划](docs/core/PHASE1_DEV_PROMPT.md)
+   - [Phase 1 开发计划](docs/archive/PHASE1_DEV_PROMPT.md)
 
 ---
 

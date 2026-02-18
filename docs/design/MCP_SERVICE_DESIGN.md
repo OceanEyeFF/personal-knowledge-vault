@@ -91,7 +91,7 @@ AI Agent 可读取的静态/动态数据：
 │            PKV MCP Server (新增)                │
 │  ┌──────────────────────────────────────────┐   │
 │  │  src/mcp/server.py                       │   │
-│  │  • MCPServer 实例                        │   │
+│  │  • FastMCP 实例                          │   │
 │  │  • Tool handlers                         │   │
 │  │  • Resource handlers                     │   │
 │  │  • Prompt handlers                       │   │
@@ -121,7 +121,7 @@ AI Agent 可读取的静态/动态数据：
 ```
 src/mcp/
 ├── __init__.py          # 模块导出
-├── server.py            # MCPServer 主入口
+├── server.py            # FastMCP 主入口
 ├── tools.py             # Tool handler 实现
 ├── resources.py         # Resource handler 实现
 ├── prompts.py           # Prompt 模板定义
@@ -143,32 +143,25 @@ src/mcp/
 
 ```python
 # src/mcp/server.py
-from mcp.server.mcpserver import MCPServer
+# FastMCP 是官方 MCP Python SDK 中的高级封装，正确导入方式：
+# - 官方 SDK (mcp>=1.0): from mcp.server.fastmcp import FastMCP
+# - 独立 FastMCP 库 (fastmcp>=2.0): from fastmcp import FastMCP
+# 两者 API 兼容，优先使用官方 SDK 中的 FastMCP
+from mcp.server.fastmcp import FastMCP
 
-from src.mcp.tools import register_tools
-from src.mcp.resources import register_resources
-from src.mcp.prompts import register_prompts
+mcp = FastMCP(
+    name="Personal Knowledge Vault",
+    instructions=(
+        "个人知识库 MCP 服务。支持知识搜索、归档、浏览和统计。\n"
+        "可用工具：search_knowledge（搜索）、get_entry（查看详情）、"
+        "archive_url（归档URL）、archive_text（归档文本）等。\n"
+        "知识条目包含标题、摘要、标签、全文等信息。"
+    ),
+)
 
-
-def create_mcp_server() -> MCPServer:
-    """创建并配置 PKV MCP Server"""
-    mcp = MCPServer(
-        name="Personal Knowledge Vault",
-        instructions=(
-            "个人知识库 MCP 服务。支持知识搜索、归档、浏览和统计。\n"
-            "可用工具：search_knowledge（搜索）、get_entry（查看详情）、"
-            "archive_url（归档URL）、archive_text（归档文本）等。\n"
-            "知识条目包含标题、摘要、标签、全文等信息。"
-        ),
-        version="0.7.0",
-    )
-
-    # 注册各类能力
-    register_tools(mcp)
-    register_resources(mcp)
-    register_prompts(mcp)
-
-    return mcp
+# Tool/Resource/Prompt 注册：使用 @mcp.tool() / @mcp.resource() / @mcp.prompt() 装饰器
+# 实际注册代码分散在各子模块，通过导入副作用完成注册
+from src.mcp import tools, resources, prompts  # noqa: F401
 
 
 def main():
@@ -182,16 +175,12 @@ def main():
     parser.add_argument("--port", type=int, default=3000, help="HTTP 端口")
     args = parser.parse_args()
 
-    mcp = create_mcp_server()
-
     if args.transport == "stdio":
         mcp.run(transport="stdio")
     else:
         mcp.run(
             transport="streamable-http",
             port=args.port,
-            stateless_http=True,
-            json_response=True,
         )
 
 
@@ -203,87 +192,128 @@ if __name__ == "__main__":
 
 ```python
 # src/mcp/tools.py
+#
+# 同步/异步策略说明（重要！）：
+#   - FastMCP 的同步 def handler 会【直接在 asyncio 事件循环中调用】，不会自动放入 threadpool
+#   - 这与 FastAPI 不同：FastAPI 会用 run_in_threadpool() 包装同步函数，FastMCP 不会
+#   - 若在同步 handler 中执行 SQLite/文件/网络等阻塞操作，会【冻结整个事件循环】
+#   - 正确做法：统一使用 async def + anyio.to_thread.run_sync() 包装现有同步 API
+#
+# 调用模式：
+#   async def my_tool(...) -> dict:
+#       result = await anyio.to_thread.run_sync(existing_sync_function, arg1, arg2)
+#       return result
+#
+import anyio
 from typing import Optional
-from mcp.server.mcpserver import MCPServer
 
-from src.retrieval import create_retriever, QueryRouter
+from src.mcp.server import mcp  # 从 server 模块获取共享的 FastMCP 实例
+from src.retrieval import QueryRouter, BM25Retriever, VectorRetriever, HybridRetriever
+from src.retrieval.result import SearchResult
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.markdown_store import MarkdownStore
 from src.workflow.engine import WorkflowEngine
+from src.ai.openai_client import OpenAIClient
 from src.utils.config import get_config
 
+config = get_config()
 
-def register_tools(mcp: MCPServer):
-    """注册所有 MCP Tools"""
+# 全局共享 router（内部含 embedder，避免重复初始化）
+# 实际实现时可用 @lru_cache 或模块级单例
+def _get_router() -> QueryRouter:
+    embedder = OpenAIClient(config)
+    return QueryRouter(
+        db_path=config.db_path,
+        vector_index_dir=config.vector_index_dir,
+        embedder=embedder,
+    )
 
-    config = get_config()
 
-    @mcp.tool()
-    async def search_knowledge(
-        query: str,
-        strategy: str = "auto",
-        top_k: int = 5,
-        source_type: Optional[str] = None,
-        tag: Optional[str] = None,
-    ) -> dict:
-        """搜索知识库。
+def _do_search_knowledge(
+    query: str, strategy: str, top_k: int,
+    source_type: Optional[str], tag: Optional[str],
+) -> dict:
+    """同步搜索实现，由 anyio.to_thread.run_sync 在 threadpool 中执行"""
+    router = _get_router()
+    if strategy == "auto":
+        strategy = router.route(query)
+    # 根据路由后策略选择检索器
+    if strategy == "bm25":
+        retriever = BM25Retriever(config.db_path)
+    elif strategy == "vector":
+        embedder = OpenAIClient(config)
+        retriever = VectorRetriever(config.db_path, config.vector_index_dir, embedder)
+    else:  # hybrid
+        embedder = OpenAIClient(config)
+        retriever = HybridRetriever(config.db_path, config.vector_index_dir, embedder)
+    results = retriever.search(query, top_k=top_k)
+    # 后过滤：检索层不支持 source_type/tag 时在结果层过滤
+    if source_type:
+        results = [r for r in results if r.source_type == source_type]
+    if tag:
+        results = [r for r in results if tag in (r.tags or [])]
+    return {
+        "total": len(results),
+        "strategy_used": strategy,
+        "results": [
+            {
+                "knowledge_id": r.knowledge_id,
+                "title": r.title,
+                "abstract": r.abstract,
+                "score": round(r.score, 4),
+                "tags": r.tags,
+                "source_type": r.source_type,
+                "created_at": r.created_at,
+            }
+            for r in results
+        ],
+    }
 
-        Args:
-            query: 搜索查询文本
-            strategy: 检索策略 - "auto"(自动路由), "bm25"(关键词), "vector"(语义), "hybrid"(混合)
-            top_k: 返回结果数量 (默认 5)
-            source_type: 按来源类型过滤 (wechat/zhihu/generic/chat/ai_chat/text/news)
-            tag: 按标签过滤
 
-        Returns:
-            包含搜索结果列表的字典，每项包含 title, abstract, score, tags, source_type
-        """
-        # 使用现有的检索引擎
-        if strategy == "auto":
-            router = QueryRouter()
-            strategy = router.route(query)
+@mcp.tool()
+async def search_knowledge(
+    query: str,
+    strategy: str = "auto",
+    top_k: int = 5,
+    source_type: Optional[str] = None,
+    tag: Optional[str] = None,
+) -> dict:
+    """搜索知识库。
 
-        retriever = create_retriever(strategy, config)
-        results = await retriever.search(query, top_k=top_k)
+    Args:
+        query: 搜索查询文本
+        strategy: 检索策略 - "auto"(自动路由), "bm25"(关键词), "vector"(语义), "hybrid"(混合)
+        top_k: 返回结果数量 (默认 5)
+        source_type: 按来源类型过滤 (wechat/zhihu/generic/chat/ai_chat/text/news)
+        tag: 按标签过滤
 
-        # 序列化结果
-        return {
-            "total": len(results),
-            "strategy_used": strategy,
-            "results": [
-                {
-                    "knowledge_id": r.knowledge_id,
-                    "title": r.title,
-                    "abstract": r.abstract,
-                    "score": round(r.score, 4),
-                    "tags": r.tags,
-                    "source_type": r.source_type,
-                    "created_at": r.created_at,
-                }
-                for r in results
-            ],
-        }
+    Returns:
+        包含搜索结果列表的字典，每项包含 title, abstract, score, tags, source_type
+    """
+    # anyio.to_thread.run_sync 在独立线程中执行阻塞操作，不阻塞事件循环
+    return await anyio.to_thread.run_sync(
+        lambda: _do_search_knowledge(query, strategy, top_k, source_type, tag)
+    )
 
-    @mcp.tool()
-    async def get_entry(knowledge_id: str) -> dict:
-        """获取知识条目完整内容。
 
-        Args:
-            knowledge_id: 知识条目 ID
+@mcp.tool()
+async def get_entry(knowledge_id: str) -> dict:
+    """获取知识条目完整内容。
 
-        Returns:
-            包含标题、摘要、标签、全文内容等完整信息的字典
-        """
-        store = SQLiteStore(config)
-        entry = store.get_entry(knowledge_id)
+    Args:
+        knowledge_id: 知识条目 ID
 
+    Returns:
+        包含标题、摘要、标签、全文内容等完整信息的字典
+    """
+    def _fetch():
+        store = SQLiteStore(config.db_path)
+        # knowledge_id 在数据库中是 INTEGER，MCP 层接收 str，需转换
+        entry = store.query_by_id(int(knowledge_id))
         if not entry:
             return {"error": f"未找到条目: {knowledge_id}"}
-
-        # 读取 Markdown 全文
-        md_store = MarkdownStore(config)
+        md_store = MarkdownStore(config.vault_dir)
         content = md_store.load(entry.get("file_path", ""))
-
         return {
             "knowledge_id": entry["knowledge_id"],
             "title": entry["title"],
@@ -298,66 +328,61 @@ def register_tools(mcp: MCPServer):
             "word_count": entry.get("word_count", 0),
             "content": content if content else "(内容不可用)",
         }
+    return await anyio.to_thread.run_sync(_fetch)
 
-    @mcp.tool()
-    async def list_tags() -> dict:
-        """列出知识库所有标签及统计。
 
-        Returns:
-            标签列表，每项包含标签名和关联条目数
-        """
-        store = SQLiteStore(config)
+@mcp.tool()
+async def list_tags() -> dict:
+    """列出知识库所有标签及统计。
+
+    Returns:
+        标签列表，每项包含标签名和关联条目数
+    """
+    def _fetch():
+        store = SQLiteStore(config.db_path)
         tags = store.get_all_tags_with_count()
         return {
             "total_tags": len(tags),
-            "tags": [
-                {"name": t["name"], "count": t["count"]}
-                for t in tags
-            ],
+            "tags": [{"name": t["name"], "count": t["count"]} for t in tags],
         }
+    return await anyio.to_thread.run_sync(_fetch)
 
-    @mcp.tool()
-    async def list_entries(
-        page: int = 1,
-        per_page: int = 20,
-        sort_by: str = "created_at",
-        sort_order: str = "desc",
-        source_type: Optional[str] = None,
-        tag: Optional[str] = None,
-    ) -> dict:
-        """浏览知识条目列表。
 
-        Args:
-            page: 页码 (从 1 开始)
-            per_page: 每页数量 (默认 20，最大 100)
-            sort_by: 排序字段 - "created_at", "title", "word_count"
-            sort_order: 排序方向 - "asc" 或 "desc"
-            source_type: 按来源类型过滤
-            tag: 按标签过滤
+@mcp.tool()
+async def list_entries(
+    page: int = 1,
+    per_page: int = 20,
+    sort_by: str = "created_at",
+    sort_order: str = "desc",
+    source_type: Optional[str] = None,
+    tag: Optional[str] = None,
+) -> dict:
+    """浏览知识条目列表。
 
-        Returns:
-            分页的条目列表
-        """
-        store = SQLiteStore(config)
-        per_page = min(per_page, 100)  # 限制最大数量
-        offset = (page - 1) * per_page
+    Args:
+        page: 页码 (从 1 开始)
+        per_page: 每页数量 (默认 20，最大 100)
+        sort_by: 排序字段 - "created_at", "title", "word_count"
+        sort_order: 排序方向 - "asc" 或 "desc"
+        source_type: 按来源类型过滤
+        tag: 按标签过滤
 
+    Returns:
+        分页的条目列表
+    """
+    def _fetch():
+        store = SQLiteStore(config.db_path)
+        _per_page = min(per_page, 100)
+        offset = (page - 1) * _per_page
         entries = store.list_entries(
-            limit=per_page,
-            offset=offset,
-            sort_by=sort_by,
-            sort_order=sort_order,
-            source_type=source_type,
-            tag=tag,
+            limit=_per_page, offset=offset,
+            sort_by=sort_by, sort_order=sort_order,
+            source_type=source_type, tag=tag,
         )
-
         total = store.count_entries(source_type=source_type, tag=tag)
-
         return {
-            "total": total,
-            "page": page,
-            "per_page": per_page,
-            "total_pages": (total + per_page - 1) // per_page,
+            "total": total, "page": page, "per_page": _per_page,
+            "total_pages": (total + _per_page - 1) // _per_page,
             "entries": [
                 {
                     "knowledge_id": e["knowledge_id"],
@@ -371,215 +396,212 @@ def register_tools(mcp: MCPServer):
                 for e in entries
             ],
         }
+    return await anyio.to_thread.run_sync(_fetch)
 
-    @mcp.tool()
-    async def archive_url(url: str) -> dict:
-        """归档网页 URL 到知识库。
 
-        Args:
-            url: 要归档的网页链接
+@mcp.tool()
+async def archive_url(url: str) -> dict:
+    """归档网页 URL 到知识库。
 
-        Returns:
-            归档结果，包含生成的 knowledge_id 和文件路径
-        """
-        engine = WorkflowEngine(config)
-        result = await engine.execute_async(
-            workflow_name="archive-url",
-            input_data={"url": url},
-        )
+    Args:
+        url: 要归档的网页链接
 
-        if result.success:
-            return {
-                "success": True,
-                "knowledge_id": result.data.get("knowledge_id", ""),
-                "title": result.data.get("title", ""),
-                "file_path": str(result.data.get("file_path", "")),
-                "tags": result.data.get("tags", []),
-                "abstract": result.data.get("abstract", ""),
-            }
-        else:
-            return {
-                "success": False,
-                "error": result.error or "归档失败",
-            }
+    Returns:
+        归档结果，包含生成的 knowledge_id 和文件路径
 
-    @mcp.tool()
-    async def archive_text(text: str, title: str = "") -> dict:
-        """归档纯文本到知识库。
+    Note:
+        WorkflowEngine.execute_async() 是原生 async 方法，内部步骤（网络请求/AI 调用）
+        均为 async def，可直接 await，无需 threadpool 包装。
+    """
+    # WorkflowEngine() 无参构造，内部自动调用 get_config() 加载配置
+    engine = WorkflowEngine()
+    result = await engine.execute_async(
+        workflow_name="archive-url",
+        input_data={"url": url},
+    )
 
-        Args:
-            text: 要归档的文本内容
-            title: 可选的标题（不提供则自动生成）
+    if result.success:
+        return {
+            "success": True,
+            "knowledge_id": result.data.get("knowledge_id", ""),
+            "title": result.data.get("title", ""),
+            "file_path": str(result.data.get("file_path", "")),
+            "tags": result.data.get("tags", []),
+            "abstract": result.data.get("abstract", ""),
+        }
+    else:
+        return {"success": False, "error": (result.errors[0] if result.errors else "归档失败")}
 
-        Returns:
-            归档结果，包含生成的 knowledge_id 和文件路径
-        """
-        engine = WorkflowEngine(config)
-        result = await engine.execute_async(
-            workflow_name="archive-text",
-            input_data={"text": text, "title": title},
-        )
 
-        if result.success:
-            return {
-                "success": True,
-                "knowledge_id": result.data.get("knowledge_id", ""),
-                "title": result.data.get("title", ""),
-                "file_path": str(result.data.get("file_path", "")),
-                "tags": result.data.get("tags", []),
-            }
-        else:
-            return {
-                "success": False,
-                "error": result.error or "归档失败",
-            }
+@mcp.tool()
+async def archive_text(text: str, title: str = "") -> dict:
+    """归档纯文本到知识库。
 
-    @mcp.tool()
-    async def get_stats() -> dict:
-        """获取知识库统计信息。
+    Args:
+        text: 要归档的文本内容
+        title: 可选的标题（不提供则自动生成）
 
-        Returns:
-            包含条目总数、标签分布、来源类型分布等统计数据
-        """
-        store = SQLiteStore(config)
-        stats = store.get_statistics()
-        return stats
+    Returns:
+        归档结果，包含生成的 knowledge_id 和文件路径
+    """
+    engine = WorkflowEngine()
+    result = await engine.execute_async(
+        workflow_name="archive-text",
+        input_data={"text": text, "title": title},
+    )
+
+    if result.success:
+        return {
+            "success": True,
+            "knowledge_id": result.data.get("knowledge_id", ""),
+            "title": result.data.get("title", ""),
+            "file_path": str(result.data.get("file_path", "")),
+            "tags": result.data.get("tags", []),
+        }
+    else:
+        return {"success": False, "error": (result.errors[0] if result.errors else "归档失败")}
+
+
+@mcp.tool()
+async def get_stats() -> dict:
+    """获取知识库统计信息。
+
+    Returns:
+        包含条目总数、标签分布、来源类型分布等统计数据
+    """
+    def _fetch():
+        store = SQLiteStore(config.db_path)
+        return store.get_statistics()
+    return await anyio.to_thread.run_sync(_fetch)
 ```
 
 ### 4.3 Resource 实现
 
 ```python
 # src/mcp/resources.py
-from mcp.server.mcpserver import MCPServer
+# Resource handler 与 Tool 策略一致：async def + anyio.to_thread.run_sync() 包装阻塞 I/O
+# 原因：FastMCP 的同步 def handler 会直接阻塞 asyncio 事件循环（不会自动 threadpool 化）
 
+import json
+import anyio
+
+from src.mcp.server import mcp  # 共享 FastMCP 实例
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.markdown_store import MarkdownStore
 from src.utils.config import get_config
 
+config = get_config()
 
-def register_resources(mcp: MCPServer):
-    """注册所有 MCP Resources"""
 
-    config = get_config()
-
-    @mcp.resource("pkv://entries/{knowledge_id}")
-    async def get_entry_content(knowledge_id: str) -> str:
-        """获取知识条目的 Markdown 全文"""
-        store = SQLiteStore(config)
-        entry = store.get_entry(knowledge_id)
-
+@mcp.resource("pkv://entries/{knowledge_id}")
+async def get_entry_content(knowledge_id: str) -> str:
+    """获取知识条目的 Markdown 全文"""
+    def _fetch():
+        store = SQLiteStore(config.db_path)
+        entry = store.query_by_id(int(knowledge_id))
         if not entry:
             return f"# 未找到条目\n\nknowledge_id: {knowledge_id}"
-
-        md_store = MarkdownStore(config)
+        md_store = MarkdownStore(config.vault_dir)
         content = md_store.load(entry.get("file_path", ""))
-
         return content or f"# {entry.get('title', '无标题')}\n\n(内容不可用)"
+    return await anyio.to_thread.run_sync(_fetch)
 
-    @mcp.resource("pkv://entries/{knowledge_id}/metadata")
-    async def get_entry_metadata(knowledge_id: str) -> str:
-        """获取知识条目的元数据（JSON 格式）"""
-        import json
 
-        store = SQLiteStore(config)
-        entry = store.get_entry(knowledge_id)
-
+@mcp.resource("pkv://entries/{knowledge_id}/metadata")
+async def get_entry_metadata(knowledge_id: str) -> str:
+    """获取知识条目的元数据（JSON 格式）"""
+    def _fetch():
+        store = SQLiteStore(config.db_path)
+        entry = store.query_by_id(int(knowledge_id))
         if not entry:
             return json.dumps({"error": f"未找到条目: {knowledge_id}"})
-
         return json.dumps(entry, ensure_ascii=False, indent=2, default=str)
+    return await anyio.to_thread.run_sync(_fetch)
 
-    @mcp.resource("pkv://tags")
-    async def get_tags() -> str:
-        """获取所有标签列表"""
-        import json
 
-        store = SQLiteStore(config)
+@mcp.resource("pkv://tags")
+async def get_tags_resource() -> str:
+    """获取所有标签列表（Resource 版，返回 JSON 字符串）"""
+    def _fetch():
+        store = SQLiteStore(config.db_path)
         tags = store.get_all_tags_with_count()
+        return json.dumps({"tags": tags}, ensure_ascii=False, indent=2)
+    return await anyio.to_thread.run_sync(_fetch)
 
-        return json.dumps(
-            {"tags": tags},
-            ensure_ascii=False,
-            indent=2,
-        )
 
-    @mcp.resource("pkv://stats")
-    async def get_stats() -> str:
-        """获取知识库统计信息"""
-        import json
-
-        store = SQLiteStore(config)
-        stats = store.get_statistics()
-
-        return json.dumps(stats, ensure_ascii=False, indent=2, default=str)
+@mcp.resource("pkv://stats")
+async def get_stats_resource() -> str:
+    """获取知识库统计信息（Resource 版，返回 JSON 字符串）"""
+    def _fetch():
+        store = SQLiteStore(config.db_path)
+        return json.dumps(store.get_statistics(), ensure_ascii=False, indent=2, default=str)
+    return await anyio.to_thread.run_sync(_fetch)
 ```
 
 ### 4.4 Prompt 模板
 
 ```python
 # src/mcp/prompts.py
-from mcp.server.mcpserver import MCPServer
+from src.mcp.server import mcp  # 共享 FastMCP 实例
 
 
-def register_prompts(mcp: MCPServer):
-    """注册所有 MCP Prompt 模板"""
+@mcp.prompt()
+def search_and_summarize(query: str, context: str = "") -> str:
+    """搜索知识库并总结结果。
 
-    @mcp.prompt()
-    def search_and_summarize(query: str, context: str = "") -> str:
-        """搜索知识库并总结结果。
+    先使用 search_knowledge 工具搜索，然后总结找到的内容。
+    """
+    base = f"请在我的知识库中搜索关于「{query}」的内容。"
+    if context:
+        base += f"\n\n背景信息：{context}"
+    base += (
+        "\n\n请执行以下步骤：\n"
+        "1. 使用 search_knowledge 工具搜索相关内容\n"
+        "2. 对搜索结果进行总结归纳\n"
+        "3. 如果找到多个相关条目，说明它们之间的关系\n"
+        "4. 指出最相关的 1-3 条内容的标题和关键信息"
+    )
+    return base
 
-        先使用 search_knowledge 工具搜索，然后总结找到的内容。
-        """
-        base = f"请在我的知识库中搜索关于「{query}」的内容。"
-        if context:
-            base += f"\n\n背景信息：{context}"
-        base += (
-            "\n\n请执行以下步骤：\n"
-            "1. 使用 search_knowledge 工具搜索相关内容\n"
-            "2. 对搜索结果进行总结归纳\n"
-            "3. 如果找到多个相关条目，说明它们之间的关系\n"
-            "4. 指出最相关的 1-3 条内容的标题和关键信息"
-        )
-        return base
+@mcp.prompt()
+def knowledge_qa(question: str) -> str:
+    """基于知识库的智能问答。
 
-    @mcp.prompt()
-    def knowledge_qa(question: str) -> str:
-        """基于知识库的智能问答。
+    利用知识库中的内容回答用户问题。
+    """
+    return (
+        f"请基于我的个人知识库回答以下问题：\n\n"
+        f"**问题**：{question}\n\n"
+        f"请执行以下步骤：\n"
+        f"1. 使用 search_knowledge 搜索可能相关的知识条目\n"
+        f"2. 如果找到相关内容，使用 get_entry 获取详细信息\n"
+        f"3. 基于知识库中的内容给出回答\n"
+        f"4. 如果知识库中没有相关信息，明确告知\n"
+        f"5. 引用具体的知识条目标题和来源"
+    )
 
-        利用知识库中的内容回答用户问题。
-        """
-        return (
-            f"请基于我的个人知识库回答以下问题：\n\n"
-            f"**问题**：{question}\n\n"
-            f"请执行以下步骤：\n"
-            f"1. 使用 search_knowledge 搜索可能相关的知识条目\n"
-            f"2. 如果找到相关内容，使用 get_entry 获取详细信息\n"
-            f"3. 基于知识库中的内容给出回答\n"
-            f"4. 如果知识库中没有相关信息，明确告知\n"
-            f"5. 引用具体的知识条目标题和来源"
-        )
 
-    @mcp.prompt()
-    def idea_sharpen(content: str, entry_id: str = "") -> str:
-        """对知识条目进行 idea Sharpen 对话。
+@mcp.prompt()
+def idea_sharpen(content: str, entry_id: str = "") -> str:
+    """对知识条目进行 idea Sharpen 对话。
 
-        帮助用户深入思考某个知识条目的核心价值。
-        """
-        base = (
-            f"让我们对以下内容进行 idea Sharpen（思想磨砺）：\n\n"
-            f"**内容**：\n{content[:2000]}\n\n"
-        )
-        if entry_id:
-            base += f"（知识条目 ID：{entry_id}）\n\n"
-        base += (
-            "请帮我深入思考以下问题：\n"
-            "1. 这篇内容的**核心价值**是什么？\n"
-            "2. 有哪些**关键观点**值得记住？\n"
-            "3. 与我知识库中的其他内容有什么**关联**？\n"
-            "4. 这些知识可以如何**应用**到实际场景中？\n\n"
-            "如果有关联条目，请使用 search_knowledge 搜索并建立关联。"
-        )
-        return base
+    帮助用户深入思考某个知识条目的核心价值。
+    """
+    base = (
+        f"让我们对以下内容进行 idea Sharpen（思想磨砺）：\n\n"
+        f"**内容**：\n{content[:2000]}\n\n"
+    )
+    if entry_id:
+        base += f"（知识条目 ID：{entry_id}）\n\n"
+    base += (
+        "请帮我深入思考以下问题：\n"
+        "1. 这篇内容的**核心价值**是什么？\n"
+        "2. 有哪些**关键观点**值得记住？\n"
+        "3. 与我知识库中的其他内容有什么**关联**？\n"
+        "4. 这些知识可以如何**应用**到实际场景中？\n\n"
+        "如果有关联条目，请使用 search_knowledge 搜索并建立关联。"
+    )
+    return base
 ```
 
 ---
@@ -633,12 +655,13 @@ python -m src.mcp.server --transport streamable-http --port 3000
 
 | MCP 能力 | 调用的现有模块 | 调用方式 |
 |---------|---------------|---------|
-| `search_knowledge` | `src/retrieval/` | `create_retriever()` + `QueryRouter` |
-| `get_entry` | `src/storage/sqlite_store.py` + `markdown_store.py` | `SQLiteStore.get_entry()` + `MarkdownStore.load()` |
-| `list_tags` | `src/storage/sqlite_store.py` | `SQLiteStore.get_all_tags_with_count()` |
-| `archive_url` | `src/workflow/engine.py` | `WorkflowEngine.execute_async("archive-url")` |
-| `archive_text` | `src/workflow/engine.py` | `WorkflowEngine.execute_async("archive-text")` |
-| `get_stats` | `src/storage/sqlite_store.py` | `SQLiteStore.get_statistics()` |
+| `search_knowledge` | `src/retrieval/` | `BM25Retriever` / `VectorRetriever` / `HybridRetriever` + `QueryRouter.route()` 策略路由（`create_retriever()` 不存在，直接按策略实例化对应检索器） |
+| `get_entry` | `src/storage/sqlite_store.py` + `markdown_store.py` | `SQLiteStore.query_by_id(int(knowledge_id))` + `MarkdownStore.load()` |
+| `list_tags` | `src/storage/sqlite_store.py` | `SQLiteStore.get_all_tags_with_count()` （需新增） |
+| `list_entries` | `src/storage/sqlite_store.py` | `SQLiteStore.list_entries()` + `SQLiteStore.count_entries()` （均需新增） |
+| `archive_url` | `src/workflow/engine.py` | `await WorkflowEngine().execute_async("archive-url", {...})` （构造器无参，无需 threadpool） |
+| `archive_text` | `src/workflow/engine.py` | `await WorkflowEngine().execute_async("archive-text", {...})` （构造器无参，无需 threadpool） |
+| `get_stats` | `src/storage/sqlite_store.py` | `SQLiteStore.get_statistics()` （需新增） |
 
 ### 6.2 需要新增的 SQLiteStore 方法
 
@@ -718,42 +741,56 @@ python -m tests.manual_test_mcp
 
 ```txt
 # requirements.txt 新增
-mcp>=1.12.0           # MCP Python SDK
+mcp[cli]>=1.6.0       # MCP Python SDK（含 FastMCP 和 CLI 调试工具），2026-02 最新 v1.26.0
+                      # 正确导入：from mcp.server.fastmcp import FastMCP
+                      # Tool 注解：from mcp.types import ToolAnnotations（注意参数驼峰：readOnlyHint）
+anyio>=4.0.0          # 异步 I/O 工具库（FastMCP 自身已依赖，通常无需单独安装）
+                      # 用于 anyio.to_thread.run_sync() 将阻塞操作放入 threadpool
 ```
+
+### 同步/异步策略说明（⚠️ 关键）
+
+本项目 MCP Tool/Resource handler **统一使用 `async def` + `anyio.to_thread.run_sync()`**：
+
+| 方式 | 行为 | 是否推荐 |
+|------|------|---------|
+| 同步 `def` handler（直接调用阻塞操作） | ⚠️ **直接阻塞 asyncio 事件循环**，冻结整个服务器 | ❌ 禁止 |
+| `async def` + `await anyio.to_thread.run_sync(fn)` | ✅ 在 threadpool 执行，不阻塞事件循环 | ✅ 推荐 |
+| `async def` + 原生 async I/O（aiosqlite 等） | ✅ 最高效，适合未来异步化改造 | ✅ 长期目标 |
+
+**重要原因**：FastMCP 与 FastAPI 不同——FastAPI 会自动用 `run_in_threadpool()` 包装同步函数，
+而 FastMCP 的同步 handler **直接在事件循环中调用**，绝对不能有阻塞操作。
 
 ### 无需新增的依赖
 
 以下功能由现有依赖覆盖：
-- asyncio (Python 标准库) — 异步支持
+- asyncio (Python 标准库) — MCP Server 内部事件循环（由 SDK 管理，无需手动处理）
 - json (Python 标准库) — 序列化
 
 ---
 
 ## 10. 实施路线
 
-### Phase 1: 核心能力 (v0.7.0-alpha)
+### M8: 只读服务 (v0.7.0-alpha)
 
 - [ ] 搭建 MCP Server 框架 (`src/mcp/server.py`)
 - [ ] 实现 P0 Tools: `search_knowledge`, `get_entry`, `list_tags`
+- [ ] 实现 P1 Tools（只读）: `list_entries`, `get_stats`
 - [ ] 实现 P0 Resources: `pkv://entries/{id}`, `pkv://entries/{id}/metadata`
+- [ ] 实现 P1 Resources: `pkv://tags`, `pkv://stats`
 - [ ] stdio 传输支持
 - [ ] 单元测试
 
-### Phase 2: 写入能力 (v0.7.0-beta)
+### M9: 写入 + Prompts (v0.7.0)
 
-- [ ] 实现 P1 Tools: `archive_url`, `archive_text`, `list_entries`, `get_stats`
-- [ ] 实现 P1 Resources: `pkv://tags`, `pkv://stats`
+- [ ] 实现 P1 Tools（写入）: `archive_url`, `archive_text`
 - [ ] 实现 Prompts: `search_and_summarize`, `knowledge_qa`
-- [ ] streamable-http 传输支持
-- [ ] 集成测试
-
-### Phase 3: 高级能力 (v0.7.0)
-
 - [ ] 实现 P2 Tools: `get_related`
 - [ ] 实现 P2 Prompts: `idea_sharpen`
-- [ ] Claude Desktop 配置文档
-- [ ] 安全加固（Token 认证、输入验证）
-- [ ] 性能测试和优化
+- [ ] streamable-http 传输支持
+- [ ] Claude Desktop / Cursor 配置文档
+- [ ] 安全加固（输入验证、长度限制）
+- [ ] 集成测试
 
 ---
 
