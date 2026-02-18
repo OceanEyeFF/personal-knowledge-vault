@@ -7,7 +7,7 @@ SQLite 存储层
 import sqlite3
 import json
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from contextlib import contextmanager
 
 from src.utils.logger import get_logger
@@ -19,6 +19,9 @@ logger = get_logger(__name__)
 
 class SQLiteStore:
     """SQLite 数据库存储管理器"""
+
+    ALLOWED_SORT_FIELDS = {"archived_at", "title", "knowledge_id", "word_count", "source_type"}
+    ALLOWED_SORT_ORDERS = {"asc", "desc"}
 
     def __init__(self, db_path: Path):
         """
@@ -368,3 +371,184 @@ class SQLiteStore:
                 (table_name,)
             )
             return cursor.fetchone() is not None
+
+    def query_by_url(self, source_url: str) -> Optional[Dict[str, Any]]:
+        """
+        根据来源 URL 查询知识条目
+
+        Args:
+            source_url: 来源 URL
+
+        Returns:
+            字典形式的条目数据
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT * FROM knowledge_items WHERE source_url = ?",
+                    (source_url,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    return dict(row)
+                return None
+        except Exception as e:
+            logger.error(f"根据来源 URL 查询失败: {e}")
+            raise
+
+    def list_entries(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        sort_by: str = "archived_at",
+        sort_order: str = "desc",
+        source_type: Optional[str] = None,
+        tag: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        获取知识条目列表
+
+        Args:
+            limit: 返回数量
+            offset: 偏移量
+            sort_by: 排序字段
+            sort_order: 排序顺序
+            source_type: 来源类型过滤
+            tag: 标签过滤
+
+        Returns:
+            知识条目列表
+        """
+        if sort_by not in self.ALLOWED_SORT_FIELDS:
+            raise ValueError(f"无效的排序字段: {sort_by}")
+        sort_order_lower = sort_order.lower()
+        if sort_order_lower not in self.ALLOWED_SORT_ORDERS:
+            raise ValueError(f"无效的排序顺序: {sort_order}")
+
+        try:
+            query = "SELECT ki.* FROM knowledge_items ki"
+            params: List[Any] = []
+            conditions: List[str] = []
+
+            if tag:
+                query += " JOIN knowledge_tags kt ON ki.knowledge_id = kt.knowledge_id"
+                query += " JOIN tags t ON kt.tag_id = t.tag_id"
+                conditions.append("t.name = ?")
+                params.append(tag)
+
+            if source_type:
+                conditions.append("ki.source_type = ?")
+                params.append(source_type)
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+
+            query += f" ORDER BY ki.{sort_by} {sort_order_lower} LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            with self.get_connection() as conn:
+                cursor = conn.execute(query, tuple(params))
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"获取知识条目列表失败: {e}")
+            raise
+
+    def count_entries(self, source_type: Optional[str] = None, tag: Optional[str] = None) -> int:
+        """
+        获取知识条目数量
+
+        Args:
+            source_type: 来源类型过滤
+            tag: 标签过滤
+
+        Returns:
+            条目数量
+        """
+        try:
+            params: List[Any] = []
+            conditions: List[str] = []
+
+            if tag:
+                query = "SELECT COUNT(DISTINCT ki.knowledge_id) AS cnt FROM knowledge_items ki"
+                query += " JOIN knowledge_tags kt ON ki.knowledge_id = kt.knowledge_id"
+                query += " JOIN tags t ON kt.tag_id = t.tag_id"
+                conditions.append("t.name = ?")
+                params.append(tag)
+            else:
+                query = "SELECT COUNT(*) AS cnt FROM knowledge_items ki"
+
+            if source_type:
+                conditions.append("ki.source_type = ?")
+                params.append(source_type)
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+
+            with self.get_connection() as conn:
+                cursor = conn.execute(query, tuple(params))
+                row = cursor.fetchone()
+                return int(row["cnt"]) if row else 0
+        except Exception as e:
+            logger.error(f"获取知识条目数量失败: {e}")
+            raise
+
+    def count_entries_by_source_type(self) -> List[Tuple[str, int]]:
+        """
+        按来源类型统计条目数量
+
+        Returns:
+            (来源类型, 数量) 列表
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT source_type, COUNT(*) as cnt FROM knowledge_items GROUP BY source_type"
+                )
+                rows = cursor.fetchall()
+                return [(row["source_type"], row["cnt"]) for row in rows]
+        except Exception as e:
+            logger.error(f"按来源类型统计失败: {e}")
+            raise
+
+    def get_all_tags_with_count(self, limit: int = 0) -> List[Dict[str, Any]]:
+        """
+        获取全部标签及其计数
+
+        Args:
+            limit: 限制返回数量，0 表示不限制
+
+        Returns:
+            标签列表
+        """
+        try:
+            query = "SELECT name, count FROM tags ORDER BY count DESC"
+            params: List[Any] = []
+            if limit > 0:
+                query += " LIMIT ?"
+                params.append(limit)
+
+            with self.get_connection() as conn:
+                cursor = conn.execute(query, tuple(params))
+                rows = cursor.fetchall()
+                return [{"name": row["name"], "count": row["count"]} for row in rows]
+        except Exception as e:
+            logger.error(f"获取标签计数失败: {e}")
+            raise
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """
+        获取统计信息
+
+        Returns:
+            统计数据字典
+        """
+        try:
+            return {
+                "total_entries": self.count_entries(),
+                "by_source_type": self.count_entries_by_source_type(),
+                "top_tags": self.get_all_tags_with_count(limit=20)
+            }
+        except Exception as e:
+            logger.error(f"获取统计信息失败: {e}")
+            raise

@@ -74,27 +74,11 @@ def _dir_size(path: Path) -> int:
 
 
 def _get_entry_by_id(store: SQLiteStore, knowledge_id: int) -> Optional[Dict[str, Any]]:
-    if hasattr(store, "get_entry_by_id"):
-        return store.get_entry_by_id(knowledge_id)
-    if hasattr(store, "query_by_id"):
-        return store.query_by_id(knowledge_id)
-    with store.get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM knowledge_items WHERE knowledge_id = ?",
-            (knowledge_id,),
-        ).fetchone()
-        return dict(row) if row else None
+    return store.query_by_id(knowledge_id)
 
 
 def _get_entry_by_url(store: SQLiteStore, url: str) -> Optional[Dict[str, Any]]:
-    if hasattr(store, "get_entry_by_url"):
-        return store.get_entry_by_url(url)
-    with store.get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM knowledge_items WHERE source_url = ?",
-            (url,),
-        ).fetchone()
-        return dict(row) if row else None
+    return store.query_by_url(url)
 
 
 def _query_entries(
@@ -104,82 +88,25 @@ def _query_entries(
     desc: bool,
     limit: Optional[int],
 ) -> List[Dict[str, Any]]:
-    if hasattr(store, "query_entries"):
-        filters = {"tag": tag} if tag else {}
-        return store.query_entries(filters=filters, order_by=order_by, desc=desc, limit=limit)
-
-    sql = "SELECT knowledge_id, title, source_type, source_url, tags, archived_at FROM knowledge_items"
-    params: List[Any] = []
-
-    if tag:
-        tag = tag.strip()
-        if store.table_exists("tags") and store.table_exists("knowledge_tags"):
-            sql = (
-                "SELECT ki.knowledge_id, ki.title, ki.source_type, ki.source_url, ki.tags, ki.archived_at "
-                "FROM knowledge_items ki "
-                "JOIN knowledge_tags kt ON ki.knowledge_id = kt.knowledge_id "
-                "JOIN tags t ON kt.tag_id = t.tag_id "
-                "WHERE t.name = ?"
-            )
-            params.append(tag)
-        else:
-            sql += " WHERE tags LIKE ?"
-            params.append(f"%{tag}%")
-
-    sql += f" ORDER BY {order_by} {'DESC' if desc else 'ASC'}"
-    if limit and limit > 0:
-        sql += " LIMIT ?"
-        params.append(limit)
-
-    rows: List[Dict[str, Any]] = []
-    with store.get_connection() as conn:
-        cursor = conn.execute(sql, tuple(params))
-        for row in cursor.fetchall():
-            rows.append(dict(row))
-    return rows
+    return store.list_entries(
+        limit=limit,
+        sort_by=order_by,
+        sort_order="desc" if desc else "asc",
+        tag=tag,
+    )
 
 
 def _count_entries(store: SQLiteStore) -> int:
-    if hasattr(store, "count_entries"):
-        return store.count_entries()
-    with store.get_connection() as conn:
-        return int(conn.execute("SELECT COUNT(*) FROM knowledge_items").fetchone()[0])
+    return store.count_entries()
 
 
 def _count_entries_by_source_type(store: SQLiteStore) -> List[Tuple[str, int]]:
-    if hasattr(store, "count_entries_by_source_type"):
-        return store.count_entries_by_source_type()
-    with store.get_connection() as conn:
-        rows = conn.execute(
-            "SELECT source_type, COUNT(*) FROM knowledge_items GROUP BY source_type"
-        ).fetchall()
-        return [(row[0], int(row[1])) for row in rows]
+    return store.count_entries_by_source_type()
 
 
 def _get_top_tags(store: SQLiteStore, limit: int = 10) -> List[Tuple[str, int]]:
-    if hasattr(store, "get_top_tags"):
-        return store.get_top_tags(limit=limit)
-    with store.get_connection() as conn:
-        if store.table_exists("tags"):
-            rows = conn.execute(
-                "SELECT name, count FROM tags ORDER BY count DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-            return [(row[0], int(row[1])) for row in rows]
-
-        tag_counter: Dict[str, int] = {}
-        rows = conn.execute(
-            "SELECT tags FROM knowledge_items WHERE tags IS NOT NULL AND tags != ''"
-        ).fetchall()
-        for row in rows:
-            tags = row[0]
-            if not tags:
-                continue
-            for tag in str(tags).split(","):
-                tag = tag.strip()
-                if tag:
-                    tag_counter[tag] = tag_counter.get(tag, 0) + 1
-        return sorted(tag_counter.items(), key=lambda x: x[1], reverse=True)[:limit]
+    rows = store.get_all_tags_with_count(limit=limit)
+    return [(row["name"], row["count"]) for row in rows]
 
 
 def _extract_result_id(result: Any) -> Optional[int]:

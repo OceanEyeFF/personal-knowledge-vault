@@ -2,8 +2,9 @@
 
 > Personal Knowledge Vault - Model Context Protocol 服务端设计
 >
-> **文档版本**: v1.0
+> **文档版本**: v1.1
 > **创建日期**: 2026-02-16
+> **最后更新**: 2026-02-18 (v1.1: 修复接口不匹配、补充单例/安全/运维/扩展设计)
 > **作者**: 幽浮喵 (猫娘工程师)
 > **目标版本**: v0.7.0
 
@@ -218,40 +219,103 @@ from src.utils.config import get_config
 
 config = get_config()
 
-# 全局共享 router（内部含 embedder，避免重复初始化）
-# 实际实现时可用 @lru_cache 或模块级单例
-def _get_router() -> QueryRouter:
-    embedder = OpenAIClient(config)
-    return QueryRouter(
-        db_path=config.db_path,
-        vector_index_dir=config.vector_index_dir,
-        embedder=embedder,
-    )
+# ============================================================
+# 服务对象单例管理（⚠️ 关键架构决策）
+#
+# 以下对象在模块加载时延迟初始化，整个 Server 生命周期内复用：
+# - SQLiteStore：数据库连接池复用
+# - QueryRouter：内部含 BM25Retriever + HybridRetriever + VectorStore（hnswlib 索引加载耗时）
+# - MarkdownStore：文件系统操作，无状态但避免重复创建
+#
+# 为什么不能每次请求重建？
+# - VectorRetriever 需要加载 hnswlib 索引文件到内存，首次加载约 1-3s
+# - QueryRouter 内部创建 BM25Retriever + HybridRetriever，重复创建浪费资源
+# - OpenAIClient（Embedder）内部维护 HTTP 连接池，复用可减少连接开销
+# ============================================================
+
+_sqlite_store: Optional[SQLiteStore] = None
+_markdown_store: Optional[MarkdownStore] = None
+_query_router: Optional[QueryRouter] = None
+
+
+def _get_sqlite_store() -> SQLiteStore:
+    """获取 SQLiteStore 单例"""
+    global _sqlite_store
+    if _sqlite_store is None:
+        _sqlite_store = SQLiteStore(config.db_path)
+    return _sqlite_store
+
+
+def _get_markdown_store() -> MarkdownStore:
+    """获取 MarkdownStore 单例"""
+    global _markdown_store
+    if _markdown_store is None:
+        _markdown_store = MarkdownStore(config.vault_dir)
+    return _markdown_store
+
+
+def _get_query_router() -> QueryRouter:
+    """获取 QueryRouter 单例（内含 BM25 + HybridRetriever + VectorStore）"""
+    global _query_router
+    if _query_router is None:
+        embedder = OpenAIClient(config)
+        _query_router = QueryRouter(
+            db_path=config.db_path,
+            vector_index_dir=config.vector_index_dir,
+            embedder=embedder,
+        )
+    return _query_router
+
+
+def _parse_tags_string(tags_str: str) -> List[str]:
+    """将 SQLite 中逗号分隔的 tags 字符串转换为列表。
+
+    数据库中 tags 以 ','.join(tags) 方式存储（如 "AI,知识管理"），
+    SearchResult.metadata["tags"] 返回的是字符串，需转换为列表。
+    """
+    if not tags_str:
+        return []
+    if isinstance(tags_str, list):
+        return tags_str
+    return [t.strip() for t in tags_str.split(",") if t.strip()]
 
 
 def _do_search_knowledge(
     query: str, strategy: str, top_k: int,
     source_type: Optional[str], tag: Optional[str],
 ) -> dict:
-    """同步搜索实现，由 anyio.to_thread.run_sync 在 threadpool 中执行"""
-    router = _get_router()
+    """同步搜索实现，由 anyio.to_thread.run_sync 在 threadpool 中执行。
+
+    接口对齐说明：
+    - QueryRouter.search() 不支持外部传入 strategy，内部根据分词数自动路由
+    - 若用户指定 strategy != "auto"，则绕过 QueryRouter 直接实例化对应 Retriever
+    - SearchResult 字段：knowledge_id, title, score, highlight, metadata
+      其中 source_type/tags/file_path 等在 metadata dict 中
+    """
+    router = _get_query_router()
+
     if strategy == "auto":
-        strategy = router.route(query)
-    # 根据路由后策略选择检索器
-    if strategy == "bm25":
+        # 直接使用 QueryRouter.search()，内部自动路由 BM25/Hybrid
+        results = router.search(query, limit=top_k)
+    elif strategy == "bm25":
         retriever = BM25Retriever(config.db_path)
+        results = retriever.search(query, limit=top_k)
     elif strategy == "vector":
         embedder = OpenAIClient(config)
         retriever = VectorRetriever(config.db_path, config.vector_index_dir, embedder)
+        results = retriever.search(query, limit=top_k)
     else:  # hybrid
         embedder = OpenAIClient(config)
         retriever = HybridRetriever(config.db_path, config.vector_index_dir, embedder)
-    results = retriever.search(query, top_k=top_k)
-    # 后过滤：检索层不支持 source_type/tag 时在结果层过滤
+        results = retriever.search(query, limit=top_k)
+
+    # 后过滤：检索层不支持 source_type/tag 过滤，在结果层过滤
+    # 注意：tags 在 metadata 中是逗号分隔字符串，需 _parse_tags_string() 转换
     if source_type:
-        results = [r for r in results if r.source_type == source_type]
+        results = [r for r in results if r.metadata.get("source_type") == source_type]
     if tag:
-        results = [r for r in results if tag in (r.tags or [])]
+        results = [r for r in results if tag in _parse_tags_string(r.metadata.get("tags", ""))]
+
     return {
         "total": len(results),
         "strategy_used": strategy,
@@ -259,11 +323,11 @@ def _do_search_knowledge(
             {
                 "knowledge_id": r.knowledge_id,
                 "title": r.title,
-                "abstract": r.abstract,
+                "abstract": r.highlight,  # SearchResult.highlight 是摘要/snippet
                 "score": round(r.score, 4),
-                "tags": r.tags,
-                "source_type": r.source_type,
-                "created_at": r.created_at,
+                "tags": _parse_tags_string(r.metadata.get("tags", "")),
+                "source_type": r.metadata.get("source_type", ""),
+                "archived_at": r.metadata.get("archived_at", ""),
             }
             for r in results
         ],
@@ -307,24 +371,27 @@ async def get_entry(knowledge_id: str) -> dict:
         包含标题、摘要、标签、全文内容等完整信息的字典
     """
     def _fetch():
-        store = SQLiteStore(config.db_path)
+        store = _get_sqlite_store()
         # knowledge_id 在数据库中是 INTEGER，MCP 层接收 str，需转换
         entry = store.query_by_id(int(knowledge_id))
         if not entry:
             return {"error": f"未找到条目: {knowledge_id}"}
-        md_store = MarkdownStore(config.vault_dir)
-        content = md_store.load(entry.get("file_path", ""))
+        md_store = _get_markdown_store()
+        loaded_entry = md_store.load(entry.get("file_path", ""))
+        content = loaded_entry.content if loaded_entry else "(content unavailable)"
+        # 注意：DB 中无 abstract 列，用 summary_one_sentence 代替
+        # 注意：DB 中 tags/keywords 是逗号分隔字符串，需转换为列表
         return {
             "knowledge_id": entry["knowledge_id"],
             "title": entry["title"],
-            "abstract": entry.get("abstract", ""),
+            "abstract": entry.get("summary_one_sentence", ""),
             "summary_one_sentence": entry.get("summary_one_sentence", ""),
             "summary_100_words": entry.get("summary_100_words", ""),
-            "tags": entry.get("tags", []),
-            "keywords": entry.get("keywords", []),
+            "tags": _parse_tags_string(entry.get("tags", "")),
+            "keywords": _parse_tags_string(entry.get("keywords", "")),
             "source_type": entry.get("source_type", ""),
             "source_url": entry.get("source_url", ""),
-            "created_at": entry.get("created_at", ""),
+            "archived_at": entry.get("archived_at", ""),
             "word_count": entry.get("word_count", 0),
             "content": content if content else "(内容不可用)",
         }
@@ -339,7 +406,7 @@ async def list_tags() -> dict:
         标签列表，每项包含标签名和关联条目数
     """
     def _fetch():
-        store = SQLiteStore(config.db_path)
+        store = _get_sqlite_store()
         tags = store.get_all_tags_with_count()
         return {
             "total_tags": len(tags),
@@ -352,7 +419,7 @@ async def list_tags() -> dict:
 async def list_entries(
     page: int = 1,
     per_page: int = 20,
-    sort_by: str = "created_at",
+    sort_by: str = "archived_at",
     sort_order: str = "desc",
     source_type: Optional[str] = None,
     tag: Optional[str] = None,
@@ -362,7 +429,7 @@ async def list_entries(
     Args:
         page: 页码 (从 1 开始)
         per_page: 每页数量 (默认 20，最大 100)
-        sort_by: 排序字段 - "created_at", "title", "word_count"
+        sort_by: 排序字段 - "archived_at", "title", "word_count"
         sort_order: 排序方向 - "asc" 或 "desc"
         source_type: 按来源类型过滤
         tag: 按标签过滤
@@ -371,7 +438,7 @@ async def list_entries(
         分页的条目列表
     """
     def _fetch():
-        store = SQLiteStore(config.db_path)
+        store = _get_sqlite_store()
         _per_page = min(per_page, 100)
         offset = (page - 1) * _per_page
         entries = store.list_entries(
@@ -387,11 +454,11 @@ async def list_entries(
                 {
                     "knowledge_id": e["knowledge_id"],
                     "title": e["title"],
-                    "abstract": e.get("abstract", ""),
-                    "tags": e.get("tags", []),
+                    "abstract": e.get("summary_one_sentence", ""),  # DB 无 abstract 列
+                    "tags": _parse_tags_string(e.get("tags", "")),  # DB 中是逗号字符串
                     "source_type": e.get("source_type", ""),
                     "word_count": e.get("word_count", 0),
-                    "created_at": e.get("created_at", ""),
+                    "archived_at": e.get("archived_at", ""),
                 }
                 for e in entries
             ],
@@ -470,7 +537,7 @@ async def get_stats() -> dict:
         包含条目总数、标签分布、来源类型分布等统计数据
     """
     def _fetch():
-        store = SQLiteStore(config.db_path)
+        store = _get_sqlite_store()
         return store.get_statistics()
     return await anyio.to_thread.run_sync(_fetch)
 ```
@@ -481,29 +548,30 @@ async def get_stats() -> dict:
 # src/mcp/resources.py
 # Resource handler 与 Tool 策略一致：async def + anyio.to_thread.run_sync() 包装阻塞 I/O
 # 原因：FastMCP 的同步 def handler 会直接阻塞 asyncio 事件循环（不会自动 threadpool 化）
+#
+# 注意：Resource handler 通过 tools.py 中的单例访问函数获取服务对象，
+# 不重复创建 SQLiteStore / MarkdownStore 实例。
 
 import json
 import anyio
 
 from src.mcp.server import mcp  # 共享 FastMCP 实例
-from src.storage.sqlite_store import SQLiteStore
-from src.storage.markdown_store import MarkdownStore
-from src.utils.config import get_config
-
-config = get_config()
+from src.mcp.tools import _get_sqlite_store, _get_markdown_store, _parse_tags_string
 
 
 @mcp.resource("pkv://entries/{knowledge_id}")
 async def get_entry_content(knowledge_id: str) -> str:
     """获取知识条目的 Markdown 全文"""
     def _fetch():
-        store = SQLiteStore(config.db_path)
+        store = _get_sqlite_store()
         entry = store.query_by_id(int(knowledge_id))
         if not entry:
             return f"# 未找到条目\n\nknowledge_id: {knowledge_id}"
-        md_store = MarkdownStore(config.vault_dir)
-        content = md_store.load(entry.get("file_path", ""))
-        return content or f"# {entry.get('title', '无标题')}\n\n(内容不可用)"
+        md_store = _get_markdown_store()
+        loaded_entry = md_store.load(entry.get("file_path", ""))
+        if loaded_entry:
+            return loaded_entry.content or f"# {entry.get('title', '无标题')}\n\n(内容不可用)"
+        return f"# {entry.get('title', '无标题')}\n\n(内容不可用)"
     return await anyio.to_thread.run_sync(_fetch)
 
 
@@ -511,11 +579,15 @@ async def get_entry_content(knowledge_id: str) -> str:
 async def get_entry_metadata(knowledge_id: str) -> str:
     """获取知识条目的元数据（JSON 格式）"""
     def _fetch():
-        store = SQLiteStore(config.db_path)
+        store = _get_sqlite_store()
         entry = store.query_by_id(int(knowledge_id))
         if not entry:
             return json.dumps({"error": f"未找到条目: {knowledge_id}"})
-        return json.dumps(entry, ensure_ascii=False, indent=2, default=str)
+        # 转换 tags/keywords 为列表后再序列化
+        entry_dict = dict(entry)
+        entry_dict["tags"] = _parse_tags_string(entry_dict.get("tags", ""))
+        entry_dict["keywords"] = _parse_tags_string(entry_dict.get("keywords", ""))
+        return json.dumps(entry_dict, ensure_ascii=False, indent=2, default=str)
     return await anyio.to_thread.run_sync(_fetch)
 
 
@@ -523,7 +595,7 @@ async def get_entry_metadata(knowledge_id: str) -> str:
 async def get_tags_resource() -> str:
     """获取所有标签列表（Resource 版，返回 JSON 字符串）"""
     def _fetch():
-        store = SQLiteStore(config.db_path)
+        store = _get_sqlite_store()
         tags = store.get_all_tags_with_count()
         return json.dumps({"tags": tags}, ensure_ascii=False, indent=2)
     return await anyio.to_thread.run_sync(_fetch)
@@ -533,7 +605,7 @@ async def get_tags_resource() -> str:
 async def get_stats_resource() -> str:
     """获取知识库统计信息（Resource 版，返回 JSON 字符串）"""
     def _fetch():
-        store = SQLiteStore(config.db_path)
+        store = _get_sqlite_store()
         return json.dumps(store.get_statistics(), ensure_ascii=False, indent=2, default=str)
     return await anyio.to_thread.run_sync(_fetch)
 ```
@@ -655,7 +727,7 @@ python -m src.mcp.server --transport streamable-http --port 3000
 
 | MCP 能力 | 调用的现有模块 | 调用方式 |
 |---------|---------------|---------|
-| `search_knowledge` | `src/retrieval/` | `BM25Retriever` / `VectorRetriever` / `HybridRetriever` + `QueryRouter.route()` 策略路由（`create_retriever()` 不存在，直接按策略实例化对应检索器） |
+| `search_knowledge` | `src/retrieval/` | `strategy="auto"` 时调用 `QueryRouter.search(query, limit)`（内部自动路由）；指定具体策略时直接实例化 `BM25Retriever` / `VectorRetriever` / `HybridRetriever` |
 | `get_entry` | `src/storage/sqlite_store.py` + `markdown_store.py` | `SQLiteStore.query_by_id(int(knowledge_id))` + `MarkdownStore.load()` |
 | `list_tags` | `src/storage/sqlite_store.py` | `SQLiteStore.get_all_tags_with_count()` （需新增） |
 | `list_entries` | `src/storage/sqlite_store.py` | `SQLiteStore.list_entries()` + `SQLiteStore.count_entries()` （均需新增） |
@@ -687,11 +759,11 @@ class SQLiteStore:
 - **只读操作** (search, get, list): 无需额外确认
 - **写入操作** (archive_url, archive_text):
   - stdio 模式：AI Agent 自行决策（用户已授权）
-  - HTTP 模式：考虑添加 Bearer Token 认证
+  - HTTP 模式：**必须**启用 Bearer Token 认证（见 7.4）
 
 ### 7.2 输入验证
 
-- URL 归档：验证 URL 格式，拒绝内网地址
+- URL 归档：验证 URL 格式，拒绝内网地址（`127.*`, `10.*`, `192.168.*`, `172.16-31.*`）
 - 文本归档：限制最大长度（100,000 字符）
 - 搜索查询：复用现有 AI 安全防护（Prompt 注入检测）
 
@@ -700,6 +772,60 @@ class SQLiteStore:
 - `top_k` 最大值：50
 - `per_page` 最大值：100
 - 单次归档超时：120 秒
+
+### 7.4 HTTP 传输认证方案（M9 实现）
+
+> ⚠️ streamable-http 模式直接暴露在网络上，**无认证 = 任何人都能操作你的知识库**。
+
+**实现方案**：基于环境变量的 Bearer Token 认证
+
+```python
+# src/mcp/utils.py — HTTP 认证中间件
+
+import os
+from functools import wraps
+
+# 从环境变量读取 Token（不硬编码）
+MCP_AUTH_TOKEN = os.environ.get("PKV_MCP_AUTH_TOKEN", "")
+
+
+def validate_http_auth(request_headers: dict) -> bool:
+    """验证 HTTP 请求的 Bearer Token"""
+    if not MCP_AUTH_TOKEN:
+        # 未配置 Token 时拒绝所有 HTTP 请求（安全默认）
+        return False
+    auth_header = request_headers.get("Authorization", "")
+    return auth_header == f"Bearer {MCP_AUTH_TOKEN}"
+```
+
+**配置方式**：
+
+```bash
+# .env 中添加（HTTP 模式必需，stdio 模式不需要）
+PKV_MCP_AUTH_TOKEN=your-secret-token-here
+
+# 启动 HTTP 服务
+python -m src.mcp.server --transport streamable-http --port 3000
+```
+
+**客户端配置**：
+
+```json
+{
+  "mcpServers": {
+    "personal-knowledge-vault": {
+      "url": "http://localhost:3000/mcp",
+      "headers": {
+        "Authorization": "Bearer your-secret-token-here"
+      }
+    }
+  }
+}
+```
+
+**安全默认原则**：
+- 未设置 `PKV_MCP_AUTH_TOKEN` 时，HTTP 模式**拒绝所有请求**
+- stdio 模式**不做认证**（进程由用户本地启动，天然安全）
 
 ---
 
@@ -794,6 +920,131 @@ anyio>=4.0.0          # 异步 I/O 工具库（FastMCP 自身已依赖，通常�
 
 ---
 
+## 11. 运维与维护
+
+### 11.1 日志策略
+
+MCP Server 复用项目现有的 `src/utils/logger.py` 日志基础设施：
+
+| 传输模式 | stdout | stderr | 日志文件 |
+|---------|--------|--------|---------|
+| **stdio** | ❌ 被 MCP 协议占用 | ✅ 可输出日志（客户端可捕获） | ✅ `.data/logs/pkv-mcp.log` |
+| **HTTP** | ✅ 可输出日志 | ✅ 可输出日志 | ✅ `.data/logs/pkv-mcp.log` |
+
+**关键约束**：stdio 模式下 **stdout 是 MCP 协议通道**，绝对不能 `print()`，只能用 `logger` 写到 stderr 或文件。
+
+```python
+# server.py 中的日志初始化
+import logging
+logger = logging.getLogger("pkv.mcp")
+# stdio 模式：日志输出到 stderr + 文件
+# HTTP 模式：日志输出到 stdout + 文件
+```
+
+### 11.2 进程管理
+
+**stdio 模式**（由客户端管理生命周期）：
+- Claude Code / Cursor 按需启动/停止 MCP Server 进程
+- 进程崩溃后客户端自动重启（取决于客户端实现）
+- **无需额外的进程管理工具**
+
+**HTTP 模式**（需手动管理）：
+```bash
+# 前台运行（开发/调试）
+python -m src.mcp.server --transport streamable-http --port 3000
+
+# 后台运行（生产）
+nohup python -m src.mcp.server --transport streamable-http --port 3000 &
+
+# 健康检查（可选，M9+ 实现）
+# GET http://localhost:3000/health → {"status": "ok"}
+```
+
+### 11.3 常见错误排查
+
+| 现象 | 原因 | 解决方式 |
+|------|------|---------|
+| Claude Code 无法发现 Tool | MCP Server 未启动或配置错误 | 检查 `claude_desktop_config.json` 中的 `cwd` 和 `command` |
+| Tool 调用返回空结果 | 数据库为空或路径错误 | 检查 `.env` 中的 `DB_PATH` 是否指向有数据的 `.data/` |
+| 归档超时 | 网络不通或 AI API 超时 | 检查 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` 是否有效 |
+| HTTP 模式 401 | Token 未配置或不匹配 | 检查 `PKV_MCP_AUTH_TOKEN` 环境变量 |
+| "冻结"无响应 | 同步阻塞了事件循环 | 检查所有 handler 是否使用了 `async def` + `anyio.to_thread.run_sync()` |
+
+### 11.4 MCP SDK 升级路径
+
+当前锁定 `mcp[cli]>=1.6.0`，未来升级注意：
+- `mcp` SDK 遵循语义化版本，次版本升级（1.x → 1.y）向后兼容
+- 主版本升级（1.x → 2.x）可能有破坏性变更，需检查：
+  - `FastMCP` 的导入路径是否变化
+  - `@mcp.tool()` / `@mcp.resource()` 装饰器签名
+  - `ToolAnnotations` 参数命名（驼峰 vs 蛇形）
+- 独立 `fastmcp>=2.0.0` 库与 SDK 内置 FastMCP 的差异需关注
+
+---
+
+## 12. 扩展指南
+
+### 12.1 添加新 Tool 的步骤
+
+```python
+# 1. 在 src/mcp/tools.py 中添加新 Tool
+from mcp.types import ToolAnnotations  # 可选：添加注解
+
+@mcp.tool(annotations=ToolAnnotations(title="我的新工具", readOnlyHint=True))
+async def my_new_tool(param1: str, param2: int = 10) -> dict:
+    """工具描述（会显示在 MCP Inspector 和客户端中）。
+
+    Args:
+        param1: 参数说明
+        param2: 参数说明
+    """
+    def _impl():
+        store = _get_sqlite_store()
+        # ... 业务逻辑 ...
+        return {"result": "..."}
+    return await anyio.to_thread.run_sync(_impl)
+
+# 2. 添加对应测试
+# tests/unit/test_mcp_tools.py 中添加测试用例
+
+# 3. 在 MCP Inspector 中验证
+# npx @modelcontextprotocol/inspector python -m src.mcp.server
+```
+
+**命名约定**：
+- Tool 名称使用 `snake_case`
+- 只读 Tool 添加 `readOnlyHint=True` 注解
+- 同步业务逻辑放在 `_do_xxx` 或 `_impl` 内部函数中
+
+### 12.2 添加新 Resource 的步骤
+
+```python
+# 在 src/mcp/resources.py 中添加
+@mcp.resource("pkv://my-resource/{param}")
+async def get_my_resource(param: str) -> str:
+    """资源描述"""
+    def _fetch():
+        # Resource 返回 str（文本），不是 dict
+        return json.dumps({"data": "..."}, ensure_ascii=False)
+    return await anyio.to_thread.run_sync(_fetch)
+```
+
+**Resource vs Tool 选择原则**：
+- **Resource**：静态/准静态数据，客户端可缓存（如标签列表、统计信息）
+- **Tool**：需要参数、有副作用或结果动态变化的操作（如搜索、归档）
+
+### 12.3 未来扩展方向（不阻塞 M8/M9）
+
+| 扩展点 | 优先级 | 依赖 |
+|--------|--------|------|
+| `pkv://config` Resource（系统配置信息） | P2 | 无 |
+| SSE 传输方式 | P3 | FastMCP 已支持 |
+| 多用户 / 权限控制 | P3+ | 需架构评估 |
+| GUI 内嵌 MCP Client | Phase 2B | GUI 框架就绪 |
+| 知识图谱关联 Tool | Phase 3 | 知识图谱功能就绪 |
+
+---
+
 **文档结束**
 
-*本文档定义了 PKV MCP 服务的完整技术方案，实际开发中可根据进度调整优先级*
+*本文档定义了 PKV MCP 服务的完整技术方案，v1.1 修复了接口不匹配问题并补充了运维/扩展设计*

@@ -347,13 +347,13 @@ def test_show_command_by_id(
     """show should look up an entry by ID."""
     entry = {"knowledge_id": 3, "title": "Entry", "file_path": "x"}
     store = mocker.MagicMock()
-    store.get_entry_by_id.return_value = entry
+    store.query_by_id.return_value = entry
     mocker.patch.object(commands, "SQLiteStore", return_value=store)
 
     response = runner.invoke(commands.cli, ["show", "3"])
 
     assert response.exit_code == 0
-    store.get_entry_by_id.assert_called_once_with(3)
+    store.query_by_id.assert_called_once_with(3)
     assert any(
         isinstance(call.args[0], Panel)
         for call in console_spy.call_args_list
@@ -370,7 +370,7 @@ def test_show_command_by_url(
     """show should look up an entry by URL."""
     entry = {"knowledge_id": 4, "title": "Entry", "file_path": "x"}
     store = mocker.MagicMock()
-    store.get_entry_by_url.return_value = entry
+    store.query_by_url.return_value = entry
     mocker.patch.object(commands, "SQLiteStore", return_value=store)
 
     response = runner.invoke(
@@ -378,7 +378,7 @@ def test_show_command_by_url(
     )
 
     assert response.exit_code == 0
-    store.get_entry_by_url.assert_called_once_with("https://example.com/post")
+    store.query_by_url.assert_called_once_with("https://example.com/post")
 
 
 def test_show_command_raw(
@@ -395,7 +395,7 @@ def test_show_command_raw(
 
     entry = {"knowledge_id": 9, "file_path": str(md_path)}
     store = mocker.MagicMock()
-    store.get_entry_by_id.return_value = entry
+    store.query_by_id.return_value = entry
     mocker.patch.object(commands, "SQLiteStore", return_value=store)
 
     response = runner.invoke(commands.cli, ["show", "9", "--raw"])
@@ -426,14 +426,14 @@ def test_list_command(
     ]
 
     store = mocker.MagicMock()
-    store.query_entries.return_value = rows
+    store.list_entries.return_value = rows
     mocker.patch.object(commands, "SQLiteStore", return_value=store)
 
     response = runner.invoke(commands.cli, ["list"])
 
     assert response.exit_code == 0
-    store.query_entries.assert_called_once_with(
-        filters={}, order_by="archived_at", desc=False, limit=20
+    store.list_entries.assert_called_once_with(
+        limit=20, sort_by="archived_at", sort_order="asc", tag=None
     )
     assert any(
         isinstance(call.args[0], Table)
@@ -461,7 +461,7 @@ def test_list_command_with_tag_filter(
     ]
 
     store = mocker.MagicMock()
-    store.query_entries.return_value = rows
+    store.list_entries.return_value = rows
     mocker.patch.object(commands, "SQLiteStore", return_value=store)
 
     response = runner.invoke(
@@ -470,8 +470,8 @@ def test_list_command_with_tag_filter(
     )
 
     assert response.exit_code == 0
-    store.query_entries.assert_called_once_with(
-        filters={"tag": "ai"}, order_by="title", desc=True, limit=5
+    store.list_entries.assert_called_once_with(
+        limit=5, sort_by="title", sort_order="desc", tag="ai"
     )
 
 
@@ -538,7 +538,10 @@ def test_stats_command(
     store.table_exists.return_value = True
     store.count_entries.return_value = 3
     store.count_entries_by_source_type.return_value = [("webpage", 2), ("test", 1)]
-    store.get_top_tags.return_value = [("alpha", 2), ("beta", 1)]
+    store.get_all_tags_with_count.return_value = [
+        {"name": "alpha", "count": 2},
+        {"name": "beta", "count": 1},
+    ]
     mocker.patch.object(commands, "SQLiteStore", return_value=store)
     mocker.patch.object(commands, "_dir_size", side_effect=[1024, 2048, 4096])
 

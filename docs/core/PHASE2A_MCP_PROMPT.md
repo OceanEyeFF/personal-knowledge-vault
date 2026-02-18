@@ -2,8 +2,9 @@
 
 > MCP 服务开发执行指令（M8 + M9）
 >
-> **版本**: 1.0
+> **版本**: 1.1
 > **创建日期**: 2026-02-18
+> **最后更新**: 2026-02-18 (v1.1: 修复接口不匹配、补充单例/安全/运维/扩展要求)
 > **适用对象**: Claude Code、CodeX 等 AI 开发工具
 > **前置条件**: Phase 1 (v0.6.1) 已全部完成
 > **总览文档**: [PHASE2_DEV_PROMPT.md](./PHASE2_DEV_PROMPT.md)
@@ -50,6 +51,78 @@
 
 ---
 
+## ⚠️ 上游接口对齐注意事项（实现前必读）
+
+> 以下是文档评审中发现的接口差异，实现时必须严格遵循，不得直接复制设计文档中的旧代码。
+
+### 1. SearchResult 字段（src/retrieval/result.py）
+
+`SearchResult` 是 frozen dataclass，只有以下 5 个字段：
+
+```python
+@dataclass(frozen=True)
+class SearchResult:
+    knowledge_id: int
+    title: str
+    score: float           # [0.0, 1.0]
+    highlight: str         # 摘要/snippet（相当于 abstract）
+    metadata: Dict[str, Any]  # source_type, tags, file_path, archived_at 等
+```
+
+**❌ 不存在的属性**: `r.abstract`, `r.tags`, `r.source_type`, `r.created_at`
+**✅ 正确访问方式**: `r.highlight`（摘要）、`r.metadata.get("tags")`（逗号字符串）
+
+### 2. QueryRouter 无 `route()` 方法
+
+`QueryRouter` 只有 `search(query, limit)` 一个公开方法，内部自动路由。
+
+**strategy 参数实现方案**：
+- `strategy="auto"` → 直接调用 `QueryRouter.search()`
+- `strategy="bm25"/"vector"/"hybrid"` → 绕过 QueryRouter，直接实例化对应 Retriever
+
+### 3. DB 中 tags/keywords 是逗号分隔字符串
+
+`SQLiteStore.insert_entry()` 使用 `",".join(entry.tags)` 存储，因此 `query_by_id()` 返回的 dict 中：
+- `entry["tags"]` → `"AI,知识管理"` （字符串）
+- `entry["keywords"]` → `"深度学习,PyTorch"` （字符串）
+
+**MCP 层必须** 使用 `_parse_tags_string()` 转换为列表后再返回给客户端。
+
+### 4. DB 中无 `abstract` 列、无 `created_at` 列
+
+- 用 `summary_one_sentence` 代替 `abstract`
+- 用 `archived_at` 代替 `created_at`
+
+### 5. 服务对象必须单例管理
+
+**SQLiteStore / MarkdownStore / QueryRouter** 在模块加载时延迟初始化，整个 Server 生命周期内复用：
+- `VectorRetriever` 内含 hnswlib 索引（加载 ~1-3s），绝不能每次请求重建
+- 详见 [MCP_SERVICE_DESIGN.md](../design/MCP_SERVICE_DESIGN.md) 第 4.2 节的单例设计
+
+### 6. MarkdownStore.load() 返回 Entry 对象而非字符串
+
+`MarkdownStore.load(file_path)` 返回 `Optional[Entry]`，不是原始 Markdown 字符串。
+若需获取 Markdown 全文，需通过 `entry.content` 或直接 `Path(file_path).read_text()`。
+
+### 7. MarkdownStore.load() 接收 Path 对象
+
+`MarkdownStore.load(file_path)` 的 `file_path` 参数要求传入 `Path` 对象。
+`SQLiteStore.query_by_id()` 返回的 `entry["file_path"]` 是字符串，需 `Path(entry["file_path"])` 转换后再调用。
+
+### 8. SQLiteStore 查询方法已补齐
+
+`SQLiteStore` 现已提供完整的查询 API，MCP 实现时**直接调用**，禁止写裸 SQL：
+- `query_by_url(source_url)` — 按 URL 查询条目
+- `list_entries(limit, offset, sort_by, sort_order, source_type, tag)` — 分页列表
+- `count_entries(source_type, tag)` — 条目计数
+- `count_entries_by_source_type()` — 按来源统计
+- `get_all_tags_with_count(limit)` — 标签排行
+- `get_statistics()` — 综合统计
+
+`sort_by` 参数有白名单校验，仅允许: `archived_at`, `title`, `knowledge_id`, `word_count`, `source_type`。
+
+---
+
 ## 🏗️ Milestone 8: MCP 只读服务 (v0.7.0-alpha)
 
 **目标**: 搭建 MCP Server 框架，实现所有只读查询能力
@@ -68,10 +141,10 @@ async def search_knowledge(query: str, strategy: str = "auto", top_k: int = 5) -
 
 | 项目 | 说明 |
 |------|------|
-| **调用链** | `QueryRouter.search(query, limit=top_k)` — 已有 sync API |
-| **实现成本** | 约 15 行，直接调用现有 `QueryRouter` |
+| **调用链** | `strategy="auto"` 时 `QueryRouter.search(query, limit=top_k)`（内部自动路由）；指定策略时直接实例化对应 Retriever（详见上游接口注意事项第 2 条） |
+| **实现成本** | 约 40 行（含策略分支 + SearchResult.metadata 字段映射 + tags 字符串转列表） |
 | **客户端兼容** | ✅ Claude Code / Cursor 均支持带参数的 Tool 调用 |
-| **风险** | 无，核心路径已在 CLI 中验证过 |
+| **风险** | SearchResult 字段需通过 metadata dict 访问（见上游接口注意事项第 1 条） |
 
 ##### Tool 2: `get_entry` — 获取条目详情 ✅ 低成本
 
@@ -106,8 +179,15 @@ async def list_tags() -> dict:
 
 ```python
 @mcp.tool(annotations=ToolAnnotations(title="浏览知识条目列表", readOnlyHint=True))
-async def list_entries(page: int = 1, per_page: int = 20, source_type: str = "") -> dict:
-    return await anyio.to_thread.run_sync(lambda: _do_list_entries(page, per_page, source_type))
+async def list_entries(
+    page: int = 1,
+    per_page: int = 20,
+    source_type: str = "",
+    sort_by: str = "archived_at",
+) -> dict:
+    return await anyio.to_thread.run_sync(
+        lambda: _do_list_entries(page, per_page, source_type, sort_by)
+    )
 ```
 
 | 项目 | 说明 |
@@ -270,9 +350,10 @@ async def get_related(knowledge_id: str, limit: int = 5) -> dict:
 
 | 项目 | 说明 |
 |------|------|
-| **调用链** | 读取条目 → 取其 embedding → `VectorRetriever` 做相似度搜索 |
+| **调用链** | 读取条目 → 取其 embedding → `VectorRetriever` 做相似度搜索（复用单例 QueryRouter 内部的 VectorRetriever） |
 | **实现成本** | 约 25 行（取已有 embedding + 向量搜索 + 排除自身） |
-| **风险** | 依赖向量索引已建立；若条目无 embedding 需优雅降级 |
+| **风险** | 依赖向量索引已建立 |
+| **降级策略** | 若条目无 embedding 或向量索引为空，返回 `{"results": [], "message": "该条目暂无向量索引，无法获取关联知识"}`，**不抛异常** |
 
 ### Prompt 详细设计与可行性
 
@@ -320,26 +401,29 @@ def idea_sharpen(content: str, entry_id: str = "") -> str:
 | 拒绝内网地址 | 检查 IP 是否为 `127.*` / `10.*` / `192.168.*` / `172.16-31.*` | ~15 行 |
 | 文本长度限制 | `len(text) > 100000` → 返回错误 | ~5 行 |
 | 参数范围限制 | `top_k = min(top_k, 50)`, `per_page = min(per_page, 100)` | ~5 行 |
+| **HTTP Bearer Token 认证** | 环境变量 `PKV_MCP_AUTH_TOKEN`，未设置时拒绝所有 HTTP 请求 | ~20 行 |
 
-合计约 35 行安全代码，放在 `src/mcp/utils.py` 中。
+合计约 55 行安全代码，放在 `src/mcp/utils.py` 中。
+详见 [MCP_SERVICE_DESIGN.md](../design/MCP_SERVICE_DESIGN.md) 第 7.4 节。
 
 ### 交付文件清单
 
 - [ ] `src/mcp/tools.py` 补充 3 个写入 Tool（archive_url, archive_text, get_related）
 - [ ] `src/mcp/prompts.py` - 3 个 Prompt 模板
-- [ ] `src/mcp/utils.py` 补充安全验证函数
+- [ ] `src/mcp/utils.py` 补充安全验证函数 + HTTP Bearer Token 认证
 - [ ] `config/workflows/archive-text.yaml` - 文本归档工作流（若不存在则新增）
 - [ ] `tests/unit/test_mcp_prompts.py` - Prompt 模板测试
-- [ ] `tests/unit/test_mcp_security.py` - 安全验证测试
-- [ ] `docs/MCP_INTEGRATION_GUIDE.md` - Claude Desktop / Cursor 配置文档
+- [ ] `tests/unit/test_mcp_security.py` - 安全验证测试（含 HTTP 认证测试）
+- [ ] `docs/MCP_INTEGRATION_GUIDE.md` - Claude Desktop / Cursor 配置文档（含运维排查章节）
 - [ ] 更新 README.md、CHANGELOG.md
 
 **验收检查点**:
 1. Claude Code 能通过 MCP 归档 URL 和文本
 2. MCP Prompt 模板在 MCP Inspector 中正确显示并可填入参数
 3. 安全验证：`archive_url("http://127.0.0.1/admin")` 被拒绝
-4. 完整的配置文档（用户可照做集成到 Claude Desktop / Cursor）
-5. 所有测试通过，MCP 模块覆盖率 ≥ 85%
+4. HTTP 模式：未设置 `PKV_MCP_AUTH_TOKEN` 时拒绝所有请求
+5. 完整的配置文档（用户可照做集成到 Claude Desktop / Cursor，含运维排查指南）
+6. 所有测试通过，MCP 模块覆盖率 ≥ 85%
 
 ---
 
@@ -416,13 +500,14 @@ def idea_sharpen(content: str, entry_id: str = "") -> str:
 
 ### v0.7.0 交付 (M9)
 - [ ] 3 个写入 Tool + 3 个 Prompt 模板
-- [ ] streamable-http 传输支持
-- [ ] 安全加固（输入验证、长度限制）
-- [ ] Claude Desktop / Cursor 配置文档
+- [ ] streamable-http 传输支持 + HTTP Bearer Token 认证
+- [ ] 安全加固（输入验证、长度限制、内网地址拦截、HTTP 认证）
+- [ ] Claude Desktop / Cursor 配置文档（含运维排查指南）
 - [ ] 更新 README.md、CHANGELOG.md
 
 ---
 
-**文档版本**: v1.0
+**文档版本**: v1.1
 **创建日期**: 2026-02-18
+**最后更新**: 2026-02-18 (v1.1: 补充上游接口对齐注意事项 + HTTP 认证 + 运维扩展)
 **对应里程碑**: M8 (v0.7.0-alpha) + M9 (v0.7.0)

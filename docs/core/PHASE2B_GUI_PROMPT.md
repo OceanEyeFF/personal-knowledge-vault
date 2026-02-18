@@ -45,6 +45,19 @@
   PySide6-Addons>=6.8.0   # QWebEngineView 等附加组件（M10 需要）
   ```
 
+> **M10 Markdown 渲染建议**：优先使用 `QTextEdit.setMarkdown()` 以降低打包体积（约 150MB）；仅在需要代码高亮时再升级为 `QWebEngineView`。
+
+---
+
+## ⚠️ 上游接口对齐注意事项（实现前必读）
+
+1. `SQLiteStore` 查询 API 已完整实现：`list_entries`、`count_entries`、`get_all_tags_with_count`、`get_statistics`、`query_by_url` 可用；`sort_by` 仅允许白名单字段。
+2. `SearchResult` 是 frozen dataclass，仅包含 `knowledge_id`、`title`、`score`、`highlight`、`metadata`；不存在 `.abstract` / `.tags` / `.source_type` 属性。
+3. `MarkdownStore.load()` 返回 `Optional[Entry]`，不是字符串；请使用 `entry.content`。
+4. 数据库中的 `tags` / `keywords` 为逗号分隔字符串。
+5. `WorkflowEngine` 没有进度回调（M11 使用脉冲动画）。
+6. DeepSeek API 目前只有同步实现（M12 需新增异步实现）。
+
 ---
 
 ## 🏗️ Milestone 10: GUI 基础框架 + 知识浏览 (v0.8.0-alpha)
@@ -84,6 +97,8 @@
 3. 搜索功能：输入关键词 → 返回结果 → 点击查看详情
 4. 明亮/暗色主题可切换
 5. 窗口关闭不产生资源泄漏
+6. 冷启动时间 < 3s
+7. 窗口关闭时状态已保存到 QSettings（重启后恢复位置/大小）
 
 ---
 
@@ -201,8 +216,9 @@ class AIChatThread(QThread):
   - [ ] 消息发送与接收信号
   - [ ] 流式输出状态管理
 - [ ] `src/gui/services/ai_chat_service.py` - AI 对话服务
-  - [ ] 直接调用 DeepSeek API（不依赖 Claude Code）
-  - [ ] 流式响应处理（streaming response）
+  - [ ] BaseChatProvider 抽象接口（stream_chat / get_models）
+  - [ ] DeepSeekProvider 具体实现（httpx.AsyncClient + SSE）
+  - [ ] 读取 Config 中的 deepseek_api_key / deepseek_base_url
   - [ ] QThread + asyncio 隔离集成（见上方说明）
   - [ ] 对话预设模板加载
 - [ ] `src/gui/services/knowledge_context.py` - 知识上下文管理
@@ -376,6 +392,24 @@ def test_search_view(qtbot):
     qtbot.mouseClick(view.search_button, Qt.LeftButton)
     assert view.result_table.rowCount() > 0
 ```
+
+---
+
+## 🛡️ 维护方案
+
+- 日志：统一写入 `pkv-gui.log`，通过 `sys.excepthook` 捕获未处理异常。
+- 配置持久化：使用 `QSettings`，包含 `settings_version` 用于兼容升级。
+- 性能指标：冷启动 < 3s，搜索 < 500ms，UI 帧率 > 30fps，内存 < 300MB。
+- 崩溃恢复：异常后下次启动提示恢复，尽量保留用户状态与会话。
+
+---
+
+## 🔌 扩展预留
+
+- AI Provider 接口：`BaseChatProvider` 抽象基类，统一 `stream_chat` / `get_models`。
+- 视图注册：使用 `dict` 映射视图标识 → View 类，便于后续扩展。
+- GUI 状态持久化：使用 `QSettings` 保存窗口位置、大小与上次视图。
+- 已知简化：`chat_sessions` 使用 JSON 存储、快捷键硬编码、暂不提供 i18n。
 
 ---
 

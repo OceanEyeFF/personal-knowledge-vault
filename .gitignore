@@ -73,3 +73,6 @@ Thumbs.db
 # Claude Code / Do Workflow
 .claude/
 .worktrees/
+
+# Serena MCP
+.serena/
