@@ -136,6 +136,27 @@ class VectorStore:
 
         logger.info(f"添加分块向量: knowledge_id={knowledge_id}, chunk_index={chunk_index}")
 
+    def get_doc_vector(self, knowledge_id: int) -> Optional[np.ndarray]:
+        """
+        根据 knowledge_id 取回已存储的文档级向量
+
+        利用 hnswlib 原生 get_items() 从内存索引中读取。
+        用于 get_related 关联推荐：取出条目的 embedding 后做相似搜索。
+
+        Args:
+            knowledge_id: 知识条目 ID
+
+        Returns:
+            float32 向量 (dim 维)，不存在时返回 None
+        """
+        try:
+            vectors = self.doc_index.get_items([knowledge_id])
+            if vectors is not None and len(vectors) > 0:
+                return np.array(vectors[0], dtype=np.float32)
+        except Exception as e:
+            logger.debug(f"获取文档向量失败 (knowledge_id={knowledge_id}): {e}")
+        return None
+
     def search_doc(self, query_vector: np.ndarray, k: int = 10) -> List[Tuple[int, float]]:
         """
         搜索文档级向量

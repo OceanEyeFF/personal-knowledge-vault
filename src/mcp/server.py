@@ -31,9 +31,12 @@ logger = logging.getLogger("pkv.mcp")
 mcp = FastMCP(
     name="Personal Knowledge Vault",
     instructions=(
-        "个人知识库 MCP 服务。支持知识搜索、归档、浏览和统计。\n"
-        "可用工具：search_knowledge（搜索）、get_entry（查看详情）、"
-        "list_tags（标签列表）、list_entries（浏览条目）、get_stats（统计信息）。\n"
+        "个人知识库 MCP 服务。支持知识搜索、归档、浏览、关联推荐和统计。\n"
+        "只读工具：search_knowledge（搜索）、get_entry（查看详情）、"
+        "list_tags（标签列表）、list_entries（浏览条目）、get_stats（统计）、"
+        "get_related（关联推荐）。\n"
+        "写入工具：archive_url（归档网页）、archive_text（归档文本）。\n"
+        "Prompt 模板：search_and_summarize、knowledge_qa、idea_sharpen。\n"
         "知识条目包含标题、摘要、标签、全文等信息。"
     ),
 )
@@ -109,17 +112,27 @@ def get_query_router():
 
 
 # ============================================================
-# 注册 Tool / Resource handler（通过导入副作用完成注册）
+# 注册 Tool / Resource / Prompt handler（通过导入副作用完成注册）
 # ============================================================
 
-# 延迟导入：在 mcp 实例创建后再导入子模块，触发 @mcp.tool() / @mcp.resource() 注册
+# 延迟导入：在 mcp 实例创建后再导入子模块，触发装饰器注册
+# ⚠️ 修复 python -m src.mcp.server 的 "double import" 问题：
+# 当直接运行本文件时 __name__ == "__main__"，但子模块中
+# from src.mcp.server import mcp 会创建另一个 src.mcp.server 副本。
+# 在导入子模块前将自身注册为 src.mcp.server，确保引用同一实例。
+import sys as _sys
+_sys.modules.setdefault("src.mcp.server", _sys.modules[__name__])
+
 from src.mcp import tools  # noqa: E402, F401
 from src.mcp import resources  # noqa: E402, F401
+from src.mcp import prompts  # noqa: E402, F401
 
 
 def main():
     """CLI 入口：启动 MCP 服务。"""
     import argparse
+    import sys
+    from logging.handlers import RotatingFileHandler
 
     parser = argparse.ArgumentParser(description="PKV MCP Server")
     parser.add_argument(
@@ -134,23 +147,60 @@ def main():
         default=3000,
         help="HTTP 端口 (仅 streamable-http 模式, 默认: 3000)",
     )
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=None,
+        help="日志级别 (覆盖 config.yaml 和环境变量)",
+    )
     args = parser.parse_args()
 
-    # 配置日志（stdio 模式下 stdout 被 MCP 协议占用，日志只能到 stderr）
-    log_level = logging.INFO
-    if args.transport == "stdio":
-        logging.basicConfig(
-            level=log_level,
-            format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-            handlers=[logging.StreamHandler()],  # stderr
-        )
+    # ── 日志级别优先级: --log-level > LOG_LEVEL 环境变量 > config.yaml > INFO ──
+    config = get_config()
+    if args.log_level:
+        level_str = args.log_level
     else:
-        logging.basicConfig(
-            level=log_level,
-            format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        )
+        level_str = config.log_level  # 内部已处理 LOG_LEVEL 环境变量 → config.yaml → "INFO"
+    log_level = getattr(logging, level_str.upper(), logging.INFO)
 
-    logger.info(f"启动 PKV MCP Server (transport={args.transport})")
+    log_format = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+    formatter = logging.Formatter(log_format)
+
+    # 获取根 logger，避免重复 handler
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+    root_logger.handlers.clear()
+
+    # ── 控制台 handler ──
+    # ⚠️ stdio 模式下 stdout 被 MCP 协议占用，日志必须走 stderr
+    # HTTP 模式下同样使用 stderr（与大多数 server 惯例一致）
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+    # ── 文件 handler（读取 config.yaml 的 logging.file 配置）──
+    file_enabled = config.get("logging.file.enabled", True)
+    if file_enabled:
+        log_dir = config.log_dir
+        log_file = log_dir / "pkv.log"
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                log_file,
+                maxBytes=int(config.get("logging.file.max_bytes", 10 * 1024 * 1024)),
+                backupCount=int(config.get("logging.file.backup_count", 5)),
+                encoding="utf-8",
+            )
+            file_handler.setLevel(log_level)
+            file_handler.setFormatter(formatter)
+            root_logger.addHandler(file_handler)
+            logger.info(f"日志文件: {log_file}")
+        except Exception as e:
+            # 文件日志初始化失败不应阻止服务启动
+            logger.warning(f"日志文件初始化失败 ({log_file}): {e}")
+
+    logger.info(f"启动 PKV MCP Server (transport={args.transport}, log_level={level_str})")
 
     if args.transport == "stdio":
         mcp.run(transport="stdio")

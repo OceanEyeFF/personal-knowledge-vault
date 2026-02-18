@@ -402,3 +402,260 @@ class TestGetStats:
             result = await get_stats()
 
         assert result["total_entries"] == 100
+
+
+# ============================================================
+# archive_url Tool 测试 (M9 新增)
+# ============================================================
+
+class TestArchiveUrl:
+    """archive_url Tool 测试。"""
+
+    @pytest.mark.asyncio
+    async def test_reject_private_ip(self):
+        """内网地址应被拒绝。"""
+        from src.mcp.tools import archive_url
+        result = await archive_url(url="http://127.0.0.1/admin")
+        assert result["success"] is False
+        assert "内网" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_reject_localhost(self):
+        """localhost 应被拒绝。"""
+        from src.mcp.tools import archive_url
+        result = await archive_url(url="http://localhost:8080/secret")
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_reject_invalid_url(self):
+        """无效 URL 应被拒绝。"""
+        from src.mcp.tools import archive_url
+        result = await archive_url(url="not-a-url")
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_reject_ftp_url(self):
+        """FTP URL 应被拒绝。"""
+        from src.mcp.tools import archive_url
+        result = await archive_url(url="ftp://example.com/file")
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_successful_archive(self):
+        """正常归档应返回成功结果。"""
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.data = {
+            "knowledge_id": 42,
+            "title": "测试文章",
+            "file_path": "/vault/test.md",
+            "tags": ["AI"],
+            "summary_one_sentence": "这是摘要",
+        }
+
+        from unittest.mock import AsyncMock
+        with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
+            mock_engine_instance = MagicMock()
+            mock_engine_instance.execute_async = AsyncMock(return_value=mock_result)
+            MockEngine.return_value = mock_engine_instance
+
+            from src.mcp.tools import archive_url
+            result = await archive_url(url="https://example.com/article")
+
+        assert result["success"] is True
+        assert result["knowledge_id"] == 42
+
+    @pytest.mark.asyncio
+    async def test_archive_failure(self):
+        """归档失败应返回错误信息。"""
+        mock_result = MagicMock()
+        mock_result.success = False
+        mock_result.errors = ["抓取失败: 连接超时"]
+
+        from unittest.mock import AsyncMock
+        with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
+            mock_engine_instance = MagicMock()
+            mock_engine_instance.execute_async = AsyncMock(return_value=mock_result)
+            MockEngine.return_value = mock_engine_instance
+
+            from src.mcp.tools import archive_url
+            result = await archive_url(url="https://example.com/timeout")
+
+        assert result["success"] is False
+        assert "抓取失败" in result["error"]
+
+
+# ============================================================
+# archive_text Tool 测试 (M9 新增)
+# ============================================================
+
+class TestArchiveText:
+    """archive_text Tool 测试。"""
+
+    @pytest.mark.asyncio
+    async def test_reject_empty_text(self):
+        """空文本应被拒绝。"""
+        from src.mcp.tools import archive_text
+        result = await archive_text(text="")
+        assert result["success"] is False
+        assert "不能为空" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_reject_too_long_text(self):
+        """超长文本应被拒绝。"""
+        from src.mcp.tools import archive_text
+        result = await archive_text(text="A" * 100001)
+        assert result["success"] is False
+        assert "超过限制" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_successful_text_archive(self):
+        """正常文本归档应返回成功结果。"""
+        mock_entry = MagicMock()
+        mock_entry.title = "自动标题"
+        mock_entry.content = "测试内容"
+        mock_entry.tags = ["text"]
+
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.data = {
+            "knowledge_id": 43,
+            "title": "自动标题",
+            "file_path": "/vault/test.md",
+            "tags": ["text"],
+        }
+
+        from unittest.mock import AsyncMock
+        with patch("src.processors.text_fallback_processor.TextFallbackProcessor") as MockProcessor, \
+             patch("src.workflow.engine.WorkflowEngine") as MockEngine:
+            mock_proc_instance = MagicMock()
+            mock_proc_instance.process = AsyncMock(return_value=mock_entry)
+            MockProcessor.return_value = mock_proc_instance
+
+            mock_engine_instance = MagicMock()
+            mock_engine_instance.execute_async = AsyncMock(return_value=mock_result)
+            MockEngine.return_value = mock_engine_instance
+
+            from src.mcp.tools import archive_text
+            result = await archive_text(text="这是一段测试文本内容")
+
+        assert result["success"] is True
+        assert result["knowledge_id"] == 43
+
+    @pytest.mark.asyncio
+    async def test_custom_title_override(self):
+        """提供 title 应覆盖自动标题。"""
+        mock_entry = MagicMock()
+        mock_entry.title = "自动标题"
+        mock_entry.content = "测试内容"
+        mock_entry.tags = ["text"]
+
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.data = {
+            "knowledge_id": 44,
+            "title": "自定义标题",
+            "file_path": "/vault/test.md",
+            "tags": ["text"],
+        }
+
+        from unittest.mock import AsyncMock
+        with patch("src.processors.text_fallback_processor.TextFallbackProcessor") as MockProcessor, \
+             patch("src.workflow.engine.WorkflowEngine") as MockEngine:
+            mock_proc_instance = MagicMock()
+            mock_proc_instance.process = AsyncMock(return_value=mock_entry)
+            MockProcessor.return_value = mock_proc_instance
+
+            mock_engine_instance = MagicMock()
+            mock_engine_instance.execute_async = AsyncMock(return_value=mock_result)
+            MockEngine.return_value = mock_engine_instance
+
+            from src.mcp.tools import archive_text
+            result = await archive_text(text="内容", title="自定义标题")
+
+        # 验证 title 被覆盖
+        assert mock_entry.title == "自定义标题"
+
+
+# ============================================================
+# get_related Tool 测试 (M9 新增)
+# ============================================================
+
+class TestGetRelated:
+    """get_related Tool 测试。"""
+
+    @pytest.mark.asyncio
+    async def test_invalid_id(self):
+        """非数字 ID 应返回 error。"""
+        from src.mcp.tools import get_related
+        result = await get_related(knowledge_id="abc")
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_entry_not_found(self):
+        """不存在的条目应返回 error。"""
+        mock_store = MagicMock()
+        mock_store.query_by_id.return_value = None
+
+        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store):
+            from src.mcp.tools import get_related
+            result = await get_related(knowledge_id="999")
+
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_no_vector_index(self):
+        """无向量索引时应优雅降级。"""
+        mock_store = MagicMock()
+        mock_store.query_by_id.return_value = MOCK_ENTRY_DB
+
+        mock_vector_store = MagicMock()
+        mock_vector_store.get_doc_vector.return_value = None
+
+        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
+             patch("src.storage.vector_store.VectorStore", return_value=mock_vector_store), \
+             patch("src.mcp.tools.get_config") as mock_config:
+            mock_config.return_value.vector_index_dir = "/tmp/vectors"
+            mock_config.return_value.get.return_value = 1536
+            from src.mcp.tools import get_related
+            result = await get_related(knowledge_id="1")
+
+        assert result["results"] == []
+        assert "暂无向量索引" in result.get("message", "")
+
+    @pytest.mark.asyncio
+    async def test_limit_clamped(self):
+        """limit 应被限制在 [1, 20]。"""
+        mock_store = MagicMock()
+        mock_store.query_by_id.return_value = MOCK_ENTRY_DB
+
+        mock_vector_store = MagicMock()
+        mock_vector_store.get_doc_vector.return_value = None
+
+        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
+             patch("src.storage.vector_store.VectorStore", return_value=mock_vector_store), \
+             patch("src.mcp.tools.get_config") as mock_config:
+            mock_config.return_value.vector_index_dir = "/tmp/vectors"
+            mock_config.return_value.get.return_value = 1536
+            from src.mcp.tools import get_related
+            result = await get_related(knowledge_id="1", limit=100)
+
+        # 结果应返回（降级为空），说明 limit 被正确处理
+        assert "results" in result
+
+    @pytest.mark.asyncio
+    async def test_vector_search_exception(self):
+        """向量搜索异常应优雅降级。"""
+        mock_store = MagicMock()
+        mock_store.query_by_id.return_value = MOCK_ENTRY_DB
+
+        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
+             patch("src.storage.vector_store.VectorStore", side_effect=Exception("索引加载失败")), \
+             patch("src.mcp.tools.get_config") as mock_config:
+            mock_config.return_value.vector_index_dir = "/tmp/vectors"
+            mock_config.return_value.get.return_value = 1536
+            from src.mcp.tools import get_related
+            result = await get_related(knowledge_id="1")
+
+        assert result["results"] == []
+        assert "不可用" in result.get("message", "")

@@ -1,12 +1,15 @@
 """
 MCP Tool handler 实现
 
-提供 5 个只读 Tool（M8），后续 M9 将补充写入 Tool。
+提供 8 个 Tool:
+- 只读 (M8): search_knowledge, get_entry, list_tags, list_entries, get_stats
+- 写入/关联 (M9): archive_url, archive_text, get_related
 
 同步/异步策略说明：
     - FastMCP 的同步 def handler 会直接在 asyncio 事件循环中调用（不同于 FastAPI）
     - 任何阻塞 I/O（SQLite/文件读取）都会冻结整个服务器
-    - 所有 handler 统一使用 async def + anyio.to_thread.run_sync() 包装同步操作
+    - 只读 Tool 统一使用 async def + anyio.to_thread.run_sync() 包装同步操作
+    - 写入 Tool (archive_url/archive_text) 使用 WorkflowEngine.execute_async()（原生 async，无需 threadpool）
 """
 
 import logging
@@ -17,7 +20,10 @@ import anyio
 from mcp.types import ToolAnnotations
 
 from src.mcp.server import mcp, get_sqlite_store, get_markdown_store, get_query_router
-from src.mcp.utils import parse_tags_string, serialize_search_result, clamp_param
+from src.mcp.utils import (
+    parse_tags_string, serialize_search_result, clamp_param,
+    validate_url_security, validate_text_length,
+)
 from src.utils.config import get_config
 
 logger = logging.getLogger("pkv.mcp")
@@ -50,6 +56,8 @@ async def search_knowledge(
     def _impl():
         top_k_safe = clamp_param(top_k, 1, 50)
         config = get_config()
+
+        logger.info(f"search_knowledge: query={query!r}, strategy={strategy}, top_k={top_k_safe}")
 
         # 根据 strategy 选择检索器
         if strategy == "auto":
@@ -90,7 +98,9 @@ async def search_knowledge(
             "results": [serialize_search_result(r) for r in results],
         }
 
-    return await anyio.to_thread.run_sync(_impl)
+    result = await anyio.to_thread.run_sync(_impl)
+    logger.info(f"search_knowledge: 返回 {result.get('total', 0)} 条结果")
+    return result
 
 
 # ============================================================
@@ -259,5 +269,206 @@ async def get_stats() -> dict:
     def _impl():
         store = get_sqlite_store()
         return store.get_statistics()
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+# ============================================================
+# Tool 6: archive_url — 归档网页 (M9 新增)
+# ============================================================
+
+@mcp.tool()
+async def archive_url(url: str) -> dict:
+    """归档网页 URL 到知识库。
+
+    自动抓取网页内容，AI 生成摘要和标签，存储到 Markdown + SQLite + 向量索引。
+    归档过程可能需要 10-30 秒（包含网络请求和 AI 分析）。
+
+    Args:
+        url: 要归档的网页链接（必须是 http/https，禁止内网地址）
+
+    Returns:
+        归档结果，包含 knowledge_id、标题、文件路径等
+    """
+    # 前置安全验证
+    valid, error = validate_url_security(url)
+    if not valid:
+        return {"success": False, "error": error}
+
+    try:
+        logger.info(f"archive_url: 开始归档 url={url!r}")
+        # WorkflowEngine() 无参构造，内部自动 get_config()
+        # execute_async() 是原生 async，可直接 await，无需 threadpool
+        from src.workflow.engine import WorkflowEngine
+        engine = WorkflowEngine()
+        result = await engine.execute_async("archive-url", {"url": url})
+
+        if result.success:
+            logger.info(f"archive_url: 归档成功 kid={result.data.get('knowledge_id', '')}, title={result.data.get('title', '')!r}")
+            return {
+                "success": True,
+                "knowledge_id": result.data.get("knowledge_id", ""),
+                "title": result.data.get("title", ""),
+                "file_path": str(result.data.get("file_path", "")),
+                "tags": result.data.get("tags", []),
+                "abstract": result.data.get("summary_one_sentence", ""),
+            }
+        else:
+            logger.warning(f"archive_url: 归档失败 url={url!r}, errors={result.errors}")
+            return {
+                "success": False,
+                "error": result.errors[0] if result.errors else "归档失败",
+            }
+    except Exception as e:
+        logger.error(f"archive_url 执行异常: {e}")
+        return {"success": False, "error": f"归档异常: {e}"}
+
+
+# ============================================================
+# Tool 7: archive_text — 归档文本 (M9 新增)
+# ============================================================
+
+@mcp.tool()
+async def archive_text(text: str, title: str = "") -> dict:
+    """归档纯文本到知识库。
+
+    将文本内容（如 AI 对话摘要、笔记、纯文本等）归档到知识库。
+    先由 TextFallbackProcessor 解析文本结构，再经 AI 分析生成摘要和标签，
+    最后存储到 Markdown + SQLite + 向量索引。
+
+    Args:
+        text: 要归档的文本内容（最大 100,000 字符）
+        title: 可选标题（不提供则自动从文本提取）
+
+    Returns:
+        归档结果，包含 knowledge_id、标题、文件路径等
+    """
+    # 前置安全验证：文本长度
+    valid, error = validate_text_length(text)
+    if not valid:
+        return {"success": False, "error": error}
+
+    try:
+        logger.info(f"archive_text: 开始归档 text_len={len(text)}, title={title!r}")
+        # 步骤 1: 用 TextFallbackProcessor 解析文本，获得 Entry 对象
+        from src.processors.text_fallback_processor import TextFallbackProcessor
+        processor = TextFallbackProcessor()
+
+        # TextFallbackProcessor.process() 接收文本（非 URL）
+        # 如果提供了 title，在生成 Entry 后覆盖
+        entry = await processor.process(text)
+        if title and title.strip():
+            entry.title = title.strip()
+
+        # 步骤 2: 将 Entry 注入工作流上下文，执行 ai_analyze → store_entry
+        from src.workflow.engine import WorkflowEngine
+        engine = WorkflowEngine()
+        result = await engine.execute_async(
+            "archive-text",
+            {"text": text, "title": entry.title, "entry": entry, "content": entry.content},
+        )
+
+        if result.success:
+            logger.info(f"archive_text: 归档成功 kid={result.data.get('knowledge_id', '')}, title={result.data.get('title', entry.title)!r}")
+            return {
+                "success": True,
+                "knowledge_id": result.data.get("knowledge_id", ""),
+                "title": result.data.get("title", entry.title),
+                "file_path": str(result.data.get("file_path", "")),
+                "tags": result.data.get("tags", entry.tags),
+            }
+        else:
+            logger.warning(f"archive_text: 归档失败 errors={result.errors}")
+            return {
+                "success": False,
+                "error": result.errors[0] if result.errors else "归档失败",
+            }
+    except Exception as e:
+        logger.error(f"archive_text 执行异常: {e}")
+        return {"success": False, "error": f"归档异常: {e}"}
+
+
+# ============================================================
+# Tool 8: get_related — 获取关联知识 (M9 新增)
+# ============================================================
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def get_related(knowledge_id: str, limit: int = 5) -> dict:
+    """获取与指定条目相关的知识条目。
+
+    基于向量相似度查找关联知识。利用条目归档时生成的 embedding 向量，
+    在向量索引中搜索最近邻，返回内容相似的条目列表。
+
+    Args:
+        knowledge_id: 知识条目 ID（数字字符串）
+        limit: 返回结果数量，默认 5，最大 20
+
+    Returns:
+        关联条目列表，每项包含 knowledge_id, title, abstract, score
+    """
+    def _impl():
+        try:
+            kid = int(knowledge_id)
+        except (ValueError, TypeError):
+            return {"error": f"无效的 knowledge_id: {knowledge_id}，需要数字"}
+
+        _limit = clamp_param(limit, 1, 20)
+
+        # 获取条目信息（确认存在）
+        store = get_sqlite_store()
+        entry = store.query_by_id(kid)
+        if not entry:
+            return {"error": f"未找到条目: {knowledge_id}"}
+
+        # 尝试从 VectorStore 取回该条目的 embedding
+        try:
+            from src.storage.vector_store import VectorStore
+            config = get_config()
+            vector_store = VectorStore(
+                index_dir=config.vector_index_dir,
+                dim=config.get("ai.openai.embedding_dim", 1536),
+            )
+
+            doc_vector = vector_store.get_doc_vector(kid)
+            if doc_vector is None:
+                return {
+                    "results": [],
+                    "message": "该条目暂无向量索引，无法获取关联知识",
+                }
+
+            # 搜索相似文档（+1 因为需要排除自身）
+            raw_results = vector_store.search_doc(doc_vector, k=_limit + 1)
+
+            # 排除自身并获取条目信息
+            results = []
+            for related_kid, distance in raw_results:
+                if related_kid == kid:
+                    continue
+                if len(results) >= _limit:
+                    break
+                related_entry = store.query_by_id(related_kid)
+                if related_entry:
+                    # cosine distance → similarity score (1 - distance)
+                    score = round(max(0.0, 1.0 - distance), 4)
+                    results.append({
+                        "knowledge_id": related_kid,
+                        "title": related_entry.get("title", ""),
+                        "abstract": related_entry.get("summary_one_sentence", ""),
+                        "tags": parse_tags_string(related_entry.get("tags", "")),
+                        "source_type": related_entry.get("source_type", ""),
+                        "score": score,
+                    })
+
+            return {
+                "total": len(results),
+                "results": results,
+            }
+
+        except Exception as e:
+            logger.warning(f"get_related 向量搜索失败: {e}")
+            return {
+                "results": [],
+                "message": f"向量搜索不可用: {e}",
+            }
 
     return await anyio.to_thread.run_sync(_impl)
