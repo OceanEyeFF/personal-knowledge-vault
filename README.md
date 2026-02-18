@@ -3,7 +3,7 @@
 > **AI-First Knowledge Workflow System**
 > 工作流驱动的个人知识管理系统
 
-[![Version](https://img.shields.io/badge/version-0.6.1-blue.svg)](./docs/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0-blue.svg)](./docs/CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.11+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](./LICENSE)
 [![Status](https://img.shields.io/badge/status-production_ready-brightgreen.svg)](./docs/milestones/)
@@ -11,6 +11,7 @@
 ## ✨ 核心特点
 
 - 🤖 **AI-First 设计**: 以 Claude Code/CodeX 作为智能协作伙伴，支持人机协作的知识处理
+- 🔌 **MCP 服务**: 标准 MCP 协议集成，AI Agent 可直接搜索、归档、浏览知识库
 - 🔍 **智能混合检索**: 自动路由 BM25/向量/混合检索策略，精确高效零成本浪费
 - ⚡ **工作流驱动**: 一切操作皆工作流，可编排、可观测、可中断恢复
 - 🔒 **本地优先**: 数据完全掌控，Markdown 主存储，SQLite+向量辅助索引
@@ -62,6 +63,31 @@ pkv config
 pkv stats
 ```
 
+### 🔌 MCP 服务 (v0.7.0 新增)
+
+AI Agent（Claude Code、Cursor 等）通过 MCP 协议直接操作知识库：
+
+```bash
+# 启动 MCP Server（stdio 模式，供 Claude Code/Cursor 集成）
+python -m src.mcp
+
+# 启动 HTTP 模式（远程访问）
+python -m src.mcp.server --transport streamable-http --port 3000
+```
+
+**8 个 Tool**:
+- `search_knowledge` — 智能搜索（BM25/向量/混合）
+- `get_entry` / `list_entries` / `list_tags` / `get_stats` — 只读浏览
+- `archive_url` — 归档网页（SSRF 防护）
+- `archive_text` — 归档纯文本
+- `get_related` — 关联知识推荐（向量相似度）
+
+**3 个 Prompt 模板**: `search_and_summarize` / `knowledge_qa` / `idea_sharpen`
+
+**4 个 Resource**: 条目全文、元数据、标签列表、统计信息
+
+**安全加固**: SSRF 拦截（内网地址过滤）、文本长度限制、Bearer Token 认证
+
 ## 📂 项目结构
 
 ```
@@ -72,12 +98,18 @@ personal-knowledge-vault/
 ├── .env.example                       # 环境变量模板
 ├── requirements.txt                   # Python 依赖
 │
-├── src/                               # 源代码 (35 个文件)
+├── src/                               # 源代码 (40+ 个文件)
 │   ├── main.py                        # CLI 入口
 │   ├── cli/                           # CLI 系统 (v0.6.0)
 │   │   ├── commands.py                # 6 个核心命令
 │   │   ├── ui.py                      # Rich Console 界面
 │   │   └── formatters.py              # 输出格式化
+│   ├── mcp/                           # MCP 服务 (v0.7.0)
+│   │   ├── server.py                  # FastMCP 主入口 (stdio/HTTP)
+│   │   ├── tools.py                   # 8 个 Tool handler
+│   │   ├── resources.py               # 4 个 Resource handler
+│   │   ├── prompts.py                 # 3 个 Prompt 模板
+│   │   └── utils.py                   # 安全验证 + 序列化
 │   ├── processors/                    # 内容处理器 (7 个)
 │   │   ├── wechat_processor.py        # 微信文章
 │   │   ├── zhihu_processor.py         # 知乎内容
@@ -107,7 +139,8 @@ personal-knowledge-vault/
 ├── config/                            # 配置文件
 │   ├── config.yaml                    # 主配置
 │   ├── workflows/                     # 工作流定义
-│   │   ├── archive-url.yaml           # 归档工作流
+│   │   ├── archive-url.yaml           # URL 归档工作流
+│   │   ├── archive-text.yaml          # 文本归档工作流 (v0.7.0)
 │   │   └── search.yaml                # 搜索工作流
 │   └── custom_dict.txt                # 自定义分词词典
 │
@@ -119,11 +152,11 @@ personal-knowledge-vault/
 │   ├── migrate.py                     # 数据库迁移工具
 │   └── migrations/                    # SQL 迁移脚本
 │
-├── tests/                             # 测试套件 (30 个文件, 85% 覆盖率)
-│   ├── unit/                          # 单元测试 (18 个)
-│   ├── integration/                   # 集成测试 (2 个)
+├── tests/                             # 测试套件 (37 个文件, 85%+ 覆盖率)
+│   ├── unit/                          # 单元测试 (22 个)
+│   ├── integration/                   # 集成测试 (3 个)
 │   ├── e2e/                           # E2E 测试
-│   ├── blackbox/                      # 黑盒测试
+│   ├── blackbox/                      # 黑盒测试 (CLI + MCP 协议)
 │   ├── fixtures/                      # 测试数据
 │   └── manual_test_*.py               # 手动测试脚本
 │
@@ -237,6 +270,8 @@ python src/main.py --help
 | M5: 工作流引擎 | ✅ 完成 | [M5_COMPLETION_SUMMARY.md](docs/milestones/M5_COMPLETION_SUMMARY.md) |
 | M5.1: Bug 修复 | ✅ 完成 | [M5_1_BUGFIX_COMPLETE.md](docs/milestones/M5_1_BUGFIX_COMPLETE.md) |
 | M6+M7: CLI 与文档 | ✅ 完成 | 参考 [CHANGELOG.md](docs/CHANGELOG.md) |
+| M8: MCP 只读服务 | ✅ 完成 | 5 Tool + 4 Resource (v0.7.0-alpha) |
+| M9: MCP 写入+安全 | ✅ 完成 | 3 写入 Tool + 3 Prompt + 安全加固 (v0.7.0) |
 
 ### 🛠️ 运维指南 (v0.6.0+)
 
@@ -336,18 +371,18 @@ python scripts/migrate.py history    # 查看迁移历史
 
 ## 📊 项目状态
 
-### 🎉 当前版本: v0.6.1 (生产就绪)
+### 🎉 当前版本: v0.7.0 (MCP 服务)
 
-**发布状态**: ✅ 所有里程碑已完成，项目处于可交付状态
+**发布状态**: ✅ Phase 1 全部完成 + Phase 2A MCP 服务完成
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| **项目版本** | v0.6.1 | AI 安全测试 + 数据库迁移 |
-| **开发进度** | 100% | M1-M7 全部完成 |
-| **源代码文件** | 35 个 | Python 模块 |
-| **测试文件** | 30 个 | 单元/集成/E2E/黑盒测试 |
-| **测试覆盖率** | 85% | 核心业务逻辑高覆盖 |
-| **文档覆盖率** | 100% | 所有模块有 CLAUDE.md |
+| **项目版本** | v0.7.0 | MCP 服务 (8 Tool + 4 Resource + 3 Prompt) |
+| **开发进度** | M1-M9 | Phase 1 + Phase 2A 完成 |
+| **源代码文件** | 40+ 个 | Python 模块 |
+| **测试文件** | 37 个 | 单元/集成/E2E/黑盒/MCP 协议测试 |
+| **测试覆盖率** | 85%+ | 核心业务逻辑高覆盖 |
+| **MCP 测试** | 203 个 | 三层测试体系 (单元/进程内/stdio 协议) |
 | **文档数量** | 60+ | Markdown 文档 |
 
 ### ✅ 里程碑完成情况
@@ -363,6 +398,8 @@ python scripts/migrate.py history    # 查看迁移历史
 | **M5.1** | ✅ | Bug 修复（配置字段、引擎传参） | 2026-02-14 |
 | **M6+M7** | ✅ | CLI 入口 + 文档完善 (v0.6.0) | 2026-02-15 |
 | **v0.6.1** | ✅ | AI 安全 + 数据库迁移 + 文档整理 | 2026-02-16 |
+| **M8** | ✅ | MCP 只读服务（5 Tool + 4 Resource） | 2026-02-18 |
+| **M9** | ✅ | MCP 写入 + Prompts + 安全加固 (v0.7.0) | 2026-02-19 |
 
 ### 🚀 核心能力矩阵
 
@@ -375,6 +412,7 @@ python scripts/migrate.py history    # 查看迁移历史
 | **工作流引擎** | ✅ 生产就绪 | YAML 配置，可编排/可观测 |
 | **数据迁移** | ✅ 生产就绪 | 版本化 Schema，增量迁移 |
 | **AI 安全** | ✅ 生产就绪 | 安全规范、测试隔离、自动备份 |
+| **MCP 服务** | ✅ 生产就绪 | 8 Tool + 4 Resource + 3 Prompt，SSRF 防护 |
 
 ### 📈 技术债务与改进方向
 
@@ -397,17 +435,25 @@ python scripts/migrate.py history    # 查看迁移历史
 
 ## 🧪 测试体系
 
-### 测试覆盖率: 85%
+### 测试覆盖率: 85%+
 
-**5 层测试体系**:
+**6 层测试体系**:
 
 | 测试类型 | 文件数 | 覆盖范围 | 运行方式 |
 |---------|--------|----------|----------|
-| **单元测试** | 18 个 | 核心业务逻辑 | `pytest tests/unit/ -v` |
-| **集成测试** | 2 个 | 跨模块集成 | `pytest tests/integration/ -v` |
+| **单元测试** | 22 个 | 核心业务逻辑 + MCP handler | `pytest tests/unit/ -v` |
+| **集成测试** | 3 个 | 跨模块集成 + MCP 进程内 | `pytest tests/integration/ -v` |
 | **E2E 测试** | 1 个 | 端到端流程 | `pytest tests/e2e/ -v` |
-| **黑盒测试** | 2 个 | CLI 用户行为 | `pytest tests/blackbox/ -v` |
+| **黑盒测试** | 3 个 | CLI + MCP stdio 协议 | `pytest tests/blackbox/ -v` |
 | **手动测试** | 5 个 | 真实环境验证 | `python tests/manual_test_*.py` |
+
+**MCP 三层测试体系 (203 tests)**:
+
+| 层级 | 文件 | 测试数 | 验证方式 |
+|------|------|--------|----------|
+| Layer 1 | `test_mcp_tools/resources/prompts/security.py` | 125 | 直接调用 handler 函数 (mock 隔离) |
+| Layer 2 | `test_mcp_functional.py` | 39 | FastMCP 进程内 (`call_tool`/`get_prompt`) |
+| Layer 3 | `test_mcp_blackbox.py` | 39 | stdio 子进程 + ClientSession (真实协议) |
 
 **快速测试**:
 
@@ -462,6 +508,7 @@ python src/utils/verify_setup.py
 **核心技术栈**:
 - [DeepSeek](https://www.deepseek.com/) - 低成本 AI 摘要生成
 - [OpenAI](https://openai.com/) - Embedding 模型
+- [FastMCP](https://github.com/jlowin/fastmcp) - MCP 服务框架 (Model Context Protocol)
 - [hnswlib](https://github.com/nmslib/hnswlib) - 高效向量检索
 - [jieba](https://github.com/fxsjy/jieba) - 中文分词
 - [Rich](https://github.com/Textualize/rich) - 终端界面
@@ -476,10 +523,10 @@ python src/utils/verify_setup.py
 <div align="center">
 
 **项目代号**: Personal Knowledge Vault
-**当前版本**: v0.6.1
+**当前版本**: v0.7.0
 **创建日期**: 2026-01-27
-**文档版本**: v3.0
-**最后更新**: 2026-02-16
+**文档版本**: v4.0
+**最后更新**: 2026-02-19
 
 ---
 

@@ -147,6 +147,18 @@ class SQLiteStore:
 
     def get_all_entries(self) -> List[Dict]:
         """获取所有条目元数据"""
+
+    def list_entries(self, limit, offset, sort_by, sort_order, source_type, tag) -> List[Dict]:
+        """分页列出条目（MCP list_entries Tool 使用）"""
+
+    def count_entries(self, source_type, tag) -> int:
+        """统计条目数量（支持过滤）"""
+
+    def get_all_tags_with_count(self) -> List[Dict]:
+        """获取所有标签及关联条目数"""
+
+    def get_statistics(self) -> Dict:
+        """获取知识库综合统计"""
 ```
 
 **Schema 设计**:
@@ -178,6 +190,13 @@ class VectorStore:
     async def search(self, query: str, top_k: int = 10) -> List[Tuple[str, float]]:
         """向量检索"""
 
+    def get_doc_vector(self, knowledge_id: int) -> Optional[np.ndarray]:
+        """根据 knowledge_id 取回已存储的文档级向量（M9 新增）
+        用于 get_related 关联推荐：取出条目的 embedding 后做相似搜索"""
+
+    def search_doc(self, vector: np.ndarray, k: int) -> List[Tuple[int, float]]:
+        """文档级向量搜索"""
+
     def save_index(self):
         """保存索引到磁盘"""
 
@@ -202,6 +221,7 @@ class VectorStore:
 - `python-frontmatter`: YAML Front Matter 解析
 - `sqlite3`: SQLite 数据库（Python 标准库）
 - `hnswlib`: HNSW 向量索引
+- `numpy`: 向量操作（get_doc_vector 返回 np.ndarray）
 - `jieba`: 中文分词（FTS5 查询）
 
 ### 配置项
@@ -319,6 +339,13 @@ CREATE TABLE knowledge_item_tags (
 
 详见: [docs/issues/SCHEMA_MIGRATION_PLAN.md](../../docs/issues/SCHEMA_MIGRATION_PLAN.md)
 
+### 4. MCP 集成 (M8+M9)
+
+Storage 层为 MCP Server 提供核心数据访问:
+- `SQLiteStore` 单例被 MCP tools/resources 共享（通过 `server.py` 的 `get_sqlite_store()`）
+- `MarkdownStore` 单例用于读取条目全文
+- `VectorStore.get_doc_vector()` 方法专为 `get_related` Tool 设计
+
 ---
 
 ## 测试与质量
@@ -409,11 +436,11 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 
 估算公式:
 ```
-文档级索引大小 ≈ 条目数 × 1536 维 × 4 字节 ≈ 6 KB/条目
-分块级索引大小 ≈ 条目数 × 平均分块数 × 6 KB
+文档级索引大小 ≈ 条目数 x 1536 维 x 4 字节 ≈ 6 KB/条目
+分块级索引大小 ≈ 条目数 x 平均分块数 x 6 KB
 ```
 
-示例: 10,000 条目 → 约 60 MB（文档级）+ 240 MB（分块级）
+示例: 10,000 条目 -> 约 60 MB（文档级）+ 240 MB（分块级）
 
 ### Q4: 如何迁移现有数据？
 
@@ -430,7 +457,8 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 | `__init__.py` | 存储层模块入口 |
 | `markdown_store.py` | Markdown 主存储 (Entry 数据类) |
 | `sqlite_store.py` | SQLite 索引层 (FTS5) |
-| `vector_store.py` | 向量语义层 (hnswlib) |
+| `vector_store.py` | 向量语义层 (hnswlib) -- 含 `get_doc_vector()` |
+| `migration_manager.py` | 数据库增量迁移管理器 |
 
 ### 测试文件
 
@@ -454,6 +482,12 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 
 ## 变更记录 (Changelog)
 
+### 2026-02-19 00:58 (M9)
+- `vector_store.py` 新增 `get_doc_vector(knowledge_id)` 方法
+- 用于 MCP `get_related` Tool 的关联推荐功能
+- 利用 hnswlib 原生 `get_items()` 从内存索引中读取向量
+- 更新文档体现 MCP 集成和新增接口
+
 ### 2026-02-16
 - 生成模块级 CLAUDE.md 文档
 - 添加导航面包屑
@@ -471,6 +505,6 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-02-16 01:53:22
+**最后更新**: 2026-02-19 00:58:06
 
 *本文档由 Claude Code 自动生成*

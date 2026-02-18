@@ -3,11 +3,19 @@
 > **AI-First Knowledge Workflow System**
 > 工作流驱动的个人知识管理系统
 
-**最后更新**: 2026-02-16 18:51:32
+**最后更新**: 2026-02-19 00:58:06
 
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-02-19 00:58
+- M8 + M9 完成：MCP 服务层（只读 + 写入 + Prompt + 安全加固）
+- 新增 `src/mcp/` 模块（server.py, tools.py, resources.py, prompts.py, utils.py, __main__.py）
+- 新增三层 MCP 测试体系：单元 4 文件 + 集成 2 文件 + 黑盒 1 文件（共 203 tests）
+- 新增 `config/workflows/archive-text.yaml` 工作流配置
+- `src/storage/vector_store.py` 新增 `get_doc_vector()` 方法
+- 版本号升级至 v0.7.0
 
 ### 2026-02-16 18:51
 - 基于 v0.6.1 和 M6+M7 完成情况全面更新索引体系
@@ -32,6 +40,7 @@
 - **本地优先**: 数据完全掌控,Markdown 主存储,SQLite+hnswlib 辅助索引
 - **成本可控**: 智能策略节省 85% API 成本
 - **安全可靠**: 测试环境隔离、自动备份、数据库增量迁移
+- **MCP 开放**: 通过 MCP 协议将知识库暴露给任意 AI Agent
 
 ---
 
@@ -39,33 +48,41 @@
 
 ### 核心设计理念
 
-**工作流驱动 + 插件化处理 + 灵活深度 + AI 安全协作**
+**工作流驱动 + 插件化处理 + 灵活深度 + AI 安全协作 + MCP 开放集成**
 
-系统采用工作流引擎编排各模块,每种内容类型对应独立的处理 Pipeline,深度由内容复杂度决定而非架构强制。通过测试环境隔离和数据库版本管理确保生产数据安全。
+系统采用工作流引擎编排各模块,每种内容类型对应独立的处理 Pipeline,深度由内容复杂度决定而非架构强制。通过测试环境隔离和数据库版本管理确保生产数据安全。MCP 服务层使 AI Agent（Claude Code、Cursor 等）可直接搜索、归档和管理知识库。
 
 ### 技术栈
 
 - **语言**: Python 3.11+ (推荐 Conda 环境)
 - **CLI 框架**: Click 8.0+ (Rich 终端界面)
+- **MCP 框架**: FastMCP (mcp SDK) -- stdio / streamable-http 双传输
 - **存储**: Markdown (YAML Front Matter) + SQLite (FTS5) + hnswlib (向量索引)
 - **AI 服务**: DeepSeek (摘要/标签提取) + OpenAI (Embedding)
 - **检索**: BM25 + 向量检索 + 混合策略 (RRF 算法)
 - **分词**: jieba (中文分词)
+- **安全**: SSRF 防护 + 文本长度验证 + Bearer Token 认证
 
 ### 架构分层
 
 ```
 ┌─────────────────────────────────────────┐
 │  CLI 交互层 (src/cli/)                   │
-│  • Click 命令组 (archive/search/...)    │
-│  • Rich 终端界面 (进度条/表格/面板)      │
+│  + Click 命令组 (archive/search/...)    │
+│  + Rich 终端界面 (进度条/表格/面板)      │
+├─────────────────────────────────────────┤
+│  MCP 服务层 (src/mcp/)        [M8+M9]  │
+│  + 8 Tools (5只读 + 3写入/关联)         │
+│  + 4 Resources (条目全文/元数据/标签/统计)│
+│  + 3 Prompts (搜索总结/知识问答/思想磨砺)│
+│  + 安全层 (SSRF/文本验证/Bearer Auth)   │
 └─────────────────┬───────────────────────┘
                   ↓
 ┌─────────────────────────────────────────┐
 │  工作流编排层 (src/workflow/)            │
-│  • 解析命令 → 加载 YAML 配置            │
-│  • 编排步骤 → 协调各模块                │
-│  • 进度追踪 → 日志记录                  │
+│  + 解析命令 → 加载 YAML 配置            │
+│  + 编排步骤 → 协调各模块                │
+│  + 进度追踪 → 日志记录                  │
 └───┬─────────┬─────────┬─────────────────┘
     │         │         │
     ↓         ↓         ↓
@@ -78,16 +95,16 @@
                ↓
       ┌────────────────┐
       │  Storage (存储层) │
-      │  • Markdown      │
-      │  • SQLite        │
-      │  • VectorStore   │
+      │  + Markdown      │
+      │  + SQLite        │
+      │  + VectorStore   │
       └────────────────┘
                ↓
       ┌────────────────┐
       │ 运维与安全层     │
-      │ • 测试环境隔离   │
-      │ • 自动备份/恢复  │
-      │ • 数据库迁移     │
+      │ + 测试环境隔离   │
+      │ + 自动备份/恢复  │
+      │ + 数据库迁移     │
       └────────────────┘
 ```
 
@@ -103,6 +120,7 @@ graph TD
 
     ROOT --> SRC["src/"]
     SRC --> CLI["cli/"]
+    SRC --> MCP["mcp/"]
     SRC --> PROCESSORS["processors/"]
     SRC --> STORAGE["storage/"]
     SRC --> RETRIEVAL["retrieval/"]
@@ -125,6 +143,7 @@ graph TD
     ROOT --> DOCS["docs/"]
 
     click CLI "./src/cli/CLAUDE.md" "查看 CLI 模块文档"
+    click MCP "./src/mcp/CLAUDE.md" "查看 MCP 服务模块文档"
     click PROCESSORS "./src/processors/CLAUDE.md" "查看 Processors 模块文档"
     click STORAGE "./src/storage/CLAUDE.md" "查看 Storage 模块文档"
     click RETRIEVAL "./src/retrieval/CLAUDE.md" "查看 Retrieval 模块文档"
@@ -145,6 +164,7 @@ graph TD
 | 模块 | 路径 | 职责 | 文档 |
 |------|------|------|------|
 | **CLI 交互层** | `src/cli/` | Click 命令行界面、Rich 终端 UI | [CLAUDE.md](./src/cli/CLAUDE.md) |
+| **MCP 服务层** | `src/mcp/` | MCP Server -- 8 Tool + 4 Resource + 3 Prompt + 安全加固 | [CLAUDE.md](./src/mcp/CLAUDE.md) |
 | **工作流引擎** | `src/workflow/` | 编排步骤、进度追踪、错误处理 | [CLAUDE.md](./src/workflow/CLAUDE.md) |
 | **内容处理器** | `src/processors/` | 插件化内容抓取与解析(微信/知乎/聊天/AI 聊天/文本回退) | [CLAUDE.md](./src/processors/CLAUDE.md) |
 | **检索引擎** | `src/retrieval/` | BM25/向量/混合检索与智能路由 | [CLAUDE.md](./src/retrieval/CLAUDE.md) |
@@ -177,6 +197,10 @@ notepad .env
 python -m src.main --help
 python -m src.main archive "https://example.com"
 python -m src.main search "关键词"
+
+# 5. 启动 MCP Server (Claude Code / Cursor 集成)
+python -m src.mcp.server                                    # stdio 模式
+python -m src.mcp.server --transport streamable-http --port 3000  # HTTP 模式
 ```
 
 详细指南请参考:
@@ -194,6 +218,10 @@ python -m src.main archive "https://mp.weixin.qq.com/xxx"
 python -m src.main search "AI 工作流"
 python -m src.main list --limit 10
 python -m src.main stats
+
+# MCP Server
+python -m src.mcp.server                      # stdio (Claude Code 集成)
+npx @modelcontextprotocol/inspector python -m src.mcp.server  # MCP Inspector 调试
 
 # 数据库管理
 python scripts/migrate.py --version         # 查看数据库版本
@@ -238,6 +266,8 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
    - 检索引擎端到端测试
    - 工作流引擎集成测试
    - CLI 端到端测试
+   - MCP 进程内功能测试 (Layer 2)
+   - MCP 真实 SQLiteStore 集成测试
    - 需要真实 API Keys
 
 3. **E2E 测试** (`tests/e2e/`)
@@ -246,12 +276,23 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 
 4. **黑盒测试** (`tests/blackbox/`)
    - CLI 黑盒测试
+   - MCP stdio 协议级黑盒测试 (Layer 3)
    - 用户场景模拟
 
 5. **手动测试** (`tests/manual_test_*.py`)
    - 真实环境验证
    - AI 服务测试
    - 安全测试(纯文本归档)
+
+### MCP 三层测试体系 (M8+M9)
+
+MCP 测试采用三层递进架构,共 203 个测试用例:
+
+| 层级 | 文件 | 说明 |
+|------|------|------|
+| **Layer 1** 单元测试 | `test_mcp_tools.py`, `test_mcp_resources.py`, `test_mcp_prompts.py`, `test_mcp_security.py` | Mock 隔离,直接调用 handler 函数 |
+| **Layer 2** 进程内集成 | `test_mcp_functional.py`, `test_mcp_integration.py` | 经 FastMCP.call_tool() / read_resource(),验证注册 + Schema + 序列化 |
+| **Layer 3** stdio 黑盒 | `test_mcp_blackbox.py` | 启动子进程,经 JSON-RPC over stdio 端到端验证 |
 
 ### 测试数据
 
@@ -337,8 +378,24 @@ class MyProcessor(BaseProcessor):
 
 `QueryRouter` 根据查询特征自动选择策略:
 - 短查询 (<10 tokens) → BM25 (精确关键词)
-- 长查询 (≥10 tokens) → Vector (语义理解)
+- 长查询 (>=10 tokens) → Vector (语义理解)
 - 混合模式 → HybridRetriever (RRF k=60)
+
+#### 5. MCP Tool 异步模式
+
+MCP Tool handler 统一使用 `async def` + `anyio.to_thread.run_sync()` 包装同步 I/O:
+
+```python
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def my_tool(param: str) -> dict:
+    def _impl():
+        # 同步阻塞操作(SQLite/文件读写)
+        store = get_sqlite_store()
+        return store.query(param)
+    return await anyio.to_thread.run_sync(_impl)
+```
+
+写入 Tool 使用 `WorkflowEngine.execute_async()` (原生 async,无需 threadpool)。
 
 ---
 
@@ -348,9 +405,35 @@ class MyProcessor(BaseProcessor):
 
 本项目设计为与 Claude Code 深度协作:
 
-1. **工作流步骤**: `IdeaSharpenStep` 触发交互式对话
-2. **CLI 命令**: 通过 `python -m src.main` 调用核心功能
-3. **配置驱动**: 所有工作流定义在 `config/workflows/*.yaml`
+1. **MCP 集成**: 通过 `python -m src.mcp.server` 启动 MCP Server,Claude Code 可直接调用 Tool/Resource/Prompt
+2. **工作流步骤**: `IdeaSharpenStep` 触发交互式对话
+3. **CLI 命令**: 通过 `python -m src.main` 调用核心功能
+4. **配置驱动**: 所有工作流定义在 `config/workflows/*.yaml`
+
+### MCP 集成方式
+
+在 Claude Code 的 MCP 配置中添加:
+
+```json
+{
+  "mcpServers": {
+    "pkv": {
+      "command": "python",
+      "args": ["-m", "src.mcp.server"],
+      "cwd": "/path/to/personal-knowledge-vault"
+    }
+  }
+}
+```
+
+可用的 8 个 Tool:
+- **只读**: `search_knowledge`, `get_entry`, `list_tags`, `list_entries`, `get_stats`, `get_related`
+- **写入**: `archive_url`, `archive_text`
+
+可用的 3 个 Prompt 模板:
+- `search_and_summarize` -- 搜索并总结
+- `knowledge_qa` -- 知识库问答
+- `idea_sharpen` -- 思想磨砺
 
 ### AI 安全规范
 
@@ -368,6 +451,12 @@ class MyProcessor(BaseProcessor):
 3. **备份要求**
    - 重要变更前执行 `.\scripts\backup-data.ps1`
    - 数据库 Schema 变更必须先在测试环境验证
+
+4. **MCP 安全加固 (M9)**
+   - `archive_url`: SSRF 防护 -- 拒绝 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, localhost
+   - `archive_text`: 文本长度限制 (最大 100,000 字符)
+   - HTTP 传输: Bearer Token 认证 (`PKV_MCP_AUTH_TOKEN` 环境变量)
+   - 未配置 Token 时拒绝所有 HTTP 请求(安全默认)
 
 详见: [.ai-safety-rules.md](./.ai-safety-rules.md)
 
@@ -439,25 +528,29 @@ CREATE TABLE IF NOT EXISTS new_feature (
 
 ### 已完成里程碑
 
-- ✅ **M1**: 基础设施层(存储、配置、SQLite、向量)
-- ✅ **M2**: AI 服务层(DeepSeek、OpenAI、Embedding)
-- ✅ **M3**: 内容处理器(微信、知乎、通用网页、聊天)
-- ✅ **M3.5**: AI 聊天处理器与文本回退
-- ✅ **M4**: 检索引擎(BM25、向量、混合检索)
-- ✅ **M5**: 工作流引擎(编排、步骤、上下文)
-- ✅ **M5.1**: Bug 修复(配置字段、引擎传参、source_type)
-- ✅ **M6**: CLI 入口与交互界面(Click + Rich)
-- ✅ **M7**: 文档完善与交付
+- M1: 基础设施层(存储、配置、SQLite、向量)
+- M2: AI 服务层(DeepSeek、OpenAI、Embedding)
+- M3: 内容处理器(微信、知乎、通用网页、聊天)
+- M3.5: AI 聊天处理器与文本回退
+- M4: 检索引擎(BM25、向量、混合检索)
+- M5: 工作流引擎(编排、步骤、上下文)
+- M5.1: Bug 修复(配置字段、引擎传参、source_type)
+- M6: CLI 入口与交互界面(Click + Rich)
+- M7: 文档完善与交付
+- **M8: MCP 只读服务** -- 5 个只读 Tool + 4 个 Resource + 单元/集成测试
+- **M9: MCP 写入/Prompts/安全加固** -- 3 个写入 Tool + 3 个 Prompt 模板 + SSRF/文本验证/Bearer Auth + 三层测试 (203 tests)
 
 ### 当前版本
 
-**v0.6.1** (2026-02-16)
+**v0.7.0** (2026-02-19)
 
 核心功能:
 - CLI 命令行界面 (6 个核心命令)
+- MCP Server (8 Tools + 4 Resources + 3 Prompts)
 - 测试环境隔离 (AI 安全测试)
 - 数据库增量迁移系统
 - 自动备份与恢复
+- SSRF 防护 + 文本验证 + Bearer Token 认证
 - 完整的用户文档体系
 
 ### 已知问题
@@ -474,10 +567,10 @@ CREATE TABLE IF NOT EXISTS new_feature (
 
 | 文件 | 说明 |
 |------|------|
-| [docs/archive/PHASE1_DEV_PROMPT.md](./docs/archive/PHASE1_DEV_PROMPT.md) | Phase 1 开发计划（已归档） |
-| [docs/core/PHASE2_DEV_PROMPT.md](./docs/core/PHASE2_DEV_PROMPT.md) | Phase 2 总览（约束/原则/里程碑索引） |
-| [docs/core/PHASE2A_MCP_PROMPT.md](./docs/core/PHASE2A_MCP_PROMPT.md) | Phase 2A 执行 Prompt — MCP 服务 (M8+M9) |
-| [docs/core/PHASE2B_GUI_PROMPT.md](./docs/core/PHASE2B_GUI_PROMPT.md) | Phase 2B 执行 Prompt — GUI 应用 (M10~M13) |
+| [docs/archive/PHASE1_DEV_PROMPT.md](./docs/archive/PHASE1_DEV_PROMPT.md) | Phase 1 开发计划(已归档) |
+| [docs/core/PHASE2_DEV_PROMPT.md](./docs/core/PHASE2_DEV_PROMPT.md) | Phase 2 总览(约束/原则/里程碑索引) |
+| [docs/core/PHASE2A_MCP_PROMPT.md](./docs/core/PHASE2A_MCP_PROMPT.md) | Phase 2A 执行 Prompt -- MCP 服务 (M8+M9) |
+| [docs/core/PHASE2B_GUI_PROMPT.md](./docs/core/PHASE2B_GUI_PROMPT.md) | Phase 2B 执行 Prompt -- GUI 应用 (M10~M13) |
 | [docs/core/personal-knowledge-vault-prd.md](./docs/core/personal-knowledge-vault-prd.md) | 产品需求文档 |
 | [docs/core/架构设计.md](./docs/core/架构设计.md) | 工作流驱动架构设计 |
 | [docs/core/技术选型.md](./docs/core/技术选型.md) | 技术栈选型说明 |
@@ -509,7 +602,8 @@ CREATE TABLE IF NOT EXISTS new_feature (
 | 文件 | 说明 |
 |------|------|
 | [config/config.yaml](./config/config.yaml) | 主配置文件 |
-| [config/workflows/archive-url.yaml](./config/workflows/archive-url.yaml) | 归档工作流配置 |
+| [config/workflows/archive-url.yaml](./config/workflows/archive-url.yaml) | 归档网页工作流配置 |
+| [config/workflows/archive-text.yaml](./config/workflows/archive-text.yaml) | 归档文本工作流配置 (M9 新增) |
 | [config/workflows/search.yaml](./config/workflows/search.yaml) | 搜索工作流配置 |
 | [.env.example](./.env.example) | 环境变量模板 |
 | [.env.test.example](./.env.test.example) | 测试环境配置模板 |
@@ -565,10 +659,10 @@ CREATE TABLE IF NOT EXISTS new_feature (
 
 ### 代码规模
 
-- **源代码文件**: 35 个 Python 文件
-- **测试文件**: 30 个测试文件
+- **源代码文件**: 45 个 Python 文件 (含 MCP 模块 6 个)
+- **测试文件**: 44 个测试文件 (含 MCP 测试 7 个)
 - **文档文件**: 60+ 个 Markdown 文档
-- **配置文件**: 4 个 YAML 配置
+- **配置文件**: 5 个 YAML 配置
 - **运维脚本**: 7 个 PowerShell 脚本
 
 ### 模块分布
@@ -576,24 +670,26 @@ CREATE TABLE IF NOT EXISTS new_feature (
 | 模块 | 文件数 | 说明 |
 |------|--------|------|
 | `src/cli/` | 4 | CLI 命令行界面 |
+| `src/mcp/` | 6 | MCP Server (M8+M9) |
 | `src/processors/` | 7 | 内容处理器 |
-| `src/storage/` | 4 | 存储层 + 迁移管理器 |
+| `src/storage/` | 5 | 存储层 + 迁移管理器 |
 | `src/retrieval/` | 6 | 检索引擎 |
 | `src/workflow/` | 4 | 工作流引擎 |
 | `src/ai/` | 4 | AI 服务 |
 | `src/utils/` | 5 | 工具函数 |
-| `tests/unit/` | 21 | 单元测试 |
-| `tests/integration/` | 3 | 集成测试 |
+| `tests/unit/` | 25 | 单元测试 (含 MCP 4 个) |
+| `tests/integration/` | 5 | 集成测试 (含 MCP 2 个) |
 | `tests/e2e/` | 1 | E2E 测试 |
-| `tests/blackbox/` | 2 | 黑盒测试 |
+| `tests/blackbox/` | 3 | 黑盒测试 (含 MCP 1 个) |
 | `tests/manual_*` | 6 | 手动测试 |
 | `scripts/` | 9 | 运维脚本 |
 
 ### 测试覆盖率
 
-- **单元测试覆盖**: 全部核心模块
-- **集成测试覆盖**: 检索引擎、工作流引擎、CLI
+- **单元测试覆盖**: 全部核心模块 + MCP 模块
+- **集成测试覆盖**: 检索引擎、工作流引擎、CLI、MCP
 - **E2E 测试**: 真实 API 环境测试
+- **MCP 测试**: 203 个测试用例 (三层架构)
 - **整体覆盖率**: 约 85% (核心模块)
 - **Fixtures**: 微信/知乎/AI 聊天样本
 
@@ -620,20 +716,19 @@ CREATE TABLE IF NOT EXISTS new_feature (
 
 ### 优先任务
 
-1. **性能优化**
+1. **Phase 2B: GUI 应用**
+   - M10~M13: 桌面 GUI 应用开发
+   - 参见 [PHASE2B_GUI_PROMPT.md](./docs/core/PHASE2B_GUI_PROMPT.md)
+
+2. **性能优化**
    - 向量索引批量更新
    - SQLite 查询优化
    - 长文档分块策略
 
-2. **功能增强**
+3. **功能增强**
    - 实现 RAG 问答功能 (`/kb:ask`)
    - 添加 B站视频处理器
    - PDF 书籍处理器
-
-3. **用户体验**
-   - 交互式配置向导
-   - 更丰富的终端 UI
-   - 进度持久化(断点续传)
 
 ### 扩展方向
 
@@ -654,9 +749,9 @@ CREATE TABLE IF NOT EXISTS new_feature (
 
 ---
 
-**文档版本**: v3.0
-**生成时间**: 2026-02-16 18:51:32
+**文档版本**: v4.0
+**生成时间**: 2026-02-19 00:58:06
 **项目代号**: Personal Knowledge Vault
-**当前版本**: v0.6.1
+**当前版本**: v0.7.0
 
 *本文档由 Claude Code 自动生成并维护*

@@ -13,7 +13,7 @@
 - **单元测试** (`unit/`): 模块级测试,Mock 外部依赖
 - **集成测试** (`integration/`): 模块间协作测试
 - **E2E 测试** (`e2e/`): 端到端真实环境测试
-- **黑盒测试** (`blackbox/`): CLI 黑盒测试
+- **黑盒测试** (`blackbox/`): CLI/MCP 黑盒测试
 - **手动测试** (`manual_test_*.py`): 真实环境验证
 
 ---
@@ -29,6 +29,10 @@
 | `test_retrieval_*.py` (3个) | 检索引擎 | 30+ |
 | `test_workflow_*.py` (3个) | 工作流引擎 | 25+ |
 | `test_cli_*.py` (3个) | CLI 命令 | 17+ |
+| `test_mcp_tools.py` | MCP Tool handler | ~40 |
+| `test_mcp_resources.py` | MCP Resource handler | ~15 |
+| `test_mcp_prompts.py` | MCP Prompt 模板 | ~15 |
+| `test_mcp_security.py` | MCP 安全验证 (SSRF/Auth) | ~30 |
 
 **覆盖率**: 约 85% (核心模块)
 
@@ -41,6 +45,8 @@
 | `test_retrieval_integration.py` | 检索引擎端到端 |
 | `test_workflow_integration.py` | 工作流引擎集成 |
 | `test_cli_e2e.py` | CLI 端到端 |
+| `test_mcp_functional.py` | MCP 进程内功能测试 (Layer 2) -- 经 FastMCP 调用 ~50 tests |
+| `test_mcp_integration.py` | MCP 真实 SQLiteStore 集成 ~15 tests |
 
 ---
 
@@ -60,8 +66,16 @@
 |------|----------|
 | `test_cli_basic.py` | CLI 基础黑盒测试 |
 | `test_cli_blackbox.py` | CLI 完整黑盒测试 |
+| `test_mcp_blackbox.py` | MCP stdio 协议级黑盒测试 (Layer 3) -- ~40 tests |
 
-**测试方式**: 使用 `click.testing.CliRunner` 模拟命令行调用
+**MCP 黑盒测试**: 启动 `python -m src.mcp.server` 子进程,经 JSON-RPC over stdio 端到端验证。验证:
+- 服务启动与协议初始化(MCP 握手)
+- 功能发现 (list_tools=8, list_prompts=3, list_resources)
+- 只读 Tool 端到端调用 (含分页/过滤)
+- 写入 Tool 安全拦截 (SSRF/空文本/超长文本)
+- Prompt 端到端调用
+- Resource 端到端读取
+- 跨功能端到端场景 (list -> get -> read -> stats)
 
 ---
 
@@ -83,6 +97,31 @@
 
 ---
 
+## MCP 三层测试体系 (M8+M9)
+
+MCP 测试采用三层递进架构,共 203 个测试用例:
+
+```
+Layer 1: 单元测试 (最快, Mock 隔离)
+    tests/unit/test_mcp_tools.py        -- Tool handler 函数直接调用
+    tests/unit/test_mcp_resources.py    -- Resource handler 函数直接调用
+    tests/unit/test_mcp_prompts.py      -- Prompt 模板参数和输出
+    tests/unit/test_mcp_security.py     -- validate_url, is_private_ip, validate_text_length, validate_http_auth
+
+Layer 2: 进程内集成 (中速, FastMCP)
+    tests/integration/test_mcp_functional.py  -- mcp.call_tool(), mcp.read_resource()
+    tests/integration/test_mcp_integration.py -- 真实 SQLiteStore + MarkdownStore
+
+Layer 3: stdio 黑盒 (最慢, 子进程)
+    tests/blackbox/test_mcp_blackbox.py  -- stdio_client + ClientSession + JSON-RPC
+```
+
+**Layer 2 vs Layer 3 对比**:
+- Layer 2: 进程内调用,快速调试,但跳过 JSON-RPC 序列化
+- Layer 3: 跨进程通信,验证完整协议链路,但启动慢
+
+---
+
 ## 运行测试
 
 ### 单元测试
@@ -94,6 +133,7 @@ python -m pytest tests/unit/ -v
 # 运行特定模块测试
 python -m pytest tests/unit/test_processors_*.py -v
 python -m pytest tests/unit/test_cli_*.py -v
+python -m pytest tests/unit/test_mcp_*.py -v
 
 # 代码覆盖率
 python -m pytest tests/unit/ --cov=src --cov-report=term-missing
@@ -106,6 +146,9 @@ python -m pytest tests/unit/ --cov=src --cov-report=term-missing
 ```bash
 # 运行所有集成测试(需要 API Keys)
 python -m pytest tests/integration/ -v
+
+# 仅 MCP 集成测试
+python -m pytest tests/integration/test_mcp_*.py -v
 
 # 在测试环境运行
 $env:DB_PATH = ".data-test/db/knowledge_vault.db"
@@ -127,6 +170,12 @@ python -m pytest tests/e2e/ -v --tb=short
 
 ```bash
 # 运行 CLI 黑盒测试
+python -m pytest tests/blackbox/test_cli_*.py -v
+
+# 运行 MCP 黑盒测试 (启动子进程)
+python -m pytest tests/blackbox/test_mcp_blackbox.py -v
+
+# 全部黑盒测试
 python -m pytest tests/blackbox/ -v
 ```
 
@@ -183,6 +232,8 @@ $env:DB_PATH = ".data-test/db/knowledge_vault.db"
 python -m pytest tests/
 ```
 
+MCP 黑盒测试自动使用临时数据库(`tmp_path`),无需手动隔离。
+
 详见: [docs/测试环境隔离指南.md](../docs/测试环境隔离指南.md)
 
 ---
@@ -211,9 +262,10 @@ addopts = -v --tb=short
 ### 当前覆盖率
 
 - **整体覆盖率**: 约 85% (核心模块)
-- **单元测试**: 142+ 测试用例
-- **集成测试**: 完整覆盖检索/工作流/CLI
+- **单元测试**: 245+ 测试用例 (含 MCP 100+)
+- **集成测试**: 完整覆盖检索/工作流/CLI/MCP
 - **E2E 测试**: 真实 API 环境验证
+- **MCP 三层测试**: 203 测试用例
 
 ### 生成覆盖率报告
 
@@ -278,6 +330,18 @@ def test_with_api():
 
 ---
 
+### Q4: MCP 黑盒测试启动很慢怎么办?
+
+MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 1-2 秒。建议:
+- 开发时优先运行 Layer 1/2 测试
+- CI/CD 或提交前运行完整三层测试
+- 使用 `-k` 过滤特定测试类:
+```bash
+python -m pytest tests/blackbox/test_mcp_blackbox.py -k "TestReadonlyTools" -v
+```
+
+---
+
 ## 相关文件
 
 | 文件 | 说明 |
@@ -289,6 +353,13 @@ def test_with_api():
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-02-19 00:58 (M8+M9)
+- 新增 MCP 单元测试: `test_mcp_tools.py`, `test_mcp_resources.py`, `test_mcp_prompts.py`, `test_mcp_security.py`
+- 新增 MCP 集成测试: `test_mcp_functional.py`, `test_mcp_integration.py`
+- 新增 MCP 黑盒测试: `test_mcp_blackbox.py`
+- MCP 测试总计 203 个用例,三层递进架构
+- 更新测试覆盖率统计
 
 ### 2026-02-16 18:51
 - 生成 Tests 模块 CLAUDE.md 文档
@@ -307,6 +378,6 @@ def test_with_api():
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-02-16 18:51:32
+**最后更新**: 2026-02-19 00:58:06
 
 *本文档由 Claude Code 自动生成*

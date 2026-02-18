@@ -107,6 +107,46 @@ steps:
 
 ---
 
+#### archive-text.yaml (M9 新增)
+
+**用途**: 归档纯文本内容的工作流定义 (MCP `archive_text` Tool 专用)
+
+**与 archive-url 的区别**:
+- 跳过 `fetch_content` 步骤（无需抓取,文本由 MCP Tool 层传入）
+- 跳过 `idea_sharpen` 步骤（MCP 场景无终端交互能力）
+- Entry 由 MCP Tool 层调用 `TextFallbackProcessor` 预构建
+
+**步骤**:
+1. `ai_analyze` - AI 分析 (摘要/标签),失败时使用 TextFallbackProcessor 的默认摘要
+2. `store_entry` - 存储到三层存储 (Markdown + SQLite + Vector)
+
+```yaml
+name: archive-text
+description: "归档纯文本内容工作流（MCP 专用）"
+steps:
+  - id: ai_analyze
+    type: ai_analyze
+    config:
+      model: deepseek-chat
+      max_tokens: 2000
+      temperature: 0.7
+      tasks:
+        - summarize
+        - extract_tags
+    on_error: continue      # AI 失败则跳过
+
+  - id: store_entry
+    type: store_entry
+    config:
+      targets:
+        - markdown
+        - sqlite
+        - vector_index
+    on_error: fail
+```
+
+---
+
 #### search.yaml
 
 **用途**: 搜索知识库的工作流定义
@@ -181,6 +221,9 @@ DB_PATH=.data/db/knowledge_vault.db
 
 # 日志级别 (可选)
 LOG_LEVEL=INFO
+
+# MCP HTTP Bearer Token (仅 HTTP 传输模式需要)
+PKV_MCP_AUTH_TOKEN=your-secret-token
 ```
 
 **创建方式**:
@@ -322,7 +365,8 @@ python -m src.main <command>
 | 文件 | 说明 |
 |------|------|
 | `config.yaml` | 主配置文件 |
-| `workflows/archive-url.yaml` | 归档工作流配置 |
+| `workflows/archive-url.yaml` | 归档网页工作流配置 |
+| `workflows/archive-text.yaml` | 归档文本工作流配置 (M9 新增) |
 | `workflows/search.yaml` | 搜索工作流配置 |
 | `custom_dict.txt` | jieba 自定义词典 |
 | `../.env.example` | 环境变量模板 (生产) |
@@ -331,6 +375,11 @@ python -m src.main <command>
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-02-19 00:58 (M9)
+- 新增 `workflows/archive-text.yaml` 工作流配置 (MCP archive_text 专用)
+- 新增 `PKV_MCP_AUTH_TOKEN` 环境变量说明 (HTTP Bearer Token)
+- 更新文档体现 3 个工作流配置
 
 ### 2026-02-16 18:51
 - 生成 Config 模块 CLAUDE.md 文档
@@ -344,6 +393,6 @@ python -m src.main <command>
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-02-16 18:51:32
+**最后更新**: 2026-02-19 00:58:06
 
 *本文档由 Claude Code 自动生成*

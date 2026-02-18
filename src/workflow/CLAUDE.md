@@ -242,42 +242,18 @@ class StoreStep(BaseStep):
 
 配置文件位置: `config/workflows/<workflow-name>.yaml`
 
-**示例: archive-url.yaml**
+当前已有 3 个工作流配置:
 
-```yaml
-name: archive-url
-description: "归档网页内容"
+| 工作流 | 配置文件 | 用途 | 调用者 |
+|--------|---------|------|--------|
+| `archive-url` | `archive-url.yaml` | 归档网页 | CLI `archive` + MCP `archive_url` |
+| `archive-text` | `archive-text.yaml` | 归档纯文本 (M9 新增) | MCP `archive_text` |
+| `search` | `search.yaml` | 搜索知识库 | CLI `search` + MCP `search_knowledge` |
 
-steps:
-  # 步骤 1: 抓取内容
-  - id: fetch
-    type: fetch_content
-    retry: 3
-
-  # 步骤 2: AI 分析（可选）
-  - id: analyze
-    type: ai_analyze
-    skip_if_exists: true  # 如果已有摘要则跳过
-
-  # 步骤 3: idea Sharpen（条件触发）
-  - id: sharpen
-    type: idea_sharpen
-    condition: |
-      content_length > 3000 or
-      concept_count >= 5 or
-      content_type in ["discussion", "analysis"]
-    questions:
-      - "这篇内容的核心价值是什么？"
-      - "你想记住哪些关键点？"
-
-  # 步骤 4: 存储
-  - id: store
-    type: store_entry
-    targets:
-      - markdown
-      - sqlite
-      - vector_index
-```
+**archive-text 与 archive-url 的区别**:
+- `archive-text` 跳过 `fetch_content` 步骤(文本由 MCP Tool 层预构建 Entry)
+- `archive-text` 跳过 `idea_sharpen` 步骤(MCP 场景无终端交互)
+- `archive-text` 的 `ai_analyze` 设置 `on_error: continue`(AI 失败不阻断)
 
 ---
 
@@ -379,6 +355,22 @@ class State(dict):
 )
 ```
 
+### 归档文本工作流 (archive-text, M9 新增)
+
+```
+输入: {"entry": Entry(...)}  # MCP Tool 层已构建好 Entry
+
+步骤 1: AnalyzeStep (on_error: continue)
+  → 调用 DeepSeek 生成摘要和标签
+  → 失败时保留 TextFallbackProcessor 的默认摘要
+
+步骤 2: StoreStep
+  → 保存到 Markdown/SQLite/Vector
+  → 输出: {"markdown_path": "...", "knowledge_id": "..."}
+
+最终输出: WorkflowResult(success=True, ...)
+```
+
 ---
 
 ## 测试与质量
@@ -421,11 +413,11 @@ python tests/manual_test_workflow_config.py
 
 ### 测试覆盖
 
-- ✅ `test_workflow_engine.py`: 引擎核心逻辑
-- ✅ `test_workflow_models.py`: State/Context/Result 数据模型
-- ✅ `test_workflow_steps.py`: 各步骤单元测试
-- ✅ `test_workflow_integration.py`: 端到端集成测试
-- ✅ 手动测试脚本: 真实环境验证
+- `test_workflow_engine.py`: 引擎核心逻辑
+- `test_workflow_models.py`: State/Context/Result 数据模型
+- `test_workflow_steps.py`: 各步骤单元测试
+- `test_workflow_integration.py`: 端到端集成测试
+- 手动测试脚本: 真实环境验证
 
 ---
 
@@ -484,6 +476,10 @@ if not result.success:
     print("日志:", result.logs)
 ```
 
+配置级别的错误处理 (`on_error`):
+- `fail` (默认): 步骤失败则终止整个工作流
+- `continue`: 步骤失败时跳过，继续后续步骤（archive-text 的 ai_analyze 使用此策略）
+
 ### Q4: 如何在步骤间传递数据？
 
 通过 `context.state` 传递:
@@ -499,12 +495,19 @@ class Step2(BaseStep):
         return {"result": data.upper()}
 ```
 
-### Q5: idea Sharpen 如何工作？
+### Q5: MCP 写入 Tool 如何调用工作流?
 
-1. **触发条件**: 在配置中定义（如 `word_count > 3000`）
-2. **交互方式**: CLI 提示用户回答问题
-3. **数据保存**: 用户回答保存到 `context.state["user_notes"]`
-4. **后续步骤**: 可在 StoreStep 中保存到 Entry.notes
+MCP `archive_url` 和 `archive_text` Tool 直接调用 `WorkflowEngine.execute_async()`:
+
+```python
+# archive_url Tool (简化示意)
+engine = WorkflowEngine()
+result = await engine.execute_async("archive-url", {"url": url})
+
+# archive_text Tool (简化示意)
+engine = WorkflowEngine()
+result = await engine.execute_async("archive-text", {"entry": entry})
+```
 
 ---
 
@@ -523,7 +526,8 @@ class Step2(BaseStep):
 
 | 文件 | 说明 |
 |------|------|
-| `config/workflows/archive-url.yaml` | 归档工作流配置 |
+| `config/workflows/archive-url.yaml` | 归档网页工作流配置 |
+| `config/workflows/archive-text.yaml` | 归档文本工作流配置 (M9 新增) |
 | `config/workflows/search.yaml` | 搜索工作流配置 |
 
 ### 测试文件
@@ -549,6 +553,11 @@ class Step2(BaseStep):
 
 ## 变更记录 (Changelog)
 
+### 2026-02-19 00:58 (M9)
+- 新增 `archive-text` 工作流配置 (MCP archive_text Tool 专用)
+- 文档补充 MCP 与 Workflow 集成说明
+- 补充 `on_error: continue` 错误处理策略说明
+
 ### 2026-02-16
 - 生成模块级 CLAUDE.md 文档
 - 添加导航面包屑
@@ -567,6 +576,6 @@ class Step2(BaseStep):
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-02-16 01:53:22
+**最后更新**: 2026-02-19 00:58:06
 
 *本文档由 Claude Code 自动生成*
