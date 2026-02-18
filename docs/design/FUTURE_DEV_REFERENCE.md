@@ -5,6 +5,9 @@
 > **创建日期**: 2026-02-18
 > **来源**: Phase 2B GUI Prompt 综合审查
 > **优先级**: P2（不阻塞 M10~M13 开发，视实际需求逐步引入）
+>
+> **已纳入 M10 计划的项目**: GUI 状态持久化（QSettings）和崩溃报告机制（sys.excepthook）
+> 已在 PHASE2B_GUI_PROMPT.md 的 M10 验收检查点和维护方案中明确要求，不再列入本文档。
 
 ---
 
@@ -17,7 +20,7 @@
 **建议方案**:
 
 ```python
-# src/gui/themes/theme_manager.py
+# src/gui/styles/theme_manager.py （路径与 PHASE2B 的 src/gui/styles/ 对齐）
 THEME_VARS = {
     "light": {
         "@bg-primary": "#FFFFFF",
@@ -35,7 +38,7 @@ THEME_VARS = {
 
 def load_theme(theme_name: str) -> str:
     """加载 QSS 模板并替换变量占位符"""
-    template = Path(f"themes/{theme_name}.qss").read_text()
+    template = Path(f"src/gui/styles/{theme_name}.qss").read_text()
     for var, value in THEME_VARS[theme_name].items():
         template = template.replace(var, value)
     return template
@@ -72,11 +75,11 @@ I18N = {
 
 ---
 
-## 3. 多 AI 提供商接口
+## 3. 多 AI 提供商扩展
 
-**现状**: M12 AI Chat Service 只对接 DeepSeek。
+**现状**: M12 已规划 `BaseChatProvider` 抽象接口 + `DeepSeekProvider` 具体实现（见 PHASE2B_GUI_PROMPT.md M12 交付物）。
 
-**问题**: 用户可能希望切换 OpenAI / 本地 Ollama / 其他提供商。
+**扩展方向**: M12 完成后，如需支持 OpenAI / 本地 Ollama / 其他提供商，可基于 `BaseChatProvider` 扩展。
 
 **建议方案**:
 
@@ -124,7 +127,7 @@ ai:
       model: qwen2.5
 ```
 
-**引入时机**: M12 完成后，如果有用户反馈需要切换模型。M12 实现时可预留 `AIProvider` 抽象类但只实现 DeepSeek。
+**引入时机**: M12 已实现 `BaseChatProvider` + `DeepSeekProvider`。新增提供商只需继承 `BaseChatProvider` 并注册到配置中，无需修改现有代码。
 
 ---
 
@@ -172,9 +175,9 @@ class KnowledgeGraphView(QWidget):
 
 ## 5. 快捷键可配置
 
-**现状**: 文档提到 `Ctrl+K` 全局搜索，快捷键硬编码。
+**现状**: PHASE2B 规划了 `Ctrl+K` 全局搜索等快捷键，初期以硬编码方式实现。
 
-**问题**: 用户习惯不同，可能想自定义。
+**问题**: 如果用户习惯不同或与系统快捷键冲突，需要可配置化支持。
 
 **建议方案**:
 
@@ -202,38 +205,7 @@ class ShortcutManager:
 
 ---
 
-## 6. GUI 状态持久化
-
-**现状**: 每次启动窗口都是默认大小和位置。
-
-**问题**: 用户每次都要重新调整窗口布局。
-
-**建议方案**:
-
-```python
-# 在 MainWindow 中
-def closeEvent(self, event):
-    settings = QSettings("PKV", "PersonalKnowledgeVault")
-    settings.setValue("geometry", self.saveGeometry())
-    settings.setValue("windowState", self.saveState())
-    settings.setValue("splitter/sizes", self.splitter.sizes())
-    super().closeEvent(event)
-
-def _restore_state(self):
-    settings = QSettings("PKV", "PersonalKnowledgeVault")
-    geometry = settings.value("geometry")
-    if geometry:
-        self.restoreGeometry(geometry)
-    state = settings.value("windowState")
-    if state:
-        self.restoreState(state)
-```
-
-**引入时机**: M10 开发时就可以顺手加上，代码量极小（~15 行）。建议 M10 直接做。
-
----
-
-## 7. `chat_sessions.messages` 长对话优化
+## 6. `chat_sessions.messages` 长对话优化
 
 **现状**: M12 设计中 `messages TEXT NOT NULL` 存储整个对话 JSON 数组。
 
@@ -266,7 +238,7 @@ CREATE INDEX idx_chat_messages_session ON chat_messages(session_id, created_at);
 
 ---
 
-## 8. 性能基准与监控
+## 7. 性能基准与监控
 
 **GUI 性能指标（未来可加入 CI）**:
 
@@ -301,50 +273,19 @@ class PerfMonitor:
 
 ---
 
-## 9. 崩溃报告机制
-
-**现状**: 未捕获异常导致 GUI 静默崩溃。
-
-**建议方案**:
-
-```python
-# src/gui/app.py
-import sys, traceback
-
-def global_exception_handler(exc_type, exc_value, exc_tb):
-    """全局异常处理：写日志 + 弹窗提示"""
-    error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
-    logger.critical(f"未捕获异常:\n{error_msg}")
-
-    # 可选：弹出错误对话框
-    from PySide6.QtWidgets import QMessageBox
-    QMessageBox.critical(None, "程序异常",
-        f"发生了一个未预期的错误，日志已保存。\n\n{exc_value}")
-
-sys.excepthook = global_exception_handler
-```
-
-**引入时机**: M10 框架搭建时直接加入（代码量极小，但价值大）。建议提升到 P1。
-
----
-
 ## 引入优先级速查表
 
 | 编号 | 优化项 | 建议引入时机 | 代码量 |
 |-----|-------|------------|-------|
 | 1 | QSS 主题变量 | 需要第 3 套主题时 | ~50 行 |
 | 2 | i18n 预留 | 有多语言需求时 | ~100 行框架 |
-| 3 | 多 AI 提供商 | M12 后有切换需求时 | ~200 行 |
+| 3 | 多 AI 提供商扩展 | M12 后有切换需求时 | ~150 行/提供商 |
 | 4 | 插件化视图 | 视图超过 5 个时 | ~60 行 |
-| 5 | 快捷键可配置 | 有用户反馈时 | ~40 行 |
-| 6 | GUI 状态持久化 | **M10 顺手加** | ~15 行 |
-| 7 | 长对话优化 | Phase 3 / 对话超 50 轮 | ~50 行 + 迁移 |
-| 8 | 性能监控 | M13 打包验收 | ~30 行 |
-| 9 | 崩溃报告 | **M10 顺手加** | ~20 行 |
-
-> **注**: 第 6、9 项虽然列在本文档中，但建议在 M10 框架搭建时直接加入，投入极小、收益明确。
+| 5 | 快捷键可配置 | 有用户反馈快捷键冲突时 | ~40 行 |
+| 6 | 长对话优化 | Phase 3 / 对话超 50 轮 | ~50 行 + 迁移 |
+| 7 | 性能监控 | M13 打包验收 | ~30 行 |
 
 ---
 
-**文档版本**: v1.0
+**文档版本**: v1.1（复查修正：删除已纳入 M10 的冗余项，对齐路径与描述）
 **维护者**: 幽浮喵 (猫娘工程师)
