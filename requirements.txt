@@ -26,6 +26,10 @@ httpx==0.26.0              # HTTP 客户端 (用于 DeepSeek API)
 playwright==1.48.0         # 网页自动化 (Python 3.13 兼容)
 requests==2.31.0           # HTTP 请求
 
+# MCP Server (Phase 2A)
+mcp[cli]>=1.6.0            # MCP Python SDK (含 FastMCP + CLI 调试工具)
+anyio>=4.0.0               # 异步 I/O (anyio.to_thread.run_sync 包装阻塞操作)
+
 # Testing
 pytest==7.4.4              # 测试框架 (兼容 pytest-asyncio<8 要求)
 pytest-cov==4.1.0          # 测试覆盖率
