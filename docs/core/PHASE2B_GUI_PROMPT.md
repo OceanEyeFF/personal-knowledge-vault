@@ -2,11 +2,15 @@
 
 > GUI 桌面应用开发执行指令（M10 ~ M13）
 >
-> **版本**: 1.0
+> **版本**: 1.2
 > **创建日期**: 2026-02-18
+> **最后更新**: 2026-02-19 (v1.2: M10 已完成，更新交付物状态和实现经验)
 > **适用对象**: Claude Code、CodeX 等 AI 开发工具
-> **前置条件**: Phase 1 (v0.6.1) 已全部完成；Phase 2A (v0.7.0) 建议先完成
+> **前置条件**: Phase 1 (v0.6.1) 已全部完成；**Phase 2A (v0.7.0) 已完成**；**M10 (v0.8.0-alpha) 已完成**
 > **总览文档**: [PHASE2_DEV_PROMPT.md](./PHASE2_DEV_PROMPT.md)
+>
+> **⚠️ 进度状态（2026-02-19）**: M10 已完成（v0.8.0-alpha，15 源文件 + 4 测试文件，130 测试全通过）。
+> M11~M13 待开始。详见 [M10 完成报告](../milestones/M10_COMPLETION_REPORT.md)。
 
 ---
 
@@ -45,18 +49,199 @@
   PySide6-Addons>=6.8.0   # QWebEngineView 等附加组件（M10 需要）
   ```
 
-> **M10 Markdown 渲染建议**：优先使用 `QTextEdit.setMarkdown()` 以降低打包体积（约 150MB）；仅在需要代码高亮时再升级为 `QWebEngineView`。
+> **M10 Markdown 渲染实际选择**：采用 `QTextEdit.setMarkdown()`，打包体积约 150MB（无需 QWebEngineView 的约 250MB 额外开销）。若后续需要代码高亮可在 M11+ 升级为 `QWebEngineView`。
 
 ---
 
 ## ⚠️ 上游接口对齐注意事项（实现前必读）
 
-1. `SQLiteStore` 查询 API 已完整实现：`list_entries`、`count_entries`、`get_all_tags_with_count`、`get_statistics`、`query_by_url` 可用；`sort_by` 仅允许白名单字段。
-2. `SearchResult` 是 frozen dataclass，仅包含 `knowledge_id`、`title`、`score`、`highlight`、`metadata`；不存在 `.abstract` / `.tags` / `.source_type` 属性。
-3. `MarkdownStore.load()` 返回 `Optional[Entry]`，不是字符串；请使用 `entry.content`。
-4. 数据库中的 `tags` / `keywords` 为逗号分隔字符串。
-5. `WorkflowEngine` 没有进度回调（M11 使用脉冲动画）。
-6. DeepSeek API 目前只有同步实现（M12 需新增异步实现）。
+> 以下注意事项综合了 Phase2A 实际实现中发现的所有接口细节，**比原始规范文档更准确**，请以此为准。
+
+### 1. SQLiteStore 查询 API（已全部实现，可直接调用）
+
+`SQLiteStore` 所有查询方法均已在 Phase2A (M8) 中实现，GUI 可直接使用：
+
+```python
+from src.storage.sqlite_store import SQLiteStore
+from src.utils.config import get_config
+
+store = SQLiteStore(get_config().db_path)
+
+# 分页列表（sort_by 白名单：archived_at/title/knowledge_id/word_count/source_type）
+entries = store.list_entries(limit=20, offset=0, sort_by="archived_at",
+                              sort_order="desc", source_type=None, tag=None)
+# 计数
+total = store.count_entries(source_type=None, tag=None)
+
+# 标签排行
+tags = store.get_all_tags_with_count(limit=20)
+# 返回: [{"name": "AI", "count": 5}, ...]
+
+# 综合统计（直接调用，供 stats_view 使用）
+stats = store.get_statistics()
+# 返回: {"total_entries": N, "by_source_type": [(type, count)...], "top_tags": [...]}
+
+# 按 URL 查询（避免重复归档时有用）
+entry = store.query_by_url(source_url)  # 返回 dict 或 None
+
+# 按 ID 查询
+entry = store.query_by_id(knowledge_id_int)  # 返回 dict 或 None
+```
+
+**⚠️ 关键细节**：
+- `sort_by` 参数有白名单校验，传入非法字段会抛 `ValueError`，GUI 需处理
+- `list_entries` 返回的每个条目 dict 包含：`knowledge_id`(int)、`title`、`summary_one_sentence`、`tags`(逗号字符串)、`keywords`(逗号字符串)、`source_type`、`source_url`、`word_count`、`archived_at`、`file_path`
+
+### 2. SearchResult 字段（只有 5 个，无 .abstract/.tags/.source_type）
+
+```python
+# SearchResult 是 frozen dataclass
+result.knowledge_id  # int
+result.title         # str
+result.score         # float [0.0, 1.0]
+result.highlight     # str — 摘要/snippet（用作 abstract）
+result.metadata      # dict — 含 source_type, tags(逗号字符串), archived_at, file_path 等
+```
+
+GUI 从 SearchResult 取标签：`tags_list = result.metadata.get("tags", "").split(",")`
+
+### 3. tags/keywords 在数据库中是逗号分隔字符串
+
+`entry["tags"]` → `"AI,知识管理"` 而非列表。Phase2A 实现了 `parse_tags_string()` 可复用：
+
+```python
+from src.mcp.utils import parse_tags_string
+tags_list = parse_tags_string(entry.get("tags", ""))
+```
+
+或 GUI 自行实现：`[t.strip() for t in tag_str.split(",") if t.strip()]`
+
+### 4. MarkdownStore.load() 返回 Entry 对象，接收 Path
+
+```python
+from src.storage.markdown_store import MarkdownStore
+from pathlib import Path
+
+md_store = MarkdownStore(get_config().vault_dir)
+entry = md_store.load(Path(file_path_str))  # 必须是 Path 对象
+content = entry.content if entry else ""    # 返回 Optional[Entry]
+```
+
+### 5. Config 属性速查（已验证可用）
+
+```python
+from src.utils.config import get_config
+config = get_config()
+
+config.db_path           # Path — SQLite 数据库路径（受 DB_PATH 环境变量覆盖）
+config.vault_dir         # Path — Markdown 文件存储目录
+config.vector_index_dir  # Path — hnswlib 向量索引目录
+config.log_dir           # Path — 日志目录
+config.log_level         # str — 日志级别（优先 LOG_LEVEL 环境变量）
+
+config.deepseek_api_key   # Optional[str] — 从 DEEPSEEK_API_KEY 环境变量读取
+config.deepseek_base_url  # str — 默认 "https://api.deepseek.com/v1"
+config.openai_api_key     # Optional[str] — 从 OPENAI_API_KEY 环境变量读取
+config.openai_base_url    # str — 默认 "https://api.openai.com/v1"
+
+# 通用 get 方法（支持点分隔路径）
+config.get("ai.openai.embedding_dim", 1536)  # 读取 config.yaml 中的嵌套字段
+```
+
+**⚠️ GUI 设置界面注意**：API Key 存储在 `.env` 文件 / 系统环境变量中，`config` 对象通过 `get_env()` 读取。
+设置界面修改 API Key 时，需要写入 `.env` 文件并调用 `os.environ` 更新当前进程，或提示重启。
+
+### 6. WorkflowEngine 接口（确认无进度回调）
+
+```python
+from src.workflow.engine import WorkflowEngine
+from src.workflow.models import WorkflowResult  # dataclass: success, data, errors, logs
+
+engine = WorkflowEngine()  # 无参构造，内部自动 get_config()
+
+# 原生 async，在 QThread 中用 asyncio.run() 调用
+result: WorkflowResult = await engine.execute_async(
+    "archive-url",         # 工作流名称
+    {"url": "https://..."}  # 输入数据
+)
+
+# result.success  — bool
+# result.data     — dict，含 knowledge_id, title, file_path, tags, summary_one_sentence 等
+# result.errors   — List[str]
+# result.logs     — List[str]
+```
+
+**工作流名称**：`"archive-url"` (URL 归档)、`"archive-text"` (文本归档，M9 新增)、`"search"` (搜索)
+
+**M11 进度显示方案**：由于 `execute_async()` 无进度回调，推荐使用"脉冲动画"（`QProgressBar` indeterminate 模式）。
+若后续需要精确进度，可在 `execute_async()` 签名中添加 `on_progress: Callable[[int, str], None] | None = None` 回调。
+
+### 7. QueryRouter 接口（GUI 搜索直接调用）
+
+```python
+from src.retrieval.query_router import QueryRouter
+from src.ai.openai_client import OpenAIClient
+
+config = get_config()
+router = QueryRouter(
+    db_path=config.db_path,
+    vector_index_dir=config.vector_index_dir,
+    embedder=OpenAIClient(config),
+)
+
+results = router.search(query, limit=10)  # 返回 List[SearchResult]
+```
+
+**⚠️ 单例复用**：`QueryRouter` 内含 hnswlib 索引（加载耗时 1-3s），GUI 必须将其作为单例管理（同 MCP 服务的做法）。建议在 ViewModel 层初始化一次后复用。
+
+### 8. DeepSeek 客户端现状（同步实现，M12 需新增异步）
+
+- **现有**：`src/ai/deepseek_client.py` 使用 `httpx.Client`（同步），提供 `generate_summary()` 和 `extract_tags()`
+- **不存在**：流式输出 / `stream_chat()` 方法
+- **M12 需新建**：`src/gui/services/ai_chat_service.py`，使用 `httpx.AsyncClient` 实现 SSE 流式接口
+
+```python
+# M12 新建文件，DeepSeek 流式接口参考实现
+# 注意：openai SDK 的 stream=True 也可用（DeepSeek 兼容 OpenAI API 格式）
+import httpx
+
+async def stream_chat(messages: list, api_key: str,
+                      base_url: str = "https://api.deepseek.com/v1",
+                      model: str = "deepseek-chat"):
+    async with httpx.AsyncClient() as client:
+        async with client.stream("POST", f"{base_url}/chat/completions",
+                                 headers={"Authorization": f"Bearer {api_key}"},
+                                 json={"model": model, "messages": messages,
+                                       "stream": True}) as resp:
+            async for line in resp.aiter_lines():
+                if line.startswith("data: ") and line != "data: [DONE]":
+                    import json
+                    chunk = json.loads(line[6:])
+                    token = chunk["choices"][0]["delta"].get("content", "")
+                    if token:
+                        yield token
+```
+
+### 9. VectorStore 新增 API（Phase2A 新增，M10 可用于"相关条目"功能）
+
+```python
+from src.storage.vector_store import VectorStore
+
+vector_store = VectorStore(
+    index_dir=config.vector_index_dir,
+    dim=config.get("ai.openai.embedding_dim", 1536),
+)
+
+# 取回某条目的 doc 向量（Phase2A M9 新增）
+vec = vector_store.get_doc_vector(knowledge_id_int)  # Optional[np.ndarray]
+
+# 相似文档搜索
+results = vector_store.search_doc(vec, k=5)  # List[(knowledge_id, distance)]
+# distance 是 cosine distance，score = 1 - distance
+
+# 分块向量搜索（细粒度）
+results = vector_store.search_chunk(vec, k=10)  # List[(knowledge_id, chunk_index, distance)]
+```
 
 ---
 
@@ -68,28 +253,36 @@
 
 **交付物**:
 
-- [ ] `src/gui/__init__.py` - GUI 模块初始化
-- [ ] `src/gui/app.py` - QApplication 主入口（事件循环、异常处理）
-- [ ] `src/gui/main_window.py` - 主窗口
-  - [ ] QMainWindow 框架（菜单栏 + 工具栏 + 状态栏）
-  - [ ] 侧边导航栏（视图切换）
-  - [ ] 全局快捷键注册
-- [ ] `src/gui/styles/` - QSS 样式表
-  - [ ] `light.qss` - 明亮主题
-  - [ ] `dark.qss` - 暗色主题
-- [ ] `src/gui/assets/` - 图标和资源文件
-- [ ] `src/gui/views/browser_view.py` - 知识库浏览界面
-  - [ ] 左侧：标签树 / 来源分类（QTreeView）
-  - [ ] 中间：条目列表（QTableView + 自定义 Model）
-  - [ ] 右侧：Markdown 预览（QWebEngineView 或 QTextEdit）
-- [ ] `src/gui/views/search_view.py` - 搜索界面
-  - [ ] 搜索框 + 策略选择（BM25/向量/混合/自动）
-  - [ ] 结果列表 + 高亮匹配
-  - [ ] 快捷键支持（Ctrl+K 全局搜索）
-- [ ] `src/gui/models/` - Qt MVC 数据模型
-  - [ ] `entry_model.py` - 知识条目数据模型
-  - [ ] `tag_model.py` - 标签数据模型
-- [ ] `tests/unit/test_gui_models.py` - 数据模型单元测试
+- [x] `src/gui/__init__.py` - GUI 模块初始化
+- [x] `src/gui/app.py` - QApplication 主入口（事件循环、异常处理）
+- [x] `src/gui/main_window.py` - 主窗口
+  - [x] QMainWindow 框架（菜单栏 + 工具栏 + 状态栏）
+  - [x] 侧边导航栏（视图切换）
+  - [x] 全局快捷键注册
+- [x] `src/gui/styles/` - QSS 样式表
+  - [x] `light.qss` - 明亮主题
+  - [x] `dark.qss` - 暗色主题
+- [x] `src/gui/assets/` - 图标和资源文件
+- [x] `src/gui/views/browser_view.py` - 知识库浏览界面
+  - [x] 左侧：标签树 / 来源分类（QTreeView）
+  - [x] 中间：条目列表（QTableView + 自定义 Model）
+  - [x] 右侧：Markdown 预览（QTextEdit.setMarkdown()）
+- [x] `src/gui/views/search_view.py` - 搜索界面
+  - [x] 搜索框 + 策略选择（BM25/向量/混合/自动）
+  - [x] 结果列表 + 高亮匹配
+  - [x] 快捷键支持（Ctrl+K 全局搜索）
+- [x] `src/gui/models/` - Qt MVC 数据模型
+  - [x] `entry_model.py` - 知识条目数据模型
+  - [x] `tag_model.py` - 标签数据模型
+- [x] `tests/unit/test_gui_models.py` - 数据模型单元测试
+- [x] `tests/unit/test_gui_main_window.py` - 主窗口 pytest-qt 测试（23 用例）
+- [x] `tests/unit/test_gui_browser_view.py` - 浏览界面 pytest-qt 测试（27 用例）
+- [x] `tests/unit/test_gui_search_view.py` - 搜索界面 pytest-qt 测试（21 用例）
+
+**额外交付（文档未预期）**:
+- [x] `src/gui/stores.py` - GUI 层存储单例管理（延迟初始化，参考 MCP 单例模式）
+- [x] `src/gui/preview_loader.py` - Markdown 预览加载器（浏览/搜索共享）
+- [x] `src/gui/models/search_result_model.py` - 搜索结果专用 Model
 
 **验收检查点**:
 1. `python -m src.gui.app` 启动后显示主窗口（无崩溃）
@@ -385,12 +578,22 @@ def get_preset(preset_id: str = "default") -> ChatPreset:
 
 ```python
 # 使用 pytest-qt 测试 GUI
-def test_search_view(qtbot):
-    view = SearchView()
-    qtbot.addWidget(view)
-    qtbot.keyClicks(view.search_input, "分布式系统")
-    qtbot.mouseClick(view.search_button, Qt.LeftButton)
-    assert view.result_table.rowCount() > 0
+# ⚠️ M10 实践经验：
+# 1. 使用 yield 而非 return，确保 mock 上下文在整个测试期间保持活跃
+# 2. 中文输入使用 setText() 而非 keyClicks()（offscreen 平台会崩溃）
+# 3. hasFocus() 在 offscreen 平台不可靠，需放宽断言
+@pytest.fixture
+def search_view(qtbot, mock_retriever):
+    with patch("src.gui.stores.get_bm25_retriever", return_value=mock_retriever):
+        from src.gui.views.search_view import SearchView
+        view = SearchView()
+        qtbot.addWidget(view)
+        yield view  # yield 保持 mock 上下文
+
+def test_search_view(search_view, qtbot):
+    search_view.search_input.setText("分布式系统")  # setText 代替 keyClicks
+    search_view.do_search()
+    assert search_view._result_model.rowCount() > 0
 ```
 
 ---
@@ -415,10 +618,11 @@ def test_search_view(qtbot):
 
 ## 📦 交付清单汇总
 
-### v0.8.0-alpha 交付 (M10)
-- [ ] GUI 基础框架（主窗口 + 明暗主题）
-- [ ] 知识库浏览界面（标签树 + 列表 + 预览）
-- [ ] 搜索界面（关键词搜索 + 结果展示）
+### v0.8.0-alpha 交付 (M10) ✅ 已完成
+- [x] GUI 基础框架（主窗口 + 明暗主题）
+- [x] 知识库浏览界面（标签树 + 列表 + 预览）
+- [x] 搜索界面（关键词搜索 + 结果展示）
+- [x] pytest-qt 测试覆盖（130 测试全通过）
 
 ### v0.8.0-beta 交付 (M11)
 - [ ] 归档界面（URL + 文本归档 + 进度显示）
@@ -439,6 +643,84 @@ def test_search_view(qtbot):
 
 ---
 
-**文档版本**: v1.0
+---
+
+## 📋 Phase2A 代码产出速查（GUI 开发参考）
+
+> Phase2A (v0.7.0) 已完成。GUI 开发时可直接复用以下模块，无需重新实现。
+
+### 可直接复用的函数（来自 `src/mcp/utils.py`）
+
+| 函数 | 用途 | GUI 使用场景 |
+|------|------|------------|
+| `parse_tags_string(tags_str)` | 逗号字符串 → 列表 | 所有显示标签的 View |
+| `serialize_entry_summary(entry)` | SQLiteStore dict → 展示用 dict | BrowserView 条目列表 |
+| `serialize_search_result(result)` | SearchResult → 展示用 dict | SearchView 结果列表 |
+| `clamp_param(value, min, max)` | 参数范围限制 | 分页参数校验 |
+| `validate_url_security(url)` | URL 格式 + SSRF 验证 | ArchiveView URL 归档前验证 |
+| `validate_text_length(text, max=100000)` | 文本长度验证 | ArchiveView 文本归档前验证 |
+
+```python
+# 导入方式（直接复用 MCP 层的工具函数）
+from src.mcp.utils import parse_tags_string, serialize_entry_summary, validate_url_security
+```
+
+### 单例管理模式参考（来自 `src/mcp/server.py`）
+
+MCP 服务中采用模块级懒初始化单例，GUI 已在 M10 中实现了独立的单例管理模块：
+
+```python
+# M10 实际实现：src/gui/stores.py（参考 MCP 的单例模式，为 GUI 独立实现）
+from src.gui.stores import get_sqlite_store, get_markdown_store, get_bm25_retriever
+
+store = get_sqlite_store()       # SQLiteStore 单例
+md_store = get_markdown_store()  # MarkdownStore 单例
+retriever = get_bm25_retriever() # BM25Retriever 单例（不走 QueryRouter，避免 hnswlib 冷启动）
+```
+
+> **M10 设计决策**：GUI 搜索使用 `BM25Retriever` 而非 `QueryRouter`，避免触发 hnswlib 向量索引加载（1-3s），确保冷启动时间 < 3s。`QueryRouter` 支持可在 M11 或后续按需引入。
+
+### archive-text 工作流的实际实现模式（M11 ArchiveView 文本归档参考）
+
+Phase2A M9 中 `archive_text` Tool 的实际实现比文档设计更复杂，GUI 归档文本时需参考：
+
+```python
+# archive_text 的实际流程（来自 src/mcp/tools.py archive_text 函数）
+# 步骤 1：先用 TextFallbackProcessor 解析文本，生成 Entry 对象
+from src.processors.text_fallback_processor import TextFallbackProcessor
+processor = TextFallbackProcessor()
+entry = await processor.process(text)  # 生成带 title/tags/content 的 Entry
+if title:
+    entry.title = title.strip()
+
+# 步骤 2：将 Entry 注入工作流上下文（archive-text.yaml 只做 ai_analyze + store_entry）
+from src.workflow.engine import WorkflowEngine
+engine = WorkflowEngine()
+result = await engine.execute_async(
+    "archive-text",
+    {"text": text, "title": entry.title, "entry": entry, "content": entry.content},
+)
+```
+
+### 可用的工作流配置文件
+
+| 文件 | 工作流名 | 用途 | 步骤 |
+|------|---------|------|------|
+| `config/workflows/archive-url.yaml` | `"archive-url"` | 归档网页 | fetch → ai_analyze → idea_sharpen → store |
+| `config/workflows/archive-text.yaml` | `"archive-text"` | 归档文本（M9 新增）| ai_analyze → store（无 fetch）|
+| `config/workflows/search.yaml` | `"search"` | 搜索 | search |
+
+### MCP 三层测试体系（可参考模式编写 GUI 测试）
+
+| 层级 | 文件 | 技术 | GUI 对应 |
+|------|------|------|---------|
+| Layer 1 单元测试 | `tests/unit/test_mcp_*.py` | pytest + Mock | `tests/unit/test_gui_*.py` |
+| Layer 2 进程内集成 | `tests/integration/test_mcp_functional.py` | FastMCP.call_tool() | `tests/integration/test_gui_viewmodels.py` |
+| Layer 3 黑盒 | `tests/blackbox/test_mcp_blackbox.py` | stdio 子进程 + JSON-RPC | pytest-qt E2E（M13） |
+
+---
+
+**文档版本**: v1.2
 **创建日期**: 2026-02-18
-**对应里程碑**: M10 (v0.8.0-alpha) + M11 (v0.8.0-beta) + M12 (v0.8.0) + M13 (v0.8.1)
+**最后更新**: 2026-02-19 (v1.2: M10 已完成，更新交付物状态、实现经验和额外产出)
+**对应里程碑**: M10 (v0.8.0-alpha) ✅ + M11 (v0.8.0-beta) + M12 (v0.8.0) + M13 (v0.8.1)

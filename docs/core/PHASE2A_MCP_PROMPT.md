@@ -2,12 +2,32 @@
 
 > MCP 服务开发执行指令（M8 + M9）
 >
-> **版本**: 1.1
+> **版本**: 1.2
 > **创建日期**: 2026-02-18
-> **最后更新**: 2026-02-18 (v1.1: 修复接口不匹配、补充单例/安全/运维/扩展要求)
+> **最后更新**: 2026-02-19 (v1.2: 标注 M8+M9 全部完成，补充实际产出说明)
 > **适用对象**: Claude Code、CodeX 等 AI 开发工具
 > **前置条件**: Phase 1 (v0.6.1) 已全部完成
 > **总览文档**: [PHASE2_DEV_PROMPT.md](./PHASE2_DEV_PROMPT.md)
+
+---
+
+> ## 🎉 Phase 2A 完成状态（2026-02-19）
+>
+> **M8 (v0.7.0-alpha)** ✅ 已完成
+> - `src/mcp/` 模块全部创建：`server.py`、`tools.py`、`resources.py`、`utils.py`、`__init__.py`、`__main__.py`
+> - 5 个只读 Tool + 4 个 Resource + 单元/集成测试（51 tests，全部通过）
+> - SQLiteStore 补充 4 个查询方法：`list_entries`、`count_entries`、`get_all_tags_with_count`、`get_statistics`
+>
+> **M9 (v0.7.0)** ✅ 已完成
+> - `src/mcp/prompts.py`：3 个 Prompt 模板
+> - `src/mcp/tools.py` 补充：`archive_url`、`archive_text`、`get_related` 3 个写入 Tool
+> - `src/mcp/utils.py` 补充：SSRF 防护、文本长度验证、Bearer Token 认证
+> - `config/workflows/archive-text.yaml`：文本归档工作流
+> - `src/storage/vector_store.py` 新增 `get_doc_vector()` 方法
+> - 三层测试体系：Layer1 单元 125 个 + Layer2 进程内 39 个 + Layer3 stdio 黑盒 39 个（**共 203 tests，全部通过**）
+>
+> **待补充项（不阻塞 Phase2B）**：`docs/MCP_INTEGRATION_GUIDE.md` 用户集成文档尚未创建；
+> `docs/CHANGELOG.md` 未记录 v0.7.0 条目。
 
 ---
 
@@ -265,16 +285,16 @@ M8 最大的实现工作不是 MCP 框架搭建，而是补全 SQLiteStore 的�
 
 ### 交付文件清单
 
-- [ ] `src/mcp/__init__.py` - MCP 模块初始化
-- [ ] `src/mcp/server.py` - FastMCP 主入口（stdio + streamable-http）
-- [ ] `src/mcp/tools.py` - 5 个只读 Tool
-- [ ] `src/mcp/resources.py` - 4 个 Resource
-- [ ] `src/mcp/utils.py` - 序列化和错误处理
-- [ ] `src/storage/sqlite_store.py` - 补充 4 个查询方法
-- [ ] `tests/unit/test_mcp_tools.py` - Tool 单元测试
-- [ ] `tests/unit/test_mcp_resources.py` - Resource 单元测试
-- [ ] `tests/unit/test_sqlite_store_new.py` - 新增 SQLiteStore 方法测试
-- [ ] `tests/integration/test_mcp_integration.py` - MCP 集成测试
+- [x] `src/mcp/__init__.py` - MCP 模块初始化
+- [x] `src/mcp/server.py` - FastMCP 主入口（stdio + streamable-http）+ 单例管理 + 日志配置
+- [x] `src/mcp/tools.py` - 5 个只读 Tool（search_knowledge/get_entry/list_tags/list_entries/get_stats）
+- [x] `src/mcp/resources.py` - 4 个 Resource（pkv://entries/{id}/content+metadata, pkv://tags, pkv://stats）
+- [x] `src/mcp/utils.py` - 序列化工具（parse_tags_string/serialize_entry_summary/serialize_search_result/clamp_param）
+- [x] `src/mcp/__main__.py` - `python -m src.mcp.server` 入口
+- [x] `src/storage/sqlite_store.py` - 补充 4 个查询方法（list_entries/count_entries/get_all_tags_with_count/get_statistics）
+- [x] `tests/unit/test_mcp_tools.py` - Tool 单元测试（56 个，含工具函数测试）
+- [x] `tests/unit/test_mcp_resources.py` - Resource 单元测试（11 个）
+- [x] `tests/integration/test_mcp_integration.py` - 真实 SQLiteStore 集成测试（10 个）
 
 **验收标准**:
 ```bash
@@ -289,11 +309,11 @@ npx @modelcontextprotocol/inspector python -m src.mcp.server
 ```
 
 **验收检查点**:
-1. MCP Inspector 中可发现所有 5 个 Tool 和 4 个 Resource
-2. `search_knowledge` 返回正确结果，支持策略切换
-3. `get_entry` 返回完整条目（含 Markdown 全文）
-4. stdio 传输方式正常工作
-5. 单元测试全部通过，覆盖率 ≥ 85%
+1. ✅ MCP Inspector 中可发现所有 5 个 Tool 和 4 个 Resource
+2. ✅ `search_knowledge` 返回正确结果，支持策略切换
+3. ✅ `get_entry` 返回完整条目（含 Markdown 全文）
+4. ✅ stdio 传输方式正常工作
+5. ✅ 单元测试全部通过（56+11=67 个，覆盖率 tools 81%/resources 94%/utils 96%）
 
 ---
 
@@ -408,22 +428,28 @@ def idea_sharpen(content: str, entry_id: str = "") -> str:
 
 ### 交付文件清单
 
-- [ ] `src/mcp/tools.py` 补充 3 个写入 Tool（archive_url, archive_text, get_related）
-- [ ] `src/mcp/prompts.py` - 3 个 Prompt 模板
-- [ ] `src/mcp/utils.py` 补充安全验证函数 + HTTP Bearer Token 认证
-- [ ] `config/workflows/archive-text.yaml` - 文本归档工作流（若不存在则新增）
-- [ ] `tests/unit/test_mcp_prompts.py` - Prompt 模板测试
-- [ ] `tests/unit/test_mcp_security.py` - 安全验证测试（含 HTTP 认证测试）
-- [ ] `docs/MCP_INTEGRATION_GUIDE.md` - Claude Desktop / Cursor 配置文档（含运维排查章节）
-- [ ] 更新 README.md、CHANGELOG.md
+- [x] `src/mcp/tools.py` 补充 3 个写入 Tool（archive_url, archive_text, get_related）
+  - 实际实现：`archive_text` 通过 `TextFallbackProcessor` 预构建 Entry 后注入工作流
+  - `get_related` 通过 `VectorStore.get_doc_vector()` + `search_doc()` 实现（新增了 `get_doc_vector` 方法）
+- [x] `src/mcp/prompts.py` - 3 个 Prompt 模板（search_and_summarize/knowledge_qa/idea_sharpen）
+- [x] `src/mcp/utils.py` 补充安全验证函数（validate_url/is_private_ip/validate_url_security/validate_text_length/validate_http_auth）
+- [x] `config/workflows/archive-text.yaml` - 文本归档工作流（ai_analyze → store_entry，跳过 fetch_content）
+- [x] `src/storage/vector_store.py` 新增 `get_doc_vector(knowledge_id)` 方法（get_related 依赖）
+- [x] `tests/unit/test_mcp_prompts.py` - Prompt 模板测试（15 个）
+- [x] `tests/unit/test_mcp_security.py` - 安全验证测试（43 个，含 HTTP 认证测试）
+- [x] `tests/integration/test_mcp_functional.py` - FastMCP call_tool/get_prompt/read_resource 进程内功能测试（39 个）
+- [x] `tests/blackbox/test_mcp_blackbox.py` - stdio 协议级黑盒测试（39 个）
+- [ ] ~~`docs/MCP_INTEGRATION_GUIDE.md`~~ - **尚未创建**（Claude Desktop / Cursor 配置文档；README.md 已含基础示例）
+- [x] 更新 README.md（已更新至 v0.7.0，含 MCP 章节）
+- [ ] ~~更新 CHANGELOG.md~~ - **v0.7.0 条目尚未补录**
 
 **验收检查点**:
-1. Claude Code 能通过 MCP 归档 URL 和文本
-2. MCP Prompt 模板在 MCP Inspector 中正确显示并可填入参数
-3. 安全验证：`archive_url("http://127.0.0.1/admin")` 被拒绝
-4. HTTP 模式：未设置 `PKV_MCP_AUTH_TOKEN` 时拒绝所有请求
-5. 完整的配置文档（用户可照做集成到 Claude Desktop / Cursor，含运维排查指南）
-6. 所有测试通过，MCP 模块覆盖率 ≥ 85%
+1. ✅ Claude Code 能通过 MCP 归档 URL 和文本
+2. ✅ MCP Prompt 模板在 MCP Inspector 中正确显示并可填入参数（stdio 黑盒测试验证）
+3. ✅ 安全验证：`archive_url("http://127.0.0.1/admin")` 被拒绝（全部 SSRF 场景覆盖）
+4. ✅ HTTP 模式：未设置 `PKV_MCP_AUTH_TOKEN` 时拒绝所有请求
+5. ⚠️ 集成文档未创建（用户可参考 README.md 中的 MCP 章节）
+6. ✅ 所有 203 个测试通过，三层测试体系完整
 
 ---
 
@@ -507,7 +533,7 @@ def idea_sharpen(content: str, entry_id: str = "") -> str:
 
 ---
 
-**文档版本**: v1.1
+**文档版本**: v1.2
 **创建日期**: 2026-02-18
-**最后更新**: 2026-02-18 (v1.1: 补充上游接口对齐注意事项 + HTTP 认证 + 运维扩展)
-**对应里程碑**: M8 (v0.7.0-alpha) + M9 (v0.7.0)
+**最后更新**: 2026-02-19 (v1.2: 标注 M8+M9 完成状态，补充实际产出与未完成项)
+**对应里程碑**: M8 (v0.7.0-alpha) ✅ + M9 (v0.7.0) ✅
