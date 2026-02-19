@@ -26,7 +26,7 @@ sys.path.insert(0, str(project_root))
 try:
     import httpx
 except ImportError:
-    print("❌ httpx 未安装，请运行: pip install httpx")
+    print("[错误] httpx 未安装，请运行: pip install httpx")
     sys.exit(1)
 
 
@@ -38,7 +38,7 @@ async def test_basic_stream():
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
-        print("❌ 环境变量 DEEPSEEK_API_KEY 未设置")
+        print("[错误] 环境变量 DEEPSEEK_API_KEY 未设置")
         return
 
     url = "https://api.deepseek.com/v1/chat/completions"
@@ -52,18 +52,18 @@ async def test_basic_stream():
         "stream": True,
     }
 
-    print(f"📡 请求 URL: {url}")
-    print(f"📦 请求体: {payload}")
-    print("\n📥 流式响应:\n")
+    print(f"[请求] URL: {url}")
+    print(f"[请求] 请求体: {payload}")
+    print("\n[响应] 流式响应:\n")
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             async with client.stream("POST", url, headers=headers, json=payload) as resp:
-                print(f"✅ HTTP 状态码: {resp.status_code}\n")
+                print(f"[成功] HTTP 状态码: {resp.status_code}\n")
 
                 if resp.status_code != 200:
                     error_body = await resp.aread()
-                    print(f"❌ 错误响应: {error_body.decode('utf-8')}")
+                    print(f"[错误] 错误响应: {error_body.decode('utf-8')}")
                     return
 
                 # 解析 SSE 流
@@ -72,11 +72,11 @@ async def test_basic_stream():
                         data = line[6:]  # 去掉 "data: " 前缀
 
                         if data == "[DONE]":
-                            print("\n✅ 流式传输结束 [DONE]")
+                            print("\n[成功] 流式传输结束 [DONE]")
                             break
 
                         # 打印原始 JSON（调试用）
-                        print(f"📄 {data}")
+                        print(f"[数据] {data}")
 
                         # TODO: 解析 JSON，提取 delta.content
                         # import json
@@ -86,9 +86,9 @@ async def test_basic_stream():
                         #     print(token, end="", flush=True)
 
     except httpx.TimeoutException:
-        print("❌ 请求超时（30s）")
+        print("[错误] 请求超时（30s）")
     except Exception as e:
-        print(f"❌ 未知错误: {e}")
+        print(f"[错误] 未知错误: {e}")
 
 
 async def test_error_handling():
@@ -108,7 +108,7 @@ async def test_error_handling():
         "stream": True,
     }
 
-    print("📡 使用无效 API Key 测试...\n")
+    print("[测试] 使用无效 API Key 测试...\n")
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -117,12 +117,12 @@ async def test_error_handling():
             print(f"响应体: {resp.text}")
 
             if resp.status_code == 401:
-                print("✅ 正确返回 401 Unauthorized")
+                print("[成功] 正确返回 401 Unauthorized")
             else:
-                print(f"⚠️  预期 401，实际 {resp.status_code}")
+                print(f"[警告] 预期 401，实际 {resp.status_code}")
 
     except Exception as e:
-        print(f"❌ 错误: {e}")
+        print(f"[错误] {e}")
 
 
 async def test_long_response():
@@ -133,7 +133,7 @@ async def test_long_response():
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
-        print("❌ DEEPSEEK_API_KEY 未设置，跳过此测试")
+        print("[错误] DEEPSEEK_API_KEY 未设置，跳过此测试")
         return
 
     url = "https://api.deepseek.com/v1/chat/completions"
@@ -150,7 +150,7 @@ async def test_long_response():
         "max_tokens": 500,
     }
 
-    print("📡 请求较长回复（约 200 字）...\n")
+    print("[测试] 请求较长回复（约 200 字）...\n")
 
     token_count = 0
 
@@ -158,7 +158,7 @@ async def test_long_response():
         async with httpx.AsyncClient(timeout=60.0) as client:
             async with client.stream("POST", url, headers=headers, json=payload) as resp:
                 if resp.status_code != 200:
-                    print(f"❌ HTTP {resp.status_code}")
+                    print(f"[错误] HTTP {resp.status_code}")
                     return
 
                 async for line in resp.aiter_lines():
@@ -170,17 +170,19 @@ async def test_long_response():
                         token_count += 1
                         # 每 10 个 chunk 显示一次进度
                         if token_count % 10 == 0:
-                            print(f"✅ 已接收 {token_count} 个 chunk")
+                            print(f"[进度] 已接收 {token_count} 个 chunk")
 
-                print(f"\n✅ 总共接收 {token_count} 个 chunk")
+                print(f"\n[成功] 总共接收 {token_count} 个 chunk")
 
     except Exception as e:
-        print(f"❌ 错误: {e}")
+        print(f"[错误] {e}")
 
 
 async def main():
     """运行所有测试"""
-    print("\n🔬 M12 DeepSeek API 流式调用测试\n")
+    print("\n" + "=" * 60)
+    print("M12 DeepSeek API 流式调用测试")
+    print("=" * 60 + "\n")
 
     # 测试 1: 基本流式请求
     await test_basic_stream()
@@ -192,9 +194,9 @@ async def main():
     await test_long_response()
 
     print("\n" + "=" * 60)
-    print("✅ 所有测试完成")
+    print("[完成] 所有测试完成")
     print("=" * 60)
-    print("\n📝 下一步：")
+    print("\n[下一步]")
     print("1. 将测试结果记录到 docs/milestones/M12_RESEARCH/02_DEEPSEEK_API_RESEARCH.md")
     print("2. 补充 SSE 格式的详细解析逻辑")
     print("3. 测试限流场景（429 错误）")

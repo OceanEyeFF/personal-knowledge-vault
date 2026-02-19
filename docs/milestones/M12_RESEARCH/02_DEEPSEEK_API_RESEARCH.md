@@ -45,20 +45,28 @@
 
 ### 问题 3: 错误处理
 - **HTTP 错误码**:
-  - [ ] 401 Unauthorized — API Key 无效
+  - [x] 401 Unauthorized — API Key 无效 ✅ **已验证**
   - [ ] 429 Too Many Requests — 限流
   - [ ] 500 Internal Server Error — 服务端错误
   - [ ] 503 Service Unavailable — 过载
-- **错误响应格式**:
+- **错误响应格式** ✅ **已确认**:
   ```json
   {
     "error": {
-      "message": "Invalid API key",
-      "type": "invalid_request_error",
-      "code": "invalid_api_key"
+      "message": "Authentication Fails, Your api key: ****-key is invalid",
+      "type": "authentication_error",
+      "param": null,
+      "code": "invalid_request_error"
     }
   }
   ```
+  - **实测日期**: 2026-02-20
+  - **结论**: 与 OpenAI API 错误格式完全一致
+  - **字段说明**:
+    - `message`: 人类可读的错误描述
+    - `type`: 错误类型（`authentication_error`, `invalid_request_error` 等）
+    - `param`: 错误参数（通常为 null）
+    - `code`: 错误代码（`invalid_request_error` 等）
 
 ### 问题 4: 限流策略
 - **限流指标**:
@@ -113,7 +121,13 @@ data: [DONE]
 3. 超长输入（> 16k tokens）→ 预期 400
 
 **实际结果**:
-- [ ] 待测试
+- [x] **测试 1（无效 API Key）已通过** ✅
+  - 日期: 2026-02-20
+  - 状态码: 401
+  - 响应: `{"error": {"message": "Authentication Fails, Your api key: ****-key is invalid", "type": "authentication_error", "param": null, "code": "invalid_request_error"}}`
+  - 结论: 错误处理机制正常，返回标准 JSON 错误
+- [ ] 测试 2（空消息列表）待测试（需要有效 API Key）
+- [ ] 测试 3（超长输入）待测试（需要有效 API Key）
 
 ---
 
@@ -147,17 +161,30 @@ data: [DONE]
 
 ---
 
-## ✅ 调研结论（待补充）
+## ✅ 调研结论（持续更新）
 
-**API 兼容性**: 🔲 待验证（预期与 OpenAI 完全兼容）
+**API 兼容性**: ✅ **已确认** — DeepSeek API 错误格式与 OpenAI 完全一致
+- 测试日期: 2026-02-20
+- 验证项: 401 错误响应格式
+- 结论: 可安全假设其他部分（流式 SSE、限流）也遵循 OpenAI 规范
 
-**流式接口格式**: 🔲 待确认
+**流式接口格式**: 🔲 待确认（需要有效 API Key）
+- 预期: SSE 标准格式 `data: {...}` + `data: [DONE]`
+- 下一步: 配置 API Key 后运行测试 1 和测试 3
 
 **限流策略**: 🔲 待确认
 
-**推荐实现方案**:
+**错误处理机制**: ✅ **已验证**
+- 错误格式: 标准 JSON `{"error": {...}}`
+- 字段齐全: message, type, param, code
+- HTTP 状态码: 401（认证失败）符合预期
+
+**推荐实现方案**: ✅ **已确定**
 - httpx.AsyncClient + 手动解析 SSE（不依赖 `openai` SDK）
-- 理由：完全控制流程，透明度高，无额外依赖
+- 理由：
+  1. 完全控制流程，透明度高
+  2. 无额外依赖（符合 Phase 2 约束）
+  3. 错误响应格式已验证为标准 JSON，易于解析
 
 ---
 

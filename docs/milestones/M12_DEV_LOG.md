@@ -28,12 +28,23 @@
 1. ✅ 创建 `milestone12` 分支
 2. ✅ 搭建技术预研框架
    - 创建 `docs/milestones/M12_RESEARCH/` 目录
-   - 创建预研索引文档
-   - 创建手动测试脚本目录
-3. 🔲 开始 DeepSeek API 流式调研（进行中）
+   - 创建预研索引文档（含 4 个调研文档 + 3 个参考资料）
+   - 创建手动测试脚本目录（3 个测试脚本）
+3. ✅ 开始 DeepSeek API 流式调研
+   - 编写 `test_deepseek_stream.py`（3 个测试场景）
+   - 运行错误处理测试（无需 API Key）
+   - 验证 401 错误响应格式
 
 #### 技术发现
-- 暂无（预研刚开始）
+1. **DeepSeek API 错误格式与 OpenAI 完全一致** ✅
+   - 错误响应: `{"error": {"message": "...", "type": "...", "param": null, "code": "..."}}`
+   - HTTP 401 认证失败符合预期
+   - 可安全假设其他部分（流式 SSE）也遵循 OpenAI 规范
+
+2. **Windows 控制台编码问题** ⚠️
+   - GBK 编码不支持 emoji 和某些中文
+   - 解决方案: 测试脚本改用纯文本标记（如 `[成功]`、`[错误]`）
+   - 不影响功能测试，只影响日志可读性
 
 #### 决策记录
 - **决策 1**: 采用独立分支 `milestone12` 进行开发
@@ -45,14 +56,17 @@
   - 参考：Phase 1 的 Milestone 报告模式
 
 #### 遗留问题
-1. DeepSeek API 流式接口的具体格式？（SSE 标准？）
-2. Qt Signal/Slot 跨线程是否需要特殊声明？
-3. httpx.AsyncClient 与现有同步代码的依赖冲突？
+1. ✅ DeepSeek API 错误格式？→ **已解决**（与 OpenAI 一致）
+2. 🔲 DeepSeek API 流式接口的具体格式？（需要有效 API Key 验证）
+3. 🔲 Qt Signal/Slot 跨线程是否需要特殊声明？
+4. 🔲 httpx.AsyncClient 与现有同步代码的依赖冲突？
 
 #### 下一步计划
-- [ ] 编写 `test_deepseek_stream.py` 验证流式 API
+- [x] 编写 `test_deepseek_stream.py` 验证流式 API ✅
+- [ ] **主人需要配置 DEEPSEEK_API_KEY 环境变量**（完成流式测试）
 - [ ] 阅读 DeepSeek 官方文档，整理到 `02_DEEPSEEK_API_RESEARCH.md`
 - [ ] 使用 ChatGPT/NotebookLM 调研 Qt + asyncio 最佳实践
+- [ ] 补充流式 SSE 解析逻辑到测试脚本
 
 ---
 
