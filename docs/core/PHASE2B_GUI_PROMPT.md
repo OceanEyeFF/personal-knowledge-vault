@@ -2,15 +2,15 @@
 
 > GUI 桌面应用开发执行指令（M10 ~ M13）
 >
-> **版本**: 1.2
+> **版本**: 1.3
 > **创建日期**: 2026-02-18
-> **最后更新**: 2026-02-19 (v1.2: M10 已完成，更新交付物状态和实现经验)
+> **最后更新**: 2026-02-20 (v1.3: M11 已完成，更新交付物状态和额外加固记录)
 > **适用对象**: Claude Code、CodeX 等 AI 开发工具
-> **前置条件**: Phase 1 (v0.6.1) 已全部完成；**Phase 2A (v0.7.0) 已完成**；**M10 (v0.8.0-alpha) 已完成**
+> **前置条件**: Phase 1 (v0.6.1) 已全部完成；**Phase 2A (v0.7.0) 已完成**；**M10 (v0.8.0-alpha) 已完成**；**M11 (v0.8.0-beta) 已完成**
 > **总览文档**: [PHASE2_DEV_PROMPT.md](./PHASE2_DEV_PROMPT.md)
 >
-> **⚠️ 进度状态（2026-02-19）**: M10 已完成（v0.8.0-alpha，15 源文件 + 4 测试文件，130 测试全通过）。
-> M11~M13 待开始。详见 [M10 完成报告](../milestones/M10_COMPLETION_REPORT.md)。
+> **⚠️ 进度状态（2026-02-20）**: M10+M11 已完成（v0.8.0-beta，69 GUI + 11 删除 + 15 知乎测试全通过）。
+> M12~M13 待开始。详见 [M10 完成报告](../milestones/M10_COMPLETION_REPORT.md) 和 [M11 完成报告](../milestones/M11_COMPLETION_REPORT.md)。
 
 ---
 
@@ -313,31 +313,62 @@ results = vector_store.search_chunk(vec, k=10)  # List[(knowledge_id, chunk_inde
 
 **交付物**:
 
-- [ ] `src/gui/views/archive_view.py` - 归档界面
-  - [ ] URL 归档表单（输入框 + 归档按钮）
-  - [ ] 文本归档编辑器（多行文本框 + 可选标题）
-  - [ ] 进度显示（QProgressBar + 状态文字）
-  - [ ] 结果预览和确认（归档完成后跳转查看）
-- [ ] `src/gui/viewmodels/archive_viewmodel.py` - 归档 ViewModel
-  - [ ] 异步工作流调用（不阻塞 UI 线程）
-  - [ ] 进度信号发射（见上方工程注意）
-- [ ] `src/gui/views/stats_view.py` - 统计面板
-  - [ ] 知识库概况（条目总数、标签分布、来源分布）
-  - [ ] 简单图表展示（可选：matplotlib 或纯 Qt 绘制）
-- [ ] `src/gui/views/settings_view.py` - 设置界面
-  - [ ] API Key 配置（DeepSeek、OpenAI）
-  - [ ] 检索策略默认值配置
-  - [ ] 主题切换
-  - [ ] 数据目录设置
-- [ ] `src/gui/viewmodels/settings_viewmodel.py` - 设置 ViewModel
-- [ ] `tests/unit/test_gui_archive.py` - 归档流程测试
+- [x] `src/gui/views/archive_view.py` - 归档界面（343 行）
+  - [x] URL 归档表单（输入框 + 归档按钮）
+  - [x] 文本归档编辑器（多行文本框 + 可选标题）
+  - [x] 进度显示（QProgressBar 脉冲动画 + 状态文字）
+  - [x] 结果预览和确认（归档完成后显示 ID/标题/路径）
+- [x] `src/gui/viewmodels/archive_viewmodel.py` - 归档 ViewModel（301 行）
+  - [x] 异步工作流调用（QThread + asyncio.run，不阻塞 UI 线程）
+  - [x] 进度信号发射（方案 B 脉冲动画）
+- [x] `src/gui/views/stats_view.py` - 统计面板（260 行）
+  - [x] 知识库概况（条目总数、标签分布、来源分布）
+  - [x] 纯 Qt 绘制条形图（QLabel + QProgressBar 模拟，不引入 matplotlib）
+- [x] `src/gui/views/settings_view.py` - 设置界面（412 行）
+  - [x] API Key 配置（DeepSeek、OpenAI，密码遮罩 + 明文切换）
+  - [x] Embedding 模型/维度配置
+  - [x] 数据目录显示（只读展示 DB/Vault/Vector 路径）
+  - [x] 保存到 .env + 更新 os.environ
+- [x] `src/gui/viewmodels/settings_viewmodel.py` - 设置 ViewModel（198 行）
+- [x] `tests/unit/test_gui_archive.py` - 归档流程测试（20 用例）
+- [x] `tests/unit/test_gui_settings.py` - 设置功能测试（15 用例）
+- [x] `tests/unit/test_gui_stats.py` - 统计面板测试（9 用例）
 
 **验收检查点**:
-1. 输入 URL → 点击归档 → 进度条显示 → 完成后可在浏览界面查看
-2. 输入文本 → 归档为知识条目 → 搜索可命中
-3. 统计面板正确显示数据概况
-4. 设置修改后立即生效（无需重启）
-5. 归档过程 UI 不冻结（异步执行）
+1. ✅ 输入 URL → 点击归档 → 进度条显示 → 完成后可在浏览界面查看
+2. ✅ 输入文本 → 归档为知识条目 → 搜索可命中
+3. ✅ 统计面板正确显示数据概况
+4. ✅ 设置修改后立即生效（写入 .env + 更新 os.environ）
+5. ✅ 归档过程 UI 不冻结（QThread 异步执行）
+
+**额外交付（M11 计划外加固）**:
+
+> 以下功能不在原始 M11 计划中，是在实际开发和使用过程中发现并解决的关键问题。
+> 详见 [M11 完成报告](../milestones/M11_COMPLETION_REPORT.md)。
+
+- [x] **知乎登录墙检测与 Cookie 注入** — `src/processors/zhihu_processor.py` (+95 行)
+  - 登录墙关键词检测 + Cookie 自动注入重试 + 用户引导配置
+  - `src/utils/config.py` 新增 `zhihu_cookie` 属性
+  - 13 个新测试用例 + `tests/fixtures/zhihu_login_wall.html`
+- [x] **Embedding 可配置化** — 模型名称/维度从环境变量读取
+  - `src/utils/config.py` 新增 `openai_embedding_model`、`embedding_dim`
+  - `src/ai/openai_client.py` 动态读取模型名
+- [x] **VectorStore 维度不匹配自动重建** — `src/storage/vector_store.py` (+82 行)
+  - 加载索引时检测维度，不匹配时自动删除旧索引并重建
+- [x] **知识条目三层删除功能**
+  - `src/storage/sqlite_store.py`: `delete_entry()` + `_decrement_tag_counts()`
+  - `src/storage/vector_store.py`: `delete_vectors_for_entry()` (hnswlib mark_deleted)
+  - `src/gui/views/browser_view.py`: 右键菜单 + 确认对话框 + 三层删除
+  - `src/gui/stores.py`: `get_vector_store()` 延迟单例
+  - 11 个存储层删除测试 + 3 个 GUI 删除测试
+- [x] **BrowserView 归档后自动刷新** — 导航切换时调用 `refresh()`
+- [x] **openai + httpx 版本兼容修复** — `requirements.txt` 固定版本约束
+
+**M11 实现经验**:
+- 归档进度采用方案 B（脉冲动画），不改 WorkflowEngine，成本最低
+- 设置界面不包含"检索策略"和"主题切换"（这两项在主窗口菜单栏已有），聚焦 API Key 和路径
+- 三层删除的标签计数递减必须在 `DELETE FROM knowledge_items` **之前**执行（因 CASCADE 会先删除关联行）
+- hnswlib `mark_deleted()` 对个人知识库规模的空间开销可忽略
 
 ---
 
@@ -449,10 +480,12 @@ class AIChatThread(QThread):
   - [ ] 打包产物验证（启动测试、资源完整性）
 - [ ] E2E 测试
   - [ ] `tests/e2e/test_gui_e2e.py` - GUI 端到端测试（pytest-qt）
-  - [ ] 覆盖：启动 → 浏览 → 搜索 → 归档 → 聊天 完整流程
+  - [ ] 覆盖：启动 → 浏览 → 搜索 → 归档 → 删除 → 聊天 完整流程
+  - [ ] 注意：M11 新增的删除功能需纳入 E2E 覆盖
 - [ ] 用户文档
   - [ ] 安装指南（含打包产物使用说明）
   - [ ] GUI 使用手册（截图 + 操作说明）
+  - [ ] 配置指南（知乎 Cookie 配置、Embedding 模型/维度配置——M11 新增）
   - [ ] 更新 README.md、CHANGELOG.md、使用手册
 
 **打包命令**:
@@ -624,10 +657,14 @@ def test_search_view(search_view, qtbot):
 - [x] 搜索界面（关键词搜索 + 结果展示）
 - [x] pytest-qt 测试覆盖（130 测试全通过）
 
-### v0.8.0-beta 交付 (M11)
-- [ ] 归档界面（URL + 文本归档 + 进度显示）
-- [ ] 设置界面（API Key、主题、检索策略）
-- [ ] 统计面板
+### v0.8.0-beta 交付 (M11) ✅ 已完成
+- [x] 归档界面（URL + 文本归档 + QThread 异步 + 脉冲进度）
+- [x] 设置界面（API Key 配置 + Embedding 配置 + .env 持久化）
+- [x] 统计面板（条目/来源/标签概况，纯 Qt 绘制）
+- [x] **额外**: 知乎登录墙检测 + Cookie 注入
+- [x] **额外**: Embedding 可配置化 + 维度不匹配自动重建
+- [x] **额外**: 知识条目三层删除（SQLite + Markdown + Vector）
+- [x] **额外**: BrowserView 归档后自动刷新
 
 ### v0.8.0 交付 (M12)
 - [ ] AI 聊天界面（流式输出 + 消息气泡 + 会话管理）
@@ -720,7 +757,7 @@ result = await engine.execute_async(
 
 ---
 
-**文档版本**: v1.2
+**文档版本**: v1.3
 **创建日期**: 2026-02-18
-**最后更新**: 2026-02-19 (v1.2: M10 已完成，更新交付物状态、实现经验和额外产出)
-**对应里程碑**: M10 (v0.8.0-alpha) ✅ + M11 (v0.8.0-beta) + M12 (v0.8.0) + M13 (v0.8.1)
+**最后更新**: 2026-02-20 (v1.3: M11 已完成，更新交付物状态、额外加固记录和实现经验)
+**对应里程碑**: M10 (v0.8.0-alpha) ✅ + M11 (v0.8.0-beta) ✅ + M12 (v0.8.0) + M13 (v0.8.1)

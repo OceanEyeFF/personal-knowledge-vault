@@ -2,15 +2,15 @@
 
 > Phase 2 共享前言：背景、约束与开发原则
 >
-> **版本**: 2.2
+> **版本**: 2.3
 > **创建日期**: 2026-02-16
-> **最后更新**: 2026-02-19
+> **最后更新**: 2026-02-20
 > **适用对象**: Claude Code、CodeX、GitHub Copilot Workspace 等 AI 开发工具
 > **前置条件**: Phase 1 (v0.6.1) 已全部完成
 >
-> **⚠️ 进度状态（2026-02-19）**: Phase 2A (M8+M9) 已全部完成（v0.7.0）。
-> Phase 2B M10 已完成（v0.8.0-alpha，130 测试全通过），M11~M13 待开始。
-> 详见 [PHASE2B_GUI_PROMPT.md](./PHASE2B_GUI_PROMPT.md) 和 [M10 完成报告](../milestones/M10_COMPLETION_REPORT.md)。
+> **⚠️ 进度状态（2026-02-20）**: Phase 2A (M8+M9) 已全部完成（v0.7.0）。
+> Phase 2B M10+M11 已完成（v0.8.0-beta，69 GUI + 11 删除 + 15 知乎测试全通过），M12~M13 待开始。
+> 详见 [PHASE2B_GUI_PROMPT.md](./PHASE2B_GUI_PROMPT.md)、[M10 完成报告](../milestones/M10_COMPLETION_REPORT.md) 和 [M11 完成报告](../milestones/M11_COMPLETION_REPORT.md)。
 
 ---
 
@@ -81,7 +81,7 @@
 | **M8** | v0.7.0-alpha | ✅ **已完成** | MCP 只读服务 | 5 个只读 Tool + 4 个 Resource + 单元/集成测试 | [Phase2A](./PHASE2A_MCP_PROMPT.md) |
 | **M9** | v0.7.0 | ✅ **已完成** | MCP 写入 + Prompts | 3 个写入 Tool + 3 个 Prompt + 安全加固 + 三层测试 203 个 | [Phase2A](./PHASE2A_MCP_PROMPT.md) |
 | **M10** | v0.8.0-alpha | ✅ **已完成** | GUI 基础框架 | 主窗口 + 知识浏览 + 搜索 + 130 测试 | [Phase2B](./PHASE2B_GUI_PROMPT.md) |
-| **M11** | v0.8.0-beta | 🔲 待开始 | GUI 归档 + 设置 | 归档界面 + 设置界面 + 统计面板 | [Phase2B](./PHASE2B_GUI_PROMPT.md) |
+| **M11** | v0.8.0-beta | ✅ **已完成** | GUI 归档 + 设置 + 额外加固 | 归档界面 + 设置界面 + 统计面板 + 知乎登录墙 + 删除功能 + Embedding 可配置 | [Phase2B](./PHASE2B_GUI_PROMPT.md) |
 | **M12** | v0.8.0 | 🔲 待开始 | AI 对话交互 | 聊天界面 + 对话服务 + 对话存储 | [Phase2B](./PHASE2B_GUI_PROMPT.md) |
 | **M13** | v0.8.1 | 🔲 待开始 | GUI 打包与集成测试 | 打包分发 + E2E 测试 + 文档 | [Phase2B](./PHASE2B_GUI_PROMPT.md) |
 
@@ -115,6 +115,6 @@ Phase 2 核心完成后（v0.8.1），系统将具备：
 
 ---
 
-**文档版本**: v2.2
+**文档版本**: v2.3
 **创建日期**: 2026-02-16
-**最后更新**: 2026-02-19 (v2.2: 更新 M10 已完成状态 — GUI 基础框架 v0.8.0-alpha 交付)
+**最后更新**: 2026-02-20 (v2.3: 更新 M11 已完成状态 — GUI 归档/设置/统计 + 额外加固 v0.8.0-beta 交付)
