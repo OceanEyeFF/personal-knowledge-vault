@@ -41,3 +41,6 @@ pytest-mock==3.12.0        # Mock 工具
 black==24.1.1              # 代码格式化
 flake8==7.0.0              # 代码检查
 mypy==1.8.0                # 类型检查
+
+# GUI (Phase 2B)
+PySide6>=6.8.0             # Qt6 Python 绑定 (跨平台桌面 GUI)
