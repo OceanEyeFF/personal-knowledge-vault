@@ -24,7 +24,7 @@ class VectorStore:
 
         Args:
             index_dir: 向量索引目录
-            dim: 向量维度 (默认 1536，对应 text-embedding-3-small)
+            dim: 向量维度 (默认 1536，可通过 config.yaml 或环境变量 OPENAI_EMBEDDING_DIM 配置)
         """
         self.index_dir = Path(index_dir)
         self.index_dir.mkdir(parents=True, exist_ok=True)
@@ -58,10 +58,32 @@ class VectorStore:
         index = hnswlib.Index(space='cosine', dim=self.dim)
 
         if index_path.exists():
-            # 加载已有索引
-            index.load_index(str(index_path))
-            logger.info(f"✅ 加载已有索引: {index_path}")
-        else:
+            # 检查已有索引的维度是否匹配
+            need_rebuild = False
+            if metadata_path.exists():
+                try:
+                    with open(metadata_path, 'r', encoding='utf-8') as f:
+                        old_meta = json.load(f)
+                    old_dim = old_meta.get("dim", self.dim)
+                    if old_dim != self.dim:
+                        logger.warning(
+                            f"⚠️ 索引维度不匹配: 已有={old_dim}, 当前配置={self.dim}，将重建索引: {name}"
+                        )
+                        need_rebuild = True
+                except (json.JSONDecodeError, KeyError):
+                    pass
+
+            if need_rebuild:
+                # 删除旧索引文件，重新创建
+                index_path.unlink(missing_ok=True)
+                metadata_path.unlink(missing_ok=True)
+                logger.info(f"🔄 已删除旧索引，重建中: {name}")
+            else:
+                # 加载已有索引
+                index.load_index(str(index_path))
+                logger.info(f"✅ 加载已有索引: {index_path}")
+
+        if not index_path.exists():
             # 初始化新索引
             index.init_index(
                 max_elements=10000,  # 初始容量，可自动扩展
@@ -95,7 +117,7 @@ class VectorStore:
 
         Args:
             knowledge_id: 知识条目 ID (对应 knowledge_items.id)
-            vector: 向量 (1536 维)
+            vector: 向量 (维度须与索引一致)
         """
         # 确保向量是 float32 类型
         if vector.dtype != np.float32:
@@ -116,7 +138,7 @@ class VectorStore:
         Args:
             knowledge_id: 知识条目 ID
             chunk_index: 块序号
-            vector: 向量 (1536 维)
+            vector: 向量 (维度须与索引一致)
         """
         # 确保向量是 float32 类型
         if vector.dtype != np.float32:
@@ -156,6 +178,52 @@ class VectorStore:
         except Exception as e:
             logger.debug(f"获取文档向量失败 (knowledge_id={knowledge_id}): {e}")
         return None
+
+    def delete_vectors_for_entry(self, knowledge_id: int) -> dict:
+        """删除指定条目的文档级和分块级向量。
+
+        使用 hnswlib 的 mark_deleted() 标记删除（不重建索引），
+        被标记的向量不再出现在搜索结果中。
+
+        Args:
+            knowledge_id: 知识条目 ID。
+
+        Returns:
+            统计字典 {"doc_deleted": bool, "chunks_deleted": int}。
+        """
+        stats = {"doc_deleted": False, "chunks_deleted": 0}
+
+        # 1. 删除文档级向量
+        try:
+            self.doc_index.mark_deleted(knowledge_id)
+            self._save_index("doc_vectors")
+            stats["doc_deleted"] = True
+            logger.info(f"标记删除文档向量: knowledge_id={knowledge_id}")
+        except RuntimeError:
+            # hnswlib: label not found
+            logger.debug(f"文档向量不存在: knowledge_id={knowledge_id}")
+
+        # 2. 删除分块级向量
+        # 分块 ID 编码: knowledge_id * 10000 + chunk_index
+        # 尝试删除 chunk_index 0~99（覆盖绝大多数场景）
+        for chunk_index in range(100):
+            hnswlib_id = knowledge_id * 10000 + chunk_index
+            try:
+                self.chunk_index.mark_deleted(hnswlib_id)
+                stats["chunks_deleted"] += 1
+            except RuntimeError:
+                # 该 chunk_index 不存在，后续大概率也不存在
+                if chunk_index > 0:
+                    break
+
+        if stats["chunks_deleted"] > 0:
+            self._save_index("chunk_vectors")
+            logger.info(
+                f"标记删除分块向量: knowledge_id={knowledge_id}, "
+                f"count={stats['chunks_deleted']}"
+            )
+
+        return stats
 
     def search_doc(self, query_vector: np.ndarray, k: int = 10) -> List[Tuple[int, float]]:
         """

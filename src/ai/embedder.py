@@ -47,7 +47,7 @@ class Embedder:
             text: 文档文本
 
         Returns:
-            文档向量（shape=(1536,)）
+            文档向量（shape=(dim,)）
 
         Raises:
             ValueError: 文本为空
@@ -56,7 +56,7 @@ class Embedder:
         Example:
             >>> embedder = Embedder()
             >>> doc_vector = embedder.embed_document("This is a document.")
-            >>> assert doc_vector.shape == (1536,)
+            >>> doc_vector.ndim == 1  # 一维向量，维度由模型决定
         """
         if not text or not text.strip():
             raise ValueError("文档文本不能为空")
@@ -81,7 +81,7 @@ class Embedder:
             text: 长文档文本
 
         Returns:
-            平均向量（shape=(1536,)）
+            平均向量（shape=(dim,)）
         """
         # 分块
         chunks = split_text_into_chunks(
@@ -113,7 +113,7 @@ class Embedder:
 
         Returns:
             (分块向量矩阵, 分块文本列表)
-            - 分块向量矩阵: shape=(num_chunks, 1536)
+            - 分块向量矩阵: shape=(num_chunks, dim)
             - 分块文本列表: 如果 return_chunks=True 则返回，否则返回 None
 
         Raises:
@@ -123,7 +123,7 @@ class Embedder:
         Example:
             >>> embedder = Embedder()
             >>> vectors, chunks = embedder.embed_chunks("Long text...", return_chunks=True)
-            >>> assert vectors.shape[1] == 1536
+            >>> vectors.ndim == 2  # (num_chunks, dim)
             >>> assert len(chunks) == vectors.shape[0]
         """
         if not text or not text.strip():
@@ -160,7 +160,7 @@ class Embedder:
             texts: 文档文本列表
 
         Returns:
-            文档向量矩阵（shape=(num_docs, 1536)）
+            文档向量矩阵（shape=(num_docs, dim)）
 
         Raises:
             ValueError: 文本列表为空
@@ -169,7 +169,7 @@ class Embedder:
         Example:
             >>> embedder = Embedder()
             >>> vectors = embedder.embed_batch_documents(["doc1", "doc2", "doc3"])
-            >>> assert vectors.shape == (3, 1536)
+            >>> vectors.shape[0] == 3  # num_docs
         """
         if not texts:
             raise ValueError("文档文本列表不能为空")
@@ -231,8 +231,8 @@ class Embedder:
         批量计算查询向量与向量集的余弦相似度
 
         Args:
-            query_vector: 查询向量（shape=(1536,)）
-            vectors: 向量矩阵（shape=(n, 1536)）
+            query_vector: 查询向量（shape=(dim,)）
+            vectors: 向量矩阵（shape=(n, dim)）
 
         Returns:
             相似度数组（shape=(n,)）

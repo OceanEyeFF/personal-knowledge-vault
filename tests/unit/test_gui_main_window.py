@@ -30,17 +30,34 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 @pytest.fixture(autouse=True)
 def mock_stores():
-    """Mock 所有存储单例，避免连接真实数据库。"""
+    """Mock 所有存储单例和配置，避免连接真实数据库。"""
     mock_store = MagicMock()
     mock_store.get_all_tags_with_count.return_value = []
     mock_store.list_entries.return_value = []
     mock_store.count_entries.return_value = 0
+    mock_store.get_statistics.return_value = {
+        "total_entries": 0,
+        "by_source_type": [],
+        "top_tags": [],
+    }
+
+    mock_config = MagicMock()
+    mock_config.deepseek_api_key = ""
+    mock_config.deepseek_base_url = ""
+    mock_config.openai_api_key = ""
+    mock_config.openai_base_url = ""
+    mock_config.db_path = ".data-test/db/test.db"
+    mock_config.vault_dir = ".data-test/vault"
+    mock_config.vector_index_dir = ".data-test/vectors"
+    mock_config.get.return_value = "auto"
 
     # 延迟导入在函数内部执行 from src.gui.stores import xxx，
     # 因此只需 mock src.gui.stores 模块级函数即可
     with patch("src.gui.stores.get_sqlite_store", return_value=mock_store), \
          patch("src.gui.stores.get_markdown_store", return_value=MagicMock()), \
-         patch("src.gui.stores.get_bm25_retriever", return_value=MagicMock()):
+         patch("src.gui.stores.get_bm25_retriever", return_value=MagicMock()), \
+         patch("src.gui.viewmodels.settings_viewmodel.get_config", return_value=mock_config), \
+         patch("src.utils.config.get_config", return_value=mock_config):
         yield mock_store
 
 
@@ -138,6 +155,40 @@ class TestNavigation:
         # 验证搜索视图的 focus_search_input 被调用
         assert main_window._stacked.currentIndex() == 1
 
+    def test_switch_to_archive(self, main_window):
+        """切换到归档视图。"""
+        main_window.switch_to_archive()
+        assert main_window._stacked.currentIndex() == 2
+
+    def test_switch_to_stats(self, main_window):
+        """切换到统计视图。"""
+        main_window.switch_to_stats()
+        assert main_window._stacked.currentIndex() == 3
+
+    def test_switch_to_settings(self, main_window):
+        """切换到设置视图。"""
+        main_window.switch_to_settings()
+        assert main_window._stacked.currentIndex() == 4
+
+    def test_nav_list_has_five_items(self, main_window):
+        """导航列表包含 5 个项目（浏览/搜索/归档/统计/设置）。"""
+        assert main_window._nav_list.count() == 5
+
+    def test_nav_list_click_archive(self, main_window):
+        """点击导航列表切换到归档视图。"""
+        main_window._nav_list.setCurrentRow(2)
+        assert main_window._stacked.currentIndex() == 2
+
+    def test_nav_list_click_stats(self, main_window):
+        """点击导航列表切换到统计视图。"""
+        main_window._nav_list.setCurrentRow(3)
+        assert main_window._stacked.currentIndex() == 3
+
+    def test_nav_list_click_settings(self, main_window):
+        """点击导航列表切换到设置视图。"""
+        main_window._nav_list.setCurrentRow(4)
+        assert main_window._stacked.currentIndex() == 4
+
 
 # ============================================================
 # 验收标准 4: 明亮/暗色主题可切换
@@ -190,6 +241,29 @@ class TestStatusBar:
         main_window.switch_to_search()
         main_window.switch_to_browser()
         assert "浏览" in main_window._status_label.text()
+
+    def test_nav_to_browser_triggers_refresh(self, main_window):
+        """切换到浏览视图时触发 BrowserView.refresh()。"""
+        with patch.object(main_window._browser_view, "refresh") as mock_refresh:
+            main_window.switch_to_search()
+            mock_refresh.reset_mock()
+            main_window.switch_to_browser()
+            mock_refresh.assert_called_once()
+
+    def test_nav_to_archive_updates_status(self, main_window):
+        """切换到归档视图时更新状态栏。"""
+        main_window.switch_to_archive()
+        assert "归档" in main_window._status_label.text()
+
+    def test_nav_to_stats_updates_status(self, main_window):
+        """切换到统计视图时更新状态栏。"""
+        main_window.switch_to_stats()
+        assert "统计" in main_window._status_label.text()
+
+    def test_nav_to_settings_updates_status(self, main_window):
+        """切换到设置视图时更新状态栏。"""
+        main_window.switch_to_settings()
+        assert "设置" in main_window._status_label.text()
 
 
 # ============================================================

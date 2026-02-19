@@ -355,6 +355,57 @@ class SQLiteStore:
                 return dict(row)
             return None
 
+    def delete_entry(self, knowledge_id: int) -> bool:
+        """删除知识条目及所有关联数据。
+
+        级联删除 content_chunks、knowledge_tags、video_timestamps（外键 CASCADE）。
+        FTS5 触发器自动清理全文索引。
+        删除后递减相关标签计数，计数归零的标签自动清理。
+
+        Args:
+            knowledge_id: 知识条目 ID。
+
+        Returns:
+            True 表示成功删除，False 表示条目不存在。
+        """
+        with self.get_connection() as conn:
+            # 1. 先递减标签计数（必须在 CASCADE 删除 knowledge_tags 之前）
+            self._decrement_tag_counts(conn, knowledge_id)
+
+            # 2. 删除主表记录（CASCADE 自动清理 chunks/tags关联/timestamps，触发器清理 FTS5）
+            cursor = conn.execute(
+                "DELETE FROM knowledge_items WHERE knowledge_id = ?",
+                (knowledge_id,),
+            )
+
+            deleted = cursor.rowcount > 0
+            if deleted:
+                logger.info(f"删除知识条目: knowledge_id={knowledge_id}")
+            else:
+                logger.warning(f"条目不存在: knowledge_id={knowledge_id}")
+            return deleted
+
+    def _decrement_tag_counts(self, conn: sqlite3.Connection, knowledge_id: int) -> None:
+        """递减条目关联标签的计数，计数归零时删除标签。
+
+        Args:
+            conn: 数据库连接（在同一事务中调用）。
+            knowledge_id: 即将被删除的条目 ID。
+        """
+        # 查询该条目关联的所有标签 ID
+        cursor = conn.execute(
+            "SELECT tag_id FROM knowledge_tags WHERE knowledge_id = ?",
+            (knowledge_id,),
+        )
+        tag_ids = [row[0] for row in cursor.fetchall()]
+
+        for tag_id in tag_ids:
+            conn.execute("UPDATE tags SET count = count - 1 WHERE tag_id = ?", (tag_id,))
+
+        # 清理计数归零的标签
+        if tag_ids:
+            conn.execute("DELETE FROM tags WHERE count <= 0")
+
     def table_exists(self, table_name: str) -> bool:
         """
         检查表是否存在

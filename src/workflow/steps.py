@@ -380,7 +380,7 @@ class StoreStep(BaseStep):
                 try:
                     vector_store = self._vector_store or VectorStore(
                         index_dir=config.vector_index_dir,
-                        dim=config.get("ai.openai.embedding_dim", 1536),
+                        dim=config.embedding_dim,
                     )
                     embedder = self._embedder or Embedder()
                     doc_vector = await asyncio.to_thread(embedder.embed_document, entry.content)

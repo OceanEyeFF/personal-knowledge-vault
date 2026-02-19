@@ -293,3 +293,94 @@ class TestPagination:
         browser_view.load_entries()
         assert browser_view._entry_model.rowCount() == 0
         assert browser_view._total_count == 0
+
+
+# ============================================================
+# 刷新功能
+# ============================================================
+
+class TestRefresh:
+    """测试 BrowserView.refresh() 方法。"""
+
+    def test_refresh_reloads_tags(self, browser_view, mock_store):
+        """refresh() 重新加载标签。"""
+        initial_tag_calls = mock_store.get_all_tags_with_count.call_count
+        browser_view.refresh()
+        assert mock_store.get_all_tags_with_count.call_count > initial_tag_calls
+
+    def test_refresh_reloads_entries(self, browser_view, mock_store):
+        """refresh() 重新加载条目列表。"""
+        initial_list_calls = mock_store.list_entries.call_count
+        browser_view.refresh()
+        assert mock_store.list_entries.call_count > initial_list_calls
+
+    def test_refresh_preserves_tag_filter(self, browser_view, mock_store):
+        """refresh() 保留当前标签筛选状态。"""
+        browser_view._current_tag = "AI"
+        browser_view.refresh()
+        last_call = mock_store.list_entries.call_args
+        assert last_call.kwargs.get("tag") == "AI"
+
+    def test_refresh_preserves_page(self, browser_view, mock_store):
+        """refresh() 保留当前页码。"""
+        mock_store.count_entries.return_value = 50
+        browser_view._current_page = 1
+        browser_view.refresh()
+        assert browser_view._current_page == 1
+
+    def test_refresh_updates_new_data(self, browser_view, mock_store):
+        """refresh() 加载最新数据（模拟新增条目）。"""
+        new_entries = MOCK_ENTRIES + [{
+            "knowledge_id": 3,
+            "title": "新归档条目",
+            "source_type": "text",
+            "tags": "测试",
+            "word_count": 500,
+            "archived_at": "2026-02-19 22:00:00",
+            "file_path": "text/2026/02/20260219-new.md",
+            "summary_one_sentence": "新归档的测试条目",
+        }]
+        mock_store.list_entries.return_value = new_entries
+        mock_store.count_entries.return_value = len(new_entries)
+        browser_view.refresh()
+        assert browser_view._entry_model.rowCount() == 3
+        assert browser_view._total_count == 3
+
+
+# ============================================================
+# 右键删除功能
+# ============================================================
+
+class TestDeleteFeature:
+    """测试 BrowserView 删除功能。"""
+
+    def test_context_menu_policy_set(self, browser_view):
+        """条目表格启用了自定义右键菜单。"""
+        from PySide6.QtCore import Qt
+        assert browser_view._entry_view.contextMenuPolicy() == Qt.CustomContextMenu
+
+    def test_execute_delete_refreshes_view(self, browser_view, mock_store):
+        """删除条目后视图自动刷新。"""
+        mock_store.delete_entry = MagicMock(return_value=True)
+        initial_list_calls = mock_store.list_entries.call_count
+
+        entry = MOCK_ENTRIES[0]
+        with patch("src.gui.stores.get_sqlite_store", return_value=mock_store), \
+             patch("src.gui.stores.get_markdown_store", return_value=MagicMock()), \
+             patch("src.gui.stores.get_vector_store", return_value=MagicMock()):
+            browser_view._execute_delete(entry)
+
+        # 验证 list_entries 被再次调用（refresh 触发）
+        assert mock_store.list_entries.call_count > initial_list_calls
+
+    def test_execute_delete_calls_store_delete(self, browser_view, mock_store):
+        """删除操作调用 SQLiteStore.delete_entry()。"""
+        mock_store.delete_entry = MagicMock(return_value=True)
+
+        entry = MOCK_ENTRIES[0]
+        with patch("src.gui.stores.get_sqlite_store", return_value=mock_store), \
+             patch("src.gui.stores.get_markdown_store", return_value=MagicMock()), \
+             patch("src.gui.stores.get_vector_store", return_value=MagicMock()):
+            browser_view._execute_delete(entry)
+
+        mock_store.delete_entry.assert_called_once_with(entry["knowledge_id"])

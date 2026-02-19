@@ -1,6 +1,6 @@
 /* ===================================================
  * Personal Knowledge Vault - 明亮主题 (Light Theme)
- * Phase 2B M10 GUI 基础框架
+ * Phase 2B M10~M11 GUI 基础框架 + 归档/设置视图
  * =================================================== */
 
 /* 主窗口与全局背景 */
@@ -308,12 +308,82 @@ QToolBar {
 QGroupBox {
     border: 1px solid #d0d0d0;
     border-radius: 4px;
-    margin-top: 8px;
-    padding-top: 8px;
+    margin-top: 12px;
+    padding: 16px 12px 12px 12px;
     font-weight: 600;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
+    subcontrol-position: top left;
     left: 10px;
-    padding: 0 4px;
+    padding: 0 6px;
+    background-color: #f5f5f5;
+    color: #2c2c2c;
+}
+
+/* 选项卡部件（归档视图） */
+QTabWidget::pane {
+    border: 1px solid #d0d0d0;
+    border-radius: 4px;
+    background-color: #ffffff;
+    padding: 8px;
+}
+QTabBar::tab {
+    background-color: #e8e8e8;
+    color: #555555;
+    border: 1px solid #d0d0d0;
+    border-bottom: none;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    padding: 6px 16px;
+    margin-right: 2px;
+    min-width: 80px;
+}
+QTabBar::tab:selected {
+    background-color: #ffffff;
+    color: #2c2c2c;
+    border-bottom: 2px solid #0078d4;
+    font-weight: 600;
+}
+QTabBar::tab:hover:!selected {
+    background-color: #e5f3fb;
+    color: #2c2c2c;
+}
+
+/* 进度条（归档进度 + 统计条） */
+QProgressBar {
+    background-color: #e0e0e0;
+    border: 1px solid #d0d0d0;
+    border-radius: 4px;
+    text-align: center;
+    color: #2c2c2c;
+    font-size: 12px;
+    min-height: 20px;
+}
+QProgressBar::chunk {
+    background-color: #0078d4;
+    border-radius: 3px;
+}
+
+/* 文本区域（归档文本输入） */
+QPlainTextEdit {
+    background-color: #ffffff;
+    color: #2c2c2c;
+    border: 1px solid #cccccc;
+    border-radius: 4px;
+    padding: 8px;
+    font-size: 13px;
+    selection-background-color: #0078d4;
+    selection-color: #ffffff;
+}
+QPlainTextEdit:focus {
+    border-color: #0078d4;
+}
+
+/* 表单标签（QFormLayout 中的标签） */
+QLabel[formLabel="true"] {
+    color: #555555;
+    font-size: 13px;
+    padding-right: 8px;
+    min-width: 80px;
 }

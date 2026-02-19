@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from bs4 import BeautifulSoup, Tag
 from playwright.async_api import async_playwright
@@ -20,9 +20,21 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# 登录墙特征文本
+_LOGIN_WALL_MARKERS = [
+    "请您登录后查看",
+    "登录知乎",
+    "请登录后查看更多",
+    "登录即可查看",
+]
+
 
 class ZhihuProcessor(BaseProcessor):
-    """Processor for Zhihu questions and posts."""
+    """Processor for Zhihu questions and posts.
+
+    支持可选的 Cookie 注入（通过环境变量 ZHIHU_COOKIE 配置），
+    用于绕过知乎登录墙获取完整内容。
+    """
 
     def __init__(self, timeout: float = 20.0, user_agent: Optional[str] = None):
         """
@@ -39,6 +51,7 @@ class ZhihuProcessor(BaseProcessor):
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         )
+        self._cookie_str: Optional[str] = config.zhihu_cookie
 
     @classmethod
     def can_handle(cls, url: str) -> bool:
@@ -59,6 +72,26 @@ class ZhihuProcessor(BaseProcessor):
         html = await self._fetch_html(url)
         if not html:
             raise ValueError(f"Empty HTML content for url={url}")
+
+        # 登录墙检测
+        if self._is_login_wall(html):
+            if self._cookie_str:
+                logger.warning(
+                    "⚠️ 知乎登录墙检测：已配置 Cookie 但仍被拦截，Cookie 可能已过期。"
+                    "请重新从浏览器复制 Cookie 到 .env 文件的 ZHIHU_COOKIE 配置项"
+                )
+            else:
+                logger.warning(
+                    "⚠️ 知乎登录墙检测：该页面需要登录才能查看完整内容。\n"
+                    "解决方法：\n"
+                    "  1. 在 .env 文件中配置 ZHIHU_COOKIE（从浏览器复制登录 Cookie）\n"
+                    "  2. 或者直接复制页面文本，使用「文本归档」功能\n"
+                    "详见 .env.example 中的 ZHIHU_COOKIE 说明"
+                )
+            raise ValueError(
+                "知乎登录墙：该页面需要登录才能查看完整内容。"
+                "请配置 ZHIHU_COOKIE 环境变量或使用文本归档功能"
+            )
 
         soup = BeautifulSoup(html, "lxml")
         self._preserve_latex(soup)
@@ -99,8 +132,15 @@ class ZhihuProcessor(BaseProcessor):
                 headless=True,
                 args=["--disable-blink-features=AutomationControlled"],
             )
-            page = await browser.new_page()
-            await page.set_extra_http_headers({"User-Agent": self.user_agent})
+            context = await browser.new_context(user_agent=self.user_agent)
+
+            # Cookie 注入
+            if self._cookie_str:
+                cookies = self._parse_cookie_str(self._cookie_str, ".zhihu.com")
+                await context.add_cookies(cookies)
+                logger.info("已注入知乎 Cookie (%d 个)", len(cookies))
+
+            page = await context.new_page()
             await page.goto(url, wait_until="networkidle", timeout=int(self.timeout * 1000))
             html = await page.content()
             await browser.close()
@@ -108,6 +148,8 @@ class ZhihuProcessor(BaseProcessor):
 
     async def _fetch_with_requests(self, url: str) -> str:
         headers = {"User-Agent": self.user_agent}
+        if self._cookie_str:
+            headers["Cookie"] = self._cookie_str
 
         def _request() -> str:
             response = requests.get(url, headers=headers, timeout=self.timeout)
@@ -199,6 +241,51 @@ class ZhihuProcessor(BaseProcessor):
             return int(value) if value is not None else 0
         except ValueError:
             return 0
+
+    # ------------------------------------------------------------------
+    # 登录墙检测 & Cookie 解析
+    # ------------------------------------------------------------------
+
+    def _is_login_wall(self, html: str) -> bool:
+        """检测 HTML 是否为知乎登录墙页面。
+
+        Args:
+            html: 页面 HTML 内容。
+
+        Returns:
+            True 表示检测到登录墙。
+        """
+        if not html:
+            return False
+        for marker in _LOGIN_WALL_MARKERS:
+            if marker in html:
+                return True
+        return False
+
+    @staticmethod
+    def _parse_cookie_str(cookie_str: str, domain: str) -> List[Dict[str, str]]:
+        """将浏览器 Cookie 字符串解析为 Playwright cookie 列表。
+
+        Args:
+            cookie_str: 从浏览器复制的 Cookie 原始字符串。
+            domain: Cookie 所属域名（如 ".zhihu.com"）。
+
+        Returns:
+            Playwright add_cookies() 接受的字典列表。
+        """
+        cookies: List[Dict[str, str]] = []
+        for pair in cookie_str.split(";"):
+            pair = pair.strip()
+            if "=" not in pair:
+                continue
+            name, _, value = pair.partition("=")
+            cookies.append({
+                "name": name.strip(),
+                "value": value.strip(),
+                "domain": domain,
+                "path": "/",
+            })
+        return cookies
 
     def _preserve_latex(self, soup: BeautifulSoup) -> None:
         """Preserve LaTeX formulas by replacing known math spans with inline markers."""

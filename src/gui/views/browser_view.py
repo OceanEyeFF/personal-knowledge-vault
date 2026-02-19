@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
     QLabel,
+    QMenu,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QTextEdit,
@@ -162,6 +164,8 @@ class BrowserView(QWidget):
         self._entry_view.setSelectionMode(QAbstractItemView.SingleSelection)  # type: ignore[attr-defined]
         self._entry_view.setAlternatingRowColors(True)
         self._entry_view.setSortingEnabled(False)
+        self._entry_view.setContextMenuPolicy(Qt.CustomContextMenu)  # type: ignore[attr-defined]
+        self._entry_view.customContextMenuRequested.connect(self._show_context_menu)
         self._entry_view.horizontalHeader().setStretchLastSection(True)
         self._entry_view.horizontalHeader().setMinimumSectionSize(40)
         self._entry_view.verticalHeader().hide()
@@ -372,6 +376,121 @@ class BrowserView(QWidget):
                 entry.get("summary_one_sentence", "") or "（无摘要）",
             ]
             self._preview_text.setPlainText("\n".join(lines))
+
+    # ------------------------------------------------------------------
+    # 公共刷新接口
+    # ------------------------------------------------------------------
+
+    def refresh(self) -> None:
+        """刷新标签和条目列表（保留当前筛选与页码状态）。
+
+        典型调用场景：归档成功后用户切换到浏览视图时，由
+        MainWindow 自动触发，确保新入库条目立即可见。
+        """
+        self.load_tags()
+        self.load_entries(tag=self._current_tag, page=self._current_page)
+        logger.debug("BrowserView 数据已刷新")
+
+    # ------------------------------------------------------------------
+    # 右键上下文菜单 & 删除
+    # ------------------------------------------------------------------
+
+    def _show_context_menu(self, position) -> None:
+        """在条目列表上显示右键上下文菜单。
+
+        Args:
+            position: 鼠标点击位置（相对于 _entry_view）。
+        """
+        index = self._entry_view.indexAt(position)
+        if not index.isValid():
+            return
+        entry = self._entry_model.get_entry(index.row())
+        if not entry:
+            return
+
+        menu = QMenu(self)
+        delete_action = menu.addAction("删除条目")
+        action = menu.exec(self._entry_view.viewport().mapToGlobal(position))
+        if action == delete_action:
+            self._confirm_and_delete(entry)
+
+    def _confirm_and_delete(self, entry: dict) -> None:
+        """弹出确认对话框，确认后执行三层删除。
+
+        Args:
+            entry: 待删除的条目字典。
+        """
+        knowledge_id = entry.get("knowledge_id")
+        title = entry.get("title", "未知标题")
+
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定要删除以下知识条目吗？\n\n"
+            f"ID: {knowledge_id}\n"
+            f"标题: {title}\n\n"
+            f"此操作将同时删除数据库记录、Markdown 文件和向量索引，不可恢复。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self._execute_delete(entry)
+
+    def _execute_delete(self, entry: dict) -> None:
+        """执行三层存储删除（best-effort 策略）。
+
+        删除顺序：SQLite → Markdown → Vector。
+        向量删除失败不阻断（辅助索引）。
+
+        Args:
+            entry: 待删除的条目字典。
+        """
+        knowledge_id = entry.get("knowledge_id")
+        file_path = entry.get("file_path", "")
+        errors: list[str] = []
+
+        # 1. 删除 SQLite 记录（含 CASCADE + FTS5 触发器）
+        try:
+            from src.gui.stores import get_sqlite_store
+            store = get_sqlite_store()
+            if not store.delete_entry(knowledge_id):
+                errors.append("数据库记录不存在")
+        except Exception as exc:
+            logger.error(f"SQLite 删除失败: {exc}", exc_info=True)
+            errors.append(f"数据库删除失败: {exc}")
+
+        # 2. 删除 Markdown 文件
+        if file_path:
+            try:
+                from src.gui.stores import get_markdown_store
+                from pathlib import Path
+                md_store = get_markdown_store()
+                full_path = Path(md_store.vault_dir) / file_path
+                md_store.delete(full_path)
+            except Exception as exc:
+                logger.warning(f"Markdown 删除失败: {exc}")
+                errors.append(f"文件删除失败: {exc}")
+
+        # 3. 删除向量索引（best-effort，失败不报错）
+        try:
+            from src.gui.stores import get_vector_store
+            vs = get_vector_store()
+            vs.delete_vectors_for_entry(knowledge_id)
+        except Exception as exc:
+            logger.warning(f"向量索引删除失败（不影响主功能）: {exc}")
+
+        # 4. 刷新视图
+        self.refresh()
+
+        # 5. 反馈结果
+        if not errors:
+            logger.info(f"条目删除成功: knowledge_id={knowledge_id}")
+        else:
+            QMessageBox.warning(
+                self,
+                "删除部分失败",
+                "删除过程中出现问题:\n\n" + "\n".join(f"• {e}" for e in errors),
+            )
 
     # ------------------------------------------------------------------
     # 分页 UI 更新

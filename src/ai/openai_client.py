@@ -21,7 +21,7 @@ class OpenAIClient:
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        model: str = "text-embedding-ada-002",
+        model: Optional[str] = None,
         timeout: float = 30.0,
         max_retries: int = 3,
     ):
@@ -31,7 +31,7 @@ class OpenAIClient:
         Args:
             api_key: API Key，默认从配置中读取
             base_url: API Base URL，默认从配置中读取
-            model: Embedding 模型名称
+            model: Embedding 模型名称，默认从 Config 读取（环境变量 > config.yaml > 内置默认）
             timeout: 请求超时时间（秒）
             max_retries: 最大重试次数
         """
@@ -42,7 +42,7 @@ class OpenAIClient:
             raise ValueError("OpenAI API Key 未配置，请设置环境变量 OPENAI_API_KEY")
 
         self.base_url = base_url or config.openai_base_url
-        self.model = model
+        self.model = model or config.openai_embedding_model
         self.timeout = timeout
         self.max_retries = max_retries
 
@@ -54,7 +54,7 @@ class OpenAIClient:
             max_retries=self.max_retries,
         )
 
-        logger.info(f"OpenAI 客户端初始化成功: model={model}, base_url={self.base_url}")
+        logger.info(f"OpenAI 客户端初始化成功: model={self.model}, base_url={self.base_url}")
 
     def embed(self, text: str) -> List[float]:
         """
@@ -64,7 +64,7 @@ class OpenAIClient:
             text: 需要向量化的文本
 
         Returns:
-            Embedding 向量（1536 维）
+            Embedding 向量（维度由配置的 embedding_dim 决定）
 
         Raises:
             ValueError: 输入文本为空
@@ -73,7 +73,7 @@ class OpenAIClient:
         Example:
             >>> client = OpenAIClient()
             >>> embedding = client.embed("Hello, world!")
-            >>> assert len(embedding) == 1536
+            >>> len(embedding)  # 维度取决于模型配置
         """
         if not text or not text.strip():
             raise ValueError("Embedding 文本不能为空")
@@ -134,7 +134,7 @@ class OpenAIClient:
             >>> client = OpenAIClient()
             >>> embeddings = client.embed_batch(["text1", "text2", "text3"])
             >>> assert len(embeddings) == 3
-            >>> assert all(len(emb) == 1536 for emb in embeddings)
+            >>> assert all(len(emb) > 0 for emb in embeddings)
         """
         if not texts:
             raise ValueError("Embedding 文本列表不能为空")
@@ -199,12 +199,12 @@ class OpenAIClient:
             text: 需要向量化的文本
 
         Returns:
-            Embedding 向量（numpy 数组，shape=(1536,)）
+            Embedding 向量（numpy 数组，shape=(dim,)，dim 由模型决定）
 
         Example:
             >>> client = OpenAIClient()
             >>> embedding = client.embed_numpy("Hello, world!")
-            >>> assert embedding.shape == (1536,)
+            >>> embedding.ndim == 1  # 一维向量
         """
         embedding = self.embed(text)
         return np.array(embedding, dtype=np.float32)
@@ -218,12 +218,12 @@ class OpenAIClient:
             batch_size: 批次大小
 
         Returns:
-            Embedding 向量矩阵（numpy 数组，shape=(n, 1536)）
+            Embedding 向量矩阵（numpy 数组，shape=(n, dim)，dim 由模型决定）
 
         Example:
             >>> client = OpenAIClient()
             >>> embeddings = client.embed_batch_numpy(["text1", "text2", "text3"])
-            >>> assert embeddings.shape == (3, 1536)
+            >>> embeddings.shape[0] == 3  # n 个文本
         """
         embeddings = self.embed_batch(texts, batch_size=batch_size)
         return np.array(embeddings, dtype=np.float32)

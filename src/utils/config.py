@@ -187,6 +187,27 @@ class Config:
         return self.get_env("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
     @property
+    def openai_embedding_model(self) -> str:
+        """OpenAI Embedding 模型名称（支持环境变量覆盖 > config.yaml > 默认值）"""
+        return (
+            self.get_env("OPENAI_EMBEDDING_MODEL")
+            or self.get("ai.openai.embedding_model", "text-embedding-3-small")
+        )
+
+    @property
+    def embedding_dim(self) -> int:
+        """Embedding 向量维度（支持环境变量覆盖 > config.yaml > 默认 1536）"""
+        env_val = self.get_env("OPENAI_EMBEDDING_DIM")
+        if env_val:
+            return int(env_val)
+        return int(self.get("ai.openai.embedding_dim", 1536))
+
+    @property
+    def zhihu_cookie(self) -> Optional[str]:
+        """知乎 Cookie（可选，用于绕过登录墙获取完整内容）"""
+        return self.get_env("ZHIHU_COOKIE")
+
+    @property
     def log_level(self) -> str:
         """日志级别"""
         return self.get_env("LOG_LEVEL") or self.get("logging.level", "INFO")

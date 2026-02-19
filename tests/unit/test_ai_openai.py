@@ -23,6 +23,7 @@ def mock_config():
         config = Mock()
         config.openai_api_key = "test-openai-key"
         config.openai_base_url = "https://api.openai.com/v1"
+        config.openai_embedding_model = "text-embedding-3-small"
         mock.return_value = config
         yield config
 
@@ -44,7 +45,7 @@ class TestOpenAIClientInit:
 
             assert client.api_key == "test-openai-key"
             assert client.base_url == "https://api.openai.com/v1"
-            assert client.model == "text-embedding-ada-002"
+            assert client.model == "text-embedding-3-small"
             assert client.timeout == 30.0
             assert client.max_retries == 3
 

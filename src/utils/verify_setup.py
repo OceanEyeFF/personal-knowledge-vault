@@ -144,10 +144,11 @@ def test_vector_store():
     """测试向量存储"""
     print("\n🔢 测试向量存储...")
     config = get_config()
-    store = VectorStore(index_dir=config.vector_index_dir, dim=1536)
+    dim = config.embedding_dim
+    store = VectorStore(index_dir=config.vector_index_dir, dim=dim)
 
     # 添加测试向量
-    test_vector = np.random.rand(1536).astype('float32')
+    test_vector = np.random.rand(dim).astype('float32')
     store.add_doc_vector(knowledge_id=1, vector=test_vector)
     print("  ✓ 添加文档向量")
 

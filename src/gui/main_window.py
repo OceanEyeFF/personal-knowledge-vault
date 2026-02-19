@@ -1,11 +1,11 @@
 """PKV 主窗口。
 
 提供 QMainWindow 实现，包含：
-- 左侧导航侧边栏（浏览 / 搜索）
-- 中央 QStackedWidget（BrowserView / SearchView）
+- 左侧导航侧边栏（浏览 / 搜索 / 归档 / 统计 / 设置）
+- 中央 QStackedWidget（BrowserView / SearchView / ArchiveView / StatsView / SettingsView）
 - 菜单栏（文件 / 视图 / 帮助）
 - 状态栏（当前状态信息）
-- 全局快捷键（Ctrl+K / Ctrl+B / Ctrl+Q）
+- 全局快捷键（Ctrl+K / Ctrl+B / Ctrl+N / Ctrl+Q）
 - QSettings 窗口状态与主题持久化
 """
 
@@ -32,6 +32,9 @@ from PySide6.QtWidgets import (
 
 from src.gui.views.browser_view import BrowserView
 from src.gui.views.search_view import SearchView
+from src.gui.views.archive_view import ArchiveView
+from src.gui.views.stats_view import StatsView
+from src.gui.views.settings_view import SettingsView
 
 logger = logging.getLogger("pkv.gui.mainwindow")
 
@@ -41,6 +44,9 @@ logger = logging.getLogger("pkv.gui.mainwindow")
 
 _NAV_BROWSER = 0
 _NAV_SEARCH = 1
+_NAV_ARCHIVE = 2
+_NAV_STATS = 3
+_NAV_SETTINGS = 4
 
 
 class MainWindow(QMainWindow):
@@ -102,7 +108,19 @@ class MainWindow(QMainWindow):
         self._search_view = SearchView(self)
         self._stacked.addWidget(self._browser_view)   # 索引 0: 浏览
         self._stacked.addWidget(self._search_view)    # 索引 1: 搜索
+
+        self._archive_view = ArchiveView(self)
+        self._stats_view = StatsView(self)
+        self._settings_view = SettingsView(self)
+        self._stacked.addWidget(self._archive_view)   # 索引 2: 归档
+        self._stacked.addWidget(self._stats_view)     # 索引 3: 统计
+        self._stacked.addWidget(self._settings_view)  # 索引 4: 设置
+
         layout.addWidget(self._stacked, stretch=1)
+
+        # 连接新视图信号
+        self._archive_view.navigate_to_browser.connect(self.switch_to_browser)
+        self._settings_view.theme_change_requested.connect(self.apply_theme)
 
         # 默认显示浏览视图
         self._stacked.setCurrentIndex(_NAV_BROWSER)
@@ -136,6 +154,18 @@ class MainWindow(QMainWindow):
         search_item = QListWidgetItem("搜索")
         search_item.setTextAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
         self._nav_list.addItem(search_item)
+
+        archive_item = QListWidgetItem("归档")
+        archive_item.setTextAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
+        self._nav_list.addItem(archive_item)
+
+        stats_item = QListWidgetItem("统计")
+        stats_item.setTextAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
+        self._nav_list.addItem(stats_item)
+
+        settings_item = QListWidgetItem("设置")
+        settings_item.setTextAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
+        self._nav_list.addItem(settings_item)
 
         self._nav_list.setCurrentRow(_NAV_BROWSER)
         self._nav_list.currentRowChanged.connect(self._on_nav_changed)
@@ -175,6 +205,22 @@ class MainWindow(QMainWindow):
         search_action.setStatusTip("切换到搜索视图并聚焦搜索框")
         search_action.triggered.connect(self.switch_to_search)
         view_menu.addAction(search_action)
+
+        archive_action = QAction("归档内容", self)
+        archive_action.setShortcut(QKeySequence("Ctrl+N"))
+        archive_action.setStatusTip("切换到归档视图")
+        archive_action.triggered.connect(self.switch_to_archive)
+        view_menu.addAction(archive_action)
+
+        stats_action = QAction("统计信息", self)
+        stats_action.setStatusTip("切换到统计视图")
+        stats_action.triggered.connect(self.switch_to_stats)
+        view_menu.addAction(stats_action)
+
+        settings_action = QAction("设置", self)
+        settings_action.setStatusTip("切换到设置视图")
+        settings_action.triggered.connect(self.switch_to_settings)
+        view_menu.addAction(settings_action)
 
         view_menu.addSeparator()
 
@@ -229,6 +275,10 @@ class MainWindow(QMainWindow):
         shortcut_browser = QShortcut(QKeySequence("Ctrl+B"), self)
         shortcut_browser.activated.connect(self.switch_to_browser)
 
+        # Ctrl+N — 切换到归档
+        shortcut_archive = QShortcut(QKeySequence("Ctrl+N"), self)
+        shortcut_archive.activated.connect(self.switch_to_archive)
+
     # ------------------------------------------------------------------
     # 导航切换
     # ------------------------------------------------------------------
@@ -242,9 +292,17 @@ class MainWindow(QMainWindow):
         self._stacked.setCurrentIndex(row)
         if row == _NAV_BROWSER:
             self.set_status("浏览模式")
+            self._browser_view.refresh()
         elif row == _NAV_SEARCH:
             self.set_status("搜索模式")
             self._search_view.focus_search_input()
+        elif row == _NAV_ARCHIVE:
+            self.set_status("归档模式")
+        elif row == _NAV_STATS:
+            self.set_status("统计模式")
+            self._stats_view.refresh()
+        elif row == _NAV_SETTINGS:
+            self.set_status("设置")
 
     def switch_to_browser(self) -> None:
         """切换到浏览视图（供菜单和快捷键调用）。"""
@@ -254,6 +312,18 @@ class MainWindow(QMainWindow):
         """切换到搜索视图并聚焦搜索框（供菜单和快捷键调用）。"""
         self._nav_list.setCurrentRow(_NAV_SEARCH)
         self._search_view.focus_search_input()
+
+    def switch_to_archive(self) -> None:
+        """切换到归档视图（供菜单和快捷键调用）。"""
+        self._nav_list.setCurrentRow(_NAV_ARCHIVE)
+
+    def switch_to_stats(self) -> None:
+        """切换到统计视图（供菜单和快捷键调用）。"""
+        self._nav_list.setCurrentRow(_NAV_STATS)
+
+    def switch_to_settings(self) -> None:
+        """切换到设置视图（供菜单和快捷键调用）。"""
+        self._nav_list.setCurrentRow(_NAV_SETTINGS)
 
     # ------------------------------------------------------------------
     # 主题管理

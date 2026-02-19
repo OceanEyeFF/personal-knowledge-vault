@@ -12,12 +12,14 @@ from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from src.storage.sqlite_store import SQLiteStore
     from src.storage.markdown_store import MarkdownStore
+    from src.storage.vector_store import VectorStore
     from src.retrieval.bm25_retriever import BM25Retriever
 
 logger = logging.getLogger("pkv.gui.stores")
 
 _sqlite_store: Optional["SQLiteStore"] = None
 _markdown_store: Optional["MarkdownStore"] = None
+_vector_store: Optional["VectorStore"] = None
 _bm25_retriever: Optional["BM25Retriever"] = None
 
 
@@ -53,6 +55,25 @@ def get_markdown_store() -> "MarkdownStore":
     return _markdown_store
 
 
+def get_vector_store() -> "VectorStore":
+    """获取 VectorStore 单例（延迟初始化，仅删除时需要）。
+
+    Returns:
+        VectorStore 实例。
+    """
+    global _vector_store
+    if _vector_store is None:
+        from src.storage.vector_store import VectorStore
+        from src.utils.config import get_config
+        config = get_config()
+        _vector_store = VectorStore(
+            index_dir=config.vector_index_dir,
+            dim=config.embedding_dim,
+        )
+        logger.info(f"VectorStore 初始化: {config.vector_index_dir}")
+    return _vector_store
+
+
 def get_bm25_retriever() -> "BM25Retriever":
     """获取 BM25Retriever 单例（延迟初始化）。
 
@@ -75,7 +96,8 @@ def get_bm25_retriever() -> "BM25Retriever":
 
 def reset_stores() -> None:
     """重置所有单例（仅用于测试）。"""
-    global _sqlite_store, _markdown_store, _bm25_retriever
+    global _sqlite_store, _markdown_store, _vector_store, _bm25_retriever
     _sqlite_store = None
     _markdown_store = None
+    _vector_store = None
     _bm25_retriever = None
