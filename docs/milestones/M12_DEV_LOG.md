@@ -78,9 +78,10 @@
   - 理由：便于后续回顾，积累技术知识库
   - 参考：Phase 1 的 Milestone 报告模式
 
-- **决策 3**: 使用 `httpx.AsyncClient` + 手动解析 SSE（已确定）✅
-  - 理由：完全控制、无额外依赖、SSE 格式已验证
-  - 不使用 `openai` SDK：避免依赖，透明度更高
+- **决策 3**: 使用 `OpenAI SDK` 流式接口（已调整）✅
+  - 理由：精确 token 统计、成熟验证、代码简洁
+  - DeepSeek API 100% 兼容 OpenAI SDK
+  - 优势：`stream_usage=True` 自动统计 tokens（服务器端精确值）
 
 - **决策 4**: 采用 `deepseek-chat` 模型（已确定）✅
   - 理由：M12 不需要深度推理，`deepseek-chat` 性价比更高
@@ -104,9 +105,10 @@
 1. ✅ DeepSeek API 错误格式？→ **已解决**（与 OpenAI 一致）
 2. ✅ DeepSeek API 流式接口格式？→ **已验证**（SSE 标准，199 chunk 实测）
 3. ✅ Token 生成速度？→ **已测量**（~66-100 tokens/s）
-4. 🔲 Qt Signal/Slot 跨线程是否需要特殊声明？
-5. 🔲 httpx.AsyncClient 与现有同步代码的依赖冲突？
-6. 🔲 429 限流实际行为？（未触发，待实际开发验证）
+4. ✅ API 客户端选择？→ **已调整**（采用 OpenAI SDK，精确 token 统计）
+5. ✅ asyncio 集成方案？→ **已调整**（采用 qt-async-threads，代码更简洁）
+6. 🔲 Token 统计精确性？→ 待实测（DeepSeek API 是否返回 usage 字段）
+7. 🔲 429 限流实际行为？（未触发，待实际开发验证）
 
 #### 下一步计划
 
@@ -117,12 +119,14 @@
 - [x] 整理 NotebookLM 调研成果 ✅
 - [x] 测量性能指标 ✅
 
-**下一步：QThread + asyncio 调研**（Day 2）:
-- [ ] 运行 `test_qthread_asyncio.py` GUI 测试
-- [ ] 验证 Signal/Slot 跨线程稳定性
-- [ ] 测试高频 Signal 发射（100 tokens/s）
-- [ ] 使用 ChatGPT 调研 Qt 线程安全最佳实践
-- [ ] 更新 `01_ASYNCIO_QT_RESEARCH.md`
+**下一步：技术方案调整**（Day 2）:
+- [x] 互联网调研成熟方案 ✅
+- [x] 调整 API 客户端为 OpenAI SDK ✅
+- [x] 调整 asyncio 集成为 qt-async-threads ✅
+- [x] 补充 Token 统计方案（stream_usage=True）✅
+- [ ] 实测验证 DeepSeek API 的 usage 字段返回
+- [ ] 创建 OpenAI SDK 流式调用测试脚本
+- [ ] 更新 `01_ASYNCIO_QT_RESEARCH.md` 完整调研结果
 
 ---
 

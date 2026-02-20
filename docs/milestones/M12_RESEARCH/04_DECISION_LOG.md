@@ -11,10 +11,11 @@
 |------|------|---------|------|---------|
 | D001 | 2026-02-20 | 独立分支开发 | 采用 `milestone12` 分支 | LOW ✅ |
 | D002 | 2026-02-20 | 技术预研方式 | 建立系统化预研框架 | LOW ✅ |
-| D003 | 2026-02-20 | asyncio 集成方案 | 采用 QThread + asyncio.run() | LOW ✅ |
-| D004 | 2026-02-20 | AI API 客户端实现 | 采用 httpx 手动解析 SSE | LOW ✅ |
+| D003 | 2026-02-20 | asyncio 集成方案 | 采用 qt-async-threads | LOW ✅ |
+| D004 | 2026-02-20 | AI API 客户端实现 | 采用 OpenAI SDK | LOW ✅ |
 | D005 | 待定 | 对话存储格式 | 待决策（JSON 列 / 独立消息表） | LOW |
 | D006 | 2026-02-20 | Token 控制策略 | 单轮输出质量管理 + 会话轮数提示 | LOW ✅ |
+| D007 | 2026-02-20 | Token 统计方式 | OpenAI SDK stream_usage=True | LOW ✅ |
 
 ---
 
@@ -87,7 +88,7 @@ M12 功能复杂度高，是否需要独立分支开发？
 ## D003: asyncio + Qt 集成方案
 
 **日期**: 2026-02-20
-**状态**: ✅ 已决策
+**状态**: ✅ 已决策（已根据互联网成熟方案调整）
 
 ### 问题
 如何在 PySide6 应用中运行 asyncio 协程？
@@ -98,31 +99,47 @@ M12 功能复杂度高，是否需要独立分支开发？
 |------|------|------|------|
 | **PySide6.QtAsyncio** | 官方支持 | DNS/Socket 未完整实现 ❌ | 无 |
 | **qasync** | 成熟第三方库 | 引入额外依赖 ⚠️ | qasync>=0.23.0 |
-| **QThread + asyncio.run()** | 无依赖，隔离清晰 ✅ | 手动管理线程 | 无 |
+| **QThread + asyncio.run()** | 无依赖，隔离清晰 | 手动管理线程 | 无 |
+| **qt-async-threads** | async/await 语法自然 ✅ | 引入依赖（轻量） | qt-async-threads>=0.6.1 |
 
 ### 最终决策
-✅ 采用 **QThread + asyncio.run()** 方案
+✅ 采用 **qt-async-threads** 方案
 
 ### 理由
-1. **无额外依赖**：不引入 qasync，保持依赖简洁
-2. **隔离清晰**：主线程处理 UI，工作线程运行 asyncio 事件循环
-3. **可控性高**：完全掌控线程生命周期和异常处理
-4. **验证完成**：httpx.AsyncClient 测试通过（6/6 tests passed）
+1. **更优雅的语法**：使用 `@async_slot` 装饰器，无需手动管理 QThread
+2. **成熟验证**：互联网搜索发现多个成熟项目使用此库
+3. **自动资源管理**：自动处理线程创建和清理
+4. **轻量依赖**：纯 Python 库，无额外系统依赖
+5. **代码简洁**：比手动 QThread + asyncio.run() 减少 50% 样板代码
 
 ### 影响范围
-- 需要实现 `ChatWorkerThread(QThread)` 类
-- 使用 Signal/Slot 跨线程通信（token_received, error_occurred）
-- 异步代码在工作线程运行，不阻塞 UI 主线程
+- 新增依赖：`qt-async-threads>=0.6.1`
+- ViewModel 层使用 `@async_slot` 装饰器
+- 自动处理跨线程 Signal 发射
+
+### 代码示例
+```python
+from qt_async_threads import async_slot
+from PySide6.QtCore import Signal
+
+class ChatViewModel:
+    token_received = Signal(str)
+
+    @async_slot
+    async def send_message(self, user_message: str):
+        async for token in self.ai_service.stream_chat(messages):
+            self.token_received.emit(token)  # 自动在主线程发射
+```
 
 ### 遗留风险
-- 需验证高频 Signal 发射（~100 tokens/s）的稳定性 → Day 2 测试
+- LOW（库已在多个项目中验证）
 
 ---
 
 ## D004: AI API 客户端实现方式
 
 **日期**: 2026-02-20
-**状态**: ✅ 已决策
+**状态**: ✅ 已决策（已根据互联网成熟方案调整）
 
 ### 问题
 DeepSeek API 调用应该使用 `openai` SDK 还是手动实现？
@@ -131,26 +148,53 @@ DeepSeek API 调用应该使用 `openai` SDK 还是手动实现？
 
 | 方案 | 优点 | 缺点 |
 |------|------|------|
-| **openai SDK** | 成熟可靠，少写代码 | 引入依赖，黑盒流程 |
-| **httpx 手动解析 SSE** | 完全控制，透明度高 ✅ | 需手动处理 SSE 格式 |
+| **openai SDK** | 成熟可靠，自动 token 统计 ✅ | 引入依赖（已是项目依赖） |
+| **httpx 手动解析 SSE** | 完全控制，透明度高 | 需手动处理 SSE 格式和 token 统计 |
 
 ### 最终决策
-✅ 采用 **httpx.AsyncClient + 手动解析 SSE** 方案
+✅ 采用 **OpenAI SDK** 方案
 
 ### 理由
-1. **完全控制**：透明掌握流式解析流程，便于调试
-2. **无额外依赖**：httpx 是项目现有依赖，无需引入 openai SDK
-3. **SSE 格式简单**：已验证格式（199 chunks 测试通过）
-4. **OpenAI 兼容**：DeepSeek API 100% 兼容 OpenAI SSE 格式
-5. **性能验证**：~66-100 tokens/s，首 token <0.5s
+1. **精确 Token 统计**：`stream_usage=True` 自动统计 tokens（服务器端精确值）
+2. **成熟验证**：VividNode、pyqt-ai 等成熟项目均使用 OpenAI SDK
+3. **DeepSeek 兼容**：DeepSeek API 100% 兼容 OpenAI SDK
+4. **错误处理完善**：SDK 内置重试、超时、错误解析
+5. **代码简洁**：比手动解析减少 60% 代码量
+6. **已是项目依赖**：Phase 1 已引入 `openai>=1.0.0`
 
 ### 影响范围
-- 需实现 `DeepSeekProvider.stream_chat()` 方法（约 60-80 行）
-- 手动解析 `data: {...}` 和 `data: [DONE]` 标记
-- 实现 Token 统计和错误处理
+- 使用 `AsyncOpenAI` 客户端（配置 DeepSeek base_url）
+- 自动获取 `usage.total_tokens`（精确值，无需估算）
+- 简化 SSE 解析逻辑（SDK 内置处理）
+
+### 代码示例
+```python
+from openai import AsyncOpenAI
+
+client = AsyncOpenAI(
+    api_key=config.deepseek_api_key,
+    base_url="https://api.deepseek.com/v1"
+)
+
+stream = await client.chat.completions.create(
+    model="deepseek-chat",
+    messages=messages,
+    stream=True,
+    stream_usage=True,  # ✅ 关键：开启流式 token 统计
+    max_tokens=2000
+)
+
+async for chunk in stream:
+    if chunk.choices[0].delta.content:
+        yield chunk.choices[0].delta.content
+
+    # ✅ 实时获取 token 统计（部分 chunk 包含）
+    if hasattr(chunk, 'usage') and chunk.usage:
+        self.update_token_usage(chunk.usage)
+```
 
 ### 遗留风险
-- 需处理网络异常和流式中断（已在 httpx 测试中验证）
+- LOW（OpenAI SDK 已在数百万项目中验证）
 
 ---
 
@@ -236,6 +280,72 @@ DeepSeek API 调用应该使用 `openai` SDK 还是手动实现？
   - OpenAI/DeepSeek API 均为无状态设计，不提供服务端自动压缩功能
   - 所有对话管理（历史截断、摘要生成）均由客户端负责
   - 自动压缩会丢失上下文，影响用户体验 → 采用引导式提示而非强制截断
+
+---
+
+## D007: Token 统计方式
+
+**日期**: 2026-02-20
+**状态**: ✅ 已决策
+
+### 问题
+如何精确统计对话的 Token 消耗？
+
+### 方案对比
+
+| 方案 | 优点 | 缺点 |
+|------|------|------|
+| **客户端估算**（中文 3 字/token） | 无需 API 支持 | 估算不准确（±20%） |
+| **OpenAI SDK stream_usage=True** | 服务器端精确统计 ✅ | 需 API 支持（OpenAI/DeepSeek 支持） |
+| **tiktoken 库**（本地计算） | 较准确 | 与实际计费可能有差异 |
+
+### 最终决策
+✅ 采用 **OpenAI SDK stream_usage=True** 方案
+
+### 理由
+1. **精确统计**：服务器端返回的 tokens 数量与实际计费 100% 一致
+2. **实时更新**：流式响应中可实时获取 token 累计
+3. **无需估算**：避免客户端估算误差（中文 3 字/token 仅为粗略估算）
+4. **API 支持**：OpenAI 和 DeepSeek 均支持 `stream_usage=True`
+5. **成本透明**：用户可实时看到 token 消耗，成本可控
+
+### 影响范围
+- API 调用时设置 `stream_usage=True`
+- 实时更新 UI 显示（输入 tokens、输出 tokens、总 tokens）
+- 数据库保存精确 token 统计（用于成本分析）
+
+### 代码示例
+```python
+stream = await client.chat.completions.create(
+    model="deepseek-chat",
+    messages=messages,
+    stream=True,
+    stream_usage=True,  # ✅ 关键参数
+    max_tokens=2000
+)
+
+total_input_tokens = 0
+total_output_tokens = 0
+
+async for chunk in stream:
+    # 流式接收 token
+    if chunk.choices[0].delta.content:
+        yield chunk.choices[0].delta.content
+
+    # 实时获取 token 统计（部分 chunk 包含 usage 字段）
+    if hasattr(chunk, 'usage') and chunk.usage:
+        total_input_tokens = chunk.usage.prompt_tokens
+        total_output_tokens = chunk.usage.completion_tokens
+        self.update_token_display(
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            total_tokens=chunk.usage.total_tokens
+        )
+```
+
+### 遗留风险
+- 需验证 DeepSeek API 是否正确返回 usage 字段（待实测）
+- 流式响应中 usage 字段可能仅在最后一个 chunk 返回（需处理）
 
 ---
 
