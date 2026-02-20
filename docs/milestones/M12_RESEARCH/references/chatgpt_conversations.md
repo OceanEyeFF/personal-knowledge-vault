@@ -184,7 +184,15 @@ ChatGPT 针对本项目（Unity + 本地知识库 + 多模型 fallback）提出�
 **代码实现**:
 - `DeepSeekProvider.stream_chat()` 解析 SSE 格式
 - `ChatServiceError` 异常体系（APIError, NetworkError, RateLimitError）
-- Token 预算控制（历史消息最多 10 轮，知识上下文最多 2000 字符）
+- **Token 预算控制（动态分配策略）**:
+  ```
+  总预算: 4000 tokens
+  优先级 1: System Prompt（~150 tokens，固定）
+  优先级 2: 知识上下文（最多 1500 tokens，动态截断）
+  优先级 3: 历史消息（剩余 tokens，最多 10 轮）
+
+  Token 估算: 中文 3 字/token，英文 4 字符/token
+  ```
 
 ---
 
