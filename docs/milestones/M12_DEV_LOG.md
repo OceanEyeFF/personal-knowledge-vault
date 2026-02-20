@@ -353,4 +353,127 @@
 
 ---
 
-**最后更新**: 2026-02-20 (Day 2 下午 - qasync 测试验证通过)
+---
+
+## 2026-02-20 星期四（傍晚）
+
+### 📌 阶段：技术预研 - Day 2 下午（数据库设计）
+
+#### 工作内容
+1. ✅ 完成 `chat_sessions` 表结构设计
+2. ✅ 创建数据库设计文档（`03_DATABASE_DESIGN.md`，~600 行）
+3. ✅ 创建数据库迁移脚本（`004_add_chat_sessions.sql`）
+4. ✅ 设计 SQLiteStore 新增方法（10 个方法）
+
+#### 数据库表结构
+
+**chat_sessions 表**:
+```sql
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    session_id TEXT PRIMARY KEY,                    -- UUID 格式
+    title TEXT NOT NULL,                            -- 会话标题
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    messages TEXT NOT NULL,                         -- JSON 格式（完整对话）
+    summary TEXT,                                   -- AI 生成的精粹版本
+    total_tokens INTEGER DEFAULT 0,                 -- 累计 Token 消耗
+    round_count INTEGER DEFAULT 0,                  -- 对话轮数
+    is_archived BOOLEAN DEFAULT 0,                  -- 归档标志
+    knowledge_id INTEGER,                           -- 可选关联到 knowledge_items
+    FOREIGN KEY (knowledge_id) REFERENCES knowledge_items(knowledge_id) ON DELETE SET NULL,
+    CHECK(round_count >= 0),
+    CHECK(total_tokens >= 0)
+);
+```
+
+**4 个索引**:
+- `idx_chat_created_at` - 按创建时间倒序查询
+- `idx_chat_updated_at` - 按更新时间倒序排序
+- `idx_chat_is_archived` - 筛选活跃/归档会话
+- `idx_chat_knowledge_id` - 查询关联的知识条目
+
+#### 技术发现
+
+1. **双重保存策略** ✅
+   - `messages`（JSON）：完整对话历史（System Prompt + User + Assistant）
+   - `summary`（TEXT）：AI 生成的精粹版本（用户主动触发）
+   - 符合 M12 需求（D005 Token 控制策略）
+
+2. **messages 字段 JSON 格式** ✅
+   ```json
+   {
+     "system_prompt": "你是一个专业的知识库助手...",
+     "conversation": [
+       {
+         "role": "user",
+         "content": "如何使用 asyncio？",
+         "timestamp": "2026-02-20T14:00:00Z",
+         "tokens": {"input": 12, "output": 0}
+       },
+       {
+         "role": "assistant",
+         "content": "你可以使用 qasync 库...",
+         "timestamp": "2026-02-20T14:00:05Z",
+         "tokens": {"input": 12, "output": 80},
+         "finish_reason": "stop"
+       }
+     ],
+     "metadata": {
+       "model": "deepseek-chat",
+       "max_tokens": 2000
+     }
+   }
+   ```
+
+3. **Token 统计策略** ✅
+   - `total_tokens = sum(input + output)` for all messages
+   - `round_count = count(role == 'user')`
+   - 3 轮警告：`round_count == 3`
+   - 64K 警告：`total_tokens >= 60000`
+
+4. **与现有架构兼容** ✅
+   - 使用 `_id` 后缀（`session_id`, `knowledge_id`）
+   - 使用 `TIMESTAMP` 类型（`created_at`, `updated_at`）
+   - 使用 `CHECK` 约束（`round_count >= 0`）
+   - 外键关系：`knowledge_id` 关联到 `knowledge_items`
+
+#### SQLiteStore 新增方法
+
+**10 个方法**:
+1. `create_session()` - 创建新会话
+2. `update_session()` - 更新会话
+3. `get_session()` - 获取单个会话
+4. `list_sessions()` - 列出会话列表（支持筛选、分页、排序）
+5. `delete_session()` - 删除会话
+6. `archive_session()` - 归档/取消归档会话
+7. `link_session_to_knowledge()` - 关联会话到知识条目
+8. `get_session_stats()` - 获取单个会话统计
+9. `get_all_sessions_stats()` - 获取全部会话统计
+
+#### 文档成果
+
+1. **03_DATABASE_DESIGN.md**（~600 行）：
+   - 完整表结构设计
+   - 字段定义与约束详解
+   - 索引策略说明
+   - messages JSON 格式规范
+   - SQLiteStore 方法设计
+   - 使用示例代码
+   - 测试用例模板
+
+2. **004_add_chat_sessions.sql**（迁移脚本）：
+   - CREATE TABLE 语句
+   - 4 个索引创建
+   - 向下迁移注释（回滚脚本）
+
+#### 下一步计划
+
+**技术预研剩余工作**:
+- [ ] **P1**: UI 设计草图（chat_view.py 布局规划）
+- [ ] **P2**: ChatViewModel 架构设计
+
+**预计完成**: Day 3 上午完成全部技术预研 ✅
+
+---
+
+**最后更新**: 2026-02-20 (Day 2 傍晚 - 数据库设计完成)
