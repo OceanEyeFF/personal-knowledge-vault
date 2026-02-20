@@ -24,7 +24,7 @@ sys.path.insert(0, str(project_root))
 try:
     import httpx
 except ImportError:
-    print("❌ httpx 未安装，请运行: pip install httpx")
+    print("[错误] httpx 未安装，请运行: pip install httpx")
     sys.exit(1)
 
 
@@ -35,19 +35,19 @@ async def test_basic_get():
     print("=" * 60)
 
     url = "https://httpbin.org/get"
-    print(f"📡 请求 URL: {url}\n")
+    print(f"[请求] URL: {url}\n")
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url)
-            print(f"✅ HTTP 状态码: {resp.status_code}")
-            print(f"📦 响应头 Content-Type: {resp.headers.get('Content-Type')}")
-            print(f"📄 响应体（前 200 字符）:\n{resp.text[:200]}...\n")
+            print(f"[成功] HTTP 状态码: {resp.status_code}")
+            print(f"[响应] Content-Type: {resp.headers.get('Content-Type')}")
+            print(f"[响应] 响应体（前 200 字符）:\n{resp.text[:200]}...\n")
 
     except httpx.TimeoutException:
-        print("❌ 请求超时（10s）")
+        print("[错误] 请求超时（10s）")
     except Exception as e:
-        print(f"❌ 错误: {e}")
+        print(f"[错误] {e}")
 
 
 async def test_stream_response():
@@ -58,25 +58,25 @@ async def test_stream_response():
 
     # 使用 httpbin 的延迟响应接口（模拟流式）
     url = "https://httpbin.org/stream/10"  # 返回 10 行 JSON
-    print(f"📡 请求 URL: {url}")
-    print("📥 流式读取:\n")
+    print(f"[请求] URL: {url}")
+    print("[响应] 流式读取:\n")
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             async with client.stream("GET", url) as resp:
-                print(f"✅ HTTP 状态码: {resp.status_code}\n")
+                print(f"[成功] HTTP 状态码: {resp.status_code}\n")
 
                 line_count = 0
                 async for line in resp.aiter_lines():
                     line_count += 1
-                    print(f"📄 Line {line_count}: {line[:80]}...")  # 只显示前 80 字符
+                    print(f"[数据] Line {line_count}: {line[:80]}...")  # 只显示前 80 字符
 
-                print(f"\n✅ 总共读取 {line_count} 行")
+                print(f"\n[成功] 总共读取 {line_count} 行")
 
     except httpx.TimeoutException:
-        print("❌ 请求超时（30s）")
+        print("[错误] 请求超时（30s）")
     except Exception as e:
-        print(f"❌ 错误: {e}")
+        print(f"[错误] {e}")
 
 
 async def test_post_json():
@@ -87,17 +87,17 @@ async def test_post_json():
 
     url = "https://httpbin.org/post"
     payload = {"message": "Hello from M12 test", "test_id": 12345}
-    print(f"📡 POST URL: {url}")
-    print(f"📦 请求体: {payload}\n")
+    print(f"[请求] POST URL: {url}")
+    print(f"[请求] 请求体: {payload}\n")
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, json=payload)
-            print(f"✅ HTTP 状态码: {resp.status_code}")
-            print(f"📄 响应体（前 300 字符）:\n{resp.text[:300]}...\n")
+            print(f"[成功] HTTP 状态码: {resp.status_code}")
+            print(f"[响应] 响应体（前 300 字符）:\n{resp.text[:300]}...\n")
 
     except Exception as e:
-        print(f"❌ 错误: {e}")
+        print(f"[错误] {e}")
 
 
 async def test_timeout_handling():
@@ -110,18 +110,18 @@ async def test_timeout_handling():
     url = "https://httpbin.org/delay/5"
     timeout = 2.0  # 设置 2 秒超时，必然超时
 
-    print(f"📡 请求 URL: {url}")
-    print(f"⏱️ 超时设置: {timeout}s\n")
+    print(f"[请求] URL: {url}")
+    print(f"[设置] 超时时间: {timeout}s\n")
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(url)
-            print(f"✅ HTTP 状态码: {resp.status_code}")
+            print(f"[成功] HTTP 状态码: {resp.status_code}")
 
     except httpx.TimeoutException:
-        print("✅ 正确触发超时异常（预期行为）")
+        print("[成功] 正确触发超时异常（预期行为）")
     except Exception as e:
-        print(f"❌ 未知错误: {e}")
+        print(f"[错误] 未知错误: {e}")
 
 
 async def test_error_status_code():
@@ -137,21 +137,21 @@ async def test_error_status_code():
     ]
 
     for url, expected_code, description in test_cases:
-        print(f"\n📡 请求 {url}")
-        print(f"🎯 预期状态码: {expected_code} ({description})")
+        print(f"\n[请求] {url}")
+        print(f"[预期] 状态码: {expected_code} ({description})")
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(url)
-                print(f"✅ 实际状态码: {resp.status_code}")
+                print(f"[实际] 状态码: {resp.status_code}")
 
                 if resp.status_code == expected_code:
-                    print("✅ 状态码匹配")
+                    print("[成功] 状态码匹配")
                 else:
-                    print(f"⚠️ 状态码不匹配！预期 {expected_code}，实际 {resp.status_code}")
+                    print(f"[警告] 状态码不匹配！预期 {expected_code}，实际 {resp.status_code}")
 
         except Exception as e:
-            print(f"❌ 错误: {e}")
+            print(f"[错误] {e}")
 
 
 async def test_concurrent_requests():
@@ -161,7 +161,7 @@ async def test_concurrent_requests():
     print("=" * 60)
 
     urls = [f"https://httpbin.org/delay/{i}" for i in range(1, 4)]  # 延迟 1-3 秒
-    print(f"📡 并发请求 {len(urls)} 个 URL\n")
+    print(f"[请求] 并发请求 {len(urls)} 个 URL\n")
 
     async def fetch(client, url):
         resp = await client.get(url)
@@ -172,17 +172,19 @@ async def test_concurrent_requests():
             tasks = [fetch(client, url) for url in urls]
             results = await asyncio.gather(*tasks)
 
-            print("✅ 所有请求完成:")
+            print("[成功] 所有请求完成:")
             for status, url in results:
-                print(f"  - {url} → {status}")
+                print(f"  - {url} -> {status}")
 
     except Exception as e:
-        print(f"❌ 错误: {e}")
+        print(f"[错误] {e}")
 
 
 async def main():
     """运行所有测试"""
-    print("\n🔬 M12 httpx.AsyncClient 基础测试\n")
+    print("\n" + "=" * 60)
+    print("M12 httpx.AsyncClient 基础测试")
+    print("=" * 60 + "\n")
 
     # 测试 1: 基本 GET
     await test_basic_get()
@@ -203,13 +205,13 @@ async def main():
     await test_concurrent_requests()
 
     print("\n" + "=" * 60)
-    print("✅ 所有测试完成")
+    print("[完成] 所有测试完成")
     print("=" * 60)
-    print("\n📝 关键收获:")
+    print("\n[收获]")
     print("1. httpx.AsyncClient 基本功能正常")
     print("2. aiter_lines() 可用于逐行读取流式响应")
     print("3. 超时和错误处理机制清晰")
-    print("\n✅ 可以安全地在 M12 中使用 httpx 进行 DeepSeek API 调用！\n")
+    print("\n[结论] 可以安全地在 M12 中使用 httpx 进行 DeepSeek API 调用！\n")
 
 
 if __name__ == "__main__":
