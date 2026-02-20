@@ -186,13 +186,25 @@ ChatGPT 针对本项目（Unity + 本地知识库 + 多模型 fallback）提出�
 - `ChatServiceError` 异常体系（APIError, NetworkError, RateLimitError）
 - **Token 控制策略（单轮输出质量管理）**:
   ```
-  核心策略: 限制单轮输出质量 + 会话轮数提示
+  核心策略: 限制单轮输出质量 + 多级提示引导
 
   单轮输出限制: max_tokens=2000（保证回复质量）
-  会话轮数管理: 3 轮后提示"建议结束或新建会话"
-  对话历史: 不自动压缩，充分利用 128K 上下文
-  System Prompt: ~150 tokens（利用上下文缓存）
+
+  会话轮数管理:
+  - 3 轮提示: "建议结束或新建会话"
+  - 64K Tokens Warning: 上下文超过 64K 时警告（128K 的一半）
+
+  对话历史: 不自动压缩（autocompact）
+  - 原因: OpenAI/DeepSeek API 无状态，客户端负责对话管理
+  - 充分利用 128K 上下文窗口
+
+  对话保存:
+  - messages (JSON): 原始完整对话历史
+  - summary (TEXT): AI 生成的精粹版本（便于快速回顾）
+
+  System Prompt: ~150 tokens（利用上下文缓存，节省 90% 成本）
   知识上下文: 动态注入，无硬性限制
+  Token 估算: 中文 3 字/token，英文 4 字符/token
   ```
 
 ---
