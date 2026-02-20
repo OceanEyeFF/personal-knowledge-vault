@@ -23,6 +23,18 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+# 加载 .env 文件
+try:
+    from dotenv import load_dotenv
+    env_file = project_root / ".env"
+    if env_file.exists():
+        load_dotenv(env_file)
+        print(f"[配置] 已加载环境变量from {env_file}")
+    else:
+        print(f"[警告] .env 文件不存在: {env_file}")
+except ImportError:
+    print("[警告] python-dotenv 未安装，将直接读取系统环境变量")
+
 try:
     import httpx
 except ImportError:

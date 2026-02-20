@@ -9,67 +9,184 @@
 
 | 日期 | 主题 | ChatGPT 模型 | 关键结论 |
 |------|------|-------------|---------|
-| 待补充 | asyncio + Qt 集成 | GPT-4 | 待补充 |
-| 待补充 | DeepSeek API 流式调用 | GPT-4 | 待补充 |
-| 待补充 | Qt 线程安全最佳实践 | GPT-4 | 待补充 |
+| 2026-02-20 | DeepSeek API 深度调研 | GPT-4 | SSE 格式、限流策略、Token 计费 |
 
 ---
 
-## 对话模板（复制使用）
+## 对话 001: DeepSeek API 深度调研
 
-### 对话 001: asyncio + Qt 集成方案
+**日期**: 2026-02-20
+**ChatGPT 模型**: GPT-4
+**对话长度**: 3 个核心问题
 
-**日期**: YYYY-MM-DD
-**ChatGPT 模型**: GPT-4 / GPT-3.5
-**对话长度**: X 轮
+### 📋 问题清单
 
-#### 用户问题
-```
-我在开发一个 PySide6 应用，需要在 GUI 中调用异步 AI API（流式输出）。
-目前有三种方案：1) PySide6.QtAsyncio 2) qasync 3) QThread + asyncio.run()
-请对比这三种方案的优缺点，并推荐最适合的方案。
-```
-
-#### ChatGPT 回答（摘要）
-```
-[复制关键回答内容]
-```
-
-#### 关键收获
-- 收获 1: ...
-- 收获 2: ...
-
-#### 应用到 M12
-- 决策影响：参考 `04_DECISION_LOG.md` D003
-- 代码实现：...
+1. DeepSeek API 的流式接口返回格式是什么？每个 chunk 的 JSON 结构是怎样的？
+2. DeepSeek API 的限流策略是什么？如何处理 429 错误？
+3. DeepSeek API 的 Token 计费规则是什么？
 
 ---
 
-## 对话 002: DeepSeek API 流式解析
+### 🔹 问题 1: 流式接口返回格式
 
-**日期**: 待补充
+#### ChatGPT 回答（核心内容）
 
-#### 用户问题
-```
-[待补充]
+**流式响应格式**: SSE (Server-Sent Events)
+- Content-Type: `text/event-stream`
+- 与 OpenAI 接口设计风格基本对齐（便于兼容）
+
+**典型 Chunk 结构**:
+```json
+{
+  "id": "chatcmpl-xxx",
+  "object": "chat.completion.chunk",
+  "created": 1700000000,
+  "model": "deepseek-chat",
+  "choices": [
+    {
+      "index": 0,
+      "delta": {
+        "content": "你"
+      },
+      "finish_reason": null
+    }
+  ]
+}
 ```
 
-#### ChatGPT 回答（摘要）
-```
-[待补充]
-```
+**关键字段**:
+- `object`: 固定为 `chat.completion.chunk`
+- `choices[].delta.content`: 本次新增 token
+- `finish_reason`: 结束时才会出现（如 `"stop"`）
 
-#### 关键收获
-- 待补充
+**流式结束标志**: `data: [DONE]`
+
+**与 OpenAI 的差异**:
+- JSON 结构几乎一致
+- 字段命名兼容
+- 模型名不同（deepseek-chat / deepseek-reasoner）
+- **结论**: 可以直接复用 OpenAI SDK 解析逻辑
 
 ---
 
-## 使用说明
+### 🔹 问题 2: 限流策略与 429 处理
 
-1. **保存完整对话**: 使用 ChatGPT 的"Share"功能生成链接，粘贴到此文档
-2. **提炼关键内容**: 不需要逐字复制，总结核心观点即可
-3. **标注应用场景**: 说明对话内容如何影响 M12 设计决策
+#### 限流触发情况
+- QPS 超出限制
+- TPM (Tokens Per Minute) 超限
+- RPM (Requests Per Minute) 超限
+- 余额不足（某些情况也会 429）
+
+#### 典型错误响应
+```json
+{
+  "error": {
+    "message": "Rate limit exceeded",
+    "type": "rate_limit_error",
+    "code": "429"
+  }
+}
+```
+
+#### 推荐处理策略
+
+**1. 指数退避（Exponential Backoff）**:
+- 第一次：等待 1s
+- 第二次：等待 2s
+- 第三次：等待 4s
+- 第四次：等待 8s
+- 最多重试 3~5 次
+
+**2. 读取 Retry-After Header**:
+- 如果响应头包含 `Retry-After: 3`，必须等待 3 秒后再试
+
+**3. 客户端限流控制**:
+- 本地令牌桶
+- 限制 QPS
+- 批量任务分批执行
+- embedding 和 chat 分离队列
+
+**不建议做的事**:
+- ❌ 死循环重试
+- ❌ 高频并发爆炸
+- ❌ 多线程疯狂抢接口
 
 ---
 
+### 🔹 问题 3: Token 计费规则
+
+#### 计费模式
+```
+费用 = 输入 Token + 输出 Token
+```
+
+#### Token 统计规则
+- 所有 messages 都计入输入 token
+- system / user / assistant 都算
+- 工具调用返回内容也算
+- 流式和非流式计费一样
+
+#### 计算示例
+- 输入 1200 tokens
+- 输出 800 tokens
+- **总计费 token = 2000**
+
+#### 工程建议
+
+1. **开启 usage 统计**:
+```json
+"usage": {
+  "prompt_tokens": 1200,
+  "completion_tokens": 800,
+  "total_tokens": 2000
+}
+```
+
+2. **日志记录**:
+- model
+- prompt_tokens
+- completion_tokens
+- cost
+
+3. **对长对话做截断或 summary**
+
+---
+
+### 📊 核心总结表
+
+| 项目 | 特点 |
+|------|------|
+| 流式格式 | SSE，结构兼容 OpenAI |
+| 429 处理 | 指数退避 + Retry-After |
+| Token 计费 | 输入 + 输出 token |
+| SDK 兼容性 | 高度兼容 OpenAI |
+
+---
+
+### 🔥 工程级优化建议
+
+ChatGPT 针对本项目（Unity + 本地知识库 + 多模型 fallback）提出的建议：
+
+1. **Chat 与 Embedding 分离限流** — 避免知识库构建把对话额度吃光
+2. **本地缓存 embedding** — 同一文本不要重复调用 API
+3. **流式响应要做增量拼接 buffer** — 不要每个 chunk 都刷新 UI
+4. **统一封装 API 适配层** — 做一个 `ILLMProvider`，随时切换 DeepSeek/OpenAI/MiniMax/本地 Qwen
+
+---
+
+### ✅ 应用到 M12
+
+**决策影响**:
+- 采用 `httpx.AsyncClient` + 手动解析 SSE（参考 `04_DECISION_LOG.md` D004）
+- 实现指数退避重试机制（错误处理策略）
+- 记录 usage 统计（Token 成本监控）
+
+**代码实现**:
+- `DeepSeekProvider.stream_chat()` 解析 SSE 格式
+- `ChatServiceError` 异常体系（APIError, NetworkError, RateLimitError）
+- Token 预算控制（历史消息最多 10 轮，知识上下文最多 2000 字符）
+
+---
+
+**文档版本**: v1.0
 **最后更新**: 2026-02-20
