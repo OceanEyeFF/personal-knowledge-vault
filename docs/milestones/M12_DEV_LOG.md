@@ -218,4 +218,130 @@
 
 ---
 
-**最后更新**: 2026-02-20 (Day 2 上午完成)
+## 2026-02-20 星期四（下午）⚠️ 错误纠正
+
+### 📌 阶段：技术预研 - Day 2 下午（重要更正）
+
+#### 工作内容
+1. ⚠️ **发现重大错误**：qt-async-threads 不提供 `@async_slot` 装饰器
+2. ✅ 快速纠正：改用 qasync 库（提供 `@asyncSlot()`）
+3. ✅ 创建新测试脚本：`test_qasync_integration.py`（~320 行）
+4. ✅ 更新所有文档：
+   - `04_DECISION_LOG.md` D003 决策（qt-async-threads → qasync）
+   - `01_ASYNCIO_QT_RESEARCH.md` v3.0（纠正错误）
+   - `M12_DEV_LOG.md` 错误纠正记录
+
+#### 错误发现过程 ⚠️
+
+1. **用户运行测试**：
+   ```bash
+   python tests/manual_test_m12/test_qt_async_threads.py
+   ```
+
+2. **错误信息**：
+   ```
+   ImportError: cannot import name 'async_slot' from 'qt_async_threads'
+   ```
+
+3. **调查分析**：
+   ```python
+   >>> import qt_async_threads
+   >>> dir(qt_async_threads)
+   ['QtAsyncRunner', 'AbstractAsyncRunner', ...]  # 没有 async_slot！
+   ```
+
+4. **发现真相**：
+   - qt-async-threads 提供 `QtAsyncRunner`（线程池模式）
+   - **完全不是流式对话需要的装饰器架构**
+
+5. **正确方案**：
+   ```python
+   >>> import qasync
+   >>> dir(qasync)
+   [..., 'asyncSlot', ...]  # ✅ 找到了！
+   ```
+
+#### 技术发现
+
+1. **qasync 正确用法** ✅
+   ```python
+   from PySide6.QtCore import QObject, Signal
+   from qasync import asyncSlot, QEventLoop
+
+   class ChatViewModel(QObject):
+       token_received = Signal(str)
+
+       @asyncSlot()  # ✅ 正确的装饰器
+       async def send_message(self, user_message: str):
+           async for token in stream:
+               self.token_received.emit(token)
+   ```
+
+2. **主程序集成** ✅
+   ```python
+   from qasync import QEventLoop
+   import asyncio
+
+   app = QApplication(sys.argv)
+   loop = QEventLoop(app)
+   asyncio.set_event_loop(loop)
+
+   with loop:
+       loop.run_forever()
+   ```
+
+3. **库对比**：
+   - **qasync**: 事件循环融合，提供 `@asyncSlot()`
+   - **qt-async-threads**: 线程池模式，提供 `QtAsyncRunner`
+   - 两者架构完全不同！
+
+#### 决策记录
+
+- **决策纠正**: D003 从 qt-async-threads 改为 qasync
+  - 理由：qt-async-threads 不提供装饰器模式
+  - 影响：新增依赖 `qasync>=0.28.0`（而非 qt-async-threads）
+
+#### 反思与教训 💭
+
+**浮浮酱犯的错误**：
+1. ❌ 搜索到 qt-async-threads 后，误以为它提供 `@async_slot`
+2. ❌ 没有先验证库的导出内容（应该先 `dir()` 检查）
+3. ❌ 基于错误假设写了大量文档和测试脚本
+
+**正确的调研流程**（应该这样做）：
+1. ✅ 找到候选库 → **先验证导出内容**（`dir(module)`）
+2. ✅ 验证 API 是否符合需求 → **再写文档和代码**
+3. ✅ 快速原型验证 → **最后批量生成**
+
+**积极的一面**：
+- ✅ 用户运行测试**立即发现问题**（测试驱动的价值）
+- ✅ 快速纠正（1 小时内完成所有更新）
+- ✅ 找到了正确的 qasync 方案（事实标准库）
+
+#### 遗留问题
+
+1. 🔲 qasync 高频 Signal（100 tokens/s）稳定性 → **待用户手动测试**
+2. 🔲 qasync 事件循环融合稳定性 → **待用户手动测试**
+3. 🔲 OpenAI SDK + qasync 集成测试 → **待用户手动测试**
+
+#### 下一步计划
+
+**P0 优先级（Day 2 下午）**:
+- [ ] **用户手动运行** `test_qasync_integration.py`（需要 GUI 交互）
+- [ ] 重点验证"测试 2: 高频 Signal（100 tokens/s）"
+- [ ] 验证"测试 5: OpenAI SDK 集成"真实 API 调用
+- [ ] 根据测试结果更新调研文档
+
+**如果测试通过** ✅:
+- [ ] 更新 `01_ASYNCIO_QT_RESEARCH.md` 实际测试结果
+- [ ] 开始 UI 设计草图（chat_view.py 布局）
+- [ ] 准备数据库表结构（chat_sessions）
+
+**如果测试失败** ⚠️:
+- [ ] 分析失败原因
+- [ ] 考虑回归 QThread + asyncio.run() 方案（保守方案）
+- [ ] 重新测试验证
+
+---
+
+**最后更新**: 2026-02-20 (Day 2 下午 - 错误纠正完成)

@@ -88,7 +88,8 @@ M12 功能复杂度高，是否需要独立分支开发？
 ## D003: asyncio + Qt 集成方案
 
 **日期**: 2026-02-20
-**状态**: ✅ 已决策（已根据互联网成熟方案调整）
+**状态**: ✅ 已决策（已纠正错误选择）
+**重要更正**: 2026-02-20 下午 — 发现 qt-async-threads 不提供 `@async_slot`，改用 qasync
 
 ### 问题
 如何在 PySide6 应用中运行 asyncio 协程？
@@ -98,41 +99,104 @@ M12 功能复杂度高，是否需要独立分支开发？
 | 方案 | 优点 | 缺点 | 依赖 |
 |------|------|------|------|
 | **PySide6.QtAsyncio** | 官方支持 | DNS/Socket 未完整实现 ❌ | 无 |
-| **qasync** | 成熟第三方库 | 引入额外依赖 ⚠️ | qasync>=0.23.0 |
+| **qasync** ✨ | 成熟第三方库，提供 `@asyncSlot` 装饰器 ✅ | 引入额外依赖 | qasync>=0.28.0 |
 | **QThread + asyncio.run()** | 无依赖，隔离清晰 | 手动管理线程 | 无 |
-| **qt-async-threads** | async/await 语法自然 ✅ | 引入依赖（轻量） | qt-async-threads>=0.6.1 |
+| **qt-async-threads** ❌ | 轻量库 | **不提供 @async_slot，架构不符合需求** | qt-async-threads>=0.6.0 |
 
 ### 最终决策
-✅ 采用 **qt-async-threads** 方案
+✅ 采用 **qasync** 方案
 
 ### 理由
-1. **更优雅的语法**：使用 `@async_slot` 装饰器，无需手动管理 QThread
-2. **成熟验证**：互联网搜索发现多个成熟项目使用此库
-3. **自动资源管理**：自动处理线程创建和清理
-4. **轻量依赖**：纯 Python 库，无额外系统依赖
-5. **代码简洁**：比手动 QThread + asyncio.run() 减少 50% 样板代码
+1. **提供 `@asyncSlot` 装饰器**：符合现代 Python async/await 习惯
+2. **成熟验证**：qasync 是 asyncio + Qt 的事实标准库（活跃维护）
+3. **事件循环融合**：Qt 事件循环与 asyncio 事件循环深度集成
+4. **代码优雅**：比手动 QThread + asyncio.run() 减少 50% 样板代码
+5. **最新版本**：0.28.0（2024 年发布）
+
+### 错误纠正过程
+**原决策错误**：
+- 误选 qt-async-threads（以为提供 `@async_slot`）
+- 实际：qt-async-threads 提供 `QtAsyncRunner`（线程池模式，不符合流式对话需求）
+
+**纠正过程**：
+1. 用户运行测试时发现 `ImportError: cannot import name 'async_slot'`
+2. 检查 `dir(qt_async_threads)`，发现无 `async_slot` 导出
+3. 重新调研，找到 qasync 库（提供 `asyncSlot`）
+4. 立即纠正决策并更新文档
 
 ### 影响范围
-- 新增依赖：`qt-async-threads>=0.6.0`（最新版本 0.6.0）
-- ViewModel 层使用 `@async_slot` 装饰器
-- 自动处理跨线程 Signal 发射
+- 新增依赖：`qasync>=0.28.0`
+- ViewModel 层使用 `@asyncSlot()` 装饰器
+- 主程序需要使用 `qasync.QEventLoop`
 
 ### 代码示例
 ```python
-from qt_async_threads import async_slot
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QObject, Signal
+from qasync import asyncSlot
+from openai import AsyncOpenAI
 
-class ChatViewModel:
+class ChatViewModel(QObject):
     token_received = Signal(str)
+    token_usage_updated = Signal(int, int, int)
 
-    @async_slot
+    def __init__(self):
+        super().__init__()
+        self.client = AsyncOpenAI(
+            api_key=config.deepseek_api_key,
+            base_url="https://api.deepseek.com/v1"
+        )
+
+    @asyncSlot()
     async def send_message(self, user_message: str):
-        async for token in self.ai_service.stream_chat(messages):
-            self.token_received.emit(token)  # 自动在主线程发射
+        messages = self._build_messages(user_message)
+
+        stream = await self.client.chat.completions.create(
+            model="deepseek-chat",
+            messages=messages,
+            stream=True,
+            stream_options={"include_usage": True},
+            max_tokens=2000
+        )
+
+        async for chunk in stream:
+            # 自动在主线程发射 Signal
+            if chunk.choices[0].delta.content:
+                self.token_received.emit(chunk.choices[0].delta.content)
+
+            # 实时 token 统计
+            if hasattr(chunk, 'usage') and chunk.usage:
+                self.token_usage_updated.emit(
+                    chunk.usage.prompt_tokens,
+                    chunk.usage.completion_tokens,
+                    chunk.usage.total_tokens
+                )
+```
+
+### 主程序集成
+```python
+import sys
+from PySide6.QtWidgets import QApplication
+import qasync
+import asyncio
+
+async def main():
+    app = QApplication(sys.argv)
+    loop = qasync.QEventLoop(app)
+    asyncio.set_event_loop(loop)
+
+    window = MainWindow()
+    window.show()
+
+    with loop:
+        loop.run_forever()
+
+if __name__ == "__main__":
+    qasync.run(main())
 ```
 
 ### 遗留风险
-- LOW（库已在多个项目中验证）
+- **MEDIUM**: 事件循环融合可能有潜在冲突（需测试验证）
+- **LOW**: 引入额外依赖（qasync 是成熟库，风险可控）
 
 ---
 
