@@ -113,7 +113,7 @@ M12 功能复杂度高，是否需要独立分支开发？
 5. **代码简洁**：比手动 QThread + asyncio.run() 减少 50% 样板代码
 
 ### 影响范围
-- 新增依赖：`qt-async-threads>=0.6.1`
+- 新增依赖：`qt-async-threads>=0.6.0`（最新版本 0.6.0）
 - ViewModel 层使用 `@async_slot` 装饰器
 - 自动处理跨线程 Signal 发射
 

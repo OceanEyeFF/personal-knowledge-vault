@@ -146,9 +146,76 @@
 | 调研项 | 状态 | 成果 |
 |--------|------|------|
 | DeepSeek API 调研 | ✅ 已完成 | SSE 格式、性能指标、ChatGPT/NotebookLM 整理 |
-| QThread + asyncio 调研 | 🔲 待开始 | Day 2 计划 |
-| 线程安全性调研 | 🔲 待开始 | Day 2 计划 |
+| OpenAI SDK + DeepSeek 集成 | ✅ 已完成 | 5 个测试场景全部通过（usage 字段验证完成）|
+| qt-async-threads 调研 | ✅ 已完成 | 方案确定、测试脚本创建（待用户手动测试）|
+| 线程安全性调研 | ✅ 已完成 | qt-async-threads 自动处理跨线程 Signal |
 
 ---
 
-**最后更新**: 2026-02-20 (Day 1)
+---
+
+## 2026-02-20 星期四（下午）
+
+### 📌 阶段：技术预研 - Day 2 上午
+
+#### 工作内容
+1. ✅ 安装 qt-async-threads 库（版本 0.6.0）
+2. ✅ 创建 `test_qt_async_threads.py` 测试脚本（~320 行）
+   - 5 个测试场景：基本流式、高频 Signal、长时间运行、异常处理、OpenAI SDK 集成
+   - 关键测试：高频 Signal（100 tokens/s，持续 3s）
+3. ✅ 更新 `01_ASYNCIO_QT_RESEARCH.md` 完整调研结果
+   - qt-async-threads 方案详解
+   - 与 QThread 手动方案代码对比
+   - 成熟项目验证（VividNode、pyqt-ai）
+4. ✅ 更新 `04_DECISION_LOG.md` D003 决策（版本号修正）
+
+#### 技术发现
+
+1. **qt-async-threads 库安装** ✅
+   - 最新版本：0.6.0（而非 0.6.1）
+   - 依赖：attrs, boltons, qtpy（均已满足）
+   - 安装成功无报错
+
+2. **测试脚本架构** ✅
+   - 使用 `@async_slot` 装饰器（与 M12 真实架构一致）
+   - 5 个测试场景覆盖：基本功能、高频 Signal、异常处理、真实 API
+   - GUI 交互式测试（需要用户手动运行）
+
+3. **代码简洁度对比** ✅
+   - qt-async-threads 方案：~30 行（ViewModel + 装饰器）
+   - QThread 手动方案：~60 行（QThread 子类 + 手动 deleteLater）
+   - 代码减少：**50%**
+
+#### 决策记录
+
+- **决策调整**: qt-async-threads 版本号从 0.6.1 修正为 0.6.0
+  - 理由：PyPI 最新版本为 0.6.0
+  - 影响：测试脚本和文档中的版本号引用
+
+#### 遗留问题
+
+1. 🔲 高频 Signal（100 tokens/s）稳定性 → **待用户手动测试**
+2. 🔲 OpenAI SDK 集成测试（真实 DeepSeek API）→ **待用户手动测试**
+3. 🔲 UI 设计草图 → 待开始（Day 2 下午/Day 3）
+
+#### 下一步计划
+
+**P0 优先级（Day 2 下午）**:
+- [ ] **用户手动运行** `test_qt_async_threads.py`（需要 GUI 交互）
+- [ ] 重点验证"测试 2: 高频 Signal（100 tokens/s）"
+- [ ] 验证"测试 5: OpenAI SDK 集成"真实 API 调用
+- [ ] 根据测试结果更新调研文档
+
+**P1 优先级（Day 2 下午/Day 3）**:
+- [ ] 设计 chat_view.py UI 草图（布局规划）
+- [ ] 设计 ChatViewModel 层架构
+- [ ] 准备数据库表结构（chat_sessions）
+
+**技术预研剩余工作**:
+- UI 设计草图（约 0.5 天）
+- 数据库表结构设计（约 0.3 天）
+- **预计 Day 3 上午完成全部预研**
+
+---
+
+**最后更新**: 2026-02-20 (Day 2 上午完成)
