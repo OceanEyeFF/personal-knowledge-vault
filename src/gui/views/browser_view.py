@@ -3,7 +3,7 @@
 提供三栏 QSplitter 布局：
 - 左栏：标签树（TagTreeModel + QTreeView）
 - 中栏：条目列表（EntryTableModel + QTableView）+ 分页控件
-- 右栏：Markdown 预览（只读 QTextEdit）
+- 右栏：Markdown 预览（只读 QTextEdit）+ 发送到对话按钮
 
 存储单例通过 src.gui.stores 统一管理，预览逻辑通过
 src.gui.utils.preview_loader 复用，避免跨模块私有变量依赖。
@@ -15,7 +15,7 @@ import logging
 import math
 from typing import Optional
 
-from PySide6.QtCore import QModelIndex, Qt
+from PySide6.QtCore import QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -46,9 +46,14 @@ class BrowserView(QWidget):
 
     左栏：标签树（支持按标签筛选条目）。
     中栏：条目列表（分页显示），点击后在右栏预览。
-    右栏：Markdown 全文预览（只读文本框）。
+    右栏：Markdown 全文预览（只读文本框）+ 发送到对话按钮。
 
     存储实例通过 src.gui.stores 延迟获取，避免启动时重复初始化。
+
+    Signals:
+        navigate_to_browser: 外部导航信号（已有）。
+        send_to_chat_requested: 发送知识条目到 AI 对话（M12）。
+            参数：条目字典 dict, 全文内容 str
 
     Attributes:
         PAGE_SIZE: 每页显示的条目数量。
@@ -57,6 +62,9 @@ class BrowserView(QWidget):
         _current_page: 当前页码（从 0 开始）。
         _total_count: 当前筛选条件下的总条目数。
     """
+
+    # M12: 发送知识条目到 AI 对话的信号（entry_dict, content_text）
+    send_to_chat_requested = Signal(dict, str)
 
     PAGE_SIZE: int = 20
 
@@ -73,6 +81,9 @@ class BrowserView(QWidget):
         self._current_tag: Optional[str] = None
         self._current_page: int = 0
         self._total_count: int = 0
+        # M12: 缓存当前选中的条目和预览内容
+        self._selected_entry: Optional[dict] = None
+        self._selected_content: str = ""
 
         self._init_ui()
         self._connect_signals()
@@ -211,10 +222,10 @@ class BrowserView(QWidget):
         return widget
 
     def _build_preview_panel(self) -> QWidget:
-        """构建右栏 Markdown 预览面板。
+        """构建右栏 Markdown 预览面板（含发送到对话按钮）。
 
         Returns:
-            包含预览标题和只读 QTextEdit 的 QWidget。
+            包含预览标题、只读 QTextEdit 和操作按钮的 QWidget。
         """
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -232,6 +243,32 @@ class BrowserView(QWidget):
         self._preview_text.setPlaceholderText("选择条目以预览内容...")
         layout.addWidget(self._preview_text)
 
+        # M12: 发送到对话按钮
+        self._send_to_chat_btn = QPushButton("💬 发送到 AI 对话")
+        self._send_to_chat_btn.setToolTip(
+            "将当前知识条目发送到 AI 对话，创建新会话并以此为上下文"
+        )
+        self._send_to_chat_btn.setEnabled(False)  # 未选中条目时禁用
+        self._send_to_chat_btn.setMinimumHeight(32)
+        self._send_to_chat_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45A049;
+            }
+            QPushButton:disabled {
+                background-color: #BDBDBD;
+                color: #757575;
+            }
+        """)
+        layout.addWidget(self._send_to_chat_btn)
+
         return widget
 
     # ------------------------------------------------------------------
@@ -244,6 +281,8 @@ class BrowserView(QWidget):
         self._entry_view.clicked.connect(self.on_entry_selected)
         self._prev_btn.clicked.connect(self._go_prev_page)
         self._next_btn.clicked.connect(self._go_next_page)
+        # M12: 发送到对话
+        self._send_to_chat_btn.clicked.connect(self._on_send_to_chat)
 
     # ------------------------------------------------------------------
     # 数据加载方法
@@ -321,6 +360,10 @@ class BrowserView(QWidget):
         # 清空右侧预览
         self._preview_text.clear()
         self._preview_title.setText("预览")
+        # M12: 清除选中缓存
+        self._selected_entry = None
+        self._selected_content = ""
+        self._send_to_chat_btn.setEnabled(False)
 
     def on_entry_selected(self, index: QModelIndex) -> None:
         """响应条目列表点击事件，在右侧加载 Markdown 预览。
@@ -330,7 +373,10 @@ class BrowserView(QWidget):
         """
         entry = self._entry_model.get_entry(index.row())
         if entry:
+            self._selected_entry = entry
             self._load_preview(entry)
+            # M12: 启用发送按钮
+            self._send_to_chat_btn.setEnabled(True)
 
     def _go_prev_page(self) -> None:
         """切换到上一页。"""
@@ -365,6 +411,8 @@ class BrowserView(QWidget):
             md_store = get_markdown_store()
             content = load_entry_preview(entry, md_store)
             self._preview_text.setPlainText(content)
+            # M12: 缓存预览内容供发送到对话使用
+            self._selected_content = content
         except Exception as exc:
             logger.error(f"加载预览失败: {exc}", exc_info=True)
             # 最终降级：显示基本元数据
@@ -375,7 +423,10 @@ class BrowserView(QWidget):
                 "",
                 entry.get("summary_one_sentence", "") or "（无摘要）",
             ]
-            self._preview_text.setPlainText("\n".join(lines))
+            fallback = "\n".join(lines)
+            self._preview_text.setPlainText(fallback)
+            # M12: 降级内容也缓存
+            self._selected_content = fallback
 
     # ------------------------------------------------------------------
     # 公共刷新接口
@@ -409,10 +460,17 @@ class BrowserView(QWidget):
             return
 
         menu = QMenu(self)
+        # M12: 发送到 AI 对话
+        chat_action = menu.addAction("💬 发送到 AI 对话")
+        menu.addSeparator()
         delete_action = menu.addAction("删除条目")
         action = menu.exec(self._entry_view.viewport().mapToGlobal(position))
         if action == delete_action:
             self._confirm_and_delete(entry)
+        elif action == chat_action:
+            self._selected_entry = entry
+            self._load_preview(entry)
+            self._on_send_to_chat()
 
     def _confirm_and_delete(self, entry: dict) -> None:
         """弹出确认对话框，确认后执行三层删除。
@@ -514,3 +572,24 @@ class BrowserView(QWidget):
         self._page_label.setText(f"第 {current_display} 页 / 共 {total_pages} 页")
         self._prev_btn.setEnabled(self._current_page > 0)
         self._next_btn.setEnabled(self._current_page < total_pages - 1)
+
+    # ------------------------------------------------------------------
+    # M12: 发送到 AI 对话
+    # ------------------------------------------------------------------
+
+    def _on_send_to_chat(self) -> None:
+        """将当前选中的知识条目发送到 AI 对话。
+
+        通过 send_to_chat_requested Signal 发射条目字典和全文内容，
+        由 MainWindow 路由到 ChatView。
+        """
+        if not self._selected_entry:
+            logger.warning("未选中条目，无法发送到对话")
+            return
+
+        title = self._selected_entry.get("title", "未知标题")
+        logger.info(f"📤 发送知识条目到 AI 对话: {title}")
+        self.send_to_chat_requested.emit(
+            self._selected_entry,
+            self._selected_content,
+        )

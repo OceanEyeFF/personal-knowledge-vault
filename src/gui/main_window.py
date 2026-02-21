@@ -35,6 +35,7 @@ from src.gui.views.search_view import SearchView
 from src.gui.views.archive_view import ArchiveView
 from src.gui.views.stats_view import StatsView
 from src.gui.views.settings_view import SettingsView
+from src.gui.views.chat_view import ChatView  # M12
 
 logger = logging.getLogger("pkv.gui.mainwindow")
 
@@ -45,8 +46,9 @@ logger = logging.getLogger("pkv.gui.mainwindow")
 _NAV_BROWSER = 0
 _NAV_SEARCH = 1
 _NAV_ARCHIVE = 2
-_NAV_STATS = 3
-_NAV_SETTINGS = 4
+_NAV_CHAT = 3  # M12 - AI 对话
+_NAV_STATS = 4
+_NAV_SETTINGS = 5
 
 
 class MainWindow(QMainWindow):
@@ -110,17 +112,23 @@ class MainWindow(QMainWindow):
         self._stacked.addWidget(self._search_view)    # 索引 1: 搜索
 
         self._archive_view = ArchiveView(self)
+        self._chat_view = ChatView(self)  # M12 - AI 对话
         self._stats_view = StatsView(self)
         self._settings_view = SettingsView(self)
         self._stacked.addWidget(self._archive_view)   # 索引 2: 归档
-        self._stacked.addWidget(self._stats_view)     # 索引 3: 统计
-        self._stacked.addWidget(self._settings_view)  # 索引 4: 设置
+        self._stacked.addWidget(self._chat_view)      # 索引 3: AI 对话
+        self._stacked.addWidget(self._stats_view)     # 索引 4: 统计
+        self._stacked.addWidget(self._settings_view)  # 索引 5: 设置
 
         layout.addWidget(self._stacked, stretch=1)
 
         # 连接新视图信号
         self._archive_view.navigate_to_browser.connect(self.switch_to_browser)
         self._settings_view.theme_change_requested.connect(self.apply_theme)
+        # M12: 从浏览器发送知识条目到 AI 对话
+        self._browser_view.send_to_chat_requested.connect(
+            self._on_send_to_chat
+        )
 
         # 默认显示浏览视图
         self._stacked.setCurrentIndex(_NAV_BROWSER)
@@ -158,6 +166,10 @@ class MainWindow(QMainWindow):
         archive_item = QListWidgetItem("归档")
         archive_item.setTextAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
         self._nav_list.addItem(archive_item)
+
+        chat_item = QListWidgetItem("💬 AI对话")  # M12
+        chat_item.setTextAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
+        self._nav_list.addItem(chat_item)
 
         stats_item = QListWidgetItem("统计")
         stats_item.setTextAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
@@ -287,7 +299,7 @@ class MainWindow(QMainWindow):
         """响应导航列表选中变化，切换中央视图。
 
         Args:
-            row: 导航项索引（0=浏览, 1=搜索）。
+            row: 导航项索引（0=浏览, 1=搜索, 2=归档, 3=AI对话, 4=统计, 5=设置）。
         """
         self._stacked.setCurrentIndex(row)
         if row == _NAV_BROWSER:
@@ -298,6 +310,8 @@ class MainWindow(QMainWindow):
             self._search_view.focus_search_input()
         elif row == _NAV_ARCHIVE:
             self.set_status("归档模式")
+        elif row == _NAV_CHAT:  # M12
+            self.set_status("AI 对话模式")
         elif row == _NAV_STATS:
             self.set_status("统计模式")
             self._stats_view.refresh()
@@ -316,6 +330,27 @@ class MainWindow(QMainWindow):
     def switch_to_archive(self) -> None:
         """切换到归档视图（供菜单和快捷键调用）。"""
         self._nav_list.setCurrentRow(_NAV_ARCHIVE)
+
+    def switch_to_chat(self) -> None:
+        """切换到 AI 对话视图（供菜单和快捷键调用，M12）。"""
+        self._nav_list.setCurrentRow(_NAV_CHAT)
+
+    def _on_send_to_chat(self, entry: dict, content: str) -> None:
+        """路由知识条目到 ChatView（M12）。
+
+        从 BrowserView 接收信号，切换到 ChatView 并启动新会话。
+
+        Args:
+            entry: 知识条目字典（来自 SQLiteStore）。
+            content: 条目全文内容。
+        """
+        logger.info(
+            f"📤 路由知识条目到 AI 对话: {entry.get('title', '')}"
+        )
+        # 切换到对话视图
+        self.switch_to_chat()
+        # 通知 ChatView 创建带引用的新会话
+        self._chat_view.start_session_with_reference(entry, content)
 
     def switch_to_stats(self) -> None:
         """切换到统计视图（供菜单和快捷键调用）。"""

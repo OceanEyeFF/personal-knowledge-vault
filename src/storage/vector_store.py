@@ -81,12 +81,19 @@ class VectorStore:
             else:
                 # 加载已有索引
                 index.load_index(str(index_path))
+                # 修正容量：若 max_elements 不足则扩容到安全值
+                if index.max_elements < index.element_count + 1000:
+                    safe_size = max(10000, index.element_count + 1000)
+                    index.resize_index(safe_size)
+                    logger.info(
+                        f"🔄 索引容量不足，已扩容至 {safe_size}: {name}"
+                    )
                 logger.info(f"✅ 加载已有索引: {index_path}")
 
         if not index_path.exists():
             # 初始化新索引
             index.init_index(
-                max_elements=10000,  # 初始容量，可自动扩展
+                max_elements=10000,  # 初始容量，由 _ensure_capacity 按需扩展
                 ef_construction=self.ef_construction,
                 M=self.M
             )
@@ -111,6 +118,23 @@ class VectorStore:
 
         return index
 
+    def _ensure_capacity(self, index: "hnswlib.Index", count: int = 1) -> None:
+        """确保索引有足够容量，不足时自动扩容（翻倍策略）
+
+        Args:
+            index: hnswlib 索引对象
+            count: 本次需要添加的元素数量
+        """
+        if index.element_count + count > index.max_elements:
+            new_size = max(
+                index.max_elements * 2,
+                index.element_count + count + 1000,
+            )
+            index.resize_index(new_size)
+            logger.info(
+                f"🔄 索引自动扩容: {index.max_elements // 2} → {new_size}"
+            )
+
     def add_doc_vector(self, knowledge_id: int, vector: np.ndarray):
         """
         添加文档级向量
@@ -122,6 +146,9 @@ class VectorStore:
         # 确保向量是 float32 类型
         if vector.dtype != np.float32:
             vector = vector.astype('float32')
+
+        # 确保容量充足
+        self._ensure_capacity(self.doc_index)
 
         # 添加向量 (使用 knowledge_id 作为 hnswlib 的标签)
         self.doc_index.add_items(vector.reshape(1, -1), ids=[knowledge_id])
@@ -146,6 +173,9 @@ class VectorStore:
 
         # 生成唯一 ID: knowledge_id * 10000 + chunk_index
         hnswlib_id = knowledge_id * 10000 + chunk_index
+
+        # 确保容量充足
+        self._ensure_capacity(self.chunk_index)
 
         # 添加向量
         self.chunk_index.add_items(vector.reshape(1, -1), ids=[hnswlib_id])

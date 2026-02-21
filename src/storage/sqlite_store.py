@@ -603,3 +603,303 @@ class SQLiteStore:
         except Exception as e:
             logger.error(f"获取统计信息失败: {e}")
             raise
+
+    # ==========================================
+    # AI 对话会话管理方法 (M12)
+    # ==========================================
+
+    def create_session(self, session_id: str, title: str) -> None:
+        """
+        创建新的 AI 对话会话
+
+        Args:
+            session_id: 会话 ID（UUID 格式）
+            title: 会话标题
+
+        Raises:
+            Exception: 创建失败时抛出异常
+        """
+        try:
+            with self.get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO chat_sessions (session_id, title, messages)
+                    VALUES (?, ?, '[]')
+                    """,
+                    (session_id, title)
+                )
+            logger.info(f"✅ 创建会话: {session_id} - {title}")
+        except Exception as e:
+            logger.error(f"创建会话失败: {e}")
+            raise
+
+    def update_session(
+        self,
+        session_id: str,
+        messages: List[dict],
+        total_tokens: int,
+        round_count: int,
+        summary: Optional[str] = None
+    ) -> None:
+        """
+        更新会话内容
+
+        Args:
+            session_id: 会话 ID
+            messages: 消息列表（OpenAI 格式）
+            total_tokens: 累计 token 数
+            round_count: 对话轮数
+            summary: AI 生成的摘要（可选）
+
+        Raises:
+            Exception: 更新失败时抛出异常
+        """
+        try:
+            with self.get_connection() as conn:
+                conn.execute(
+                    """
+                    UPDATE chat_sessions
+                    SET messages = ?,
+                        total_tokens = ?,
+                        round_count = ?,
+                        summary = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE session_id = ?
+                    """,
+                    (
+                        json.dumps(messages, ensure_ascii=False),
+                        total_tokens,
+                        round_count,
+                        summary,
+                        session_id
+                    )
+                )
+            logger.info(f"✅ 更新会话: {session_id} (轮数: {round_count}, Tokens: {total_tokens})")
+        except Exception as e:
+            logger.error(f"更新会话失败: {e}")
+            raise
+
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        获取会话详情
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            会话字典，包含所有字段（messages 已解析为 list）
+            如果会话不存在则返回 None
+
+        Raises:
+            Exception: 查询失败时抛出异常
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT session_id, title, created_at, updated_at,
+                           messages, summary, total_tokens, round_count,
+                           is_archived, knowledge_id
+                    FROM chat_sessions
+                    WHERE session_id = ?
+                    """,
+                    (session_id,)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+
+                session_dict = dict(row)
+                # 解析 JSON messages
+                session_dict["messages"] = json.loads(session_dict["messages"])
+                return session_dict
+        except Exception as e:
+            logger.error(f"获取会话失败: {e}")
+            raise
+
+    def list_sessions(
+        self,
+        is_archived: bool = False,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        列出会话列表
+
+        Args:
+            is_archived: 是否只显示归档会话
+            limit: 最大返回数量
+
+        Returns:
+            会话列表（按更新时间倒序）
+
+        Raises:
+            Exception: 查询失败时抛出异常
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT session_id, title, created_at, updated_at,
+                           total_tokens, round_count, is_archived,
+                           knowledge_id, summary
+                    FROM chat_sessions
+                    WHERE is_archived = ?
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (1 if is_archived else 0, limit)
+                )
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"列出会话失败: {e}")
+            raise
+
+    def delete_session(self, session_id: str) -> None:
+        """
+        删除会话
+
+        Args:
+            session_id: 会话 ID
+
+        Raises:
+            Exception: 删除失败时抛出异常
+        """
+        try:
+            with self.get_connection() as conn:
+                conn.execute(
+                    "DELETE FROM chat_sessions WHERE session_id = ?",
+                    (session_id,)
+                )
+            logger.info(f"✅ 删除会话: {session_id}")
+        except Exception as e:
+            logger.error(f"删除会话失败: {e}")
+            raise
+
+    def archive_session(self, session_id: str, is_archived: bool = True) -> None:
+        """
+        归档或取消归档会话
+
+        Args:
+            session_id: 会话 ID
+            is_archived: True=归档, False=取消归档
+
+        Raises:
+            Exception: 操作失败时抛出异常
+        """
+        try:
+            with self.get_connection() as conn:
+                conn.execute(
+                    """
+                    UPDATE chat_sessions
+                    SET is_archived = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE session_id = ?
+                    """,
+                    (1 if is_archived else 0, session_id)
+                )
+            action = "归档" if is_archived else "取消归档"
+            logger.info(f"✅ {action}会话: {session_id}")
+        except Exception as e:
+            logger.error(f"归档会话失败: {e}")
+            raise
+
+    def link_session_to_knowledge(
+        self,
+        session_id: str,
+        knowledge_id: int
+    ) -> None:
+        """
+        关联会话到知识条目
+
+        Args:
+            session_id: 会话 ID
+            knowledge_id: 知识条目 ID
+
+        Raises:
+            Exception: 关联失败时抛出异常
+        """
+        try:
+            with self.get_connection() as conn:
+                conn.execute(
+                    """
+                    UPDATE chat_sessions
+                    SET knowledge_id = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE session_id = ?
+                    """,
+                    (knowledge_id, session_id)
+                )
+            logger.info(f"✅ 关联会话 {session_id} -> 知识条目 {knowledge_id}")
+        except Exception as e:
+            logger.error(f"关联会话失败: {e}")
+            raise
+
+    def get_session_stats(self) -> Dict[str, Any]:
+        """
+        获取会话统计信息
+
+        Returns:
+            统计数据字典，包含：
+            - total_sessions: 总会话数
+            - active_sessions: 活跃会话数
+            - archived_sessions: 归档会话数
+            - total_tokens: 累计 token 消耗
+            - avg_tokens_per_session: 平均每会话 token 数
+            - total_rounds: 累计对话轮数
+
+        Raises:
+            Exception: 查询失败时抛出异常
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT
+                        COUNT(*) as total_sessions,
+                        SUM(CASE WHEN is_archived = 0 THEN 1 ELSE 0 END) as active_sessions,
+                        SUM(CASE WHEN is_archived = 1 THEN 1 ELSE 0 END) as archived_sessions,
+                        COALESCE(SUM(total_tokens), 0) as total_tokens,
+                        COALESCE(AVG(total_tokens), 0) as avg_tokens_per_session,
+                        COALESCE(SUM(round_count), 0) as total_rounds
+                    FROM chat_sessions
+                    """
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else {}
+        except Exception as e:
+            logger.error(f"获取会话统计失败: {e}")
+            raise
+
+    def get_all_sessions_stats(self) -> List[Dict[str, Any]]:
+        """
+        获取所有会话的统计概览
+
+        Returns:
+            会话概览列表，每个会话包含：
+            - session_id
+            - title
+            - created_at
+            - updated_at
+            - total_tokens
+            - round_count
+            - is_archived
+
+        Raises:
+            Exception: 查询失败时抛出异常
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT session_id, title, created_at, updated_at,
+                           total_tokens, round_count, is_archived
+                    FROM chat_sessions
+                    ORDER BY updated_at DESC
+                    """
+                )
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"获取所有会话统计失败: {e}")
+            raise
