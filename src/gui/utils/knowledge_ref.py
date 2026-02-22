@@ -17,6 +17,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from src.gui.styles import theme_colors
+
 logger = logging.getLogger("pkv.gui.utils.knowledge_ref")
 
 # Token 估算常量
@@ -249,22 +251,24 @@ def format_reference_card_html(ref: KnowledgeReference) -> str:
     Returns:
         HTML 格式的引用卡片
     """
+    colors = theme_colors.get_current_colors()
     truncated_marker = " (已截断)" if ref.is_truncated else ""
     source_info = f" | {ref.source_type}" if ref.source_type else ""
 
     return f"""
     <div style="
-        background-color: #E8F5E9;
-        border-left: 4px solid #4CAF50;
+        background-color: {colors['ref_card_bg']};
+        border-left: 4px solid {colors['ref_card_border']};
         padding: 10px;
         margin: 6px;
         border-radius: 4px;
+        color: {colors['msg_fg']};
     ">
         <strong>📎 引用: {ref.title}</strong>{source_info}<br>
-        <span style="color: #666; font-size: 12px;">
+        <span style="color: {colors['ref_card_meta']}; font-size: 12px;">
             ID: {ref.knowledge_id} | ~{ref.token_count} tokens{truncated_marker}
         </span><br>
-        <em style="color: #555;">{ref.summary[:100] if ref.summary else '(无摘要)'}</em>
+        <em style="color: {colors['ref_card_summary']};">{ref.summary[:100] if ref.summary else '(无摘要)'}</em>
     </div>
     """
 

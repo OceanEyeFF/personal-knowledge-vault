@@ -37,6 +37,7 @@ from markdown2 import Markdown
 from pygments.formatters import HtmlFormatter
 
 from src.gui.viewmodels import ChatViewModel
+from src.gui.styles import theme_colors
 
 logger = logging.getLogger("pkv.gui.views.chat")
 
@@ -69,6 +70,7 @@ def render_markdown(text: str, role: str) -> str:
         渲染后的 HTML 字符串
     """
     html_content = md_renderer.convert(text)
+    colors = theme_colors.get_current_colors()
 
     css_class = "assistant" if role == "assistant" else "user"
     role_label = "🤖 Assistant" if role == "assistant" else "👤 You"
@@ -82,23 +84,24 @@ def render_markdown(text: str, role: str) -> str:
         margin: 4px 0;
         line-height: 1.6;
         font-size: 14px;
+        color: {colors['msg_fg']};
     }}
     .assistant {{
-        background-color: #F5F5F5;
-        border-left: 3px solid #4CAF50;
+        background-color: {colors['assistant_bg']};
+        border-left: 3px solid {colors['assistant_border']};
     }}
     .user {{
-        background-color: #E3F2FD;
-        border-left: 3px solid #2196F3;
+        background-color: {colors['user_bg']};
+        border-left: 3px solid {colors['user_border']};
     }}
     .role-label {{
         font-size: 12px;
-        color: #757575;
+        color: {colors['role_label']};
         margin-bottom: 4px;
     }}
     pre {{
-        background-color: #272822;
-        color: #f8f8f2;
+        background-color: {colors['code_bg']};
+        color: {colors['code_fg']};
         padding: 10px;
         border-radius: 4px;
         overflow-x: auto;
@@ -156,7 +159,7 @@ class TokenPanel(QWidget):
 
         # 标题
         title = QLabel("📊 Token 统计")
-        title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        title.setObjectName("token_panel_title")
         layout.addWidget(title)
 
         # 当前会话
@@ -175,13 +178,7 @@ class TokenPanel(QWidget):
 
         # 警告区域
         self.warning_label = QLabel("")
-        self.warning_label.setStyleSheet("""
-            background-color: #FFF3E0;
-            color: #E65100;
-            padding: 8px;
-            border-radius: 4px;
-            font-weight: bold;
-        """)
+        self.warning_label.setObjectName("token_warning")
         self.warning_label.setVisible(False)
         self.warning_label.setWordWrap(True)
         layout.addWidget(self.warning_label)
@@ -238,6 +235,7 @@ class SessionSidebar(QWidget):
             parent: Qt 父对象
         """
         super().__init__(parent)
+        self.setObjectName("session_sidebar")
 
         layout = QVBoxLayout(self)
 
@@ -248,19 +246,7 @@ class SessionSidebar(QWidget):
 
         # 会话列表
         self.session_list = QListWidget()
-        self.session_list.setStyleSheet("""
-            QListWidget {
-                background-color: #F5F5F5;
-                border: none;
-            }
-            QListWidget::item {
-                padding: 8px;
-                border-bottom: 1px solid #E0E0E0;
-            }
-            QListWidget::item:selected {
-                background-color: #E3F2FD;
-            }
-        """)
+        self.session_list.setObjectName("session_list")
         self.session_list.itemClicked.connect(self._on_item_clicked)
         self.session_list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
@@ -615,6 +601,7 @@ class InputArea(QWidget):
 
         # 输入框
         self.input_box = InputBox()
+        self.input_box.setObjectName("chat_input")
         self.input_box.setPlaceholderText(
             "输入消息... (Ctrl+Enter 换行, @知识库/ 或 @搜索/ 引用知识)"
         )
@@ -623,11 +610,13 @@ class InputArea(QWidget):
 
         # 发送按钮
         self.send_btn = QPushButton("🚀 发送")
+        self.send_btn.setObjectName("btn_send_to_chat")
         self.send_btn.setMinimumWidth(80)
         layout.addWidget(self.send_btn)
 
         # 停止按钮
         self.stop_btn = QPushButton("⏹ 停止")
+        self.stop_btn.setObjectName("btn_stop")
         self.stop_btn.setMinimumWidth(80)
         self.stop_btn.setVisible(False)
         layout.addWidget(self.stop_btn)
@@ -660,15 +649,9 @@ class ChatArea(QWidget):
 
         # 消息显示区
         self.message_display = QTextBrowser()
+        self.message_display.setObjectName("message_display")
         self.message_display.setReadOnly(True)
         self.message_display.setOpenExternalLinks(True)
-        self.message_display.setStyleSheet("""
-            QTextBrowser {
-                background-color: #FFFFFF;
-                border: none;
-                padding: 12px;
-            }
-        """)
         layout.addWidget(self.message_display)
 
         # 输入区
@@ -693,8 +676,9 @@ class ChatArea(QWidget):
         记录当前文档长度，流式结束后用于定位并替换纯文本。
         """
         self._stream_start_pos = self.message_display.document().characterCount()
+        colors = theme_colors.get_current_colors()
         self.message_display.append(
-            "<div class='role-label' style='font-size:12px; color:#757575;'>🤖 Assistant</div>"
+            f"<div class='role-label' style='font-size:12px; color:{colors['role_label']};'>🤖 Assistant</div>"
         )
 
     def finish_assistant_message(self) -> None:
@@ -842,8 +826,9 @@ class ChatView(QWidget):
             session_id: 会话 ID
         """
         self.viewmodel.save_session_to_knowledge_base(session_id)
+        colors = theme_colors.get_current_colors()
         self.chat_area.message_display.append(
-            "<p style='color: #1976D2;'>📥 正在保存对话到知识库...</p>"
+            f"<p style='color: {colors['status_info']};'>📥 正在保存对话到知识库...</p>"
         )
 
     def _on_session_saved_to_kb(self, session_id: str, knowledge_id: int) -> None:
@@ -853,8 +838,9 @@ class ChatView(QWidget):
             session_id: 会话 ID
             knowledge_id: 新建的知识条目 ID
         """
+        colors = theme_colors.get_current_colors()
         self.chat_area.message_display.append(
-            f"<p style='color: #4CAF50;'>✅ 对话已保存到知识库 (ID: {knowledge_id})</p>"
+            f"<p style='color: {colors['status_success']};'>✅ 对话已保存到知识库 (ID: {knowledge_id})</p>"
         )
 
     def _on_session_save_to_kb_failed(self, session_id: str, error_msg: str) -> None:
@@ -864,8 +850,9 @@ class ChatView(QWidget):
             session_id: 会话 ID
             error_msg: 错误信息
         """
+        colors = theme_colors.get_current_colors()
         self.chat_area.message_display.append(
-            f"<p style='color: #F44336;'>❌ 保存失败: {error_msg}</p>"
+            f"<p style='color: {colors['status_error']};'>❌ 保存失败: {error_msg}</p>"
         )
 
     def _on_session_created(self, session_id: str, title: str) -> None:
@@ -1068,10 +1055,11 @@ class ChatView(QWidget):
         """URL 归档开始
 
         Args:
-            url: 正在归档的 URL
+            url: 正在归档 of the URL
         """
+        colors = theme_colors.get_current_colors()
         self.chat_area.message_display.append(
-            f"<p style='color: #666; font-size: 12px;'>"
+            f"<p style='color: {colors['status_progress']}; font-size: 12px;'>"
             f"🔄 正在归档: {url}...</p>"
         )
 
@@ -1111,8 +1099,9 @@ class ChatView(QWidget):
             url: 归档失败的 URL
             error_msg: 错误消息
         """
+        colors = theme_colors.get_current_colors()
         self.chat_area.message_display.append(
-            f"<p style='color: #FF9800; font-size: 12px;'>"
+            f"<p style='color: {colors['status_warning']}; font-size: 12px;'>"
             f"⚠️ URL 归档失败: {url}<br>"
             f"原因: {error_msg}</p>"
         )
@@ -1161,7 +1150,8 @@ class ChatView(QWidget):
             error_msg: 错误消息
         """
         logger.error(f"❌ 错误: {error_msg}")
-        self.chat_area.message_display.append(f"<p style='color: red;'>❌ 错误: {error_msg}</p>")
+        colors = theme_colors.get_current_colors()
+        self.chat_area.message_display.append(f"<p style='color: {colors['status_error']};'>❌ 错误: {error_msg}</p>")
 
         # 恢复按钮状态
         self.chat_area.input_area.send_btn.setVisible(True)

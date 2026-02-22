@@ -137,7 +137,7 @@ class BrowserView(QWidget):
 
         # 标题标签
         header = QLabel("标签")
-        header.setStyleSheet("font-weight: bold; padding: 2px 0;")
+        header.setProperty("class", "panel-header")
         layout.addWidget(header)
 
         # 标签树视图
@@ -164,7 +164,7 @@ class BrowserView(QWidget):
 
         # 条目列表标题（含数量显示）
         self._entry_count_label = QLabel("条目")
-        self._entry_count_label.setStyleSheet("font-weight: bold; padding: 2px 0;")
+        self._entry_count_label.setProperty("class", "panel-header")
         layout.addWidget(self._entry_count_label)
 
         # 条目表格视图
@@ -234,7 +234,7 @@ class BrowserView(QWidget):
 
         # 标题标签
         self._preview_title = QLabel("预览")
-        self._preview_title.setStyleSheet("font-weight: bold; padding: 2px 0;")
+        self._preview_title.setProperty("class", "panel-header")
         layout.addWidget(self._preview_title)
 
         # 预览文本框
@@ -250,23 +250,7 @@ class BrowserView(QWidget):
         )
         self._send_to_chat_btn.setEnabled(False)  # 未选中条目时禁用
         self._send_to_chat_btn.setMinimumHeight(32)
-        self._send_to_chat_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 6px 12px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45A049;
-            }
-            QPushButton:disabled {
-                background-color: #BDBDBD;
-                color: #757575;
-            }
-        """)
+        self._send_to_chat_btn.setObjectName("btn_send_to_chat")
         layout.addWidget(self._send_to_chat_btn)
 
         return widget

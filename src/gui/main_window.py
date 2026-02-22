@@ -36,6 +36,7 @@ from src.gui.views.archive_view import ArchiveView
 from src.gui.views.stats_view import StatsView
 from src.gui.views.settings_view import SettingsView
 from src.gui.views.chat_view import ChatView  # M12
+from src.gui.styles import theme_colors
 
 logger = logging.getLogger("pkv.gui.mainwindow")
 
@@ -134,50 +135,37 @@ class MainWindow(QMainWindow):
         self._stacked.setCurrentIndex(_NAV_BROWSER)
 
     def _build_nav_panel(self) -> QWidget:
-        """构建左侧导航侧边栏（固定宽度约 120px）。
+        """构建左侧导航侧边栏（固定宽度 130px）。
 
         Returns:
             包含 QListWidget 导航列表的 QWidget。
         """
         panel = QWidget()
-        panel.setFixedWidth(120)
+        panel.setFixedWidth(130)
         panel.setObjectName("nav_panel")
-        panel.setStyleSheet(
-            "#nav_panel { border-right: 1px solid #d0d0d0; }"
-        )
 
         layout = QHBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         self._nav_list = QListWidget(panel)
+        self._nav_list.setObjectName("nav_list")
         self._nav_list.setFrameShape(QListWidget.NoFrame)  # type: ignore[attr-defined]
         self._nav_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # type: ignore[attr-defined]
 
-        # 导航项
-        browser_item = QListWidgetItem("浏览")
-        browser_item.setTextAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
-        self._nav_list.addItem(browser_item)
+        # 导航项 (添加 Emoji 并左对齐)
+        items = [
+            ("📂 浏览", _NAV_BROWSER),
+            ("🔍 搜索", _NAV_SEARCH),
+            ("📦 归档", _NAV_ARCHIVE),
+            ("💬 对话", _NAV_CHAT),
+            ("📊 统计", _NAV_STATS),
+            ("⚙️ 设置", _NAV_SETTINGS),
+        ]
 
-        search_item = QListWidgetItem("搜索")
-        search_item.setTextAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
-        self._nav_list.addItem(search_item)
-
-        archive_item = QListWidgetItem("归档")
-        archive_item.setTextAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
-        self._nav_list.addItem(archive_item)
-
-        chat_item = QListWidgetItem("💬 AI对话")  # M12
-        chat_item.setTextAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
-        self._nav_list.addItem(chat_item)
-
-        stats_item = QListWidgetItem("统计")
-        stats_item.setTextAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
-        self._nav_list.addItem(stats_item)
-
-        settings_item = QListWidgetItem("设置")
-        settings_item.setTextAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
-        self._nav_list.addItem(settings_item)
+        for text, _ in items:
+            item = QListWidgetItem(text)
+            self._nav_list.addItem(item)
 
         self._nav_list.setCurrentRow(_NAV_BROWSER)
         self._nav_list.currentRowChanged.connect(self._on_nav_changed)
@@ -382,6 +370,7 @@ class MainWindow(QMainWindow):
             if app:
                 app.setStyleSheet(qss)
             self.current_theme = theme
+            theme_colors.set_current_theme(theme)
             self.set_status(f"已切换主题: {'明亮' if theme == 'light' else '暗色'}")
             logger.info(f"已应用主题: {theme}")
         except Exception as exc:

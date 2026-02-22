@@ -93,7 +93,7 @@ class StatsView(QWidget):
         self._source_layout = QVBoxLayout(self._source_group)
         self._source_layout.setSpacing(4)
         self._source_placeholder = QLabel("暂无数据", self)
-        self._source_placeholder.setStyleSheet("color: gray;")
+        self._source_placeholder.setProperty("class", "text-muted")
         self._source_layout.addWidget(self._source_placeholder)
         self._main_layout.addWidget(self._source_group)
 
@@ -102,7 +102,7 @@ class StatsView(QWidget):
         self._tags_layout = QVBoxLayout(self._tags_group)
         self._tags_layout.setSpacing(4)
         self._tags_placeholder = QLabel("暂无数据", self)
-        self._tags_placeholder.setStyleSheet("color: gray;")
+        self._tags_placeholder.setProperty("class", "text-muted")
         self._tags_layout.addWidget(self._tags_placeholder)
         self._main_layout.addWidget(self._tags_group)
 
@@ -184,12 +184,12 @@ class StatsView(QWidget):
 
         self._clear_layout(self._source_layout)
         error_label = QLabel("加载失败", self)
-        error_label.setStyleSheet("color: red;")
+        error_label.setProperty("status", "error")
         self._source_layout.addWidget(error_label)
 
         self._clear_layout(self._tags_layout)
         error_label2 = QLabel("加载失败", self)
-        error_label2.setStyleSheet("color: red;")
+        error_label2.setProperty("status", "error")
         self._tags_layout.addWidget(error_label2)
 
     def _rebuild_bar_group(
@@ -209,7 +209,7 @@ class StatsView(QWidget):
 
         if not items:
             placeholder = QLabel("暂无数据", self)
-            placeholder.setStyleSheet("color: gray;")
+            placeholder.setProperty("class", "text-muted")
             layout.addWidget(placeholder)
             return
 

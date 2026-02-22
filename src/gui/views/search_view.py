@@ -152,7 +152,7 @@ class SearchView(QWidget):
 
         # 结果数量标签
         self._result_count_label = QLabel("输入关键词开始搜索")
-        self._result_count_label.setStyleSheet("color: gray; font-size: 12px;")
+        self._result_count_label.setProperty("class", "text-muted")
         layout.addWidget(self._result_count_label)
 
         # 结果表格
@@ -183,7 +183,7 @@ class SearchView(QWidget):
         layout.setSpacing(4)
 
         self._preview_title = QLabel("详情")
-        self._preview_title.setStyleSheet("font-weight: bold;")
+        self._preview_title.setProperty("class", "panel-header")
         layout.addWidget(self._preview_title)
 
         self._preview_text = QTextEdit(self)

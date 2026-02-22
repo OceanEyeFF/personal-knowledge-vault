@@ -59,28 +59,7 @@ class AutocompletePopup(QListWidget):
             Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
         )
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
-        # 样式
-        self.setStyleSheet("""
-            QListWidget {
-                background-color: #FFFFFF;
-                border: 1px solid #BDBDBD;
-                border-radius: 4px;
-                padding: 2px;
-                font-size: 13px;
-            }
-            QListWidget::item {
-                padding: 6px 8px;
-                border-bottom: 1px solid #F0F0F0;
-            }
-            QListWidget::item:selected {
-                background-color: #E3F2FD;
-                color: #1565C0;
-            }
-            QListWidget::item:hover {
-                background-color: #F5F5F5;
-            }
-        """)
+        self.setObjectName("autocomplete_popup")
 
         # 当前模式和过滤文本
         self._mode: str = MODE_KNOWLEDGE

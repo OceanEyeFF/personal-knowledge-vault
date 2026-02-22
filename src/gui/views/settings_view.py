@@ -222,17 +222,17 @@ class SettingsView(QWidget):
 
         self._db_path_label = QLabel(db_path, self)
         self._db_path_label.setWordWrap(True)
-        self._db_path_label.setStyleSheet("color: gray; font-size: 12px;")
+        self._db_path_label.setProperty("class", "text-muted")
         form.addRow("数据库:", self._db_path_label)
 
         self._vault_dir_label = QLabel(vault_dir, self)
         self._vault_dir_label.setWordWrap(True)
-        self._vault_dir_label.setStyleSheet("color: gray; font-size: 12px;")
+        self._vault_dir_label.setProperty("class", "text-muted")
         form.addRow("Markdown 目录:", self._vault_dir_label)
 
         self._vector_dir_label = QLabel(vector_dir, self)
         self._vector_dir_label.setWordWrap(True)
-        self._vector_dir_label.setStyleSheet("color: gray; font-size: 12px;")
+        self._vector_dir_label.setProperty("class", "text-muted")
         form.addRow("向量索引:", self._vector_dir_label)
 
         return group
@@ -250,7 +250,7 @@ class SettingsView(QWidget):
 
         # 状态消息标签
         self._status_label = QLabel("", self)
-        self._status_label.setStyleSheet("color: gray; font-size: 12px;")
+        self._status_label.setProperty("class", "text-muted")
         layout.addWidget(self._status_label, stretch=1)
 
         # 重置按钮
@@ -343,7 +343,9 @@ class SettingsView(QWidget):
     def _on_save_success(self) -> None:
         """保存成功后更新状态消息。"""
         self._status_label.setText("设置已保存")
-        self._status_label.setStyleSheet("color: green; font-size: 12px;")
+        self._status_label.setProperty("status", "success")
+        self._status_label.style().unpolish(self._status_label)
+        self._status_label.style().polish(self._status_label)
         logger.info("设置保存成功")
 
     def _on_save_error(self, message: str) -> None:
@@ -353,7 +355,9 @@ class SettingsView(QWidget):
             message: 错误消息字符串。
         """
         self._status_label.setText(f"保存失败: {message}")
-        self._status_label.setStyleSheet("color: red; font-size: 12px;")
+        self._status_label.setProperty("status", "error")
+        self._status_label.style().unpolish(self._status_label)
+        self._status_label.style().polish(self._status_label)
         logger.warning(f"设置保存失败: {message}")
 
     # ------------------------------------------------------------------

@@ -189,7 +189,7 @@ class ArchiveView(QWidget):
 
         # 进度文本标签
         self._progress_label = QLabel("准备中...", self)
-        self._progress_label.setStyleSheet("color: gray; font-size: 12px;")
+        self._progress_label.setProperty("class", "text-muted")
         layout.addWidget(self._progress_label)
 
         return widget
@@ -201,8 +201,7 @@ class ArchiveView(QWidget):
             包含结果信息标签和"前往浏览"按钮的 QFrame。
         """
         frame = QFrame(self)
-        frame.setFrameShape(QFrame.StyledPanel)  # type: ignore[attr-defined]
-        frame.setStyleSheet("QFrame { padding: 8px; }")
+        frame.setObjectName("archive_result_frame")
 
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -210,19 +209,19 @@ class ArchiveView(QWidget):
 
         # 结果标题
         self._result_title_label = QLabel("", self)
-        self._result_title_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self._result_title_label.setObjectName("archive_result_title")
         self._result_title_label.setWordWrap(True)
         layout.addWidget(self._result_title_label)
 
         # knowledge_id
         self._result_kid_label = QLabel("", self)
-        self._result_kid_label.setStyleSheet("color: gray; font-size: 12px;")
+        self._result_kid_label.setProperty("class", "text-muted")
         self._result_kid_label.setWordWrap(True)
         layout.addWidget(self._result_kid_label)
 
         # 文件路径
         self._result_path_label = QLabel("", self)
-        self._result_path_label.setStyleSheet("color: gray; font-size: 12px;")
+        self._result_path_label.setProperty("class", "text-muted")
         self._result_path_label.setWordWrap(True)
         layout.addWidget(self._result_path_label)
 

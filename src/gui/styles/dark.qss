@@ -388,3 +388,160 @@ QLabel[formLabel="true"] {
     padding-right: 8px;
     min-width: 80px;
 }
+
+/* ===================================================
+ * M12 UI Overhaul - 新增组件样式 (Dark)
+ * =================================================== */
+
+/* 导航面板 */
+#nav_panel {
+    background-color: #252526;
+    border-right: 1px solid #3c3c3c;
+}
+#nav_list {
+    background-color: transparent;
+    border: none;
+    outline: none;
+}
+#nav_list::item {
+    padding: 10px 15px;
+    color: #8a8a8a;
+    border-left: 3px solid transparent;
+}
+#nav_list::item:hover {
+    background-color: #2a2d2e;
+}
+#nav_list::item:selected {
+    background-color: #37373d;
+    color: #0e639c;
+    border-left: 3px solid #0e639c;
+    font-weight: 600;
+}
+
+/* 会话侧栏 */
+#session_sidebar {
+    background-color: #252526;
+    border-right: 1px solid #3c3c3c;
+}
+#session_list {
+    background-color: transparent;
+    border: none;
+}
+#session_list::item {
+    padding: 8px 12px;
+    border-bottom: 1px solid #3c3c3c;
+}
+#session_list::item:hover {
+    background-color: #2a2d2e;
+}
+#session_list::item:selected {
+    background-color: #1a3a5c;
+    color: #42a5f5;
+}
+
+/* Token 面板 */
+#token_panel {
+    background-color: #1e1e1e;
+    border-top: 1px solid #3c3c3c;
+    padding: 4px;
+}
+#token_panel_title {
+    font-weight: bold;
+    font-size: 14px;
+    color: #d4d4d4;
+    padding-bottom: 2px;
+}
+#token_warning {
+    background-color: #3e2723;
+    color: #ffb74d;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+/* 消息显示区 */
+#message_display {
+    background-color: #1e1e1e;
+    border: none;
+}
+
+/* 聊天输入框 */
+#chat_input {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    border: 1px solid #454545;
+    border-radius: 6px;
+    padding: 8px;
+    font-size: 14px;
+}
+#chat_input:focus {
+    border-color: #0e639c;
+}
+
+/* 自动补全弹窗 */
+#autocomplete_popup {
+    background-color: #252526;
+    color: #d4d4d4;
+    border: 1px solid #454545;
+    border-radius: 4px;
+}
+
+/* 归档结果框 */
+#archive_result_frame {
+    background-color: #252526;
+    border: 1px solid #3c3c3c;
+    border-radius: 6px;
+    padding: 12px;
+    margin-top: 8px;
+}
+#archive_result_title {
+    font-weight: bold;
+    font-size: 15px;
+    color: #d4d4d4;
+    margin-bottom: 6px;
+}
+
+/* 按钮变体 */
+#btn_send_to_chat {
+    background-color: #66bb6a;
+    color: white;
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-weight: 600;
+}
+#btn_send_to_chat:hover {
+    background-color: #43a047;
+}
+#btn_stop {
+    background-color: #ef5350;
+    color: white;
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-weight: 600;
+}
+#btn_stop:hover {
+    background-color: #e53935;
+}
+
+/* 语义化属性选择器 */
+QLabel[class="panel-header"] {
+    font-weight: bold;
+    font-size: 14px;
+    color: #d4d4d4;
+    padding: 4px 0;
+}
+QLabel[class="text-muted"] {
+    color: #8a8a8a;
+    font-size: 12px;
+}
+QLabel[status="success"] {
+    color: #66bb6a;
+    font-weight: 600;
+}
+QLabel[status="error"] {
+    color: #ef5350;
+    font-weight: 600;
+}
+QLabel[status="muted"] {
+    color: #8a8a8a;
+}
