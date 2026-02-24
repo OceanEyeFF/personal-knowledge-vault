@@ -28,6 +28,16 @@ steps:
         - extract_tags
     on_error: continue      # AI 失败则跳过，保留 TextFallbackProcessor 的默认摘要
 
+  - id: review_entry
+    type: review_entry
+    config:
+      required: false
+      timeout: 600
+      skip_on_timeout: true
+      max_regenerations: 3
+      preview_chars: 500
+    on_error: continue
+
   - id: store_entry
     type: store_entry
     config:

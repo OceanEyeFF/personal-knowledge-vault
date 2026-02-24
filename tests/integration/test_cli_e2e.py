@@ -46,7 +46,8 @@ def _extract_json_payload(output: str) -> Dict[str, Any]:
     if start == -1 or end == -1 or end <= start:
         raise AssertionError(f"CLI output does not contain JSON: {output}")
     payload = text[start : end + 1]
-    return json.loads(payload)
+    # strict=False 允许 JSON 字符串中含有控制字符（如未转义的换行符）
+    return json.loads(payload, strict=False)
 
 
 def _collect_result_ids(payload: Dict[str, Any]) -> List[int]:
@@ -226,7 +227,8 @@ def test_config_e2e(
     get_result = runner.invoke(commands.cli, ["config", "get", "storage.vault_dir"])
     assert get_result.exit_code == 0, get_result.output
     get_output = _strip_ansi(get_result.output)
-    assert str(config.vault_dir) in get_output
+    # Windows 终端可能将长路径换行输出，去掉空白字符后再比较
+    assert str(config.vault_dir).replace("\\", "/") in get_output.replace("\n", "").replace(" ", "").replace("\\", "/")
 
     set_result = runner.invoke(
         commands.cli,
