@@ -46,7 +46,7 @@ Bob: Yes, they passed.
         entry = await processor.process(dialogue_text)
 
     assert entry.title == "对话记录 - Alice、Bob"
-    assert entry.source_type == "text_fallback"
+    assert entry.source_type == "text"  # 实现已统一使用 "text"，测试同步更新
     assert entry.source_url is None
     assert entry.summary_100_words == "Mock summary"
     assert entry.tags == ["tag1", "tag2", "tag3"]
@@ -75,7 +75,7 @@ It mentions coverage expectations.
         entry = await processor.process(article_text)
 
     assert entry.title == "Sample Article"
-    assert entry.source_type == "text_fallback"
+    assert entry.source_type == "text"  # 实现已统一使用 "text"，测试同步更新
     assert entry.summary_100_words == "Mock summary"
     assert "first paragraph" in entry.content
     assert "coverage expectations" in entry.content
