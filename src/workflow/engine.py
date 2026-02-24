@@ -16,6 +16,7 @@ from src.workflow.steps import (
     FetchStep,
     AnalyzeStep,
     IdeaSharpenStep,
+    ReviewStep,
     StoreStep,
 )
 
@@ -23,6 +24,7 @@ _STEP_REGISTRY: Dict[str, Type[BaseStep]] = {
     "fetch_content": FetchStep,
     "ai_analyze": AnalyzeStep,
     "idea_sharpen": IdeaSharpenStep,
+    "review_entry": ReviewStep,
     "store_entry": StoreStep,
 }
 

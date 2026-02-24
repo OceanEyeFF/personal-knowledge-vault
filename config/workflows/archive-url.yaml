@@ -49,10 +49,20 @@ steps:
             - "立场分析"
     on_error: continue      # 超时或跳过则使用 AI 默认分析
 
+  - id: review_entry
+    type: review_entry
+    config:
+      required: true
+      timeout: 600
+      skip_on_timeout: true
+      max_regenerations: 3
+      preview_chars: 500
+    on_error: continue
+
   - id: store_entry
     type: store_entry
     config:
-      targets:  # 修复：字段名应为 "targets" 而非 "storage_backends"
+      targets:
         - markdown      # Markdown Front Matter (主存储)
         - sqlite        # SQLite FTS5 索引
         - vector_index  # hnswlib 向量索引
