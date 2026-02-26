@@ -2,10 +2,10 @@
 
 > 审核系统开发执行指令（M14）
 >
-> **版本**: 1.0
+> **版本**: 1.1
 > **创建日期**: 2026-02-23
 > **适用对象**: Claude Code、CodeX 等 AI 开发工具
-> **前置条件**: M11 完成（GUI 基础设施）；M12-M13 可并行开发
+> **前置条件**: M12 已完成（GUI + AI 对话）；M13 已跳过；M14 在现有基础上继续推进
 > **核心文档**: [M14 Product Requirements Document](../../docs/review-system-prd.md)
 > **总览文档**: [PHASE2_DEV_PROMPT.md](./PHASE2_DEV_PROMPT.md)
 
@@ -33,6 +33,25 @@
 
 ---
 
+## 🧭 当前代码基线（先核验，再修改 Prompt）
+
+在继续修订 M14 前，先以代码为准确认以下事实（避免文档漂移）：
+
+1. `ReviewManager` 已在 `src/storage/review_manager.py` 落地，接口为**同步方法**。
+2. `ReviewStep` 已在 `src/workflow/steps.py` 落地，并通过 `WorkflowEngine` 注册为 `review_entry`。
+3. `archive-url.yaml` 与 `archive-text.yaml` 已注入 `review_entry`，且 `required` 分别为 `true/false`。
+4. `review-drafts` CLI 命令组、`archive --no-review` 目前仍是增强项（默认未交付）。
+5. M13 打包为“已跳过里程碑”，当前事实以 Phase 总览文档为准。
+
+建议先执行以下核验命令，再继续编辑文档：
+
+```bash
+rg -n "class ReviewManager|class ReviewStep|review_entry|record_regeneration|list_drafts|restore_draft" src config -g '*.py' -g '*.yaml'
+rg -n "M13 被跳过|M14" docs/core/PHASE2_DEV_PROMPT.md docs/core/PHASE2B_GUI_PROMPT.md -g '*.md'
+```
+
+---
+
 ## ⚙️ 技术方案
 
 ### 数据库设计
@@ -42,32 +61,29 @@
 ```sql
 -- 审核队列表
 CREATE TABLE review_queue (
-    review_id INTEGER PRIMARY KEY,
-    knowledge_id INTEGER,                    -- 可为空（新条目）
-    review_status TEXT DEFAULT 'pending',    -- pending/approved/rejected/needs_revision
+    review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ai_generated_summary TEXT NOT NULL,
+    ai_generated_tags TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL DEFAULT 'unknown',
+    ai_cleaned_content TEXT NOT NULL DEFAULT '',
+    ai_generation_model TEXT NOT NULL DEFAULT 'deepseek-chat',
+    original_content_preview TEXT NOT NULL DEFAULT '',
+    source_url TEXT,
+    knowledge_id INTEGER,
 
-    -- AI 生成的原始内容
-    ai_generated_summary TEXT,
-    ai_generated_tags TEXT,
-    ai_cleaned_content TEXT,
-
-    -- 用户审核意见
     user_summary TEXT,
     user_tags TEXT,
-    user_comments TEXT,                      -- ⭐ 个人评论
+    user_comments TEXT,
 
-    -- AI 重新生成
-    regeneration_count INTEGER DEFAULT 0,
-    regeneration_prompts TEXT,               -- JSON 格式的历次 Prompt
-    regeneration_session_id TEXT,            -- 关联的 AI Session
+    regeneration_count INTEGER NOT NULL DEFAULT 0,
+    regeneration_prompts TEXT NOT NULL DEFAULT '[]',
 
-    -- 时间戳和追踪
-    created_at TIMESTAMP,
-    approved_at TIMESTAMP,
-    review_version INTEGER DEFAULT 1,
+    review_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(review_status IN ('pending', 'approved', 'rejected', 'draft')),
+    review_version INTEGER NOT NULL DEFAULT 1,
 
-    FOREIGN KEY (knowledge_id) REFERENCES knowledge_items(knowledge_id),
-    FOREIGN KEY (regeneration_session_id) REFERENCES chat_sessions(session_id)
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 审核历史表（记录每个操作）
@@ -75,9 +91,9 @@ CREATE TABLE review_history (
     history_id INTEGER PRIMARY KEY,
     review_id INTEGER NOT NULL,
     action TEXT,                             -- init/modify_summary/modify_tags/regenerate/approve/reject
-    details JSON,                            -- 变更详情
-    operator TEXT DEFAULT 'user',            -- user/ai
-    created_at TIMESTAMP,
+    details TEXT NOT NULL DEFAULT '',        -- JSON 字符串
+    operator TEXT NOT NULL DEFAULT 'user',   -- user/system
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (review_id) REFERENCES review_queue(review_id)
 );
@@ -93,32 +109,34 @@ CREATE TABLE review_history (
    - 接口：
      ```python
      class ReviewManager:
-         async def create_review(review_item: ReviewItem) -> int  # 返回 review_id
-         async def get_review(review_id: int) -> ReviewItem
-         async def update_user_summary(review_id, summary) -> bool
-         async def update_user_tags(review_id, tags) -> bool
-         async def add_user_comment(review_id, comment) -> bool
-         async def add_regeneration_prompt(review_id, prompt, ai_session_id) -> bool
-         async def approve_review(review_id, final_version) -> bool
-         async def reject_review(review_id) -> bool
-         async def get_history(review_id) -> List[ReviewHistoryItem]
-         async def revert_to_version(review_id, version) -> bool
+         def create_review(review_item: ReviewItem) -> int  # 返回 review_id
+         def get_review(review_id: int) -> ReviewItem
+         def update_user_summary(review_id, summary) -> bool
+         def update_user_tags(review_id, tags) -> bool
+         def add_user_comment(review_id, comment) -> bool
+         def record_regeneration(review_id, prompt, new_summary, new_tags) -> bool
+         def approve_review(review_id) -> bool
+         def reject_review(review_id) -> bool
+         def get_history(review_id) -> List[dict]
+         def list_drafts() -> List[ReviewItem]
+         def restore_draft(review_id) -> bool
      ```
+   - 调用约定：`ReviewManager` 为同步实现，在异步工作流中通过 `asyncio.to_thread(...)` 调用。
 
 2. **ReviewStep** （新增工作流步骤）
    - 位置: `src/workflow/steps.py` 中新增
    - 职责：在工作流中插入审核阶段
-   - 特点：**可选/强制配置** 通过环境变量 `REVIEW_REQUIRED=true/false`
+   - 特点：**可选/强制配置** 通过 workflow YAML 的 `required: true/false` 控制
 
 3. **CLI 审核界面** （改造 `archive` 命令）
    - 位置: `src/cli/commands.py` 修改 `archive()` 函数
-   - 新增参数: `--no-review`（跳过审核）
+   - 当前状态：`archive` 命令已接入审核步骤；`--no-review` 作为增强项待补充
    - 交互式菜单：修改摘要 → 修改标签 → 添加评论 → 重新生成 → 最终决定
 
 4. **AI 重新生成服务**
-   - 位置: `src/gui/services/ai_chat_service.py`（已存在 M12）
-   - 复用现有的 DeepSeekClient 和 stream_chat 功能
-   - 保持同一 session 中的上下文
+   - 当前实现位置: `src/workflow/steps.py::_call_ai_regenerate()`
+   - 复用 `DeepSeekClient`，通过结构化 Prompt 执行重生成
+   - 已支持多轮 Prompt 记录；会话级 session 复用作为后续增强项
 
 ---
 
@@ -190,7 +208,7 @@ CREATE TABLE review_history (
 ### Phase 7: 草稿管理（Week 3-4）
 
 - [ ] **拒绝条目的草稿存储**
-  - [ ] 拒绝的条目存入 review_queue（status='rejected'）
+  - [ ] 拒绝的条目存入 review_queue（status='draft'）
   - [ ] 用户可以查看草稿区
   - [ ] 支持恢复或永久删除草稿
   - [ ] CLI 命令: `pkv review-drafts list/show/restore/delete`
@@ -220,10 +238,17 @@ CREATE TABLE review_history (
 
 ### 决策 1: 审核是可选/强制的
 
-**环境变量控制**:
-```bash
-REVIEW_REQUIRED=true   # 强制审核（生产环境推荐）
-REVIEW_REQUIRED=false  # 可选审核（开发/快速测试）
+**配置方式（当前实现）**:
+```yaml
+# config/workflows/archive-url.yaml
+review_entry:
+  config:
+    required: true
+
+# config/workflows/archive-text.yaml
+review_entry:
+  config:
+    required: false
 ```
 
 不同工作流可以有不同的配置。例如：
@@ -243,7 +268,8 @@ AI Session:
 [消息 5] 用户修改 / 再次 Prompt ...
 ```
 
-AI 能看到完整的修改历史和反馈，生成更一致的结果。
+当前实现通过 `regeneration_prompts` 累积记录多轮用户指导；
+“与 chat_sessions 绑定的会话级上下文”属于后续增强项。
 
 ### 决策 3: 拒绝 → 草稿区 而非永久删除
 
@@ -301,12 +327,17 @@ AI 能看到完整的修改历史和反馈，生成更一致的结果。
 - [x] ReviewManager 类（审核队列管理）
 - [x] ReviewStep 工作流步骤
 - [x] CLI 交互式审核界面
-- [x] AI 重新生成服务（保持 Session 上下文）
+- [x] AI 重新生成服务（多轮 Prompt 记录）
 - [x] 文本编辑器集成
-- [x] 版本回溯与历史追踪
 - [x] 草稿区管理
-- [x] 90+ 单元/集成/E2E 测试
-- [x] 完整的用户文档和 API 文档
+- [x] M14 基础单元/集成测试
+- [ ] `archive --no-review` 参数（可选增强）
+- [ ] `pkv review-drafts list/show/restore/delete` 命令组
+- [ ] 会话级上下文复用（chat_sessions 关联）
+- [ ] 完整 v0.9.0 用户文档与 API 文档
+
+> 说明：上面的勾选表示“代码库当前状态”，不是对未来工作的封版承诺；
+> 在大仓迭代中，M14 允许继续修订，按“代码事实 → Prompt 更新”循环推进。
 
 ---
 
@@ -319,7 +350,22 @@ AI 能看到完整的修改历史和反馈，生成更一致的结果。
 
 ---
 
-**文档版本**: v1.0
+## 🔍 与 M13 相关文档的对接校验（执行前必读）
+
+为避免误把历史“计划项”当成“已交付项”，在执行 M14 前需先做一次文档对账：
+
+1. **以 Phase 总览为最终状态源**
+   - `PHASE2_DEV_PROMPT.md` 明确：M13 已跳过，M14 为 Phase 2 最后里程碑。
+2. **以 Phase2B 文档确认 M13 的处理结论**
+   - `PHASE2B_GUI_PROMPT.md`（v1.5）明确写了 M13 被跳过，打包后移。
+3. **里程碑完成报告按“历史快照”读取**
+   - 早期 M10/M11/M12 完成报告中可能仍含“下一步 M13 打包”描述，这是当时计划，不代表当前状态。
+
+> 执行规则：若文档冲突，**以最新更新日期的 Phase 总览文档为准**，再回写到当前 M14 Prompt，保持单一事实源。
+
+---
+
+**文档版本**: v1.1
 **创建日期**: 2026-02-23
 **适用里程碑**: M14 - 用户审核系统 (v0.9.0)
-**预计周期**: 4 周（可与 M12-M13 GUI 开发并行）
+**预计周期**: 4 周（基于 M12 已完成、M13 已跳过的主线继续推进）
