@@ -13,6 +13,8 @@
 ## 短期高频使用
 
 - [当前战略与路线收敛-2026-03.md](./overview/当前战略与路线收敛-2026-03.md)
+- [当前事实基线-2026-03.md](./overview/当前事实基线-2026-03.md)
+- [阶段开发路线与依赖-2026-03.md](./overview/阶段开发路线与依赖-2026-03.md)
 - [personal-knowledge-vault-prd.md](./overview/personal-knowledge-vault-prd.md)
 - [架构设计.md](./overview/架构设计.md)
 - [QUICKSTART.md](./operations/QUICKSTART.md)
@@ -29,6 +31,7 @@
 ## 使用原则
 
 - 当前真相源优先看 `overview/`
+- `overview/开发计划.md` 属于早期路线文档，默认不作为当前执行依据
 - 具体模块行为优先看 `modules/` 与 `specs/`
 - 操作步骤和维护流程优先看 `operations/`
 - `history/` 仅用于追溯背景，不作为当前开发的默认依据
