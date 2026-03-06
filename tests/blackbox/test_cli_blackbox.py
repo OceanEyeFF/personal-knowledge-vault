@@ -13,11 +13,17 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 class CLIBlackboxTester:
@@ -32,7 +38,7 @@ class CLIBlackboxTester:
         """
         self.test_dir = test_dir
         self.python_exe = python_exe
-        self.project_root = Path(__file__).resolve().parent.parent.parent
+        self.project_root = PROJECT_ROOT
         self.data_dir = test_dir / ".data"
         self.db_path = self.data_dir / "db" / "knowledge_vault.db"
         self.vault_dir = self.data_dir / "vault"
@@ -165,11 +171,12 @@ def test_cli_help_command(cli_tester: CLIBlackboxTester):
     assert "search" in result.stdout
 
 
-def test_cli_version_command(cli_tester: CLIBlackboxTester):
+def test_cli_version_command(tmp_path: Path):
     """测试 --version 命令。"""
+    cli_tester = CLIBlackboxTester(tmp_path)
     result = cli_tester.run_cli("--version")
     assert result.returncode == 0
-    assert "0.6.0" in result.stdout
+    assert "0.8.0-alpha" in result.stdout
 
 
 def test_search_command_with_results(cli_tester: CLIBlackboxTester):

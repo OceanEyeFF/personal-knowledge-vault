@@ -85,7 +85,7 @@ def test_cli_version_command(cli: CLITester):
     """测试 --version 命令。"""
     result = cli.run_cli("--version")
     assert result.returncode == 0
-    assert "0.6.0" in result.stdout
+    assert "0.8.0-alpha" in result.stdout
 
 
 def test_archive_help(cli: CLITester):

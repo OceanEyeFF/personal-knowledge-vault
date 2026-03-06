@@ -15,6 +15,7 @@
 - [当前战略与路线收敛-2026-03.md](./overview/当前战略与路线收敛-2026-03.md)
 - [当前事实基线-2026-03.md](./overview/当前事实基线-2026-03.md)
 - [阶段开发路线与依赖-2026-03.md](./overview/阶段开发路线与依赖-2026-03.md)
+- [文档与代码差异清单-2026-03.md](./overview/文档与代码差异清单-2026-03.md)
 - [personal-knowledge-vault-prd.md](./overview/personal-knowledge-vault-prd.md)
 - [架构设计.md](./overview/架构设计.md)
 - [QUICKSTART.md](./operations/QUICKSTART.md)

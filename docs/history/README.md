@@ -5,7 +5,7 @@
 ## 当前保留范围
 
 - `prompts/`：阶段主 Prompt 总览
-- `milestones/`：关键里程碑完成报告与少量研究结论
+- `milestones/`：关键里程碑完成报告、阶段总结与少量研究结论
 - `issues/`：历史问题与迁移记录
 - `discussions/`：对项目方向有启发价值的讨论
 - `reviews/`：复盘与问题总结

@@ -3,10 +3,13 @@
 > **AI-First Knowledge Workflow System**
 > 工作流驱动的个人知识管理系统
 
-[![Version](https://img.shields.io/badge/version-0.7.0-blue.svg)](./docs/operations/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.0--alpha-blue.svg)](./docs/operations/CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.11+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](./LICENSE)
 [![Status](https://img.shields.io/badge/status-production_ready-brightgreen.svg)](./docs/history/milestones/)
+
+> 当前仓库基线：`v0.8.0-alpha`
+> 说明：`v0.6.0` 是 CLI 首次稳定引入版本，`v0.7.0` 是 MCP 首次稳定引入版本；当前仓库在此基础上继续合入后续 GUI 与文档收敛工作。
 
 ## ✨ 核心特点
 
@@ -152,12 +155,13 @@ personal-knowledge-vault/
 │   ├── migrate.py                     # 数据库迁移工具
 │   └── migrations/                    # SQL 迁移脚本
 │
-├── tests/                             # 测试套件 (37 个文件, 85%+ 覆盖率)
-│   ├── unit/                          # 单元测试 (22 个)
-│   ├── integration/                   # 集成测试 (3 个)
-│   ├── e2e/                           # E2E 测试
-│   ├── blackbox/                      # 黑盒测试 (CLI + MCP 协议)
+├── tests/                             # 测试套件（2026-03-06 仓库快照：96 个文件）
+│   ├── unit/                          # 单元测试（40 个文件）
+│   ├── integration/                   # 集成测试（8 个文件）
+│   ├── e2e/                           # E2E 测试（6 个文件）
+│   ├── blackbox/                      # 黑盒测试（5 个文件）
 │   ├── fixtures/                      # 测试数据
+│   ├── manual_test_m12/               # M12 专项手动验证（7 个文件）
 │   └── manual_test_*.py               # 手动测试脚本
 │
 ├── docs/                              # 文档
@@ -365,18 +369,19 @@ python scripts/migrate.py history    # 查看迁移历史
 
 ## 📊 项目状态
 
-### 🎉 当前版本: v0.7.0 (MCP 服务)
+### 🎉 当前仓库基线: v0.8.0-alpha
 
-**发布状态**: ✅ Phase 1 全部完成 + Phase 2A MCP 服务完成
+**发布状态**: ✅ M1-M9 稳定能力已完成，仓库当前基线继续包含后续 GUI / 聊天相关工件与文档收敛结果
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| **项目版本** | v0.7.0 | MCP 服务 (8 Tool + 4 Resource + 3 Prompt) |
+| **项目版本** | v0.8.0-alpha | 当前仓库基线 |
+| **稳定能力基线** | v0.7.0 | MCP 服务 (8 Tool + 4 Resource + 3 Prompt) |
 | **开发进度** | M1-M9 | Phase 1 + Phase 2A 完成 |
 | **源代码文件** | 40+ 个 | Python 模块 |
-| **测试文件** | 37 个 | 单元/集成/E2E/黑盒/MCP 协议测试 |
-| **测试覆盖率** | 85%+ | 核心业务逻辑高覆盖 |
-| **MCP 测试** | 203 个 | 三层测试体系 (单元/进程内/stdio 协议) |
+| **测试文件** | 96 个 | 2026-03-06 仓库快照（tracked files） |
+| **测试覆盖率** | 待重新统计 | README 不再保留未经重新验证的旧覆盖率数字 |
+| **MCP 测试** | 多层覆盖 | 相关用例分布在 unit / integration / blackbox / e2e |
 | **文档数量** | 60+ | Markdown 文档 |
 
 ### ✅ 里程碑完成情况
@@ -429,25 +434,29 @@ python scripts/migrate.py history    # 查看迁移历史
 
 ## 🧪 测试体系
 
-### 测试覆盖率: 85%+
+### 测试资产快照（2026-03-06）
 
-**6 层测试体系**:
+说明：
+
+- 下表使用仓库文件快照统计（基于 tracked files），不是测试用例数
+- 覆盖率数字需要重新执行覆盖率统计后再更新
 
 | 测试类型 | 文件数 | 覆盖范围 | 运行方式 |
 |---------|--------|----------|----------|
-| **单元测试** | 22 个 | 核心业务逻辑 + MCP handler | `pytest tests/unit/ -v` |
-| **集成测试** | 3 个 | 跨模块集成 + MCP 进程内 | `pytest tests/integration/ -v` |
-| **E2E 测试** | 1 个 | 端到端流程 | `pytest tests/e2e/ -v` |
-| **黑盒测试** | 3 个 | CLI + MCP stdio 协议 | `pytest tests/blackbox/ -v` |
-| **手动测试** | 5 个 | 真实环境验证 | `python tests/manual_test_*.py` |
+| **单元测试** | 40 个 | 核心业务逻辑、GUI、MCP、处理器、存储层 | `pytest tests/unit/ -v` |
+| **集成测试** | 8 个 | 跨模块集成、MCP 功能、工作流、审核链路 | `pytest tests/integration/ -v` |
+| **E2E 测试** | 6 个 | 端到端流程、MCP 服务与真实工作流验证 | `pytest tests/e2e/ -v` |
+| **黑盒测试** | 5 个 | CLI + MCP stdio 协议 | `pytest tests/blackbox/ -v` |
+| **根目录测试/辅助文件** | 9 个 | 基础语法、手动验证脚本、测试说明 | 按文件说明执行 |
+| **M12 专项手动验证** | 7 个 | qasync、流式输出、线程/异步集成 | `python tests/manual_test_m12/<file>.py` |
 
-**MCP 三层测试体系 (203 tests)**:
+**MCP 多层测试结构**:
 
-| 层级 | 文件 | 测试数 | 验证方式 |
-|------|------|--------|----------|
-| Layer 1 | `test_mcp_tools/resources/prompts/security.py` | 125 | 直接调用 handler 函数 (mock 隔离) |
-| Layer 2 | `test_mcp_functional.py` | 39 | FastMCP 进程内 (`call_tool`/`get_prompt`) |
-| Layer 3 | `test_mcp_blackbox.py` | 39 | stdio 子进程 + ClientSession (真实协议) |
+| 层级 | 当前文件 | 说明 | 验证方式 |
+|------|----------|------|----------|
+| Layer 1 | `tests/unit/test_mcp_tools.py` / `test_mcp_resources.py` / `test_mcp_prompts.py` / `test_mcp_security.py` | handler 级单元测试 | 直接调用函数 + mock 隔离 |
+| Layer 2 | `tests/integration/test_mcp_functional.py` | FastMCP 进程内功能验证 | `call_tool` / `get_prompt` / `read_resource` |
+| Layer 3 | `tests/blackbox/test_mcp_blackbox.py` + `tests/e2e/test_mcp_e2e_*.py` | stdio 子进程与端到端验证 | 真实协议 / 子进程 / E2E 工作流 |
 
 **快速测试**:
 
@@ -517,10 +526,10 @@ python src/utils/verify_setup.py
 <div align="center">
 
 **项目代号**: Personal Knowledge Vault
-**当前版本**: v0.7.0
+**当前版本**: v0.8.0-alpha
 **创建日期**: 2026-01-27
 **文档版本**: v4.0
-**最后更新**: 2026-02-19
+**最后更新**: 2026-03-06
 
 ---
 

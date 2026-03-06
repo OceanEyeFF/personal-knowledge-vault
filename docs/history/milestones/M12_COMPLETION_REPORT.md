@@ -7,6 +7,16 @@
 
 ---
 
+> Phase 0 校注（2026-03-06）：
+> - 本文档保留 M12 阶段性交付背景，但不再直接代表当前仓库文件结构。
+> - 当前仓库映射以实际文件为准：
+>   - 聊天界面：`src/gui/views/chat_view.py`
+>   - 对话控制与流式输出：`src/gui/viewmodels/chat_viewmodel.py`
+>   - 会话持久化：`src/storage/sqlite_store.py`
+>   - 知识引用格式化：`src/gui/utils/knowledge_ref.py`
+>   - 数据库迁移：`scripts/migrations/004_add_chat_sessions.sql`
+> - 当前仓库没有 `src/gui/services/` 目录，也没有 `src/ai/chat_presets.py`、`tests/unit/test_ai_chat_service.py`、`pkv chat ...` CLI 命令。
+
 ## 📋 概述
 
 M12 是 Phase 2B 的第三个里程碑，核心目标是**实现内置 AI 对话能力**，让用户在知识库中直接进行 AI 交互，
@@ -56,38 +66,40 @@ M12 是 Phase 2B 的第三个里程碑，核心目标是**实现内置 AI 对话
 - 会话切换和创建
 - Token 使用量追踪
 
-### 3. AI 对话服务 (`src/gui/services/ai_chat_service.py` 等)
+### 3. 对话控制与上下文注入（当前仓库映射）
 
-**新增文件**:
-- `ai_chat_service.py` — DeepSeek 流式 API 接口 (httpx.AsyncClient + SSE)
-- `knowledge_context.py` — 知识库上下文管理（相关条目检索 + token 预算）
-- `chat_presets.py` — 对话预设模板（system prompt + temperature）
+**当前仓库中的对应实现**:
+- `src/gui/viewmodels/chat_viewmodel.py` — DeepSeek/OpenAI SDK 流式调用、Token 统计、会话状态管理
+- `src/gui/views/chat_view.py` — 知识引用注入、消息渲染、流式显示、UI 事件编排
+- `src/gui/utils/knowledge_ref.py` — 引用卡片与上下文格式化
+
+**当前实现边界**:
+- 当前仓库未单独拆出 `src/gui/services/ai_chat_service.py`
+- 当前仓库未单独拆出 `src/gui/services/knowledge_context.py`
+- 对话模型参数与 API 配置当前集中在 `ChatViewModel` 中
 
 **核心功能**:
-- **流式输出**: 使用 httpx.AsyncClient 的 SSE 接口，实时返回 token
-- **知识注入**: 自动检索相关知识条目，注入到 system prompt 中
-- **Token 预算**:
-  - 初始化时计算剩余 token 预算（总 64K - 历史消息 - 最大输出预留）
-  - 每轮对话检查预算，不足时提示用户或自动创建新会话
-  - 保存时记录 total_tokens 用于统计和成本预警
-- **错误处理**: 网络错误、API 限流、超时等场景的优雅降级
+- **流式输出**: `ChatViewModel` 直接调用模型流式接口并发射 token Signal
+- **知识注入**: `chat_view.py` 检索相关知识后，调用 `set_knowledge_context()` 注入 system message
+- **Token 统计**: `ChatViewModel` 维护 `current_total_tokens` 与 `round_count`
+- **错误处理**: 通过 ViewModel Signal 向 UI 反馈异常和停止状态
 
-### 4. 数据库迁移 (`scripts/migrations/003_add_chat_sessions.sql`)
+### 4. 数据库迁移 (`scripts/migrations/004_add_chat_sessions.sql`)
 
 **新表: chat_sessions**
 ```sql
 CREATE TABLE chat_sessions (
     session_id TEXT PRIMARY KEY,
-    title TEXT,
-    session_type TEXT DEFAULT 'default',    -- preset_id
-    context_entry_id TEXT,                  -- 关联知识条目
-    messages TEXT NOT NULL,                 -- JSON 格式对话历史
-    message_count INTEGER DEFAULT 0,
-    model_used TEXT,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP,
-    FOREIGN KEY (context_entry_id)
-        REFERENCES knowledge_items(knowledge_id)
+    title TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    messages TEXT NOT NULL,
+    summary TEXT,
+    total_tokens INTEGER DEFAULT 0,
+    round_count INTEGER DEFAULT 0,
+    is_archived BOOLEAN DEFAULT 0,
+    knowledge_id INTEGER,
+    FOREIGN KEY (knowledge_id) REFERENCES knowledge_items(knowledge_id)
 );
 ```
 
@@ -96,30 +108,26 @@ CREATE TABLE chat_sessions (
 [
   {"role": "system", "content": "...", "timestamp": "..."},
   {"role": "user", "content": "...", "timestamp": "..."},
-  {"role": "assistant", "content": "...", "timestamp": "...",
-   "context_refs": ["knowledge_id_1", "knowledge_id_2"]}
+  {"role": "assistant", "content": "...", "timestamp": "..."}
 ]
 ```
 
-### 5. 对话预设模板 (`src/ai/chat_presets.py`)
+### 5. 模型配置与预设边界（当前仓库映射）
 
-**M12 交付**: 通用预设 `"default"`
+当前仓库没有独立的 `src/ai/chat_presets.py`。
 
-```python
-ChatPreset(
-    preset_id="default",
-    name="通用助手",
-    description="适用于任意话题，自动引用知识库相关内容",
-    system_prompt_template=(
-        "你是用户的个人知识助手，可以访问用户的个人知识库。\n"
-        "知识库当前有 {entry_count} 条知识条目，热门标签：{top_tags}。\n\n"
-        "请根据用户的问题，合理地引用知识库中的相关内容进行回答。"
-    ),
-    temperature=0.5
-)
-```
+当前实际实现为：
 
-**升级路径**: 后续可在 `CHAT_PRESETS` 字典中追加新预设（无需改 Schema）
+- `src/gui/viewmodels/chat_viewmodel.py` 中直接维护：
+  - `base_url = "https://api.deepseek.com/v1"`
+  - `model = "deepseek-chat"`
+  - `max_tokens = 2000`
+
+这意味着：
+
+- M12 阶段确实形成了“对话预设/模型配置”的设计意图
+- 但当前仓库中该能力尚未抽成独立预设模块
+- 若后续继续演化，应视为“待抽象能力”，而非“当前独立文件已存在”
 
 ### 6. UI 整体风格优化
 
@@ -141,12 +149,16 @@ ChatPreset(
 |------|------|------|
 | `tests/unit/test_chat_viewmodel.py` | 单元测试 | ViewModel 消息收发、状态管理 |
 | `tests/unit/test_knowledge_ref.py` | 单元测试 | 知识库引用、上下文管理 |
-| `tests/unit/test_ai_chat_service.py` | 单元测试 | 流式输出、error handling |
 | `tests/blackbox/test_mcp_client_simulation.py` | Layer 2 | MCP 客户端模拟 (在进程内调用) |
 | `tests/e2e/conftest.py` | E2E 固件 | 测试数据库、MCP 服务启动 |
 | `tests/e2e/test_mcp_e2e_search.py` | Layer 3 | 搜索 E2E 测试 |
 | `tests/e2e/test_mcp_e2e_archive.py` | Layer 3 | 归档 E2E 测试 |
 | `tests/e2e/test_mcp_e2e_knowledge_qa.py` | Layer 3 | 知识问答 E2E 测试 |
+
+说明：
+
+- 当前仓库中不存在 `tests/unit/test_ai_chat_service.py`
+- 与聊天直接相关的当前单元测试主要是 `test_chat_viewmodel.py` 与 `test_knowledge_ref.py`
 
 ---
 
@@ -167,24 +179,11 @@ ChatPreset(
 
 **功能**: AI 对话中自动引用相关知识库条目
 
-**实现** (`src/gui/services/knowledge_context.py`):
+**当前仓库映射** (`src/gui/views/chat_view.py` + `src/gui/utils/knowledge_ref.py`):
 ```python
-class KnowledgeContext:
-    async def get_context(query: str, limit: int) -> str:
-        # 1. 使用 BM25 + 向量混合搜索找相关条目
-        results = await self.router.search(query, limit=limit)
-
-        # 2. 排序和去重（避免重复引用）
-        unique_results = self._deduplicate(results)
-
-        # 3. 组织成 markdown 格式的上下文
-        context = self._format_as_context(unique_results)
-
-        # 4. 计算 token 数，确保在预算内
-        if estimate_tokens(context) < remaining_budget:
-            return context
-        else:
-            return context[:1000]  # 截断
+knowledge_refs = ...  # 检索/组织出的引用对象
+context = format_context_message(knowledge_refs)
+viewmodel.set_knowledge_context(context)
 ```
 
 **UI 显示**:
@@ -198,15 +197,12 @@ class KnowledgeContext:
 - 完整的会话 CRUD 操作
 - 消息历史的 JSON 存储和查询
 - 会话统计（消息数、token 使用量、创建/更新时间）
-- 支持导出会话为 Markdown
+- 支持将对话内容保存到知识库
 
-**CLI 命令** (`src/cli/commands.py`):
-```bash
-pkv chat list                    # 列出所有会话
-pkv chat show <session_id>       # 显示会话内容
-pkv chat export <session_id>     # 导出为 Markdown
-pkv chat delete <session_id>     # 删除会话
-```
+**当前仓库说明**:
+
+- 当前仓库没有 `pkv chat ...` CLI 命令
+- 会话管理入口当前主要存在于 GUI 与 `SQLiteStore` / `ChatViewModel`
 
 ### E4. Token 预算控制策略（完整实现）
 
@@ -309,7 +305,6 @@ pkv chat delete <session_id>     # 删除会话
 |------|------|--------|------|
 | 单元测试 | `test_chat_viewmodel.py` | 25+ | ViewModel 消息管理 |
 | 单元测试 | `test_knowledge_ref.py` | 18+ | 知识库引用 + 上下文 |
-| 单元测试 | `test_ai_chat_service.py` | 22+ | 流式输出 + Token 控制 |
 | Layer 2 | `test_mcp_client_simulation.py` | 60+ | MCP 客户端模拟 |
 | Layer 3 | `test_mcp_e2e_search.py` | 31+ | 搜索 E2E |
 | Layer 3 | `test_mcp_e2e_archive.py` | 35+ | 归档 E2E |
@@ -335,14 +330,12 @@ Layer 3 E2E 黑盒: ✅ 93/93 passed
 | 文件 | 行数 | 说明 |
 |------|------|------|
 | `src/gui/views/chat_view.py` | 450+ | 聊天界面 |
-| `src/gui/viewmodels/chat_viewmodel.py` | 380+ | ViewModel |
-| `src/gui/services/ai_chat_service.py` | 320+ | 流式对话服务 |
-| `src/gui/services/knowledge_context.py` | 280+ | 知识库上下文 |
+| `src/gui/viewmodels/chat_viewmodel.py` | 380+ | 流式对话控制 + Token 管理 |
+| `src/gui/utils/knowledge_ref.py` | 150+ | 知识引用格式化 |
 | `src/gui/styles/theme_colors.py` | 120+ | 主题颜色管理 |
-| `src/ai/chat_presets.py` | 85+ | 对话预设 |
-| `scripts/migrations/003_add_chat_sessions.sql` | 50+ | 数据库迁移 |
-| `src/gui/models/chat_model.py` | 150+ | 消息数据模型 |
-| 测试文件 | 1200+ | 8 个测试文件 |
+| `src/storage/sqlite_store.py` | +120 | 会话 CRUD |
+| `scripts/migrations/004_add_chat_sessions.sql` | 35+ | 数据库迁移 |
+| 测试文件 | 900+ | 当前仓库中可对应到的聊天/MCP 测试 |
 
 ### 修改文件 (现有模块增强)
 
@@ -353,7 +346,7 @@ Layer 3 E2E 黑盒: ✅ 93/93 passed
 | `src/gui/styles/dark.qss` | +150 | 暗色聊天样式 |
 | `src/storage/sqlite_store.py` | +120 | 会话 CRUD |
 | `src/retrieval/query_router.py` | +80 | 向量检索优化 |
-| `src/cli/commands.py` | +60 | 聊天 CLI 命令 |
+| `src/cli/commands.py` | - | 当前仓库未包含聊天 CLI 命令 |
 
 ### 代码行数汇总
 
@@ -483,8 +476,7 @@ src/gui/
 ├── stores.py
 ├── models/
 │   ├── entry_model.py
-│   ├── tag_model.py
-│   └── chat_model.py            # [M12 新增] 消息数据模型
+│   └── tag_model.py
 ├── viewmodels/
 │   ├── chat_viewmodel.py        # [M12 新增] 聊天 ViewModel
 │   ├── archive_viewmodel.py
@@ -496,14 +488,12 @@ src/gui/
 │   ├── archive_view.py
 │   ├── settings_view.py
 │   └── stats_view.py
-├── services/
-│   ├── ai_chat_service.py       # [M12 新增] AI 流式对话
-│   └── knowledge_context.py     # [M12 新增] 知识库上下文
 ├── styles/
 │   ├── theme_colors.py          # [M12 新增] 主题颜色集中管理
 │   ├── light.qss                # [M12 扩展]
 │   └── dark.qss                 # [M12 扩展]
 └── utils/
+    ├── knowledge_ref.py         # [当前仓库映射] 知识引用格式化
     └── preview_loader.py
 ```
 
