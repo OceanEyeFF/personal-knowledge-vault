@@ -3,10 +3,10 @@
 > **AI-First Knowledge Workflow System**
 > 工作流驱动的个人知识管理系统
 
-[![Version](https://img.shields.io/badge/version-0.7.0-blue.svg)](./docs/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.7.0-blue.svg)](./docs/operations/CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.11+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](./LICENSE)
-[![Status](https://img.shields.io/badge/status-production_ready-brightgreen.svg)](./docs/milestones/)
+[![Status](https://img.shields.io/badge/status-production_ready-brightgreen.svg)](./docs/history/milestones/)
 
 ## ✨ 核心特点
 
@@ -160,19 +160,13 @@ personal-knowledge-vault/
 │   ├── fixtures/                      # 测试数据
 │   └── manual_test_*.py               # 手动测试脚本
 │
-├── docs/                              # 文档 (60+ 文件)
-│   ├── core/                          # 核心文档
-│   │   ├── (归档至 docs/archive/)     # Phase 1 开发计划（已归档）
-│   │   ├── personal-knowledge-vault-prd.md  # PRD
-│   │   ├── 架构设计.md                # 架构设计
-│   │   ├── QUICKSTART.md              # 详细指南
-│   │   └── ...
-│   ├── refactor/                      # 接口规范 (11 份)
-│   ├── milestones/                    # 里程碑文档
-│   ├── prompts/                       # 开发 Prompt
-│   ├── CHANGELOG.md                   # 更新日志
-│   ├── API文档.md                     # API 参考
-│   └── 快速用户手册.md                # 用户手册
+├── docs/                              # 文档
+│   ├── overview/                      # 项目定位、PRD、架构、技术选型
+│   ├── modules/                       # 模块级设计文档
+│   ├── specs/                         # 接口、模型、Schema、数据流
+│   ├── operations/                    # 安装、使用、维护、迁移、测试环境
+│   ├── history/                       # 历史 Prompt、问题、讨论、里程碑
+│   └── README.md                      # 文档总索引
 │
 └── .data/                             # 运行时数据（已忽略）
     ├── db/knowledge_vault.db          # SQLite 数据库
@@ -221,10 +215,10 @@ python src/main.py --help
 | 指南 | 内容 | 适合场景 |
 |------|------|----------|
 | [RUN_ME_FIRST.md](RUN_ME_FIRST.md) | 3 步快速开始 | 首次使用 |
-| [docs/core/QUICKSTART.md](docs/core/QUICKSTART.md) | 详细安装指南 | 遇到问题时参考 |
-| [docs/快速用户手册.md](docs/快速用户手册.md) | 用户手册 | 日常使用参考 |
-| [docs/API文档.md](docs/API文档.md) | API 参考 | 开发集成 |
-| [docs/数据库迁移指南.md](docs/数据库迁移指南.md) | 数据库升级 | 版本更新时 |
+| [docs/operations/QUICKSTART.md](docs/operations/QUICKSTART.md) | 详细安装指南 | 遇到问题时参考 |
+| [docs/operations/使用手册.md](docs/operations/使用手册.md) | 用户手册 | 日常使用参考 |
+| [docs/operations/API文档.md](docs/operations/API文档.md) | API 参考 | 开发集成 |
+| [docs/operations/数据库迁移指南.md](docs/operations/数据库迁移指南.md) | 数据库升级 | 版本更新时 |
 
 ## 📖 文档索引
 
@@ -233,43 +227,43 @@ python src/main.py --help
 | 文档 | 说明 | 时长 |
 |------|------|------|
 | [RUN_ME_FIRST.md](RUN_ME_FIRST.md) | 3 步快速开始 | 5 分钟 |
-| [docs/core/QUICKSTART.md](docs/core/QUICKSTART.md) | 详细安装指南 | 15 分钟 |
-| [docs/快速用户手册.md](docs/快速用户手册.md) | 用户手册（含示例） | 30 分钟 |
-| [docs/API文档.md](docs/API文档.md) | API 参考文档 | 按需查阅 |
+| [docs/operations/QUICKSTART.md](docs/operations/QUICKSTART.md) | 详细安装指南 | 15 分钟 |
+| [docs/operations/使用手册.md](docs/operations/使用手册.md) | 用户手册（含示例） | 30 分钟 |
+| [docs/operations/API文档.md](docs/operations/API文档.md) | API 参考文档 | 按需查阅 |
 
 ### 📐 架构设计
 
 | 文档 | 内容 | 适合读者 |
 |------|------|---------|
 | [CLAUDE.md](CLAUDE.md) | 项目索引（AI 协作上下文） | AI 协作者 |
-| [docs/core/personal-knowledge-vault-prd.md](docs/core/personal-knowledge-vault-prd.md) | 产品需求文档 | 产品经理、决策者 |
-| [docs/core/架构设计.md](docs/core/架构设计.md) | 系统架构与数据流 | 架构师、开发者 |
-| [docs/core/技术选型.md](docs/core/技术选型.md) | 技术栈对比与决策 | 技术决策者 |
-| [docs/core/项目结构说明.md](docs/core/项目结构说明.md) | 目录结构详解 | 新手开发者 |
+| [docs/overview/personal-knowledge-vault-prd.md](docs/overview/personal-knowledge-vault-prd.md) | 产品需求文档 | 产品经理、决策者 |
+| [docs/overview/架构设计.md](docs/overview/架构设计.md) | 系统架构与数据流 | 架构师、开发者 |
+| [docs/overview/技术选型.md](docs/overview/技术选型.md) | 技术栈对比与决策 | 技术决策者 |
+| [docs/overview/项目结构说明.md](docs/overview/项目结构说明.md) | 目录结构详解 | 新手开发者 |
 
 ### 🔧 接口规范 (11 份核心文档)
 
 | 文档 | 内容 |
 |------|------|
-| [docs/refactor/Entry数据模型规范.md](docs/refactor/Entry数据模型规范.md) | 知识条目数据结构 |
-| [docs/refactor/Processors接口规范.md](docs/refactor/Processors接口规范.md) | 内容处理器接口 |
-| [docs/refactor/Storage接口规范.md](docs/refactor/Storage接口规范.md) | 三层存储架构 |
-| [docs/refactor/Retrieval检索引擎规范.md](docs/refactor/Retrieval检索引擎规范.md) | 检索策略设计 |
-| [docs/refactor/WorkflowEngine接口规范.md](docs/refactor/WorkflowEngine接口规范.md) | 工作流引擎接口 |
-| [查看完整列表](docs/refactor/文档分类清单.md) | 11 份规范文档索引 |
+| [docs/specs/models/Entry数据模型规范.md](docs/specs/models/Entry数据模型规范.md) | 知识条目数据结构 |
+| [docs/specs/interfaces/Processors接口规范.md](docs/specs/interfaces/Processors接口规范.md) | 内容处理器接口 |
+| [docs/specs/interfaces/Storage接口规范.md](docs/specs/interfaces/Storage接口规范.md) | 三层存储架构 |
+| [docs/specs/interfaces/Retrieval检索引擎规范.md](docs/specs/interfaces/Retrieval检索引擎规范.md) | 检索策略设计 |
+| [docs/specs/interfaces/WorkflowEngine接口规范.md](docs/specs/interfaces/WorkflowEngine接口规范.md) | 工作流引擎接口 |
+| [查看完整列表](docs/README.md) | 当前文档总索引 |
 
 ### 🎯 里程碑报告
 
 | 里程碑 | 状态 | 文档 |
 |--------|------|------|
-| M1: 基础设施层 | ✅ 完成 | [MILESTONE1_COMPLETE.md](docs/milestones/MILESTONE1_COMPLETE.md) |
-| M2: AI 服务层 | ✅ 完成 | [MILESTONE2_COMPLETE.md](docs/milestones/MILESTONE2_COMPLETE.md) |
-| M3: 内容处理器 | ✅ 完成 | [MILESTONE3_COMPLETE.md](docs/milestones/MILESTONE3_COMPLETE.md) |
-| M3.5: AI 对话处理器 | ✅ 完成 | [MILESTONE3_5_COMPLETE.md](docs/milestones/MILESTONE3_5_COMPLETE.md) |
-| M4: 检索引擎 | ✅ 完成 | [M4_COMPLETION_REPORT.md](docs/milestones/M4_COMPLETION_REPORT.md) |
-| M5: 工作流引擎 | ✅ 完成 | [M5_COMPLETION_SUMMARY.md](docs/milestones/M5_COMPLETION_SUMMARY.md) |
-| M5.1: Bug 修复 | ✅ 完成 | [M5_1_BUGFIX_COMPLETE.md](docs/milestones/M5_1_BUGFIX_COMPLETE.md) |
-| M6+M7: CLI 与文档 | ✅ 完成 | 参考 [CHANGELOG.md](docs/CHANGELOG.md) |
+| M1: 基础设施层 | ✅ 完成 | [MILESTONE1_COMPLETE.md](docs/history/milestones/MILESTONE1_COMPLETE.md) |
+| M2: AI 服务层 | ✅ 完成 | [MILESTONE2_COMPLETE.md](docs/history/milestones/MILESTONE2_COMPLETE.md) |
+| M3: 内容处理器 | ✅ 完成 | [MILESTONE3_COMPLETE.md](docs/history/milestones/MILESTONE3_COMPLETE.md) |
+| M3.5: AI 对话处理器 | ✅ 完成 | [MILESTONE3_5_COMPLETE.md](docs/history/milestones/MILESTONE3_5_COMPLETE.md) |
+| M4: 检索引擎 | ✅ 完成 | [M4_COMPLETION_REPORT.md](docs/history/milestones/M4_COMPLETION_REPORT.md) |
+| M5: 工作流引擎 | ✅ 完成 | [M5_COMPLETION_SUMMARY.md](docs/history/milestones/M5_COMPLETION_SUMMARY.md) |
+| M5.1: Bug 修复 | ✅ 完成 | [M5_1_BUGFIX_COMPLETE.md](docs/history/milestones/M5_1_BUGFIX_COMPLETE.md) |
+| M6+M7: CLI 与文档 | ✅ 完成 | 参考 [CHANGELOG.md](docs/operations/CHANGELOG.md) |
 | M8: MCP 只读服务 | ✅ 完成 | 5 Tool + 4 Resource (v0.7.0-alpha) |
 | M9: MCP 写入+安全 | ✅ 完成 | 3 写入 Tool + 3 Prompt + 安全加固 (v0.7.0) |
 
@@ -277,19 +271,19 @@ python src/main.py --help
 
 | 文档 | 内容 |
 |------|------|
-| [docs/环境演示.md](docs/环境演示.md) | 完整环境演示案例 |
-| [docs/数据库迁移指南.md](docs/数据库迁移指南.md) | 数据库升级与迁移 |
-| [docs/测试环境隔离指南.md](docs/测试环境隔离指南.md) | 测试环境管理 |
+| [docs/operations/testing/测试环境演示.md](docs/operations/testing/测试环境演示.md) | 完整环境演示案例 |
+| [docs/operations/数据库迁移指南.md](docs/operations/数据库迁移指南.md) | 数据库升级与迁移 |
+| [docs/operations/testing/测试环境隔离指南.md](docs/operations/testing/测试环境隔离指南.md) | 测试环境管理 |
 | [scripts/README.md](scripts/README.md) | 运维脚本使用说明 |
 
 ### 📊 项目管理
 
 | 文档 | 内容 |
 |------|------|
-| [docs/archive/PHASE1_DEV_PROMPT.md](docs/archive/PHASE1_DEV_PROMPT.md) | Phase 1 开发计划（已归档） |
-| [docs/CHANGELOG.md](docs/CHANGELOG.md) | 更新日志 |
-| [docs/文档分类清单.md](docs/文档分类清单.md) | 60+ 文档索引 |
-| [docs/refactor/Bug修复记录.md](docs/refactor/Bug修复记录.md) | 问题跟踪 |
+| [docs/history/prompts/PHASE1_DEV_PROMPT.md](docs/history/prompts/PHASE1_DEV_PROMPT.md) | Phase 1 开发计划（已归档） |
+| [docs/operations/CHANGELOG.md](docs/operations/CHANGELOG.md) | 更新日志 |
+| [docs/README.md](docs/README.md) | 当前文档总索引 |
+| [docs/history/reviews/Bug修复记录.md](docs/history/reviews/Bug修复记录.md) | 问题跟踪 |
 
 ## 💡 设计亮点
 

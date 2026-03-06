@@ -1,0 +1,34 @@
+# 文档总览
+
+`docs/` 现在按抽象层级和使用目的组织，避免把时间维度混进主目录结构。
+
+## 目录说明
+
+- `overview/`：项目定位、战略、PRD、架构总览、技术选型、结构说明
+- `modules/`：按模块拆分的设计文档，例如 `mcp/`、`workflow/`、`gui/`、`review/`
+- `specs/`：接口、数据模型、Schema、数据流等细颗粒规范
+- `operations/`：安装、使用、维护、迁移、测试环境等操作型文档
+- `history/`：历史 Prompt、讨论、里程碑、问题记录、复盘材料
+
+## 短期高频使用
+
+- [当前战略与路线收敛-2026-03.md](./overview/当前战略与路线收敛-2026-03.md)
+- [personal-knowledge-vault-prd.md](./overview/personal-knowledge-vault-prd.md)
+- [架构设计.md](./overview/架构设计.md)
+- [QUICKSTART.md](./operations/QUICKSTART.md)
+- [维护指南.md](./operations/维护指南.md)
+
+## 长期参考
+
+- [技术选型.md](./overview/技术选型.md)
+- [项目结构说明.md](./overview/项目结构说明.md)
+- [modules/](./modules/)
+- [specs/](./specs/)
+- [history/README.md](./history/README.md)
+
+## 使用原则
+
+- 当前真相源优先看 `overview/`
+- 具体模块行为优先看 `modules/` 与 `specs/`
+- 操作步骤和维护流程优先看 `operations/`
+- `history/` 仅用于追溯背景，不作为当前开发的默认依据

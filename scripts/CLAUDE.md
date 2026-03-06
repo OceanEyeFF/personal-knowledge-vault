@@ -278,7 +278,7 @@ python scripts/migrate.py --no-backup
 - 交互式确认(除非使用 `--auto`)
 - 失败自动回滚(如果可能)
 
-详见: [docs/数据库迁移指南.md](../docs/数据库迁移指南.md)
+详见: [docs/operations/数据库迁移指南.md](../docs/operations/数据库迁移指南.md)
 
 ---
 
@@ -603,10 +603,10 @@ MigrationManager.get_pending_migrations()
 | 文件 | 说明 |
 |------|------|
 | [scripts/README.md](./README.md) | 脚本详细说明 |
-| [docs/测试环境隔离指南.md](../docs/测试环境隔离指南.md) | 测试环境完整文档 |
-| [docs/测试环境快速开始.md](../docs/测试环境快速开始.md) | 3 分钟入门 |
-| [docs/数据库迁移指南.md](../docs/数据库迁移指南.md) | 数据库迁移完整指南 |
-| [docs/AI安全与数据库升级完整方案.md](../docs/AI安全与数据库升级完整方案.md) | AI 安全 + 数据库升级总结 |
+| [docs/operations/testing/测试环境隔离指南.md](../docs/operations/testing/测试环境隔离指南.md) | 测试环境完整文档 |
+| [docs/operations/testing/测试环境快速开始.md](../docs/operations/testing/测试环境快速开始.md) | 3 分钟入门 |
+| [docs/operations/数据库迁移指南.md](../docs/operations/数据库迁移指南.md) | 数据库迁移完整指南 |
+| [docs/operations/testing/AI安全与数据库升级完整方案.md](../docs/operations/testing/AI安全与数据库升级完整方案.md) | AI 安全 + 数据库升级总结 |
 
 ---
 
