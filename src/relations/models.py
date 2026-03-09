@@ -139,6 +139,7 @@ class RelationQueryResult:
     seed_knowledge_id: int
     query_direction: RelationQueryDirection | str
     items: list[RelationRecord]
+    grouped_items: Dict[str, list[RelationRecord]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.query_direction = _normalize_enum(
@@ -158,6 +159,10 @@ class RelationQueryResult:
             "query_direction": self.query_direction.value,
             "total": self.total,
             "items": [item.to_dict() for item in self.items],
+            "grouped_items": {
+                relation_type: [item.to_dict() for item in items]
+                for relation_type, items in self.grouped_items.items()
+            },
         }
 
 

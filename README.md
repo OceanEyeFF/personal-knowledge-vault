@@ -91,14 +91,15 @@ python -m src.mcp.server --transport streamable-http --port 3000
 
 **安全加固**: SSRF 拦截（内网地址过滤）、文本长度限制、Bearer Token 认证
 
-### 🕸️ 关系层基础 (Phase A / T1+T3 已实现)
+### 🕸️ 关系层基础 (Phase A / T1+T5 已实现)
 
 - 已新增 `src/relations/models.py`，定义低歧义关系的类型、方向、来源和查询结果结构
 - 已新增 `src/storage/relation_store.py`，提供 `knowledge_relations` 的最小读写能力
 - 已新增 `scripts/migrations/006_add_relations_foundation.sql`，显式引入关系表与索引
 - 已新增 `src/relations/extractors.py`，当前支持 Markdown 显式链接与 Front Matter `related_docs` 的低歧义关系抽取
 - 已新增 `scripts/backfill_relations.py`，默认 `dry-run`，仅在显式传入 `--apply` 时写入关系表
-- 当前仍未实现独立 relation query service 与多跳推理接口能力，这部分仍在后续 Batch
+- 已新增 `src/relations/query_service.py`，提供一跳关系查询、关系类型分组和稳定排序能力
+- 当前仍未实现多跳推理接口与对外 MCP 暴露，这部分仍在后续 Phase
 
 ## 📂 项目结构
 
@@ -130,7 +131,8 @@ personal-knowledge-vault/
 │   │   └── text_fallback_processor.py # 纯文本
 │   ├── relations/                     # 关系模型与类型定义 (Phase A)
 │   │   ├── models.py                  # 关系记录 / 查询结果模型
-│   │   └── extractors.py              # 低歧义关系抽取与回填服务
+│   │   ├── extractors.py              # 低歧义关系抽取与回填服务
+│   │   └── query_service.py           # 一跳关系查询与分组服务
 │   ├── storage/                       # 三层存储
 │   │   ├── markdown_store.py          # Markdown 主存储
 │   │   ├── sqlite_store.py            # SQLite 元数据索引

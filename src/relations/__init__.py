@@ -11,12 +11,14 @@ from src.relations.models import (
     RelationSourceType,
     RelationType,
 )
+from src.relations.query_service import RelationQueryService
 
 __all__ = [
     "LOW_AMBIGUITY_RELATION_TYPES",
     "RelationDirection",
     "RelationQueryDirection",
     "RelationQueryResult",
+    "RelationQueryService",
     "RelationRecord",
     "RelationSourceType",
     "RelationType",
