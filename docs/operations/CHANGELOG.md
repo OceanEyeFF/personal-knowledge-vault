@@ -10,7 +10,7 @@
 > - `v0.7.0` 表示 MCP 能力层首次稳定引入
 > - `history/` 下的 `v0.8.0-beta / v0.8.0` 里程碑文档保留阶段性背景，不直接作为当前仓库发布标签
 
-## [Unreleased] - 2026-03-09 (Phase A / T1+T2 收尾)
+## [Unreleased] - 2026-03-09 (Phase A / T3 完成)
 
 ### ✨ 新增功能
 
@@ -18,6 +18,11 @@
   - `src/relations/models.py`
   - `src/storage/relation_store.py`
   - `scripts/migrations/006_add_relations_foundation.sql`
+
+- ✅ **低歧义关系抽取与安全回填**
+  - `src/relations/extractors.py`
+  - `scripts/backfill_relations.py`
+  - `RelationStore.delete_outgoing_relations_for_knowledge()`
 
 - ✅ **迁移链健康检查**
   - `scripts/migrate.py --health-check`
@@ -28,12 +33,16 @@
 - `004_add_chat_sessions.sql` 标准化为 `v1.1.1`
 - `005_add_review_system.sql` 标准化为 `v1.1.2`
 - `006_add_relations_foundation.sql` 作为 `v1.2.0` 接入当前有效迁移链
-- `README.md`、当前事实基线、架构设计、项目结构说明同步更新为 `Phase A / T1+T2` 口径
+- Batch2 当前只覆盖低歧义关系：Markdown 显式链接与 Front Matter `related_docs`
+- `scripts/backfill_relations.py` 默认 `dry-run`，仅在显式传入 `--apply` 时写入关系表
+- `README.md`、当前事实基线、阶段路线与差异清单同步更新为 `Phase A / T3` 口径
 
 ### 🧪 测试
 
 - 新增 `tests/unit/test_relation_store.py`
 - 新增 `tests/integration/test_relations_migration.py`
+- 新增 `tests/unit/test_relation_extractors.py`
+- 新增 `tests/integration/test_relation_backfill.py`
 - 新增 `tests/unit/test_migration_manager_versions.py`
 - 新增 `tests/unit/test_migration_health_check.py`
 

@@ -181,3 +181,25 @@ class RelationStore:
                 (source_type_value,),
             )
             return cursor.rowcount
+
+    def delete_outgoing_relations_for_knowledge(
+        self,
+        knowledge_id: int,
+        relation_source_types: Optional[Iterable[str]] = None,
+    ) -> int:
+        """删除指定条目导出的关系，用于安全重跑 backfill。"""
+        if knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+
+        query = "DELETE FROM knowledge_relations WHERE source_knowledge_id = ?"
+        params: list[object] = [knowledge_id]
+
+        source_type_values = normalize_relation_source_types(relation_source_types)
+        if source_type_values:
+            placeholders = ", ".join("?" for _ in source_type_values)
+            query += f" AND relation_source_type IN ({placeholders})"
+            params.extend(source_type_values)
+
+        with self.get_connection() as conn:
+            cursor = conn.execute(query, tuple(params))
+            return cursor.rowcount

@@ -91,12 +91,14 @@ python -m src.mcp.server --transport streamable-http --port 3000
 
 **安全加固**: SSRF 拦截（内网地址过滤）、文本长度限制、Bearer Token 认证
 
-### 🕸️ 关系层基础 (Phase A / T1+T2 已实现)
+### 🕸️ 关系层基础 (Phase A / T1+T3 已实现)
 
 - 已新增 `src/relations/models.py`，定义低歧义关系的类型、方向、来源和查询结果结构
 - 已新增 `src/storage/relation_store.py`，提供 `knowledge_relations` 的最小读写能力
 - 已新增 `scripts/migrations/006_add_relations_foundation.sql`，显式引入关系表与索引
-- 当前仍未实现 relation extraction / backfill / query service，多跳推理能力仍在后续 Batch
+- 已新增 `src/relations/extractors.py`，当前支持 Markdown 显式链接与 Front Matter `related_docs` 的低歧义关系抽取
+- 已新增 `scripts/backfill_relations.py`，默认 `dry-run`，仅在显式传入 `--apply` 时写入关系表
+- 当前仍未实现独立 relation query service 与多跳推理接口能力，这部分仍在后续 Batch
 
 ## 📂 项目结构
 
@@ -127,7 +129,8 @@ personal-knowledge-vault/
 │   │   ├── ai_chat_processor.py       # AI 对话
 │   │   └── text_fallback_processor.py # 纯文本
 │   ├── relations/                     # 关系模型与类型定义 (Phase A)
-│   │   └── models.py                  # 关系记录 / 查询结果模型
+│   │   ├── models.py                  # 关系记录 / 查询结果模型
+│   │   └── extractors.py              # 低歧义关系抽取与回填服务
 │   ├── storage/                       # 三层存储
 │   │   ├── markdown_store.py          # Markdown 主存储
 │   │   ├── sqlite_store.py            # SQLite 元数据索引
@@ -162,6 +165,7 @@ personal-knowledge-vault/
 │   ├── test-conda.ps1                 # 环境验证
 │   ├── backup-data.ps1                # 数据备份
 │   ├── restore-data.ps1               # 数据恢复
+│   ├── backfill_relations.py          # 关系回填脚本（默认 dry-run）
 │   ├── migrate.py                     # 数据库迁移工具
 │   └── migrations/                    # SQL 迁移脚本
 │
