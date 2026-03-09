@@ -91,6 +91,13 @@ python -m src.mcp.server --transport streamable-http --port 3000
 
 **安全加固**: SSRF 拦截（内网地址过滤）、文本长度限制、Bearer Token 认证
 
+### 🕸️ 关系层基础 (Phase A / T1+T2 已实现)
+
+- 已新增 `src/relations/models.py`，定义低歧义关系的类型、方向、来源和查询结果结构
+- 已新增 `src/storage/relation_store.py`，提供 `knowledge_relations` 的最小读写能力
+- 已新增 `scripts/migrations/006_add_relations_foundation.sql`，显式引入关系表与索引
+- 当前仍未实现 relation extraction / backfill / query service，多跳推理能力仍在后续 Batch
+
 ## 📂 项目结构
 
 ```
@@ -119,11 +126,14 @@ personal-knowledge-vault/
 │   │   ├── chat_processor.py          # 聊天记录
 │   │   ├── ai_chat_processor.py       # AI 对话
 │   │   └── text_fallback_processor.py # 纯文本
+│   ├── relations/                     # 关系模型与类型定义 (Phase A)
+│   │   └── models.py                  # 关系记录 / 查询结果模型
 │   ├── storage/                       # 三层存储
 │   │   ├── markdown_store.py          # Markdown 主存储
 │   │   ├── sqlite_store.py            # SQLite 元数据索引
 │   │   ├── vector_store.py            # hnswlib 向量索引
-│   │   └── migration_manager.py       # 数据库迁移 (v0.6.1)
+│   │   ├── relation_store.py          # knowledge_relations 存储
+│   │   └── migration_manager.py       # 数据库迁移与健康检查
 │   ├── retrieval/                     # 检索引擎 (6 个)
 │   │   ├── bm25_retriever.py          # BM25 关键词检索
 │   │   ├── vector_retriever.py        # 向量语义检索
@@ -357,14 +367,17 @@ steps:
 
 ```bash
 # 迁移工具
-python scripts/migrate.py upgrade    # 升级到最新版本
-python scripts/migrate.py rollback   # 回滚到上一版本
-python scripts/migrate.py history    # 查看迁移历史
+python scripts/migrate.py                # 交互式升级
+python scripts/migrate.py --auto         # 自动升级
+python scripts/migrate.py --dry-run      # 仅检查待执行迁移
+python scripts/migrate.py --version      # 查看当前数据库版本
+python scripts/migrate.py --health-check # 只读检查迁移链健康度
 ```
 
 **特点**:
 - 版本号追踪（存储在 `schema_version` 表）
 - 增量 SQL 脚本（`scripts/migrations/*.sql`）
+- 迁移链健康检查（脚本头、版本递增、表结构与版本记录漂移）
 - 向前/向后兼容
 
 ## 📊 项目状态

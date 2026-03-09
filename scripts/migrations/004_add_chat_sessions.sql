@@ -1,4 +1,5 @@
--- Version: 1.1.0
+-- Migration: 004_add_chat_sessions.sql
+-- Version: 1.1.1
 -- Description: 添加 AI 对话会话表（M12 - AI 对话功能）
 -- Author: Claude Code
 -- Date: 2026-02-20
@@ -6,6 +7,15 @@
 -- ============================================================
 -- 向上迁移（创建 chat_sessions 表）
 -- ============================================================
+
+-- 兼容早期通过 initialize() 创建、但还没有 schema_version 表的数据库
+CREATE TABLE IF NOT EXISTS schema_version (
+    version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version TEXT NOT NULL UNIQUE,
+    description TEXT,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    applied_by TEXT
+);
 
 -- 创建 chat_sessions 表
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -30,6 +40,9 @@ CREATE INDEX IF NOT EXISTS idx_chat_updated_at ON chat_sessions(updated_at DESC)
 CREATE INDEX IF NOT EXISTS idx_chat_is_archived ON chat_sessions(is_archived);
 CREATE INDEX IF NOT EXISTS idx_chat_knowledge_id ON chat_sessions(knowledge_id);
 
+INSERT OR IGNORE INTO schema_version (version, description)
+VALUES ('1.1.1', '添加 AI 对话会话表（M12 - AI 对话功能）');
+
 -- ============================================================
 -- 向下迁移（回滚）
 -- ============================================================
@@ -40,3 +53,4 @@ CREATE INDEX IF NOT EXISTS idx_chat_knowledge_id ON chat_sessions(knowledge_id);
 -- DROP INDEX IF EXISTS idx_chat_updated_at;
 -- DROP INDEX IF EXISTS idx_chat_created_at;
 -- DROP TABLE IF EXISTS chat_sessions;
+-- DELETE FROM schema_version WHERE version = '1.1.1';

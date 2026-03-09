@@ -6,6 +6,7 @@
     python scripts/migrate.py --auto       # 自动升级
     python scripts/migrate.py --dry-run    # 仅检查，不执行
     python scripts/migrate.py --version    # 查看当前版本
+    python scripts/migrate.py --health-check  # 迁移链健康检查
 """
 
 import sys
@@ -30,11 +31,13 @@ def main():
   python scripts/migrate.py --auto         # 自动升级
   python scripts/migrate.py --dry-run      # 仅检查
   python scripts/migrate.py --version      # 查看版本
+  python scripts/migrate.py --health-check # 健康检查
         """
     )
     parser.add_argument("--auto", action="store_true", help="自动执行所有迁移（无需确认）")
     parser.add_argument("--dry-run", action="store_true", help="仅检查待迁移脚本，不执行")
     parser.add_argument("--version", action="store_true", help="显示当前数据库版本")
+    parser.add_argument("--health-check", action="store_true", help="检查迁移链和数据库版本记录是否健康")
     parser.add_argument("--no-backup", action="store_true", help="跳过自动备份（不推荐）")
 
     args = parser.parse_args()
@@ -66,6 +69,56 @@ def main():
         print(f"当前数据库版本: {current_version}")
         print("")
         return 0
+
+    if args.health_check:
+        report = manager.run_health_check()
+        print("迁移链健康检查:")
+        print("")
+
+        print("脚本链:")
+        for item in report["scripts"]:
+            status = "OK" if item["has_standard_headers"] else "MISSING_HEADERS"
+            version = item["version"] or "(缺失)"
+            description = item["description"] or "(缺失)"
+            print(f"  • {item['file']} [{status}]")
+            print(f"    版本: v{version}")
+            print(f"    说明: {description}")
+
+        print("")
+        print("数据库:")
+        db_info = report["database"]
+        print(f"  数据库文件存在: {'是' if db_info['db_exists'] else '否'}")
+        print(f"  schema_version 存在: {'是' if db_info['schema_version_exists'] else '否'}")
+        print(f"  当前版本: {db_info['current_version']}")
+
+        applied_versions = db_info["applied_versions"]
+        if applied_versions:
+            print(f"  已记录版本: {', '.join(applied_versions)}")
+        else:
+            print("  已记录版本: (空)")
+
+        pending = db_info["pending_migrations"]
+        if not db_info["db_exists"]:
+            print("  待执行迁移: (数据库未初始化，未计算)")
+        elif pending:
+            print("  待执行迁移:")
+            for item in pending:
+                print(f"    - {item['file']} (v{item['version']})")
+        else:
+            print("  待执行迁移: (无)")
+
+        print("")
+        if report["healthy"]:
+            print("✓ 迁移链健康检查通过")
+            print("")
+            return 0
+
+        print("✗ 迁移链健康检查发现问题")
+        print("")
+        for issue in report["issues"]:
+            print(f"  - {issue}")
+        print("")
+        return 1
 
     # 获取当前版本
     current_version = manager.get_current_version()

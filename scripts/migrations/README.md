@@ -11,6 +11,9 @@ scripts/migrations/
 ├── README.md                      # 本文件
 ├── 001_initial_schema.sql         # v1.0.0 初始 Schema（M1）
 ├── 002_add_cli_tables.sql         # v1.1.0 新增 CLI 表（M6）
+├── 004_add_chat_sessions.sql      # v1.1.1 新增 AI 对话会话表（M12）
+├── 005_add_review_system.sql      # v1.1.2 新增审核系统表
+├── 006_add_relations_foundation.sql # v1.2.0 新增关系层基础表（Phase A）
 └── (未来的迁移脚本...)
 ```
 
@@ -89,6 +92,9 @@ python scripts/migrate.py
 
 # 自动迁移（用于 CI/CD）
 python scripts/migrate.py --auto
+
+# 健康检查（只读）
+python scripts/migrate.py --health-check
 ```
 
 ### 3. 在测试环境验证
@@ -114,6 +120,9 @@ python scripts/migrate.py --auto
 |--------|----------|------|------|
 | 1.0.0 | 001_initial_schema.sql | M1 初始 Schema | 2026-02-14 |
 | 1.1.0 | 002_add_cli_tables.sql | M6 CLI 统计表 | 2026-02-16 |
+| 1.1.1 | 004_add_chat_sessions.sql | M12 AI 对话会话表 | 2026-02-20 |
+| 1.1.2 | 005_add_review_system.sql | 审核系统表 | 2026-02-28 |
+| 1.2.0 | 006_add_relations_foundation.sql | Phase A 关系层基础表 | 2026-03-09 |
 
 ### 版本号规范
 

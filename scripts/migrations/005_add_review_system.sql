@@ -1,3 +1,9 @@
+-- Migration: 005_add_review_system.sql
+-- Version: 1.1.2
+-- Description: 新增审核系统表 review_queue / review_history
+-- Author: 幽浮喵
+-- Date: 2026-02-28
+--
 -- Migration 005: Add Review System
 -- 审核系统数据库迁移
 --
@@ -6,6 +12,15 @@
 -- 2. review_history   - 审核操作历史（记录每次用户操作）
 --
 -- 关联: review_queue.knowledge_id -> knowledge_items.knowledge_id (可为 NULL，草稿未入库)
+
+-- 兼容早期通过 initialize() 创建、但还没有 schema_version 表的数据库
+CREATE TABLE IF NOT EXISTS schema_version (
+    version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version TEXT NOT NULL UNIQUE,
+    description TEXT,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    applied_by TEXT
+);
 
 -- 审核队列表
 CREATE TABLE IF NOT EXISTS review_queue (
@@ -83,3 +98,6 @@ FOR EACH ROW
 BEGIN
     UPDATE review_queue SET updated_at = CURRENT_TIMESTAMP WHERE review_id = OLD.review_id;
 END;
+
+INSERT OR IGNORE INTO schema_version (version, description)
+VALUES ('1.1.2', '新增审核系统表 review_queue / review_history');

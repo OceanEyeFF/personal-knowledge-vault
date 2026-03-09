@@ -10,6 +10,33 @@
 > - `v0.7.0` 表示 MCP 能力层首次稳定引入
 > - `history/` 下的 `v0.8.0-beta / v0.8.0` 里程碑文档保留阶段性背景，不直接作为当前仓库发布标签
 
+## [Unreleased] - 2026-03-09 (Phase A / T1+T2 收尾)
+
+### ✨ 新增功能
+
+- ✅ **关系层基础骨架**
+  - `src/relations/models.py`
+  - `src/storage/relation_store.py`
+  - `scripts/migrations/006_add_relations_foundation.sql`
+
+- ✅ **迁移链健康检查**
+  - `scripts/migrate.py --health-check`
+  - `MigrationManager.run_health_check()`
+
+### 📝 变更
+
+- `004_add_chat_sessions.sql` 标准化为 `v1.1.1`
+- `005_add_review_system.sql` 标准化为 `v1.1.2`
+- `006_add_relations_foundation.sql` 作为 `v1.2.0` 接入当前有效迁移链
+- `README.md`、当前事实基线、架构设计、项目结构说明同步更新为 `Phase A / T1+T2` 口径
+
+### 🧪 测试
+
+- 新增 `tests/unit/test_relation_store.py`
+- 新增 `tests/integration/test_relations_migration.py`
+- 新增 `tests/unit/test_migration_manager_versions.py`
+- 新增 `tests/unit/test_migration_health_check.py`
+
 ## [v0.8.0-alpha] - 2026-03-06 (当前仓库基线对齐)
 
 ### ✨ 新增功能

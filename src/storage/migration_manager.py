@@ -6,13 +6,20 @@
 
 import sqlite3
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 import logging
 import subprocess
 import datetime
 import re
 
 logger = logging.getLogger(__name__)
+
+
+EXPECTED_TABLES_BY_VERSION = {
+    "1.1.1": ("chat_sessions",),
+    "1.1.2": ("review_queue", "review_history"),
+    "1.2.0": ("knowledge_relations",),
+}
 
 
 class MigrationManager:
@@ -99,6 +106,143 @@ class MigrationManager:
 
         logger.info(f"找到 {len(migrations)} 个待执行的迁移脚本")
         return migrations
+
+    def run_health_check(self) -> Dict[str, Any]:
+        """
+        执行迁移链健康检查（只读）。
+
+        Returns:
+            包含脚本链检查、数据库状态和问题列表的结果字典
+        """
+        migration_files = sorted(self.migrations_dir.glob("*.sql"))
+        script_checks: List[Dict[str, Any]] = []
+        issues: List[str] = []
+        seen_versions: Dict[str, str] = {}
+        previous_version: Optional[str] = None
+
+        for migration_file in migration_files:
+            metadata = self._read_migration_metadata(migration_file)
+            version = metadata.get("version")
+            description = metadata.get("description")
+            header_ok = all(metadata.values())
+            check: Dict[str, Any] = {
+                "file": migration_file.name,
+                "version": version,
+                "description": description,
+                "has_standard_headers": header_ok,
+            }
+
+            if not header_ok:
+                missing = [
+                    key for key, value in metadata.items() if not value
+                ]
+                issues.append(
+                    f"{migration_file.name} 缺少标准头字段: {', '.join(missing)}"
+                )
+
+            if version:
+                if not re.match(r"^\d+\.\d+\.\d+$", version):
+                    issues.append(f"{migration_file.name} 的版本号格式无效: {version}")
+                elif version in seen_versions:
+                    issues.append(
+                        f"{migration_file.name} 与 {seen_versions[version]} 使用了重复版本号 {version}"
+                    )
+                else:
+                    seen_versions[version] = migration_file.name
+
+                if (
+                    previous_version
+                    and re.match(r"^\d+\.\d+\.\d+$", previous_version)
+                    and re.match(r"^\d+\.\d+\.\d+$", version)
+                    and self._version_compare(version, previous_version) <= 0
+                ):
+                    issues.append(
+                        f"{migration_file.name} 的版本号 {version} 未严格高于前一个脚本版本 {previous_version}"
+                    )
+
+                previous_version = version
+
+            script_checks.append(check)
+
+        db_info: Dict[str, Any] = {
+            "db_path": str(self.db_path),
+            "db_exists": self.db_path.exists(),
+            "schema_version_exists": False,
+            "current_version": "0.0.0",
+            "applied_versions": [],
+            "pending_migrations": [],
+            "table_drift": [],
+        }
+
+        if db_info["db_exists"]:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT name FROM sqlite_master
+                    WHERE type='table' AND name='schema_version'
+                    """
+                )
+                schema_version_exists = cursor.fetchone() is not None
+                db_info["schema_version_exists"] = schema_version_exists
+
+                if schema_version_exists:
+                    applied_rows = conn.execute(
+                        """
+                        SELECT version
+                        FROM schema_version
+                        ORDER BY version_id ASC
+                        """
+                    ).fetchall()
+                    applied_versions = [row[0] for row in applied_rows]
+                    db_info["applied_versions"] = applied_versions
+                    db_info["current_version"] = (
+                        applied_versions[-1] if applied_versions else "0.0.0"
+                    )
+
+                    known_versions = set(seen_versions.keys())
+                    if (
+                        db_info["current_version"] != "0.0.0"
+                        and db_info["current_version"] not in known_versions
+                    ):
+                        issues.append(
+                            f"数据库当前版本 {db_info['current_version']} 不在当前迁移链定义中"
+                        )
+
+                table_names = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+
+                applied_versions = set(db_info["applied_versions"])
+                table_drift: List[str] = []
+                for version, expected_tables in EXPECTED_TABLES_BY_VERSION.items():
+                    has_tables = all(table in table_names for table in expected_tables)
+                    if has_tables and version not in applied_versions:
+                        table_drift.append(
+                            f"数据库已存在 {', '.join(expected_tables)}，但 schema_version 中缺少 {version}"
+                        )
+                    if version in applied_versions and not has_tables:
+                        table_drift.append(
+                            f"schema_version 已记录 {version}，但数据库缺少表 {', '.join(expected_tables)}"
+                        )
+
+                db_info["table_drift"] = table_drift
+                issues.extend(table_drift)
+
+            pending = self.get_pending_migrations()
+            db_info["pending_migrations"] = [
+                {"version": version, "file": path.name}
+                for version, path in pending
+            ]
+
+        return {
+            "healthy": len(issues) == 0,
+            "scripts": script_checks,
+            "database": db_info,
+            "issues": issues,
+        }
 
     def apply_migration(self, migration_file: Path, auto_backup: bool = True):
         """
@@ -282,6 +426,37 @@ class MigrationManager:
                     return line.split(":")[-1].strip()
 
         return None
+
+    def _read_migration_metadata(self, file_path: Path) -> Dict[str, Optional[str]]:
+        """
+        读取迁移脚本标准头部。
+
+        Args:
+            file_path: 迁移脚本路径
+
+        Returns:
+            包含 migration/version/description 的字典
+        """
+        metadata: Dict[str, Optional[str]] = {
+            "migration": None,
+            "version": None,
+            "description": None,
+        }
+
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith("-- Migration:"):
+                    metadata["migration"] = stripped.split(":", 1)[-1].strip()
+                elif stripped.startswith("-- Version:"):
+                    metadata["version"] = stripped.split(":", 1)[-1].strip()
+                elif stripped.startswith("-- Description:"):
+                    metadata["description"] = stripped.split(":", 1)[-1].strip()
+
+                if all(metadata.values()):
+                    break
+
+        return metadata
 
     def _version_compare(self, v1: str, v2: str) -> int:
         """
