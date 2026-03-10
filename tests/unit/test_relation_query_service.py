@@ -75,6 +75,7 @@ def query_env(tmp_path: Path):
     alpha_id = _insert_entry(db_path, "Alpha")
     beta_id = _insert_entry(db_path, "Beta")
     gamma_id = _insert_entry(db_path, "Gamma")
+    delta_id = _insert_entry(db_path, "Delta")
 
     relation_store.upsert_relation(
         RelationRecord(
@@ -116,12 +117,23 @@ def query_env(tmp_path: Path):
             evidence_payload={"field": "related_docs"},
         )
     )
+    relation_store.upsert_relation(
+        RelationRecord(
+            source_knowledge_id=gamma_id,
+            target_knowledge_id=delta_id,
+            relation_type=RelationType.RELATED_DOCUMENT,
+            relation_source_type=RelationSourceType.FRONTMATTER_RELATED_DOCS,
+            weight=3.0,
+            evidence_payload={"field": "related_docs"},
+        )
+    )
 
     return {
         "query_service": query_service,
         "alpha_id": alpha_id,
         "beta_id": beta_id,
         "gamma_id": gamma_id,
+        "delta_id": delta_id,
     }
 
 
@@ -180,3 +192,88 @@ def test_get_relations_between_returns_bidirectional_matches(query_env):
         (gamma_id, alpha_id),
     }
     assert result.to_dict()["grouped_items"][RelationType.REFERENCES.value][0]["weight"] == 2.0
+
+
+def test_query_subgraph_can_expand_to_second_hop(query_env):
+    query_service = query_env["query_service"]
+    alpha_id = query_env["alpha_id"]
+    delta_id = query_env["delta_id"]
+
+    result = query_service.query_subgraph(seed_knowledge_id=alpha_id, depth=2)
+
+    assert result.total_nodes == 4
+    assert result.total_edges == 5
+    assert result.truncated is False
+    assert [(node.knowledge_id, node.depth) for node in result.nodes] == [
+        (query_env["alpha_id"], 0),
+        (query_env["beta_id"], 1),
+        (query_env["gamma_id"], 1),
+        (delta_id, 2),
+    ]
+    assert list(result.grouped_edges.keys()) == [
+        RelationType.REFERENCES.value,
+        RelationType.RELATED_DOCUMENT.value,
+    ]
+    assert result.to_dict()["nodes"][-1] == {
+        "knowledge_id": delta_id,
+        "depth": 2,
+    }
+
+
+def test_query_subgraph_respects_depth_limit(query_env):
+    query_service = query_env["query_service"]
+    alpha_id = query_env["alpha_id"]
+    delta_id = query_env["delta_id"]
+
+    result = query_service.query_subgraph(seed_knowledge_id=alpha_id, depth=1)
+
+    assert [node.knowledge_id for node in result.nodes] == [
+        alpha_id,
+        query_env["beta_id"],
+        query_env["gamma_id"],
+    ]
+    assert all(node.knowledge_id != delta_id for node in result.nodes)
+
+
+def test_explain_relation_returns_direct_explanation(query_env):
+    query_service = query_env["query_service"]
+
+    result = query_service.explain_relation(
+        query_env["alpha_id"],
+        query_env["gamma_id"],
+    )
+
+    assert result.found is True
+    assert result.explanation_type == "direct"
+    assert result.hops == 1
+    assert len(result.path) == 1
+    assert len(result.supporting_relations) == 2
+    assert result.summary == (
+        f"{query_env['alpha_id']} <-[{RelationType.REFERENCES.value}]- "
+        f"{query_env['gamma_id']}"
+    )
+    assert result.evidence_items[0]["relation_type"] == RelationType.REFERENCES.value
+
+
+def test_explain_relation_can_fallback_to_two_hop_path(query_env):
+    query_service = query_env["query_service"]
+
+    result = query_service.explain_relation(
+        query_env["alpha_id"],
+        query_env["delta_id"],
+        max_depth=2,
+    )
+
+    assert result.found is True
+    assert result.explanation_type == "path"
+    assert result.hops == 2
+    assert result.intermediate_knowledge_ids == [query_env["gamma_id"]]
+    assert result.summary == (
+        f"{query_env['alpha_id']} <-[{RelationType.REFERENCES.value}]- "
+        f"{query_env['gamma_id']} -[{RelationType.RELATED_DOCUMENT.value}]-> "
+        f"{query_env['delta_id']}"
+    )
+    assert [item["relation_type"] for item in result.evidence_items] == [
+        RelationType.REFERENCES.value,
+        RelationType.RELATED_DOCUMENT.value,
+    ]

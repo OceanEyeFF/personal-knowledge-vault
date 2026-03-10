@@ -79,6 +79,7 @@ def relation_pipeline_env(tmp_path: Path):
     alpha_path = vault_dir / "alpha.md"
     beta_path = vault_dir / "beta.md"
     gamma_path = vault_dir / "gamma.md"
+    delta_path = vault_dir / "delta.md"
 
     alpha_path.write_text(
         "---\n"
@@ -90,11 +91,13 @@ def relation_pipeline_env(tmp_path: Path):
         encoding="utf-8",
     )
     beta_path.write_text("# Beta\n\n回链到 [Alpha](./alpha.md)\n", encoding="utf-8")
-    gamma_path.write_text("# Gamma\n\n正文", encoding="utf-8")
+    gamma_path.write_text("# Gamma\n\n继续参考 [Delta](./delta.md)\n", encoding="utf-8")
+    delta_path.write_text("# Delta\n\n正文", encoding="utf-8")
 
     alpha_id = _insert_entry(db_path, alpha_path, "Alpha", "https://example.com/a")
     beta_id = _insert_entry(db_path, beta_path, "Beta", "https://example.com/b")
     gamma_id = _insert_entry(db_path, gamma_path, "Gamma", "https://example.com/c")
+    delta_id = _insert_entry(db_path, delta_path, "Delta", "https://example.com/d")
 
     return {
         "db_path": db_path,
@@ -102,6 +105,7 @@ def relation_pipeline_env(tmp_path: Path):
         "alpha_id": alpha_id,
         "beta_id": beta_id,
         "gamma_id": gamma_id,
+        "delta_id": delta_id,
     }
 
 
@@ -119,7 +123,7 @@ def test_relation_query_service_reads_grouped_results_from_backfill(relation_pip
         direction=RelationQueryDirection.BOTH,
     )
 
-    assert report.applied_relations == 3
+    assert report.applied_relations == 4
     assert result.total == 3
     assert list(result.grouped_items.keys()) == [
         RelationType.REFERENCES.value,
@@ -153,3 +157,62 @@ def test_relation_query_service_can_find_relations_between_two_entries(relation_
         (relation_pipeline_env["alpha_id"], relation_pipeline_env["beta_id"]),
         (relation_pipeline_env["beta_id"], relation_pipeline_env["alpha_id"]),
     }
+
+
+def test_relation_query_service_can_expand_backfilled_subgraph(relation_pipeline_env):
+    service = RelationBackfillService(
+        db_path=relation_pipeline_env["db_path"],
+        vault_dir=relation_pipeline_env["vault_dir"],
+    )
+    query_service = RelationQueryService(
+        RelationStore(relation_pipeline_env["db_path"])
+    )
+
+    service.backfill(apply=True)
+    result = query_service.query_subgraph(
+        seed_knowledge_id=relation_pipeline_env["alpha_id"],
+        depth=2,
+    )
+
+    assert [(node.knowledge_id, node.depth) for node in result.nodes] == [
+        (relation_pipeline_env["alpha_id"], 0),
+        (relation_pipeline_env["beta_id"], 1),
+        (relation_pipeline_env["gamma_id"], 1),
+        (relation_pipeline_env["delta_id"], 2),
+    ]
+    assert result.total_edges == 4
+    assert list(result.grouped_edges.keys()) == [
+        RelationType.REFERENCES.value,
+        RelationType.RELATED_DOCUMENT.value,
+    ]
+
+
+def test_relation_query_service_can_explain_backfilled_relation_path(
+    relation_pipeline_env,
+):
+    service = RelationBackfillService(
+        db_path=relation_pipeline_env["db_path"],
+        vault_dir=relation_pipeline_env["vault_dir"],
+    )
+    query_service = RelationQueryService(
+        RelationStore(relation_pipeline_env["db_path"])
+    )
+
+    service.backfill(apply=True)
+    result = query_service.explain_relation(
+        relation_pipeline_env["alpha_id"],
+        relation_pipeline_env["delta_id"],
+        max_depth=2,
+    )
+
+    assert result.found is True
+    assert result.explanation_type == "path"
+    assert result.hops == 2
+    assert result.intermediate_knowledge_ids == [relation_pipeline_env["gamma_id"]]
+    assert [item["relation_type"] for item in result.evidence_items] == [
+        RelationType.RELATED_DOCUMENT.value,
+        RelationType.REFERENCES.value,
+    ] or [item["relation_type"] for item in result.evidence_items] == [
+        RelationType.REFERENCES.value,
+        RelationType.RELATED_DOCUMENT.value,
+    ]
