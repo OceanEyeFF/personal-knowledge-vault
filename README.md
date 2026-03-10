@@ -10,6 +10,7 @@
 
 > 当前仓库基线：`v0.8.0-alpha`
 > 说明：`v0.6.0` 是 CLI 首次稳定引入版本，`v0.7.0` 是 MCP 首次稳定引入版本；当前仓库在此基础上继续合入后续 GUI 与文档收敛工作。
+> 命名说明：当前路线里提到的“当前开发 Phase 1”实际对应 `Phase A：Relation Foundation`；历史文档中的旧 `Phase 1` 已归档完成，两者不是同一时间轴。
 
 ## ✨ 核心特点
 
@@ -98,8 +99,8 @@ python -m src.mcp.server --transport streamable-http --port 3000
 - 已新增 `scripts/migrations/006_add_relations_foundation.sql`，显式引入关系表与索引
 - 已新增 `src/relations/extractors.py`，当前支持 Markdown 显式链接与 Front Matter `related_docs` 的低歧义关系抽取
 - 已新增 `scripts/backfill_relations.py`，默认 `dry-run`，仅在显式传入 `--apply` 时写入关系表
-- 已新增 `src/relations/query_service.py`，提供一跳关系查询、关系类型分组和稳定排序能力
-- 当前仍未实现多跳推理接口与对外 MCP 暴露，这部分仍在后续 Phase
+- 已扩展 `src/relations/query_service.py`，当前提供一跳关系查询、内部 `query_subgraph` 多跳子图遍历基础、最小 `explain_relation` 能力、关系类型分组和稳定排序能力
+- 当前仍未实现 `collect_evidence` 与对外 MCP 暴露，这部分仍在后续 Phase
 
 ## 📂 项目结构
 
