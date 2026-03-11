@@ -10,7 +10,7 @@
 > - `v0.7.0` 表示 MCP 能力层首次稳定引入
 > - `history/` 下的 `v0.8.0-beta / v0.8.0` 里程碑文档保留阶段性背景，不直接作为当前仓库发布标签
 
-## [Unreleased] - 2026-03-10 (Phase A 收尾 / Phase B 起步)
+## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
 ### ✨ 新增功能
 
@@ -38,6 +38,14 @@
   - `RelationQueryService.explain_relation()`
   - 直接关系优先，找不到时降级到受限跳数内的最短解释路径
 
+- ✅ **最小推理型 MCP Tool**
+  - `query_subgraph`
+  - `explain_relation`
+  - `collect_evidence`
+  - `find_bridges` (partial)
+  - `timeline_of` (partial)
+  - `contrast` (partial)
+
 - ✅ **迁移链健康检查**
   - `scripts/migrate.py --health-check`
   - `MigrationManager.run_health_check()`
@@ -49,7 +57,9 @@
 - `006_add_relations_foundation.sql` 作为 `v1.2.0` 接入当前有效迁移链
 - Batch2 当前只覆盖低歧义关系：Markdown 显式链接与 Front Matter `related_docs`
 - `scripts/backfill_relations.py` 默认 `dry-run`，仅在显式传入 `--apply` 时写入关系表
-- 当前已补上内部 `query_subgraph` 多跳子图遍历基础，但仍未暴露推理型 MCP Tool，也未进行真实库正式回填执行
+- 当前已补上内部 `query_subgraph` 多跳子图遍历基础，并将 `query_subgraph` / `explain_relation` 暴露为最小推理型 MCP Tool，但仍未进行真实库正式回填执行
+- 当前已补上 `collect_evidence(question)` 文档级证据包聚合 v1，并将其接入只读 MCP Tool；当前版本仍不依赖 chunk 文本落库
+- 当前已补上 `find_bridges`、`timeline_of`、`contrast` 的 partial implementation，并在返回结构中显式标注 `implementation_level=partial`
 - 查询结果当前优先按 `relation_type` 分组，组内按 `weight DESC -> updated_at DESC -> relation_id ASC` 稳定排序
 - `README.md`、当前事实基线、阶段路线与差异清单同步更新为 `Phase A / T1+T5` 口径
 
@@ -58,6 +68,9 @@
 - `src/relations/models.py` 当前新增 `RelationSubgraphNode` 与 `RelationSubgraphResult`，作为内部多跳子图查询的统一返回结构
 - `src/relations/query_service.py` 当前新增 `query_subgraph(seed_knowledge_id, depth, ...)`，基于现有一跳查询服务做受限 BFS 子图扩展
 - `src/relations/query_service.py` 当前新增 `explain_relation(a, b, ...)`，优先返回直接关系解释，失败时降级为最短路径解释
+- `src/relations/evidence_service.py` 当前新增 `collect_evidence(question, ...)`，围绕问题聚合文档级证据包，并为候选条目补充相对种子条目的关系解释
+- `src/relations/exploration_service.py` 当前新增 `find_bridges(seed_knowledge_id, ...)`、`timeline_of(topic, ...)` 与 `contrast(topic_a, topic_b, ...)`，分别提供桥接候选发现、弱时间线和表层主题对比
+- `src/mcp/tools.py` 当前新增 `query_subgraph`、`explain_relation`、`collect_evidence`、`find_bridges`、`timeline_of` 与 `contrast`，把 Phase B 的最小关系推理与受限探索能力接入 MCP
 - `tests/unit/test_relation_query_service.py` 当前补充两跳子图查询与深度限制断言
 - `tests/integration/test_relation_query_pipeline.py` 当前补充 `backfill -> query_subgraph` 与 `backfill -> explain_relation` 联通验证，并把样例图扩展到 `Alpha -> Gamma -> Delta`
 - 当前工作区文档同步范围已覆盖 `README.md`、`当前事实基线-2026-03.md`、`阶段开发路线与依赖-2026-03.md`

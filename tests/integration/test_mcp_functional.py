@@ -29,6 +29,22 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.markdown_store import Entry, MarkdownStore
+from src.relations.models import (
+    BridgeCandidate,
+    BridgeDiscoveryResult,
+    CollectedEvidenceItem,
+    CollectedEvidenceResult,
+    ContrastCandidateItem,
+    ContrastResult,
+    RelationExplanationResult,
+    RelationRecord,
+    RelationSourceType,
+    RelationSubgraphNode,
+    RelationSubgraphResult,
+    RelationType,
+    TimelinePoint,
+    TimelineResult,
+)
 
 # 导入 MCP 实例（会触发 tools/resources/prompts 注册）
 from src.mcp.server import mcp
@@ -167,27 +183,33 @@ class TestToolRegistration:
     """验证 Tool 注册机制是否正确。"""
 
     @pytest.mark.asyncio
-    async def test_list_tools_returns_all_8(self):
-        """list_tools() 应返回 8 个已注册的 Tool。"""
+    async def test_list_tools_returns_all_14(self):
+        """list_tools() 应返回 14 个已注册的 Tool。"""
         tools = await mcp.list_tools()
-        assert len(tools) == 8, f"期望 8 个 Tool，实际: {len(tools)}"
+        assert len(tools) == 14, f"期望 14 个 Tool，实际: {len(tools)}"
 
     @pytest.mark.asyncio
     async def test_tool_names(self):
-        """8 个 Tool 名称应正确。"""
+        """14 个 Tool 名称应正确。"""
         tools = await mcp.list_tools()
         names = {t.name for t in tools}
         expected = {
             "search_knowledge", "get_entry", "list_tags", "list_entries",
             "get_stats", "archive_url", "archive_text", "get_related",
+            "query_subgraph", "explain_relation", "collect_evidence",
+            "find_bridges", "timeline_of", "contrast",
         }
         assert names == expected, f"Tool 名称不匹配: 多了 {names - expected}, 缺少 {expected - names}"
 
     @pytest.mark.asyncio
     async def test_readonly_tools_have_annotation(self):
-        """5 个只读 Tool 应标注 readOnlyHint=True。"""
+        """只读 Tool 应标注 readOnlyHint=True。"""
         tools = await mcp.list_tools()
-        readonly_names = {"search_knowledge", "get_entry", "list_tags", "list_entries", "get_stats", "get_related"}
+        readonly_names = {
+            "search_knowledge", "get_entry", "list_tags", "list_entries",
+            "get_stats", "get_related", "query_subgraph", "explain_relation",
+            "collect_evidence", "find_bridges", "timeline_of", "contrast",
+        }
         for tool in tools:
             if tool.name in readonly_names:
                 assert tool.annotations is not None, f"{tool.name} 缺少 annotations"
@@ -237,6 +259,33 @@ class TestToolRegistration:
         # get_related 应有 knowledge_id 必填参数
         gr = tool_map["get_related"]
         assert "knowledge_id" in gr.inputSchema.get("properties", {}), "get_related 缺少 knowledge_id 参数"
+
+        qs = tool_map["query_subgraph"]
+        assert "knowledge_id" in qs.inputSchema.get("properties", {}), "query_subgraph 缺少 knowledge_id 参数"
+        assert "depth" in qs.inputSchema.get("properties", {}), "query_subgraph 缺少 depth 参数"
+
+        er = tool_map["explain_relation"]
+        er_props = er.inputSchema.get("properties", {})
+        assert "source_knowledge_id" in er_props, "explain_relation 缺少 source_knowledge_id 参数"
+        assert "target_knowledge_id" in er_props, "explain_relation 缺少 target_knowledge_id 参数"
+
+        ce = tool_map["collect_evidence"]
+        ce_props = ce.inputSchema.get("properties", {})
+        assert "question" in ce_props, "collect_evidence 缺少 question 参数"
+        assert "top_k" in ce_props, "collect_evidence 缺少 top_k 参数"
+
+        fb = tool_map["find_bridges"]
+        fb_props = fb.inputSchema.get("properties", {})
+        assert "seed_knowledge_id" in fb_props, "find_bridges 缺少 seed_knowledge_id 参数"
+
+        tl = tool_map["timeline_of"]
+        tl_props = tl.inputSchema.get("properties", {})
+        assert "topic" in tl_props, "timeline_of 缺少 topic 参数"
+
+        ct = tool_map["contrast"]
+        ct_props = ct.inputSchema.get("properties", {})
+        assert "topic_a" in ct_props, "contrast 缺少 topic_a 参数"
+        assert "topic_b" in ct_props, "contrast 缺少 topic_b 参数"
 
 
 # ============================================================
@@ -597,6 +646,251 @@ class TestToolCallWriteSecurity:
         result = parse_tool_result(raw)
         assert "error" in result
         assert "未找到" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_query_subgraph_success(self):
+        """query_subgraph 应返回结构化子图。"""
+        record = RelationRecord(
+            source_knowledge_id=1,
+            target_knowledge_id=2,
+            relation_type=RelationType.REFERENCES,
+            relation_source_type=RelationSourceType.MARKDOWN_LINK,
+            evidence_payload={"href": "./beta.md"},
+        )
+        mock_service = MagicMock()
+        mock_service.query_subgraph.return_value = RelationSubgraphResult(
+            seed_knowledge_id=1,
+            max_depth=2,
+            nodes=[
+                RelationSubgraphNode(knowledge_id=1, depth=0),
+                RelationSubgraphNode(knowledge_id=2, depth=1),
+            ],
+            edges=[record],
+            grouped_edges={RelationType.REFERENCES.value: [record]},
+        )
+
+        with patch("src.mcp.tools.get_relation_query_service", return_value=mock_service):
+            raw = await mcp.call_tool(
+                "query_subgraph",
+                {"knowledge_id": "1", "depth": 2, "relation_types": ["references"]},
+            )
+
+        result = parse_tool_result(raw)
+        assert result["seed_knowledge_id"] == 1
+        assert result["total_nodes"] == 2
+        assert result["grouped_edges"][RelationType.REFERENCES.value][0]["target_knowledge_id"] == 2
+
+    @pytest.mark.asyncio
+    async def test_explain_relation_success(self):
+        """explain_relation 应返回结构化关系解释。"""
+        record = RelationRecord(
+            source_knowledge_id=1,
+            target_knowledge_id=2,
+            relation_type=RelationType.RELATED_DOCUMENT,
+            relation_source_type=RelationSourceType.FRONTMATTER_RELATED_DOCS,
+            evidence_payload={"field": "related_docs"},
+        )
+        mock_service = MagicMock()
+        mock_service.explain_relation.return_value = RelationExplanationResult(
+            source_knowledge_id=1,
+            target_knowledge_id=2,
+            found=True,
+            explanation_type="direct",
+            hops=1,
+            path=[record],
+            supporting_relations=[record],
+            summary="1 -[related_document]-> 2",
+            evidence_items=[
+                {
+                    "step_index": 0,
+                    "relation_type": RelationType.RELATED_DOCUMENT.value,
+                    "relation_source_type": RelationSourceType.FRONTMATTER_RELATED_DOCS.value,
+                    "direction": record.direction.value,
+                    "weight": record.weight,
+                    "source_knowledge_id": 1,
+                    "target_knowledge_id": 2,
+                    "evidence_payload": {"field": "related_docs"},
+                }
+            ],
+        )
+
+        with patch("src.mcp.tools.get_relation_query_service", return_value=mock_service):
+            raw = await mcp.call_tool(
+                "explain_relation",
+                {"source_knowledge_id": "1", "target_knowledge_id": "2"},
+            )
+
+        result = parse_tool_result(raw)
+        assert result["found"] is True
+        assert result["explanation_type"] == "direct"
+        assert result["summary"] == "1 -[related_document]-> 2"
+
+    @pytest.mark.asyncio
+    async def test_collect_evidence_success(self):
+        """collect_evidence 应返回结构化证据包。"""
+        mock_service = MagicMock()
+        mock_service.collect_evidence.return_value = CollectedEvidenceResult(
+            question="Alpha 和 Beta 有什么关系？",
+            found=True,
+            seed_knowledge_id=1,
+            seed_title="Alpha",
+            evidence=[
+                CollectedEvidenceItem(
+                    knowledge_id=1,
+                    title="Alpha",
+                    abstract="Alpha 摘要",
+                    source_type="generic",
+                    archived_at="2026-03-10 10:00:00",
+                    tags=["AI"],
+                    retrieval_rank=1,
+                    retrieval_score=0.95,
+                    is_seed=True,
+                ),
+                CollectedEvidenceItem(
+                    knowledge_id=2,
+                    title="Beta",
+                    abstract="Beta 摘要",
+                    source_type="generic",
+                    archived_at="2026-03-10 10:10:00",
+                    tags=["知识图谱"],
+                    retrieval_rank=2,
+                    retrieval_score=0.82,
+                    relation_found=True,
+                    relation_explanation_type="direct",
+                    relation_hops=1,
+                    relation_summary="1 -[related_document]-> 2",
+                ),
+            ],
+            summary="围绕问题共聚合 2 条证据",
+        )
+
+        with patch("src.mcp.tools.get_evidence_collection_service", return_value=mock_service):
+            raw = await mcp.call_tool(
+                "collect_evidence",
+                {"question": "Alpha 和 Beta 有什么关系？", "top_k": 5},
+            )
+
+        result = parse_tool_result(raw)
+        assert result["found"] is True
+        assert result["seed_knowledge_id"] == 1
+        assert result["total_evidence"] == 2
+        assert result["related_evidence_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_find_bridges_success(self):
+        """find_bridges 应返回桥接候选。"""
+        mock_service = MagicMock()
+        mock_service.find_bridges.return_value = BridgeDiscoveryResult(
+            seed_knowledge_id=1,
+            found=True,
+            max_depth=2,
+            items=[
+                BridgeCandidate(
+                    knowledge_id=3,
+                    title="Gamma",
+                    depth=1,
+                    bridge_score=2.25,
+                    connected_knowledge_ids=[1, 4],
+                    relation_types=["references", "related_document"],
+                    summary="Gamma 是桥接候选",
+                )
+            ],
+            summary="找到 1 个桥接候选",
+            limitation_notes=["partial"],
+        )
+
+        with patch("src.mcp.tools.get_exploration_service", return_value=mock_service):
+            raw = await mcp.call_tool(
+                "find_bridges",
+                {"seed_knowledge_id": "1", "top_k": 5, "max_depth": 2},
+            )
+
+        result = parse_tool_result(raw)
+        assert result["found"] is True
+        assert result["total_bridges"] == 1
+        assert result["implementation_level"] == "partial"
+
+    @pytest.mark.asyncio
+    async def test_timeline_of_success(self):
+        """timeline_of 应返回弱时间线。"""
+        mock_service = MagicMock()
+        mock_service.timeline_of.return_value = TimelineResult(
+            topic="AI Timeline",
+            found=True,
+            items=[
+                TimelinePoint(
+                    knowledge_id=1,
+                    title="Alpha",
+                    archived_at="2026-03-10 10:00:00",
+                    source_type="generic",
+                    abstract="Alpha 摘要",
+                    tags=["AI"],
+                    retrieval_score=0.91,
+                )
+            ],
+            summary="时间线已生成",
+            limitation_notes=["partial"],
+        )
+
+        with patch("src.mcp.tools.get_exploration_service", return_value=mock_service):
+            raw = await mcp.call_tool(
+                "timeline_of",
+                {"topic": "AI Timeline", "top_k": 5, "sort_order": "asc"},
+            )
+
+        result = parse_tool_result(raw)
+        assert result["found"] is True
+        assert result["total_points"] == 1
+        assert result["implementation_level"] == "partial"
+
+    @pytest.mark.asyncio
+    async def test_contrast_success(self):
+        """contrast 应返回主题对比结构。"""
+        mock_service = MagicMock()
+        mock_service.contrast.return_value = ContrastResult(
+            topic_a="Topic A",
+            topic_b="Topic B",
+            found=True,
+            topic_a_candidates=[
+                ContrastCandidateItem(
+                    knowledge_id=1,
+                    title="Alpha",
+                    abstract="Alpha 摘要",
+                    archived_at="2026-03-10 10:00:00",
+                    source_type="generic",
+                    tags=["AI", "共同"],
+                    retrieval_score=0.93,
+                )
+            ],
+            topic_b_candidates=[
+                ContrastCandidateItem(
+                    knowledge_id=2,
+                    title="Beta",
+                    abstract="Beta 摘要",
+                    archived_at="2026-03-11 10:00:00",
+                    source_type="generic",
+                    tags=["时间线", "共同"],
+                    retrieval_score=0.87,
+                )
+            ],
+            shared_tags=["共同"],
+            only_a_tags=["AI"],
+            only_b_tags=["时间线"],
+            overlap_knowledge_ids=[],
+            summary="对比完成",
+            limitation_notes=["partial"],
+        )
+
+        with patch("src.mcp.tools.get_exploration_service", return_value=mock_service):
+            raw = await mcp.call_tool(
+                "contrast",
+                {"topic_a": "Topic A", "topic_b": "Topic B", "top_k": 5},
+            )
+
+        result = parse_tool_result(raw)
+        assert result["found"] is True
+        assert result["implementation_level"] == "partial"
+        assert result["shared_tags"] == ["共同"]
 
 
 # ============================================================

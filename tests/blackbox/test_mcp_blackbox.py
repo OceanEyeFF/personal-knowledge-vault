@@ -222,8 +222,8 @@ class TestServerStartup:
                 assert caps is not None
 
     @pytest.mark.asyncio
-    async def test_list_tools_returns_8(self, empty_db_path):
-        """list_tools 应返回 8 个 Tool。"""
+    async def test_list_tools_returns_14(self, empty_db_path):
+        """list_tools 应返回 14 个 Tool。"""
         params = get_server_params(empty_db_path)
 
         async with stdio_client(params) as (read, write):
@@ -232,10 +232,12 @@ class TestServerStartup:
                 tools_result = await session.list_tools()
                 tool_names = {t.name for t in tools_result.tools}
 
-                assert len(tool_names) == 8, f"期望 8 个 Tool，实际: {tool_names}"
+                assert len(tool_names) == 14, f"期望 14 个 Tool，实际: {tool_names}"
                 expected = {
                     "search_knowledge", "get_entry", "list_tags", "list_entries",
                     "get_stats", "archive_url", "archive_text", "get_related",
+                    "query_subgraph", "explain_relation", "collect_evidence",
+                    "find_bridges", "timeline_of", "contrast",
                 }
                 assert tool_names == expected
 

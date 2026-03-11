@@ -10,7 +10,7 @@
 
 ### 核心能力
 
-- **8 个 Tool**: 5 只读 + 2 写入 + 1 关联推荐
+- **14 个 Tool**: 12 只读 + 2 写入
 - **4 个 Resource**: 条目全文/元数据/标签列表/统计信息
 - **3 个 Prompt 模板**: 搜索总结/知识问答/思想磨砺
 - **安全加固**: SSRF 防护 + 文本长度验证 + Bearer Token 认证
@@ -54,7 +54,7 @@ python -m src.mcp.server --log-level DEBUG
 
 ## 对外接口
 
-### Tools (8 个)
+### Tools (14 个)
 
 #### 只读 Tool (readOnlyHint=True)
 
@@ -66,6 +66,12 @@ python -m src.mcp.server --log-level DEBUG
 | `list_entries` | `page?`, `per_page?`, `sort_by?`, `sort_order?`, `source_type?`, `tag?` | `{total, page, entries[]}` | 分页浏览条目列表 |
 | `get_stats` | (无) | `{total_entries, source_types, ...}` | 知识库统计信息 |
 | `get_related` | `knowledge_id`, `limit?` | `{total, results[{knowledge_id, title, score}]}` | 基于向量相似度的关联推荐 |
+| `query_subgraph` | `knowledge_id`, `depth?`, `relation_types?`, `max_nodes?` | `{seed_knowledge_id, nodes[], edges[], grouped_edges}` | 受限多跳关系子图查询 |
+| `explain_relation` | `source_knowledge_id`, `target_knowledge_id`, `relation_types?`, `max_depth?` | `{found, summary, path[], evidence_items[]}` | 解释两个条目之间为何相关 |
+| `collect_evidence` | `question`, `top_k?`, `relation_max_depth?` | `{seed_knowledge_id, summary, evidence[]}` | 聚合文档级证据包 |
+| `find_bridges` | `seed_knowledge_id`, `top_k?`, `max_depth?` | `{items[], limitation_notes[]}` | 发现显式关系子图中的桥接候选（partial） |
+| `timeline_of` | `topic`, `top_k?`, `sort_order?` | `{items[], inferred_time_field}` | 按 `archived_at` 重建弱时间线（partial） |
+| `contrast` | `topic_a`, `topic_b`, `top_k?` | `{shared_tags, only_a_tags, only_b_tags, ...}` | 基于检索候选表面字段做主题对比（partial） |
 
 #### 写入 Tool
 
@@ -284,7 +290,7 @@ Authorization: Bearer my-secret-token-here
 | `__init__.py` | 模块入口,描述模块结构 |
 | `__main__.py` | 支持 `python -m src.mcp.server` 启动 |
 | `server.py` | FastMCP 主入口,单例管理,注册子模块 |
-| `tools.py` | 8 个 Tool handler 实现 |
+| `tools.py` | 14 个 Tool handler 实现 |
 | `resources.py` | 4 个 Resource handler 实现 |
 | `prompts.py` | 3 个 Prompt 模板实现 |
 | `utils.py` | 辅助工具(序列化/安全验证/参数约束) |

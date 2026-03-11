@@ -267,6 +267,306 @@ class RelationExplanationResult:
         }
 
 
+@dataclass
+class CollectedEvidenceItem:
+    """证据聚合中的单条证据项。"""
+
+    knowledge_id: int
+    title: str
+    abstract: str = ""
+    source_type: str = ""
+    archived_at: str = ""
+    tags: list[str] = field(default_factory=list)
+    source_url: str = ""
+    file_path: str = ""
+    content_preview: str = ""
+    retrieval_rank: int = 1
+    retrieval_score: float = 0.0
+    is_seed: bool = False
+    relation_found: bool = False
+    relation_explanation_type: str = ""
+    relation_hops: int = 0
+    relation_summary: str = ""
+    relation_path: list[RelationRecord] = field(default_factory=list)
+    relation_evidence_items: list[Dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+        if self.retrieval_rank <= 0:
+            raise ValueError("retrieval_rank 必须为正整数")
+        if not (0.0 <= self.retrieval_score <= 1.0):
+            raise ValueError("retrieval_score 必须在 [0.0, 1.0] 范围内")
+        if self.relation_hops < 0:
+            raise ValueError("relation_hops 不能为负数")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "knowledge_id": self.knowledge_id,
+            "title": self.title,
+            "abstract": self.abstract,
+            "source_type": self.source_type,
+            "archived_at": self.archived_at,
+            "tags": list(self.tags),
+            "source_url": self.source_url,
+            "file_path": self.file_path,
+            "content_preview": self.content_preview,
+            "retrieval_rank": self.retrieval_rank,
+            "retrieval_score": self.retrieval_score,
+            "is_seed": self.is_seed,
+            "relation_found": self.relation_found,
+            "relation_explanation_type": self.relation_explanation_type,
+            "relation_hops": self.relation_hops,
+            "relation_summary": self.relation_summary,
+            "relation_path": [record.to_dict() for record in self.relation_path],
+            "relation_evidence_items": [
+                dict(item) for item in self.relation_evidence_items
+            ],
+        }
+
+
+@dataclass
+class CollectedEvidenceResult:
+    """证据聚合统一返回结构。"""
+
+    question: str
+    found: bool
+    seed_knowledge_id: Optional[int] = None
+    seed_title: str = ""
+    evidence: list[CollectedEvidenceItem] = field(default_factory=list)
+    summary: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.question or not self.question.strip():
+            raise ValueError("question 不能为空")
+        if self.seed_knowledge_id is not None and self.seed_knowledge_id <= 0:
+            raise ValueError("seed_knowledge_id 必须为正整数")
+
+    @property
+    def total_evidence(self) -> int:
+        return len(self.evidence)
+
+    @property
+    def related_evidence_count(self) -> int:
+        return sum(1 for item in self.evidence if item.relation_found)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "question": self.question,
+            "found": self.found,
+            "seed_knowledge_id": self.seed_knowledge_id,
+            "seed_title": self.seed_title,
+            "total_evidence": self.total_evidence,
+            "related_evidence_count": self.related_evidence_count,
+            "summary": self.summary,
+            "evidence": [item.to_dict() for item in self.evidence],
+        }
+
+
+@dataclass
+class BridgeCandidate:
+    """桥接候选节点。"""
+
+    knowledge_id: int
+    title: str
+    depth: int
+    bridge_score: float
+    connected_knowledge_ids: list[int] = field(default_factory=list)
+    relation_types: list[str] = field(default_factory=list)
+    summary: str = ""
+
+    def __post_init__(self) -> None:
+        if self.knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+        if self.depth < 0:
+            raise ValueError("depth 不能为负数")
+        if self.bridge_score < 0:
+            raise ValueError("bridge_score 不能为负数")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "knowledge_id": self.knowledge_id,
+            "title": self.title,
+            "depth": self.depth,
+            "bridge_score": self.bridge_score,
+            "connected_knowledge_ids": list(self.connected_knowledge_ids),
+            "relation_types": list(self.relation_types),
+            "summary": self.summary,
+        }
+
+
+@dataclass
+class BridgeDiscoveryResult:
+    """桥接发现结果。"""
+
+    seed_knowledge_id: int
+    found: bool
+    max_depth: int
+    items: list[BridgeCandidate] = field(default_factory=list)
+    summary: str = ""
+    implementation_level: str = "partial"
+    limitation_notes: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.seed_knowledge_id <= 0:
+            raise ValueError("seed_knowledge_id 必须为正整数")
+        if self.max_depth <= 0:
+            raise ValueError("max_depth 必须大于 0")
+
+    @property
+    def total_bridges(self) -> int:
+        return len(self.items)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "seed_knowledge_id": self.seed_knowledge_id,
+            "found": self.found,
+            "max_depth": self.max_depth,
+            "total_bridges": self.total_bridges,
+            "summary": self.summary,
+            "implementation_level": self.implementation_level,
+            "limitation_notes": list(self.limitation_notes),
+            "items": [item.to_dict() for item in self.items],
+        }
+
+
+@dataclass
+class TimelinePoint:
+    """时间线条目。"""
+
+    knowledge_id: int
+    title: str
+    archived_at: str = ""
+    source_type: str = ""
+    abstract: str = ""
+    tags: list[str] = field(default_factory=list)
+    retrieval_score: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+        if not (0.0 <= self.retrieval_score <= 1.0):
+            raise ValueError("retrieval_score 必须在 [0.0, 1.0] 范围内")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "knowledge_id": self.knowledge_id,
+            "title": self.title,
+            "archived_at": self.archived_at,
+            "source_type": self.source_type,
+            "abstract": self.abstract,
+            "tags": list(self.tags),
+            "retrieval_score": self.retrieval_score,
+        }
+
+
+@dataclass
+class TimelineResult:
+    """时间线重建结果。"""
+
+    topic: str
+    found: bool
+    inferred_time_field: str = "archived_at"
+    items: list[TimelinePoint] = field(default_factory=list)
+    summary: str = ""
+    implementation_level: str = "partial"
+    limitation_notes: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.topic or not self.topic.strip():
+            raise ValueError("topic 不能为空")
+
+    @property
+    def total_points(self) -> int:
+        return len(self.items)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "topic": self.topic,
+            "found": self.found,
+            "inferred_time_field": self.inferred_time_field,
+            "total_points": self.total_points,
+            "summary": self.summary,
+            "implementation_level": self.implementation_level,
+            "limitation_notes": list(self.limitation_notes),
+            "items": [item.to_dict() for item in self.items],
+        }
+
+
+@dataclass
+class ContrastCandidateItem:
+    """对比分析中的候选条目。"""
+
+    knowledge_id: int
+    title: str
+    abstract: str = ""
+    archived_at: str = ""
+    source_type: str = ""
+    tags: list[str] = field(default_factory=list)
+    retrieval_score: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+        if not (0.0 <= self.retrieval_score <= 1.0):
+            raise ValueError("retrieval_score 必须在 [0.0, 1.0] 范围内")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "knowledge_id": self.knowledge_id,
+            "title": self.title,
+            "abstract": self.abstract,
+            "archived_at": self.archived_at,
+            "source_type": self.source_type,
+            "tags": list(self.tags),
+            "retrieval_score": self.retrieval_score,
+        }
+
+
+@dataclass
+class ContrastResult:
+    """主题对比结果。"""
+
+    topic_a: str
+    topic_b: str
+    found: bool
+    topic_a_candidates: list[ContrastCandidateItem] = field(default_factory=list)
+    topic_b_candidates: list[ContrastCandidateItem] = field(default_factory=list)
+    shared_tags: list[str] = field(default_factory=list)
+    only_a_tags: list[str] = field(default_factory=list)
+    only_b_tags: list[str] = field(default_factory=list)
+    overlap_knowledge_ids: list[int] = field(default_factory=list)
+    summary: str = ""
+    implementation_level: str = "partial"
+    limitation_notes: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.topic_a or not self.topic_a.strip():
+            raise ValueError("topic_a 不能为空")
+        if not self.topic_b or not self.topic_b.strip():
+            raise ValueError("topic_b 不能为空")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "topic_a": self.topic_a,
+            "topic_b": self.topic_b,
+            "found": self.found,
+            "summary": self.summary,
+            "implementation_level": self.implementation_level,
+            "limitation_notes": list(self.limitation_notes),
+            "shared_tags": list(self.shared_tags),
+            "only_a_tags": list(self.only_a_tags),
+            "only_b_tags": list(self.only_b_tags),
+            "overlap_knowledge_ids": list(self.overlap_knowledge_ids),
+            "topic_a_candidates": [
+                item.to_dict() for item in self.topic_a_candidates
+            ],
+            "topic_b_candidates": [
+                item.to_dict() for item in self.topic_b_candidates
+            ],
+        }
+
+
 def normalize_relation_types(
     relation_types: Optional[Iterable[RelationType | str]],
 ) -> list[str]:

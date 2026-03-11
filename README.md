@@ -79,12 +79,18 @@ python -m src.mcp
 python -m src.mcp.server --transport streamable-http --port 3000
 ```
 
-**8 个 Tool**:
+**14 个 Tool**:
 - `search_knowledge` — 智能搜索（BM25/向量/混合）
 - `get_entry` / `list_entries` / `list_tags` / `get_stats` — 只读浏览
 - `archive_url` — 归档网页（SSRF 防护）
 - `archive_text` — 归档纯文本
 - `get_related` — 关联知识推荐（向量相似度）
+- `query_subgraph` — 关系子图查询
+- `explain_relation` — 关系解释
+- `collect_evidence` — 证据包聚合
+- `find_bridges` — 桥接候选发现（partial）
+- `timeline_of` — 弱时间线重建（partial）
+- `contrast` — 主题对比（partial）
 
 **3 个 Prompt 模板**: `search_and_summarize` / `knowledge_qa` / `idea_sharpen`
 
@@ -100,7 +106,10 @@ python -m src.mcp.server --transport streamable-http --port 3000
 - 已新增 `src/relations/extractors.py`，当前支持 Markdown 显式链接与 Front Matter `related_docs` 的低歧义关系抽取
 - 已新增 `scripts/backfill_relations.py`，默认 `dry-run`，仅在显式传入 `--apply` 时写入关系表
 - 已扩展 `src/relations/query_service.py`，当前提供一跳关系查询、内部 `query_subgraph` 多跳子图遍历基础、最小 `explain_relation` 能力、关系类型分组和稳定排序能力
-- 当前仍未实现 `collect_evidence` 与对外 MCP 暴露，这部分仍在后续 Phase
+- 已新增 `src/relations/evidence_service.py`，当前提供文档级 `collect_evidence` 证据包聚合 v1
+- 已新增 `src/relations/exploration_service.py`，当前提供 `find_bridges`、`timeline_of`、`contrast` 的受限版本
+- 当前已把 `query_subgraph`、`explain_relation` 与 `collect_evidence` 暴露为只读 MCP Tool；其中 `collect_evidence` 当前仍是文档级证据包，不依赖 chunk 文本落库
+- 当前已把 `find_bridges`、`timeline_of`、`contrast` 暴露为只读 MCP Tool，但它们仍是 partial implementation：只基于显式关系子图、`archived_at` 和检索候选表面字段
 
 ## 📂 项目结构
 
@@ -120,7 +129,7 @@ personal-knowledge-vault/
 │   │   └── formatters.py              # 输出格式化
 │   ├── mcp/                           # MCP 服务 (v0.7.0)
 │   │   ├── server.py                  # FastMCP 主入口 (stdio/HTTP)
-│   │   ├── tools.py                   # 8 个 Tool handler
+│   │   ├── tools.py                   # 14 个 Tool handler
 │   │   ├── resources.py               # 4 个 Resource handler
 │   │   ├── prompts.py                 # 3 个 Prompt 模板
 │   │   └── utils.py                   # 安全验证 + 序列化

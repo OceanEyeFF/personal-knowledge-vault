@@ -11,8 +11,11 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 import pytest
+from dotenv import load_dotenv
 
 from src.storage.sqlite_store import SQLiteStore
+
+load_dotenv()
 
 
 def _parse_tool_content(result) -> Dict[str, Any]:

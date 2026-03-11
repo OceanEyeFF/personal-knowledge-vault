@@ -7,13 +7,15 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Awaitable, Callable, Dict, List
 
 import pytest
-import pytest_asyncio
+from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
+
+load_dotenv()
 
 from mcp import StdioServerParameters
 from mcp.client.session import ClientSession
@@ -30,6 +32,23 @@ class TestEnv:
     vault_dir: Path
     vector_dir: Path
     env: Dict[str, str]
+
+
+@dataclass(frozen=True)
+class MCPTestClient:
+    params: StdioServerParameters
+
+    async def _with_session(self, operation: Callable[[ClientSession], Awaitable[Any]]) -> Any:
+        async with stdio_client(self.params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return await operation(session)
+
+    async def call_tool(self, name: str, arguments: Dict[str, Any]):
+        return await self._with_session(lambda session: session.call_tool(name, arguments))
+
+    async def get_prompt(self, name: str, arguments: Dict[str, str] | None = None):
+        return await self._with_session(lambda session: session.get_prompt(name, arguments))
 
 
 def _clean_path(path: Path) -> None:
@@ -298,19 +317,15 @@ def test_env() -> TestEnv:
             os.environ[key] = value
 
 
-@pytest_asyncio.fixture(scope="session")
-async def mcp_server(test_env: TestEnv, sample_knowledge_db) -> ClientSession:
+@pytest.fixture
+def mcp_server(test_env: TestEnv, sample_knowledge_db) -> MCPTestClient:
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "src.mcp.server"],
         env=test_env.env,
         cwd=str(PROJECT_ROOT),
     )
-
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            yield session
+    return MCPTestClient(params=params)
 
 
 @pytest.fixture(scope="session")

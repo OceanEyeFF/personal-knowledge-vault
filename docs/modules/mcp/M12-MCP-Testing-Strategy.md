@@ -4,6 +4,12 @@
 
 **核心理念**：充分利用已有的测试环境隔离方案（`.data-test/` + `.env.test`），循序渐进地验证 MCP 层的可用性。
 
+当前状态补注（2026-03-11）：
+
+- 当前代码基线共 `14` 个 Tool，其中 `query_subgraph`、`explain_relation`、`collect_evidence` 已可调用
+- `find_bridges`、`timeline_of`、`contrast` 也已接入 MCP，但仍属于 partial implementation
+- 当前自动化验证已经覆盖 unit / integration / blackbox；完整 E2E 仍需继续补齐
+
 ---
 
 ## 一、测试层次设计
@@ -33,11 +39,17 @@ npx @modelcontextprotocol/inspector python -m src.mcp.server
 
 **检查清单**：
 
-- [ ] 8 个 Tool 全部列出 (5 只读 + 3 写入)
+- [ ] 14 个 Tool 全部列出 (12 只读 + 2 写入)
 - [ ] 4 个 Resource 全部列出
 - [ ] 3 个 Prompt 全部列出
 - [ ] `search_knowledge "AI"` → 返回搜索结果
 - [ ] `get_entry {valid_id}` → 返回知识条目
+- [ ] `query_subgraph {knowledge_id}` → 返回 nodes / edges / truncated
+- [ ] `explain_relation {source_id, target_id}` → 返回 summary / path
+- [ ] `collect_evidence {question}` → 返回 seed / evidence[]
+- [ ] `find_bridges {seed_id}` → 返回 `implementation_level=partial`
+- [ ] `timeline_of {topic}` → 返回 `inferred_time_field=archived_at`
+- [ ] `contrast {topic_a, topic_b}` → 返回 `shared_tags / only_a_tags / only_b_tags`
 - [ ] `archive_url "https://example.com"` → 成功/失败响应
 - [ ] 无效参数测试 → 返回合理的错误信息
 - [ ] 大数据量返回 → 不超时不崩溃
@@ -475,4 +487,3 @@ MCP 真实场景测试完成的标志：
 - **集成测试**：与真实 Claude Code MCP 配置集成
 - **性能基准**：建立 Tool 响应时间基准
 - **自动化 CI**：GitHub Actions / GitLab CI 每次 PR 自动运行
-

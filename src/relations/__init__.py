@@ -3,6 +3,12 @@
 """
 
 from src.relations.models import (
+    BridgeCandidate,
+    BridgeDiscoveryResult,
+    CollectedEvidenceItem,
+    CollectedEvidenceResult,
+    ContrastCandidateItem,
+    ContrastResult,
     LOW_AMBIGUITY_RELATION_TYPES,
     RelationDirection,
     RelationExplanationResult,
@@ -13,19 +19,27 @@ from src.relations.models import (
     RelationSubgraphNode,
     RelationSubgraphResult,
     RelationType,
+    TimelinePoint,
+    TimelineResult,
 )
-from src.relations.query_service import RelationQueryService
 
 __all__ = [
+    "BridgeCandidate",
+    "BridgeDiscoveryResult",
+    "CollectedEvidenceItem",
+    "CollectedEvidenceResult",
+    "ContrastCandidateItem",
+    "ContrastResult",
     "LOW_AMBIGUITY_RELATION_TYPES",
     "RelationDirection",
     "RelationExplanationResult",
     "RelationQueryDirection",
     "RelationQueryResult",
-    "RelationQueryService",
     "RelationRecord",
     "RelationSourceType",
     "RelationSubgraphNode",
     "RelationSubgraphResult",
     "RelationType",
+    "TimelinePoint",
+    "TimelineResult",
 ]

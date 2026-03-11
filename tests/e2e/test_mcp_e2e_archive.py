@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
 
 import pytest
+from dotenv import load_dotenv
 
 from src.storage.sqlite_store import SQLiteStore
+
+load_dotenv()
 
 
 def _parse_tool_content(result) -> Dict[str, Any]:
@@ -53,6 +57,14 @@ def _assert_search_payload(data: Dict[str, Any]) -> None:
     assert isinstance(data["results"], list)
 
 
+def _has_archive_api_keys() -> bool:
+    return bool(os.getenv("DEEPSEEK_API_KEY")) and bool(os.getenv("OPENAI_API_KEY"))
+
+
+@pytest.mark.skipif(
+    not _has_archive_api_keys(),
+    reason="需要配置 DEEPSEEK_API_KEY 和 OPENAI_API_KEY",
+)
 @pytest.mark.asyncio
 async def test_archive_url_success(mcp_server, test_env):
     urls: Iterable[Tuple[str, str]] = [
@@ -123,6 +135,10 @@ async def test_archive_url_invalid_format(mcp_server, test_env):
     assert after_count == before_count
 
 
+@pytest.mark.skipif(
+    not _has_archive_api_keys(),
+    reason="需要配置 DEEPSEEK_API_KEY 和 OPENAI_API_KEY",
+)
 @pytest.mark.asyncio
 async def test_archive_text_success(mcp_server, test_env):
     text = "# E2E 归档纯文本\n\n这是一次端到端归档测试，验证文本能被成功写入数据库。"
@@ -151,6 +167,10 @@ async def test_archive_text_success(mcp_server, test_env):
     assert file_path.exists(), f"归档文件不存在: {file_path}"
 
 
+@pytest.mark.skipif(
+    not _has_archive_api_keys(),
+    reason="需要配置 DEEPSEEK_API_KEY 和 OPENAI_API_KEY",
+)
 @pytest.mark.asyncio
 async def test_archive_text_with_title(mcp_server):
     text = "E2E 标题覆盖测试内容，包含标签词：归档、标题、标签。"
@@ -182,6 +202,10 @@ async def test_archive_text_length_limit(mcp_server):
     _assert_error_payload(data, expected_substr="超过限制")
 
 
+@pytest.mark.skipif(
+    not _has_archive_api_keys(),
+    reason="需要配置 DEEPSEEK_API_KEY 和 OPENAI_API_KEY",
+)
 @pytest.mark.asyncio
 async def test_archive_then_search(mcp_server):
     keyword = "归档搜索验证E2E"

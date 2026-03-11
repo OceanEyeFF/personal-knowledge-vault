@@ -261,6 +261,13 @@ GUI 的目标是：
 - `collect_evidence`
 - 其他高价值知识探索 Tool
 
+当前实现补注（2026-03-11）：
+
+- `query_subgraph`、`explain_relation` 已作为只读 MCP Tool 暴露
+- `collect_evidence` 已实现文档级证据包聚合 v1
+- `find_bridges`、`timeline_of`、`contrast` 已以 partial implementation 形式进入 MCP
+- 当前仍不应把这些能力表述为“完整高阶推理闭环”，因为 chunk 原文落库、事件时间与语义桥接仍未补齐
+
 #### Phase C：基于关系层的 GUI 增强
 
 - 关系链检查

@@ -1,9 +1,9 @@
 """
 MCP Tool handler 实现
 
-提供 8 个 Tool:
-- 只读 (M8): search_knowledge, get_entry, list_tags, list_entries, get_stats
-- 写入/关联 (M9): archive_url, archive_text, get_related
+提供 14 个 Tool:
+- 只读: search_knowledge, get_entry, list_tags, list_entries, get_stats, get_related, query_subgraph, explain_relation, collect_evidence, find_bridges, timeline_of, contrast
+- 写入: archive_url, archive_text
 
 同步/异步策略说明：
     - FastMCP 的同步 def handler 会直接在 asyncio 事件循环中调用（不同于 FastAPI）
@@ -19,7 +19,15 @@ from typing import Optional
 import anyio
 from mcp.types import ToolAnnotations
 
-from src.mcp.server import mcp, get_sqlite_store, get_markdown_store, get_query_router
+from src.mcp.server import (
+    mcp,
+    get_evidence_collection_service,
+    get_exploration_service,
+    get_sqlite_store,
+    get_markdown_store,
+    get_query_router,
+    get_relation_query_service,
+)
 from src.mcp.utils import (
     parse_tags_string, serialize_search_result, clamp_param,
     validate_url_security, validate_text_length,
@@ -301,7 +309,10 @@ async def archive_url(url: str) -> dict:
         # execute_async() 是原生 async，可直接 await，无需 threadpool
         from src.workflow.engine import WorkflowEngine
         engine = WorkflowEngine()
-        result = await engine.execute_async("archive-url", {"url": url})
+        result = await engine.execute_async(
+            "archive-url",
+            {"url": url, "skip_review": True},
+        )
 
         if result.success:
             logger.info(f"archive_url: 归档成功 kid={result.data.get('knowledge_id', '')}, title={result.data.get('title', '')!r}")
@@ -365,7 +376,13 @@ async def archive_text(text: str, title: str = "") -> dict:
         engine = WorkflowEngine()
         result = await engine.execute_async(
             "archive-text",
-            {"text": text, "title": entry.title, "entry": entry, "content": entry.content},
+            {
+                "text": text,
+                "title": entry.title,
+                "entry": entry,
+                "content": entry.content,
+                "skip_review": True,
+            },
         )
 
         if result.success:
@@ -470,5 +487,264 @@ async def get_related(knowledge_id: str, limit: int = 5) -> dict:
                 "results": [],
                 "message": f"向量搜索不可用: {e}",
             }
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+# ============================================================
+# Tool 9: query_subgraph — 获取关系子图 (Phase B)
+# ============================================================
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def query_subgraph(
+    knowledge_id: str,
+    depth: int = 2,
+    relation_types: Optional[list[str]] = None,
+    max_nodes: int = 50,
+) -> dict:
+    """获取指定条目周围的关系子图。
+
+    Args:
+        knowledge_id: 种子知识条目 ID（数字字符串）
+        depth: 查询跳数，默认 2，最大 4
+        relation_types: 可选关系类型过滤列表
+        max_nodes: 最多返回节点数，默认 50，最大 200
+
+    Returns:
+        子图结果，包含 nodes、edges、grouped_edges、truncated 等字段
+    """
+
+    def _impl():
+        try:
+            kid = int(knowledge_id)
+        except (ValueError, TypeError):
+            return {"error": f"无效的 knowledge_id: {knowledge_id}，需要数字"}
+
+        depth_safe = clamp_param(depth, 1, 4)
+        max_nodes_safe = clamp_param(max_nodes, 1, 200)
+        relation_query_service = get_relation_query_service()
+
+        try:
+            result = relation_query_service.query_subgraph(
+                seed_knowledge_id=kid,
+                depth=depth_safe,
+                relation_types=relation_types or None,
+                per_node_limit=max_nodes_safe,
+                max_nodes=max_nodes_safe,
+                max_edges=max(max_nodes_safe * 4, 20),
+            )
+        except ValueError as e:
+            return {"error": str(e)}
+
+        return result.to_dict()
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+# ============================================================
+# Tool 10: explain_relation — 解释条目关系 (Phase B)
+# ============================================================
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def explain_relation(
+    source_knowledge_id: str,
+    target_knowledge_id: str,
+    relation_types: Optional[list[str]] = None,
+    max_depth: int = 2,
+) -> dict:
+    """解释两个知识条目之间为何相关。
+
+    Args:
+        source_knowledge_id: 起始知识条目 ID（数字字符串）
+        target_knowledge_id: 目标知识条目 ID（数字字符串）
+        relation_types: 可选关系类型过滤列表
+        max_depth: 最多允许的解释跳数，默认 2，最大 4
+
+    Returns:
+        关系解释结果，包含 summary、path、evidence_items 等字段
+    """
+
+    def _impl():
+        try:
+            source_kid = int(source_knowledge_id)
+            target_kid = int(target_knowledge_id)
+        except (ValueError, TypeError):
+            return {
+                "error": (
+                    "无效的 knowledge_id，"
+                    f"需要数字: source={source_knowledge_id}, target={target_knowledge_id}"
+                )
+            }
+
+        max_depth_safe = clamp_param(max_depth, 1, 4)
+        relation_query_service = get_relation_query_service()
+
+        try:
+            result = relation_query_service.explain_relation(
+                source_knowledge_id=source_kid,
+                target_knowledge_id=target_kid,
+                relation_types=relation_types or None,
+                max_depth=max_depth_safe,
+                per_node_limit=100,
+            )
+        except ValueError as e:
+            return {"error": str(e)}
+
+        return result.to_dict()
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+# ============================================================
+# Tool 11: collect_evidence — 聚合问题证据包 (Phase B)
+# ============================================================
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def collect_evidence(
+    question: str,
+    top_k: int = 5,
+    relation_max_depth: int = 2,
+) -> dict:
+    """围绕问题聚合最小证据包。
+
+    Args:
+        question: 待回答的问题或主题
+        top_k: 最多聚合的证据条目数，默认 5，最大 10
+        relation_max_depth: 与种子条目解释关系时允许的最大跳数，默认 2，最大 4
+
+    Returns:
+        证据聚合结果，包含 seed、summary 和 evidence[] 等字段
+    """
+
+    def _impl():
+        if not question or not question.strip():
+            return {"error": "question 不能为空"}
+
+        top_k_safe = clamp_param(top_k, 1, 10)
+        relation_max_depth_safe = clamp_param(relation_max_depth, 1, 4)
+        evidence_collection_service = get_evidence_collection_service()
+
+        try:
+            result = evidence_collection_service.collect_evidence(
+                question=question,
+                top_k=top_k_safe,
+                relation_max_depth=relation_max_depth_safe,
+            )
+        except ValueError as e:
+            return {"error": str(e)}
+
+        return result.to_dict()
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+# ============================================================
+# Tool 12: find_bridges — 发现桥接节点 (Phase B partial)
+# ============================================================
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def find_bridges(
+    seed_knowledge_id: str,
+    top_k: int = 5,
+    max_depth: int = 2,
+) -> dict:
+    """发现 seed 周围关系子图中的桥接候选。
+
+    注意：
+        当前是 partial implementation，只基于显式关系子图和简单邻接度启发式。
+        它适合作为桥接探索入口，不代表完整主题桥接发现。
+    """
+
+    def _impl():
+        try:
+            seed_kid = int(seed_knowledge_id)
+        except (ValueError, TypeError):
+            return {"error": f"无效的 seed_knowledge_id: {seed_knowledge_id}，需要数字"}
+
+        exploration_service = get_exploration_service()
+        try:
+            result = exploration_service.find_bridges(
+                seed_knowledge_id=seed_kid,
+                top_k=clamp_param(top_k, 1, 10),
+                max_depth=clamp_param(max_depth, 1, 4),
+            )
+        except ValueError as e:
+            return {"error": str(e)}
+
+        return result.to_dict()
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+# ============================================================
+# Tool 13: timeline_of — 重建弱时间线 (Phase B partial)
+# ============================================================
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def timeline_of(
+    topic: str,
+    top_k: int = 8,
+    sort_order: str = "asc",
+) -> dict:
+    """按 archived_at 重建主题的弱时间线。
+
+    注意：
+        当前是 partial implementation，只能按 archived_at 排序。
+        它不代表正文中的真实事件时间，也还未接入 video_timestamps 或事件时间抽取。
+    """
+
+    def _impl():
+        if not topic or not topic.strip():
+            return {"error": "topic 不能为空"}
+
+        exploration_service = get_exploration_service()
+        try:
+            result = exploration_service.timeline_of(
+                topic=topic,
+                top_k=clamp_param(top_k, 1, 20),
+                sort_order=sort_order,
+            )
+        except ValueError as e:
+            return {"error": str(e)}
+
+        return result.to_dict()
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+# ============================================================
+# Tool 14: contrast — 主题对比 (Phase B partial)
+# ============================================================
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def contrast(
+    topic_a: str,
+    topic_b: str,
+    top_k: int = 5,
+) -> dict:
+    """对比两个主题的检索候选表面特征。
+
+    注意：
+        当前是 partial implementation，只对比候选集、标签和摘要。
+        它不代表完整语义对比，也未引入 contrast 关系类型。
+    """
+
+    def _impl():
+        if not topic_a or not topic_a.strip():
+            return {"error": "topic_a 不能为空"}
+        if not topic_b or not topic_b.strip():
+            return {"error": "topic_b 不能为空"}
+
+        exploration_service = get_exploration_service()
+        try:
+            result = exploration_service.contrast(
+                topic_a=topic_a,
+                topic_b=topic_b,
+                top_k=clamp_param(top_k, 1, 10),
+            )
+        except ValueError as e:
+            return {"error": str(e)}
+
+        return result.to_dict()
 
     return await anyio.to_thread.run_sync(_impl)

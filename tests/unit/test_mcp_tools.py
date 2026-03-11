@@ -5,18 +5,34 @@ MCP Tools 单元测试
 专注测试 Tool handler 的逻辑正确性。
 """
 
+from dataclasses import dataclass
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from dataclasses import dataclass
 
-import pytest
 import anyio
+import pytest
 
 # 确保项目根目录在 Python path 中
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.relations.models import (
+    BridgeCandidate,
+    BridgeDiscoveryResult,
+    CollectedEvidenceItem,
+    CollectedEvidenceResult,
+    ContrastCandidateItem,
+    ContrastResult,
+    RelationExplanationResult,
+    RelationRecord,
+    RelationSourceType,
+    RelationSubgraphNode,
+    RelationSubgraphResult,
+    RelationType,
+    TimelinePoint,
+    TimelineResult,
+)
 from src.mcp.utils import parse_tags_string, serialize_search_result, clamp_param
 from src.retrieval.result import SearchResult
 
@@ -659,3 +675,328 @@ class TestGetRelated:
 
         assert result["results"] == []
         assert "不可用" in result.get("message", "")
+
+
+class TestQuerySubgraph:
+    """query_subgraph Tool 测试。"""
+
+    @pytest.mark.asyncio
+    async def test_invalid_id(self):
+        from src.mcp.tools import query_subgraph
+
+        result = await query_subgraph(knowledge_id="abc")
+
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_success(self):
+        mock_service = MagicMock()
+        record = RelationRecord(
+            source_knowledge_id=1,
+            target_knowledge_id=2,
+            relation_type=RelationType.REFERENCES,
+            relation_source_type=RelationSourceType.MARKDOWN_LINK,
+            evidence_payload={"href": "./beta.md"},
+        )
+        mock_service.query_subgraph.return_value = RelationSubgraphResult(
+            seed_knowledge_id=1,
+            max_depth=2,
+            nodes=[
+                RelationSubgraphNode(knowledge_id=1, depth=0),
+                RelationSubgraphNode(knowledge_id=2, depth=1),
+            ],
+            edges=[record],
+            grouped_edges={RelationType.REFERENCES.value: [record]},
+            truncated=False,
+        )
+
+        with patch("src.mcp.tools.get_relation_query_service", return_value=mock_service):
+            from src.mcp.tools import query_subgraph
+
+            result = await query_subgraph(
+                knowledge_id="1",
+                depth=2,
+                relation_types=[RelationType.REFERENCES.value],
+                max_nodes=20,
+            )
+
+        assert result["seed_knowledge_id"] == 1
+        assert result["total_nodes"] == 2
+        assert result["grouped_edges"][RelationType.REFERENCES.value][0]["target_knowledge_id"] == 2
+        mock_service.query_subgraph.assert_called_once()
+
+
+class TestExplainRelation:
+    """explain_relation Tool 测试。"""
+
+    @pytest.mark.asyncio
+    async def test_invalid_id(self):
+        from src.mcp.tools import explain_relation
+
+        result = await explain_relation(
+            source_knowledge_id="1",
+            target_knowledge_id="abc",
+        )
+
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_success(self):
+        mock_service = MagicMock()
+        record = RelationRecord(
+            source_knowledge_id=1,
+            target_knowledge_id=2,
+            relation_type=RelationType.RELATED_DOCUMENT,
+            relation_source_type=RelationSourceType.FRONTMATTER_RELATED_DOCS,
+            evidence_payload={"field": "related_docs"},
+        )
+        mock_service.explain_relation.return_value = RelationExplanationResult(
+            source_knowledge_id=1,
+            target_knowledge_id=2,
+            found=True,
+            explanation_type="direct",
+            hops=1,
+            path=[record],
+            supporting_relations=[record],
+            summary="1 -[related_document]-> 2",
+            evidence_items=[
+                {
+                    "step_index": 0,
+                    "relation_type": RelationType.RELATED_DOCUMENT.value,
+                    "relation_source_type": RelationSourceType.FRONTMATTER_RELATED_DOCS.value,
+                    "direction": record.direction.value,
+                    "weight": record.weight,
+                    "source_knowledge_id": 1,
+                    "target_knowledge_id": 2,
+                    "evidence_payload": {"field": "related_docs"},
+                }
+            ],
+        )
+
+        with patch("src.mcp.tools.get_relation_query_service", return_value=mock_service):
+            from src.mcp.tools import explain_relation
+
+            result = await explain_relation(
+                source_knowledge_id="1",
+                target_knowledge_id="2",
+                max_depth=2,
+            )
+
+        assert result["found"] is True
+        assert result["explanation_type"] == "direct"
+        assert result["summary"] == "1 -[related_document]-> 2"
+        mock_service.explain_relation.assert_called_once()
+
+
+class TestCollectEvidence:
+    """collect_evidence Tool 测试。"""
+
+    @pytest.mark.asyncio
+    async def test_reject_empty_question(self):
+        from src.mcp.tools import collect_evidence
+
+        result = await collect_evidence(question="   ")
+
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_success(self):
+        mock_service = MagicMock()
+        mock_service.collect_evidence.return_value = CollectedEvidenceResult(
+            question="Alpha 和 Beta 有什么关系？",
+            found=True,
+            seed_knowledge_id=1,
+            seed_title="Alpha",
+            evidence=[
+                CollectedEvidenceItem(
+                    knowledge_id=1,
+                    title="Alpha",
+                    abstract="Alpha 摘要",
+                    source_type="generic",
+                    archived_at="2026-03-10 10:00:00",
+                    tags=["AI"],
+                    retrieval_rank=1,
+                    retrieval_score=0.95,
+                    is_seed=True,
+                ),
+                CollectedEvidenceItem(
+                    knowledge_id=2,
+                    title="Beta",
+                    abstract="Beta 摘要",
+                    source_type="generic",
+                    archived_at="2026-03-10 10:10:00",
+                    tags=["知识图谱"],
+                    retrieval_rank=2,
+                    retrieval_score=0.82,
+                    relation_found=True,
+                    relation_explanation_type="direct",
+                    relation_hops=1,
+                    relation_summary="1 -[related_document]-> 2",
+                ),
+            ],
+            summary="围绕问题共聚合 2 条证据",
+        )
+
+        with patch(
+            "src.mcp.tools.get_evidence_collection_service",
+            return_value=mock_service,
+        ):
+            from src.mcp.tools import collect_evidence
+
+            result = await collect_evidence(
+                question="Alpha 和 Beta 有什么关系？",
+                top_k=5,
+                relation_max_depth=2,
+            )
+
+        assert result["found"] is True
+        assert result["seed_knowledge_id"] == 1
+        assert result["total_evidence"] == 2
+        assert result["related_evidence_count"] == 1
+        mock_service.collect_evidence.assert_called_once()
+
+
+class TestFindBridges:
+    """find_bridges Tool 测试。"""
+
+    @pytest.mark.asyncio
+    async def test_invalid_seed_id(self):
+        from src.mcp.tools import find_bridges
+
+        result = await find_bridges(seed_knowledge_id="abc")
+
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_success(self):
+        mock_service = MagicMock()
+        mock_service.find_bridges.return_value = BridgeDiscoveryResult(
+            seed_knowledge_id=1,
+            found=True,
+            max_depth=2,
+            items=[
+                BridgeCandidate(
+                    knowledge_id=3,
+                    title="Gamma",
+                    depth=1,
+                    bridge_score=2.25,
+                    connected_knowledge_ids=[1, 4],
+                    relation_types=["references", "related_document"],
+                    summary="Gamma 是桥接候选",
+                )
+            ],
+            summary="找到 1 个桥接候选",
+            limitation_notes=["partial"],
+        )
+
+        with patch("src.mcp.tools.get_exploration_service", return_value=mock_service):
+            from src.mcp.tools import find_bridges
+
+            result = await find_bridges(seed_knowledge_id="1", top_k=5, max_depth=2)
+
+        assert result["found"] is True
+        assert result["total_bridges"] == 1
+        assert result["implementation_level"] == "partial"
+        mock_service.find_bridges.assert_called_once()
+
+
+class TestTimelineOf:
+    """timeline_of Tool 测试。"""
+
+    @pytest.mark.asyncio
+    async def test_reject_empty_topic(self):
+        from src.mcp.tools import timeline_of
+
+        result = await timeline_of(topic="  ")
+
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_success(self):
+        mock_service = MagicMock()
+        mock_service.timeline_of.return_value = TimelineResult(
+            topic="AI Timeline",
+            found=True,
+            items=[
+                TimelinePoint(
+                    knowledge_id=1,
+                    title="Alpha",
+                    archived_at="2026-03-10 10:00:00",
+                    source_type="generic",
+                    abstract="Alpha 摘要",
+                    tags=["AI"],
+                    retrieval_score=0.91,
+                )
+            ],
+            summary="时间线已生成",
+            limitation_notes=["partial"],
+        )
+
+        with patch("src.mcp.tools.get_exploration_service", return_value=mock_service):
+            from src.mcp.tools import timeline_of
+
+            result = await timeline_of(topic="AI Timeline", top_k=5, sort_order="asc")
+
+        assert result["found"] is True
+        assert result["total_points"] == 1
+        assert result["implementation_level"] == "partial"
+        mock_service.timeline_of.assert_called_once()
+
+
+class TestContrast:
+    """contrast Tool 测试。"""
+
+    @pytest.mark.asyncio
+    async def test_reject_empty_topic(self):
+        from src.mcp.tools import contrast
+
+        result = await contrast(topic_a="A", topic_b="  ")
+
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_success(self):
+        mock_service = MagicMock()
+        mock_service.contrast.return_value = ContrastResult(
+            topic_a="Topic A",
+            topic_b="Topic B",
+            found=True,
+            topic_a_candidates=[
+                ContrastCandidateItem(
+                    knowledge_id=1,
+                    title="Alpha",
+                    abstract="Alpha 摘要",
+                    archived_at="2026-03-10 10:00:00",
+                    source_type="generic",
+                    tags=["AI", "共同"],
+                    retrieval_score=0.93,
+                )
+            ],
+            topic_b_candidates=[
+                ContrastCandidateItem(
+                    knowledge_id=2,
+                    title="Beta",
+                    abstract="Beta 摘要",
+                    archived_at="2026-03-11 10:00:00",
+                    source_type="generic",
+                    tags=["时间线", "共同"],
+                    retrieval_score=0.87,
+                )
+            ],
+            shared_tags=["共同"],
+            only_a_tags=["AI"],
+            only_b_tags=["时间线"],
+            overlap_knowledge_ids=[],
+            summary="对比完成",
+            limitation_notes=["partial"],
+        )
+
+        with patch("src.mcp.tools.get_exploration_service", return_value=mock_service):
+            from src.mcp.tools import contrast
+
+            result = await contrast(topic_a="Topic A", topic_b="Topic B", top_k=5)
+
+        assert result["found"] is True
+        assert result["implementation_level"] == "partial"
+        assert result["shared_tags"] == ["共同"]
+        mock_service.contrast.assert_called_once()

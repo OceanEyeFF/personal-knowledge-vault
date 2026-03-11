@@ -31,10 +31,13 @@ logger = logging.getLogger("pkv.mcp")
 mcp = FastMCP(
     name="Personal Knowledge Vault",
     instructions=(
-        "个人知识库 MCP 服务。支持知识搜索、归档、浏览、关联推荐和统计。\n"
+        "个人知识库 MCP 服务。支持知识搜索、归档、浏览、关联推荐、关系推理和统计。\n"
         "只读工具：search_knowledge（搜索）、get_entry（查看详情）、"
         "list_tags（标签列表）、list_entries（浏览条目）、get_stats（统计）、"
-        "get_related（关联推荐）。\n"
+        "get_related（关联推荐）、query_subgraph（关系子图）、"
+        "explain_relation（关系解释）、collect_evidence（证据聚合）、"
+        "find_bridges（桥接发现）、timeline_of（弱时间线）、"
+        "contrast（主题对比）。\n"
         "写入工具：archive_url（归档网页）、archive_text（归档文本）。\n"
         "Prompt 模板：search_and_summarize、knowledge_qa、idea_sharpen。\n"
         "知识条目包含标题、摘要、标签、全文等信息。"
@@ -58,6 +61,9 @@ mcp = FastMCP(
 _sqlite_store = None
 _markdown_store = None
 _query_router = None
+_relation_query_service = None
+_evidence_collection_service = None
+_exploration_service = None
 
 
 def get_sqlite_store():
@@ -109,6 +115,51 @@ def get_query_router():
         )
         logger.info("QueryRouter 单例初始化完成")
     return _query_router
+
+
+def get_relation_query_service():
+    """获取 RelationQueryService 单例。"""
+    global _relation_query_service
+    if _relation_query_service is None:
+        from src.relations.query_service import RelationQueryService
+        from src.storage.relation_store import RelationStore
+
+        config = get_config()
+        relation_store = RelationStore(config.db_path)
+        _relation_query_service = RelationQueryService(relation_store)
+        logger.info("RelationQueryService 单例初始化完成")
+    return _relation_query_service
+
+
+def get_evidence_collection_service():
+    """获取 EvidenceCollectionService 单例。"""
+    global _evidence_collection_service
+    if _evidence_collection_service is None:
+        from src.relations.evidence_service import EvidenceCollectionService
+
+        _evidence_collection_service = EvidenceCollectionService(
+            query_router=get_query_router(),
+            sqlite_store=get_sqlite_store(),
+            markdown_store=get_markdown_store(),
+            relation_query_service=get_relation_query_service(),
+        )
+        logger.info("EvidenceCollectionService 单例初始化完成")
+    return _evidence_collection_service
+
+
+def get_exploration_service():
+    """获取 ExplorationService 单例。"""
+    global _exploration_service
+    if _exploration_service is None:
+        from src.relations.exploration_service import ExplorationService
+
+        _exploration_service = ExplorationService(
+            query_router=get_query_router(),
+            sqlite_store=get_sqlite_store(),
+            relation_query_service=get_relation_query_service(),
+        )
+        logger.info("ExplorationService 单例初始化完成")
+    return _exploration_service
 
 
 # ============================================================
