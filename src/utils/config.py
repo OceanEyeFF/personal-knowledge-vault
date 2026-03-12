@@ -139,8 +139,16 @@ class Config:
     @property
     def vault_dir(self) -> Path:
         """Markdown Vault 目录"""
-        path = self.get("storage.vault_dir", ".data/vault")
+        path = self.get_env("VAULT_DIR") or self.get("storage.vault_dir", ".data/vault")
         return self._project_root / path
+
+    @property
+    def data_dir(self) -> Path:
+        """数据根目录。"""
+        data_dir_str = self.get_env("DATA_DIR")
+        if data_dir_str:
+            return self._project_root / data_dir_str
+        return self.db_path.parent.parent
 
     @property
     def db_path(self) -> Path:
@@ -151,7 +159,7 @@ class Config:
     @property
     def vector_index_dir(self) -> Path:
         """向量索引目录"""
-        path = self.get("storage.vector_index_dir", ".data/vectors")
+        path = self.get_env("VECTOR_STORE_PATH") or self.get("storage.vector_index_dir", ".data/vectors")
         return self._project_root / path
 
     @property

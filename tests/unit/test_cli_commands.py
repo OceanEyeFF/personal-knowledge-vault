@@ -27,6 +27,7 @@ class DummyConfig:
     """Lightweight config stub for CLI tests."""
 
     def __init__(self, base_path: Path) -> None:
+        self.data_dir = base_path / ".data"
         self.vault_dir = base_path / "vault"
         self.db_path = base_path / "db" / "vault.db"
         self.vector_index_dir = base_path / "vectors"
@@ -330,7 +331,7 @@ def test_search_command_json_output(
     )
 
     assert response.exit_code == 0
-    payload_text = console_spy.call_args[0][0]
+    payload_text = response.output
     payload = json.loads(payload_text)
     assert payload["query"] == "query"
     assert payload["strategy"] == "bm25"
@@ -504,6 +505,19 @@ def test_config_get(
 
     assert response.exit_code == 0
     assert any("/tmp/vault" in text for text in _printed_strings(console_spy))
+
+
+def test_config_get_alias_key(
+    runner: CliRunner,
+    load_config_stub,
+    mock_config: DummyConfig,
+    console_spy,
+) -> None:
+    """config get should support legacy alias keys."""
+    response = runner.invoke(commands.cli, ["config", "get", "db_path"])
+
+    assert response.exit_code == 0
+    assert any("vault.db" in text for text in _printed_strings(console_spy))
 
 
 def test_config_set(

@@ -31,6 +31,16 @@ from src.ai.embedder import Embedder
 
 console = Console()
 
+CONFIG_KEY_ALIASES = {
+    "data_dir": lambda config: config.data_dir,
+    "vault_dir": lambda config: config.vault_dir,
+    "db_path": lambda config: config.db_path,
+    "vector_store_path": lambda config: config.vector_index_dir,
+    "vector_index_dir": lambda config: config.vector_index_dir,
+    "log_dir": lambda config: config.log_dir,
+    "tmp_dir": lambda config: config.tmp_dir,
+}
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -271,6 +281,20 @@ def _set_env_value(env_path: Path, key: str, value: str) -> None:
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
+def _resolve_config_value(config: Config, key: str) -> Any:
+    """兼容旧键名与点号键名的配置读取。"""
+    alias_getter = CONFIG_KEY_ALIASES.get(key)
+    if alias_getter is not None:
+        return alias_getter(config)
+    if "." in key:
+        return config.get(key)
+
+    env_value = config.get_env(key)
+    if env_value is not None:
+        return env_value
+    return config.get(key)
+
+
 def _friendly_hint(message: str) -> None:
     msg = (message or "").lower()
     if "processor" in msg or "抓取" in msg or "url" in msg:
@@ -443,7 +467,7 @@ def search(query: str, strategy: str, limit: int, output_format: str) -> None:
                 "total": len(results),
                 "results": [_result_to_dict(r) for r in results],
             }
-            console.print(json.dumps(payload, ensure_ascii=False, indent=2))
+            click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
             return
 
         if output_format == "markdown":
@@ -589,6 +613,10 @@ def config_show() -> None:
         table.add_column("值")
 
         rows = [
+            ("data_dir", str(config.data_dir)),
+            ("vault_dir", str(config.vault_dir)),
+            ("db_path", str(config.db_path)),
+            ("vector_store_path", str(config.vector_index_dir)),
             ("storage.vault_dir", str(config.vault_dir)),
             ("storage.db_path", str(config.db_path)),
             ("storage.vector_index_dir", str(config.vector_index_dir)),
@@ -617,20 +645,13 @@ def config_get(key: str) -> None:
     """查询单个配置。"""
     try:
         config = _load_config()
-
-        value = None
-        if "." in key:
-            value = config.get(key)
-        else:
-            value = config.get_env(key)
-            if value is None:
-                value = config.get(key)
+        value = _resolve_config_value(config, key)
 
         if value is None:
             console.print(f"[yellow]警告: 未找到配置: {key}[/yellow]")
             sys.exit(1)
 
-        console.print(value)
+        console.print(str(value))
 
     except Exception as exc:
         console.print(f"[red]错误: 配置查询失败: {exc}[/red]")
