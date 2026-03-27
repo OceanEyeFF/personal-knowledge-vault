@@ -13,12 +13,7 @@ from urllib.parse import unquote, urlparse
 
 import yaml
 
-from src.relations.models import (
-    RelationQueryDirection,
-    RelationRecord,
-    RelationSourceType,
-    RelationType,
-)
+from src.relations.models import RelationRecord, RelationSourceType, RelationType
 from src.storage.relation_store import RelationStore
 from src.utils.logger import get_logger
 
@@ -49,28 +44,206 @@ class ExtractedReference:
     evidence_payload: Dict[str, object]
 
 
+@dataclass(frozen=True)
+class ReferenceIssue:
+    """未能形成有效关系的引用记录。"""
+
+    relation_type: RelationType
+    relation_source_type: RelationSourceType
+    raw_target: str
+    reason: str
+    detail: Dict[str, object] = field(default_factory=dict)
+
+
 @dataclass
 class BackfillReport:
-    """回填执行结果。"""
+    """回填执行结果与质量统计。
+
+    质量指标定义：
+    - total_references：可识别的原始引用总数（包含有效与无效）。
+    - resolved_references：成功解析到 knowledge_id 的引用数。
+    - invalid_references：外链、锚点、空引用、自引用等无效引用数。
+    - unresolved_references：格式合法但目标不存在的引用数。
+    - conflicted_relations：与更高优先级来源冲突的解析关系数。
+    - coverage_rate = resolved_references / total_references
+    - noise_rate = (invalid_references + unresolved_references) / total_references
+    - conflict_rate = conflicted_relations / resolved_references
+    """
 
     scanned_entries: int = 0
     processed_entries: int = 0
     extracted_relations: int = 0
     applied_relations: int = 0
     deleted_relations: int = 0
+    total_references: int = 0
+    resolved_references: int = 0
+    invalid_references: int = 0
+    unresolved_references: int = 0
+    conflicted_relations: int = 0
     missing_files: List[str] = field(default_factory=list)
     skipped_references: List[Dict[str, object]] = field(default_factory=list)
+    limitation_notes: List[str] = field(default_factory=list)
+    by_source_type: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    by_relation_type: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    extensions: Dict[str, object] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, object]:
+    @property
+    def schema_version(self) -> str:
+        return "backfill_quality_report.v1"
+
+    @property
+    def coverage_rate(self) -> float:
+        return _safe_rate(self.resolved_references, self.total_references)
+
+    @property
+    def noise_rate(self) -> float:
+        return _safe_rate(
+            self.invalid_references + self.unresolved_references,
+            self.total_references,
+        )
+
+    @property
+    def conflict_rate(self) -> float:
+        return _safe_rate(self.conflicted_relations, self.resolved_references)
+
+    def metric_definitions(self) -> Dict[str, str]:
+        """返回指标口径，便于人和自动化理解。"""
         return {
+            "total_references": "可识别的原始引用总数（包含有效与无效）。",
+            "resolved_references": "成功解析到 knowledge_id 的引用数。",
+            "invalid_references": "外链、锚点、空引用、自引用等无效引用数。",
+            "unresolved_references": "格式合法但目标不存在的引用数。",
+            "conflicted_relations": "与更高优先级来源冲突的解析关系数。",
+            "coverage_rate": "resolved_references / total_references。",
+            "noise_rate": "(invalid_references + unresolved_references) / total_references。",
+            "conflict_rate": "conflicted_relations / resolved_references。",
+        }
+
+    def register_reference(
+        self,
+        relation_source_type: RelationSourceType,
+        relation_type: RelationType,
+        outcome: str,
+    ) -> None:
+        """记录单条引用结果。
+
+        outcome 取值：resolved / invalid / unresolved
+        """
+        self.total_references += 1
+        if outcome == "resolved":
+            self.resolved_references += 1
+        elif outcome == "invalid":
+            self.invalid_references += 1
+        elif outcome == "unresolved":
+            self.unresolved_references += 1
+        else:
+            raise ValueError(f"未知 outcome: {outcome}")
+
+        self._increment_bucket(
+            self.by_source_type,
+            relation_source_type.value,
+            outcome,
+        )
+        self._increment_bucket(
+            self.by_relation_type,
+            relation_type.value,
+            outcome,
+        )
+
+    @staticmethod
+    def _increment_bucket(
+        bucket: Dict[str, Dict[str, int]],
+        key: str,
+        outcome: str,
+    ) -> None:
+        if key not in bucket:
+            bucket[key] = {
+                "total": 0,
+                "resolved": 0,
+                "invalid": 0,
+                "unresolved": 0,
+            }
+        bucket[key]["total"] += 1
+        bucket[key][outcome] += 1
+
+    def to_dict(self, include_definitions: bool = True) -> Dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
             "scanned_entries": self.scanned_entries,
             "processed_entries": self.processed_entries,
             "extracted_relations": self.extracted_relations,
             "applied_relations": self.applied_relations,
             "deleted_relations": self.deleted_relations,
+            "total_references": self.total_references,
+            "resolved_references": self.resolved_references,
+            "invalid_references": self.invalid_references,
+            "unresolved_references": self.unresolved_references,
+            "conflicted_relations": self.conflicted_relations,
+            "coverage_rate": self.coverage_rate,
+            "noise_rate": self.noise_rate,
+            "conflict_rate": self.conflict_rate,
             "missing_files": list(self.missing_files),
             "skipped_references": list(self.skipped_references),
+            "limitation_notes": list(self.limitation_notes),
+            "by_source_type": dict(self.by_source_type),
+            "by_relation_type": dict(self.by_relation_type),
+            "extensions": dict(self.extensions),
+            "metric_definitions": self.metric_definitions() if include_definitions else {},
         }
+
+    def to_markdown(self) -> str:
+        """生成用于归档的 Markdown 质量报告。"""
+        lines = [
+            "# 关系回填质量报告",
+            "",
+            f"- schema_version: {self.schema_version}",
+            f"- scanned_entries: {self.scanned_entries}",
+            f"- processed_entries: {self.processed_entries}",
+            f"- extracted_relations: {self.extracted_relations}",
+            f"- applied_relations: {self.applied_relations}",
+            f"- deleted_relations: {self.deleted_relations}",
+            "",
+            "## 质量指标",
+            f"- total_references: {self.total_references}",
+            f"- resolved_references: {self.resolved_references}",
+            f"- invalid_references: {self.invalid_references}",
+            f"- unresolved_references: {self.unresolved_references}",
+            f"- conflicted_relations: {self.conflicted_relations}",
+            f"- coverage_rate: {self.coverage_rate:.4f}",
+            f"- noise_rate: {self.noise_rate:.4f}",
+            f"- conflict_rate: {self.conflict_rate:.4f}",
+        ]
+
+        if self.by_source_type:
+            lines.extend(["", "## 按来源统计"])
+            for key, stats in self.by_source_type.items():
+                lines.append(
+                    f"- {key}: total={stats['total']}, "
+                    f"resolved={stats['resolved']}, "
+                    f"invalid={stats['invalid']}, "
+                    f"unresolved={stats['unresolved']}"
+                )
+
+        if self.by_relation_type:
+            lines.extend(["", "## 按关系类型统计"])
+            for key, stats in self.by_relation_type.items():
+                lines.append(
+                    f"- {key}: total={stats['total']}, "
+                    f"resolved={stats['resolved']}, "
+                    f"invalid={stats['invalid']}, "
+                    f"unresolved={stats['unresolved']}"
+                )
+
+        if self.limitation_notes:
+            lines.extend(["", "## 限制说明"])
+            for note in self.limitation_notes:
+                lines.append(f"- {note}")
+
+        lines.extend(["", "## 指标口径"])
+        for key, desc in self.metric_definitions().items():
+            lines.append(f"- {key}: {desc}")
+
+        return "\n".join(lines)
 
 
 def parse_front_matter(markdown_text: str) -> tuple[Dict[str, object], str]:
@@ -102,14 +275,28 @@ def parse_front_matter(markdown_text: str) -> tuple[Dict[str, object], str]:
     return metadata, body
 
 
-def extract_markdown_link_references(markdown_text: str) -> List[ExtractedReference]:
+def extract_markdown_link_references(
+    markdown_text: str,
+) -> tuple[List[ExtractedReference], List[ReferenceIssue]]:
     """提取正文中的 Markdown 显式链接。"""
     _, body = parse_front_matter(markdown_text)
     extracted: List[ExtractedReference] = []
+    issues: List[ReferenceIssue] = []
 
     for anchor_text, raw_target in MARKDOWN_LINK_PATTERN.findall(body):
-        cleaned_target = _clean_link_target(raw_target)
+        cleaned_target, reason = _normalize_link_target(raw_target)
         if cleaned_target is None:
+            issues.append(
+                ReferenceIssue(
+                    relation_type=RelationType.REFERENCES,
+                    relation_source_type=RelationSourceType.MARKDOWN_LINK,
+                    raw_target=raw_target,
+                    reason=reason or "invalid_target",
+                    detail={
+                        "anchor_text": anchor_text.strip(),
+                    },
+                )
+            )
             continue
 
         extracted.append(
@@ -125,19 +312,30 @@ def extract_markdown_link_references(markdown_text: str) -> List[ExtractedRefere
             )
         )
 
-    return extracted
+    return extracted, issues
 
 
-def extract_frontmatter_related_docs(markdown_text: str) -> List[ExtractedReference]:
+def extract_frontmatter_related_docs(
+    markdown_text: str,
+) -> tuple[List[ExtractedReference], List[ReferenceIssue]]:
     """提取 front matter 中的 related_docs。"""
     metadata, _ = parse_front_matter(markdown_text)
     related_docs = metadata.get("related_docs") or []
     if not isinstance(related_docs, list):
-        return []
+        return [], []
 
     extracted: List[ExtractedReference] = []
+    issues: List[ReferenceIssue] = []
     for raw_target in related_docs:
         if not isinstance(raw_target, str) or not raw_target.strip():
+            issues.append(
+                ReferenceIssue(
+                    relation_type=RelationType.RELATED_DOCUMENT,
+                    relation_source_type=RelationSourceType.FRONTMATTER_RELATED_DOCS,
+                    raw_target=str(raw_target),
+                    reason="invalid_target",
+                )
+            )
             continue
         extracted.append(
             ExtractedReference(
@@ -150,7 +348,7 @@ def extract_frontmatter_related_docs(markdown_text: str) -> List[ExtractedRefere
                 },
             )
         )
-    return extracted
+    return extracted, issues
 
 
 class RelationBackfillService:
@@ -179,6 +377,9 @@ class RelationBackfillService:
         entries = self._filter_entries(all_entries, knowledge_ids=knowledge_ids)
         entry_maps = self._build_entry_path_maps(all_entries)
         report = BackfillReport(scanned_entries=len(entries))
+        can_check_conflicts = self.relation_store.table_exists()
+        if not can_check_conflicts:
+            report.limitation_notes.append("关系表不存在，未执行冲突检测。")
 
         for entry in entries:
             if not entry.file_path.exists():
@@ -186,13 +387,31 @@ class RelationBackfillService:
                 continue
 
             markdown_text = entry.file_path.read_text(encoding="utf-8")
-            raw_refs = (
-                extract_markdown_link_references(markdown_text)
-                + extract_frontmatter_related_docs(markdown_text)
+            markdown_refs, markdown_issues = extract_markdown_link_references(
+                markdown_text
             )
+            frontmatter_refs, frontmatter_issues = extract_frontmatter_related_docs(
+                markdown_text
+            )
+            raw_refs = markdown_refs + frontmatter_refs
+            all_issues = markdown_issues + frontmatter_issues
             report.processed_entries += 1
 
             relations: List[RelationRecord] = []
+            for issue in all_issues:
+                report.register_reference(
+                    issue.relation_source_type, issue.relation_type, "invalid"
+                )
+                report.skipped_references.append(
+                    {
+                        "source_knowledge_id": entry.knowledge_id,
+                        "source_file_path": str(entry.file_path),
+                        "raw_target": issue.raw_target,
+                        "relation_type": issue.relation_type.value,
+                        "reason": issue.reason,
+                    }
+                )
+
             for raw_ref in raw_refs:
                 target_entry = self._resolve_target_entry(
                     raw_ref.raw_target,
@@ -200,6 +419,11 @@ class RelationBackfillService:
                     entry_maps=entry_maps,
                 )
                 if target_entry is None:
+                    report.register_reference(
+                        raw_ref.relation_source_type,
+                        raw_ref.relation_type,
+                        "unresolved",
+                    )
                     report.skipped_references.append(
                         {
                             "source_knowledge_id": entry.knowledge_id,
@@ -210,6 +434,35 @@ class RelationBackfillService:
                         }
                     )
                     continue
+                if target_entry.knowledge_id == entry.knowledge_id:
+                    report.register_reference(
+                        raw_ref.relation_source_type,
+                        raw_ref.relation_type,
+                        "invalid",
+                    )
+                    report.skipped_references.append(
+                        {
+                            "source_knowledge_id": entry.knowledge_id,
+                            "source_file_path": str(entry.file_path),
+                            "raw_target": raw_ref.raw_target,
+                            "relation_type": raw_ref.relation_type.value,
+                            "reason": "self_reference",
+                        }
+                    )
+                    continue
+
+                report.register_reference(
+                    raw_ref.relation_source_type,
+                    raw_ref.relation_type,
+                    "resolved",
+                )
+
+                if can_check_conflicts and self._is_conflicted_relation(
+                    entry.knowledge_id,
+                    target_entry.knowledge_id,
+                    raw_ref.relation_source_type,
+                ):
+                    report.conflicted_relations += 1
 
                 relations.append(
                     RelationRecord(
@@ -380,11 +633,42 @@ class RelationBackfillService:
     def _normalized_key(path: Path) -> str:
         return str(path).replace("\\", "/").lower()
 
+    def _is_conflicted_relation(
+        self,
+        source_knowledge_id: int,
+        target_knowledge_id: int,
+        relation_source_type: RelationSourceType,
+    ) -> bool:
+        """判断是否与更高优先级来源冲突。"""
+        priority = {
+            RelationSourceType.MANUAL: 1,
+            RelationSourceType.FRONTMATTER_FIELD: 2,
+            RelationSourceType.MARKDOWN_LINK: 3,
+            RelationSourceType.FRONTMATTER_RELATED_DOCS: 3,
+            RelationSourceType.BACKFILL: 4,
+        }
+        incoming_priority = priority.get(relation_source_type, 99)
+        existing = self.relation_store.list_relations_between(
+            source_knowledge_id, target_knowledge_id
+        )
+        if not existing:
+            return False
+        best_existing = min(
+            priority.get(item.relation_source_type, 99) for item in existing
+        )
+        return best_existing < incoming_priority
 
-def _clean_link_target(raw_target: str) -> Optional[str]:
+
+def _safe_rate(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return numerator / denominator
+
+
+def _normalize_link_target(raw_target: str) -> tuple[Optional[str], Optional[str]]:
     target = raw_target.strip()
     if not target:
-        return None
+        return None, "invalid_target"
 
     if target.startswith("<") and ">" in target:
         target = target[1 : target.index(">")].strip()
@@ -393,11 +677,11 @@ def _clean_link_target(raw_target: str) -> Optional[str]:
 
     parsed = urlparse(target)
     if parsed.scheme in {"http", "https", "mailto"}:
-        return None
+        return None, "external_link"
     if target.startswith("#"):
-        return None
+        return None, "anchor_link"
 
     cleaned = unquote(parsed.path or target)
     if not cleaned or cleaned.startswith("#"):
-        return None
-    return cleaned
+        return None, "invalid_target"
+    return cleaned, None

@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
+
+import yaml
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -44,7 +47,32 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="覆盖 vault 路径（默认读取配置）",
     )
+    parser.add_argument(
+        "--report-json",
+        type=str,
+        default=None,
+        help="输出 JSON 质量报告（传入文件路径或 '-' 输出到 stdout）",
+    )
+    parser.add_argument(
+        "--report-yaml",
+        type=str,
+        default=None,
+        help="输出 YAML 质量报告（传入文件路径或 '-' 输出到 stdout）",
+    )
+    parser.add_argument(
+        "--report-md",
+        type=str,
+        default=None,
+        help="输出 Markdown 质量报告（传入文件路径或 '-' 输出到 stdout）",
+    )
     return parser.parse_args()
+
+
+def _write_report(path: str, content: str) -> None:
+    if path == "-":
+        print("\n" + content)
+        return
+    Path(path).write_text(content, encoding="utf-8")
 
 
 def main() -> int:
@@ -71,6 +99,14 @@ def main() -> int:
     print(f"提取关系: {report.extracted_relations}")
     print(f"删除旧关系: {report.deleted_relations}")
     print(f"写入关系: {report.applied_relations}")
+    print(f"引用总数: {report.total_references}")
+    print(f"解析成功: {report.resolved_references}")
+    print(f"无效引用: {report.invalid_references}")
+    print(f"未命中目标: {report.unresolved_references}")
+    print(f"冲突关系: {report.conflicted_relations}")
+    print(f"覆盖率: {report.coverage_rate:.4f}")
+    print(f"噪声率: {report.noise_rate:.4f}")
+    print(f"冲突率: {report.conflict_rate:.4f}")
     print(f"缺失文件: {len(report.missing_files)}")
     print(f"跳过引用: {len(report.skipped_references)}")
 
@@ -91,6 +127,29 @@ def main() -> int:
 
     if not args.apply:
         print("\n提示: 默认是 dry-run，确认结果后再加 `--apply` 执行真实写入。")
+
+    report_payload = report.to_dict(include_definitions=True)
+    if args.report_json:
+        _write_report(
+            args.report_json,
+            json.dumps(
+                report_payload,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+    if args.report_yaml:
+        _write_report(
+            args.report_yaml,
+            yaml.safe_dump(
+                report_payload,
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+        )
+    if args.report_md:
+        _write_report(args.report_md, report.to_markdown())
 
     return 0
 

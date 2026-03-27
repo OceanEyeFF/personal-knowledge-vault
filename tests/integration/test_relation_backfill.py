@@ -121,6 +121,14 @@ def test_relation_backfill_dry_run_does_not_write(relation_env):
     assert report.processed_entries == 3
     assert report.extracted_relations == 2
     assert report.applied_relations == 0
+    assert report.total_references == 2
+    assert report.resolved_references == 2
+    assert report.invalid_references == 0
+    assert report.unresolved_references == 0
+    assert report.conflicted_relations == 0
+    assert report.coverage_rate == 1.0
+    assert report.noise_rate == 0.0
+    assert report.conflict_rate == 0.0
     assert rows == []
 
 

@@ -171,6 +171,28 @@ class RelationStore:
             rows = conn.execute(query, tuple(params)).fetchall()
             return [RelationRecord.from_row(dict(row)) for row in rows]
 
+    def list_relations_between(
+        self,
+        source_knowledge_id: int,
+        target_knowledge_id: int,
+    ) -> List[RelationRecord]:
+        """按 source/target 精确查询关系，用于冲突检测。"""
+        if source_knowledge_id <= 0 or target_knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+
+        query = """
+            SELECT *
+            FROM knowledge_relations
+            WHERE source_knowledge_id = ?
+              AND target_knowledge_id = ?
+        """
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                query,
+                (source_knowledge_id, target_knowledge_id),
+            ).fetchall()
+            return [RelationRecord.from_row(dict(row)) for row in rows]
+
     def delete_relations_by_source_type(self, relation_source_type: str) -> int:
         """按关系来源类型清理关系记录。"""
         source_type_value = normalize_relation_source_types([relation_source_type])[0]
