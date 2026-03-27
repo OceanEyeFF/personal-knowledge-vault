@@ -233,6 +233,17 @@ python -m src.mcp.server                                    # stdio 模式
 python -m src.mcp.server --transport streamable-http --port 3000  # HTTP 模式
 ```
 
+### Codex/Claude 运行环境
+
+为 AI 协作者准备的专用环境：
+
+```bash
+conda create -y -n pkv-py311-codex python=3.11
+conda install -y -n pkv-py311-codex -c conda-forge hnswlib=0.8.0
+conda run -n pkv-py311-codex python -m pip install -r requirements.txt
+conda activate pkv-py311-codex
+```
+
 ### 常用命令
 
 ```bash

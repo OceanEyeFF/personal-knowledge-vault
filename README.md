@@ -218,6 +218,17 @@ personal-knowledge-vault/
 - **DeepSeek API** (摘要生成、标签提取) - [获取 API Key](https://platform.deepseek.com/)
 - **OpenAI API** (Embedding) - [获取 API Key](https://platform.openai.com/)
 
+### Codex/Claude 专用环境
+
+为 AI 协作者准备的隔离环境（推荐）：
+
+```bash
+conda create -y -n pkv-py311-codex python=3.11
+conda install -y -n pkv-py311-codex -c conda-forge hnswlib=0.8.0
+conda run -n pkv-py311-codex python -m pip install -r requirements.txt
+conda activate pkv-py311-codex
+```
+
 ### ⚡ 3 步安装 (推荐：Conda 方式)
 
 ```powershell
