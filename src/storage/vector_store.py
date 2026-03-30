@@ -273,6 +273,11 @@ class VectorStore:
                 logger.debug(f"分块向量不存在: hnswlib_id={hnswlib_id}")
 
         if stats["chunks_deleted"] > 0:
+            for hnswlib_id in chunk_ids:
+                metadata.get("id_mapping", {}).pop(str(hnswlib_id), None)
+            metadata_path = self.index_dir / "chunk_vectors_metadata.json"
+            with open(metadata_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2)
             self._save_index("chunk_vectors")
             logger.info(
                 f"标记删除分块向量: knowledge_id={knowledge_id}, "

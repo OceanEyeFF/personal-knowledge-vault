@@ -167,6 +167,8 @@ class TestVectorStoreDelete:
             vector_store.add_chunk_vector(1, i, vec)
         stats = vector_store.delete_vectors_for_entry(1)
         assert stats["chunks_deleted"] == 3
+        metadata = vector_store._load_metadata("chunk_vectors")
+        assert metadata["id_mapping"] == {}
 
     def test_delete_nonexistent_vector(self, vector_store: VectorStore):
         """删除不存在的条目向量不报错。"""

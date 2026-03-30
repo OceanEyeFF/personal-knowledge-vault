@@ -195,11 +195,7 @@ class ExplorationService:
             )
 
         points.sort(
-            key=lambda item: (
-                self._parse_time_sort_key(item.archived_at),
-                item.knowledge_id,
-            ),
-            reverse=(sort_order == "desc"),
+            key=lambda item: self._timeline_sort_key(item, sort_order),
         )
         inferred_time_field = points[0].time_source if points else "archived_at"
         return TimelineResult(
@@ -394,13 +390,28 @@ class ExplorationService:
         return "", priority[-1]
 
     @staticmethod
-    def _parse_time_sort_key(raw_value: str) -> tuple[int, str]:
+    def _parse_time_sort_key(raw_value: str) -> tuple[int, int, float, str]:
         if not raw_value:
-            return (1, "")
+            return (1, 1, 0.0, "")
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
             try:
                 parsed = datetime.strptime(raw_value, fmt)
-                return (0, parsed.isoformat())
+                return (0, 0, parsed.timestamp(), "")
             except ValueError:
                 continue
-        return (0, raw_value)
+        return (0, 1, 0.0, raw_value)
+
+    @classmethod
+    def _timeline_sort_key(
+        cls, item: TimelinePoint, sort_order: str
+    ) -> tuple[int, Any]:
+        missing_rank, parse_kind, parsed_ts, raw_value = cls._parse_time_sort_key(
+            item.archived_at
+        )
+        if sort_order == "desc":
+            if missing_rank:
+                return (1, 1, 0.0, "", item.knowledge_id)
+            if parse_kind == 0:
+                return (0, 0, -parsed_ts, "", item.knowledge_id)
+            return (0, 1, 0.0, raw_value, item.knowledge_id)
+        return (missing_rank, parse_kind, parsed_ts, raw_value, item.knowledge_id)
