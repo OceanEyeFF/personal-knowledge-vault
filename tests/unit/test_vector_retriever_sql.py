@@ -13,8 +13,10 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 import pytest
+import numpy as np
 from src.storage.markdown_store import MarkdownStore, Entry
 from src.storage.sqlite_store import SQLiteStore
+from src.storage.vector_store import VectorStore
 
 
 def test_vector_retriever_metadata_query():
@@ -155,3 +157,67 @@ def test_vector_retriever_get_metadata():
     # Cleanup
     import shutil
     shutil.rmtree(temp_dir)
+
+
+def test_vector_retriever_search_chunks_returns_chunk_metadata():
+    """search_chunks should map vector hits back to chunk rows."""
+    import tempfile
+    from unittest.mock import Mock
+    from src.retrieval.vector_retriever import VectorRetriever
+
+    temp_dir = Path(tempfile.mkdtemp())
+    db_path = temp_dir / "test.db"
+    vault_dir = temp_dir / "vault"
+    vector_dir = temp_dir / "vectors"
+    vault_dir.mkdir()
+    vector_dir.mkdir()
+
+    md_store = MarkdownStore(vault_dir)
+    sql_store = SQLiteStore(db_path)
+    sql_store.initialize()
+
+    entry = Entry(
+        title="Chunk 检索测试",
+        content="# Chunk 检索测试\n\n第一段\n\n第二段",
+        abstract="测试摘要",
+        summary_one_sentence="测试一句话摘要",
+        summary_100_words="测试百字摘要",
+        tags=["chunk", "测试"],
+        keywords="chunk,测试",
+        source_type="generic",
+        source_url="https://example.com/chunk-search",
+    )
+
+    file_path = md_store.save(entry)
+    knowledge_id = sql_store.insert_entry(entry, str(file_path))
+    sql_store.insert_chunks(knowledge_id, ["第一段", "第二段"])
+
+    vector_store = VectorStore(vector_dir)
+    vector_store.add_chunk_vector(knowledge_id, 0, np.ones(1536, dtype="float32"))
+
+    mock_embedder = Mock()
+    mock_embedder.embed_document.return_value = np.ones(1536, dtype="float32")
+
+    retriever = VectorRetriever(db_path, vector_dir, mock_embedder)
+    results = retriever.search_chunks("第一段", limit=3)
+
+    assert len(results) == 1
+    assert results[0].knowledge_id == knowledge_id
+    assert results[0].metadata["chunk_index"] == 0
+    assert results[0].metadata["chunk_text"] == "第一段"
+    assert results[0].highlight == "第一段"
+
+    import shutil
+    shutil.rmtree(temp_dir)
+
+
+def test_vector_store_rejects_chunk_index_overflow(tmp_path: Path):
+    """chunk_index beyond encoding range should raise ValueError."""
+    vector_store = VectorStore(tmp_path / "vectors")
+
+    with pytest.raises(ValueError, match="chunk_index 超出编码范围"):
+        vector_store.add_chunk_vector(
+            knowledge_id=1,
+            chunk_index=VectorStore.MAX_CHUNK_INDEX + 1,
+            vector=np.zeros(1536, dtype="float32"),
+        )

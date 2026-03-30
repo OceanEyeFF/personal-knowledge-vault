@@ -99,6 +99,66 @@ class VectorRetriever:
             logger.error(f"向量检索失败: {e}", exc_info=True)
             return []
 
+    def search_chunks(self, query: str, limit: int = 10) -> List[SearchResult]:
+        """
+        执行 chunk 级向量检索。
+
+        Args:
+            query: 查询文本
+            limit: 返回结果数量
+
+        Returns:
+            chunk 级搜索结果列表，元数据中包含 chunk_index/chunk_text 等字段
+        """
+        if not query or not query.strip():
+            logger.debug("查询文本为空，返回空 chunk 结果")
+            return []
+
+        try:
+            query_vector = self.embedder.embed_document(query)
+            if query_vector is None:
+                logger.error("查询文本向量化失败")
+                return []
+
+            vector_results = self.vector_store.search_chunk(query_vector, k=limit)
+            if not vector_results:
+                logger.info("chunk 向量检索无结果")
+                return []
+
+            results = []
+            for rank, (knowledge_id, chunk_index, distance) in enumerate(
+                vector_results, start=1
+            ):
+                metadata_dict = self._get_chunk_metadata(knowledge_id, chunk_index)
+                if not metadata_dict:
+                    logger.warning(
+                        "chunk 向量检索结果缺少元数据: "
+                        f"knowledge_id={knowledge_id}, chunk_index={chunk_index}"
+                    )
+                    continue
+
+                score = self._distance_to_score(distance)
+                metadata = dict(metadata_dict)
+                metadata["vector_distance"] = float(distance)
+                metadata["vector_rank"] = rank
+
+                results.append(
+                    SearchResult(
+                        knowledge_id=knowledge_id,
+                        title=metadata_dict.get("title", f"条目 {knowledge_id}"),
+                        score=score,
+                        highlight=metadata_dict.get("chunk_text", "")[:200],
+                        metadata=metadata,
+                    )
+                )
+
+            logger.info(f"chunk 向量检索完成: 查询='{query[:50]}...', 结果数={len(results)}")
+            return results
+
+        except Exception as e:
+            logger.error(f"chunk 向量检索失败: {e}", exc_info=True)
+            return []
+
     def _get_metadata(self, knowledge_id: int) -> dict:
         """
         从数据库获取知识条目元数据
@@ -149,6 +209,70 @@ class VectorRetriever:
                 }
         except Exception as e:
             logger.error(f"获取元数据失败: knowledge_id={knowledge_id}, {e}")
+            return {}
+
+    def _get_chunk_metadata(self, knowledge_id: int, chunk_index: int) -> dict:
+        """
+        从数据库获取 chunk 元数据。
+
+        Args:
+            knowledge_id: 知识条目 ID
+            chunk_index: 分块序号
+
+        Returns:
+            元数据字典
+        """
+        try:
+            with self.store.get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT
+                        ki.knowledge_id,
+                        ki.title,
+                        ki.summary_one_sentence,
+                        ki.summary_100_words,
+                        ki.source_type,
+                        ki.source_url,
+                        ki.tags,
+                        ki.keywords,
+                        ki.file_path,
+                        ki.archived_at,
+                        ki.updated_at,
+                        cc.chunk_id,
+                        cc.chunk_index,
+                        cc.chunk_text
+                    FROM knowledge_items ki
+                    JOIN content_chunks cc
+                      ON ki.knowledge_id = cc.knowledge_id
+                    WHERE ki.knowledge_id = ? AND cc.chunk_index = ?
+                    """,
+                    (knowledge_id, chunk_index),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return {}
+
+                return {
+                    "knowledge_id": row["knowledge_id"],
+                    "title": row["title"],
+                    "summary_one_sentence": row["summary_one_sentence"],
+                    "summary_100_words": row["summary_100_words"],
+                    "source_type": row["source_type"],
+                    "source_url": row["source_url"],
+                    "tags": row["tags"],
+                    "keywords": row["keywords"],
+                    "file_path": row["file_path"],
+                    "archived_at": row["archived_at"],
+                    "updated_at": row["updated_at"],
+                    "chunk_id": row["chunk_id"],
+                    "chunk_index": row["chunk_index"],
+                    "chunk_text": row["chunk_text"],
+                }
+        except Exception as e:
+            logger.error(
+                "获取 chunk 元数据失败: "
+                f"knowledge_id={knowledge_id}, chunk_index={chunk_index}, {e}"
+            )
             return {}
 
     @staticmethod

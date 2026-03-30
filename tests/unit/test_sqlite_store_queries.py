@@ -182,3 +182,37 @@ def test_get_statistics(store_with_data: SQLiteStore) -> None:
 
     counts = {source_type: count for source_type, count in stats["by_source_type"]}
     assert counts == {"wechat": 1, "zhihu": 1, "generic": 1}
+
+
+def test_chunk_crud_roundtrip(store: SQLiteStore, tmp_path: Path) -> None:
+    """chunk CRUD should support insert, query, count and delete."""
+    entry = Entry(
+        title="Chunked Entry",
+        source_type="generic",
+        source_url="https://example.com/chunked",
+        tags=["chunk"],
+        keywords=["chunk"],
+        content="chunk content",
+    )
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    md_path = vault_dir / "chunked.md"
+    md_path.write_text("# Chunked Entry\n\nchunk content", encoding="utf-8")
+    knowledge_id = store.insert_entry(entry, str(md_path))
+
+    inserted_count = store.insert_chunks(knowledge_id, ["chunk a", "chunk b"])
+
+    assert inserted_count == 2
+    assert store.count_chunks(knowledge_id) == 2
+
+    chunks = store.get_chunks_by_knowledge_id(knowledge_id)
+    assert [chunk["chunk_index"] for chunk in chunks] == [0, 1]
+    assert [chunk["chunk_text"] for chunk in chunks] == ["chunk a", "chunk b"]
+
+    chunk = store.get_chunk_by_index(knowledge_id, 1)
+    assert chunk is not None
+    assert chunk["chunk_text"] == "chunk b"
+
+    deleted_count = store.delete_chunks_by_knowledge_id(knowledge_id)
+    assert deleted_count == 2
+    assert store.count_chunks(knowledge_id) == 0

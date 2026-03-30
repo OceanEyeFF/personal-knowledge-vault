@@ -342,6 +342,8 @@ async def test_store_step_with_dummy_vector(tmp_path: Path) -> None:
     assert Path(result["file_path"]).exists()
     assert vector_store.doc_calls
     assert vector_store.chunk_calls
+    chunk_rows = sqlite_store.get_chunks_by_knowledge_id(result["knowledge_id"])
+    assert [row["chunk_text"] for row in chunk_rows] == ["chunk1", "chunk2"]
 
 
 @pytest.mark.asyncio

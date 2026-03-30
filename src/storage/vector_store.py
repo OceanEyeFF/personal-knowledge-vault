@@ -18,6 +18,9 @@ logger = get_logger(__name__)
 class VectorStore:
     """hnswlib 向量索引管理器"""
 
+    CHUNK_ID_STRIDE = 10000
+    MAX_CHUNK_INDEX = CHUNK_ID_STRIDE - 1
+
     def __init__(self, index_dir: Path, dim: int = 1536):
         """
         初始化向量索引
@@ -171,8 +174,7 @@ class VectorStore:
         if vector.dtype != np.float32:
             vector = vector.astype('float32')
 
-        # 生成唯一 ID: knowledge_id * 10000 + chunk_index
-        hnswlib_id = knowledge_id * 10000 + chunk_index
+        hnswlib_id = self.encode_chunk_id(knowledge_id, chunk_index)
 
         # 确保容量充足
         self._ensure_capacity(self.chunk_index)
@@ -187,6 +189,28 @@ class VectorStore:
         self._save_index("chunk_vectors")
 
         logger.info(f"添加分块向量: knowledge_id={knowledge_id}, chunk_index={chunk_index}")
+
+    @classmethod
+    def encode_chunk_id(cls, knowledge_id: int, chunk_index: int) -> int:
+        """将 (knowledge_id, chunk_index) 编码为 hnswlib label。"""
+        if knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+        if chunk_index < 0:
+            raise ValueError("chunk_index 不能为负数")
+        if chunk_index > cls.MAX_CHUNK_INDEX:
+            raise ValueError(
+                f"chunk_index 超出编码范围: {chunk_index} > {cls.MAX_CHUNK_INDEX}"
+            )
+        return knowledge_id * cls.CHUNK_ID_STRIDE + chunk_index
+
+    @classmethod
+    def decode_chunk_id(cls, hnswlib_id: int) -> Tuple[int, int]:
+        """将 hnswlib label 解码为 (knowledge_id, chunk_index)。"""
+        if hnswlib_id < 0:
+            raise ValueError("hnswlib_id 不能为负数")
+        knowledge_id = hnswlib_id // cls.CHUNK_ID_STRIDE
+        chunk_index = hnswlib_id % cls.CHUNK_ID_STRIDE
+        return knowledge_id, chunk_index
 
     def get_doc_vector(self, knowledge_id: int) -> Optional[np.ndarray]:
         """
@@ -234,17 +258,19 @@ class VectorStore:
             logger.debug(f"文档向量不存在: knowledge_id={knowledge_id}")
 
         # 2. 删除分块级向量
-        # 分块 ID 编码: knowledge_id * 10000 + chunk_index
-        # 尝试删除 chunk_index 0~99（覆盖绝大多数场景）
-        for chunk_index in range(100):
-            hnswlib_id = knowledge_id * 10000 + chunk_index
+        metadata = self._load_metadata("chunk_vectors")
+        chunk_ids = [
+            int(hnswlib_id)
+            for hnswlib_id, mapping in metadata.get("id_mapping", {}).items()
+            if mapping[0] == knowledge_id
+        ]
+
+        for hnswlib_id in chunk_ids:
             try:
                 self.chunk_index.mark_deleted(hnswlib_id)
                 stats["chunks_deleted"] += 1
             except RuntimeError:
-                # 该 chunk_index 不存在，后续大概率也不存在
-                if chunk_index > 0:
-                    break
+                logger.debug(f"分块向量不存在: hnswlib_id={hnswlib_id}")
 
         if stats["chunks_deleted"] > 0:
             self._save_index("chunk_vectors")
@@ -270,7 +296,12 @@ class VectorStore:
         if query_vector.dtype != np.float32:
             query_vector = query_vector.astype('float32')
 
-        labels, distances = self.doc_index.knn_query(query_vector.reshape(1, -1), k=k)
+        current_count = self.doc_index.get_current_count()
+        if current_count <= 0:
+            return []
+
+        k_safe = min(k, current_count)
+        labels, distances = self.doc_index.knn_query(query_vector.reshape(1, -1), k=k_safe)
         return [(int(label), float(dist)) for label, dist in zip(labels[0], distances[0])]
 
     def search_chunk(self, query_vector: np.ndarray, k: int = 10) -> List[Tuple[int, int, float]]:
@@ -288,14 +319,18 @@ class VectorStore:
         if query_vector.dtype != np.float32:
             query_vector = query_vector.astype('float32')
 
-        labels, distances = self.chunk_index.knn_query(query_vector.reshape(1, -1), k=k)
+        current_count = self.chunk_index.get_current_count()
+        if current_count <= 0:
+            return []
+
+        k_safe = min(k, current_count)
+        labels, distances = self.chunk_index.knn_query(query_vector.reshape(1, -1), k=k_safe)
 
         # 从元数据中解析 (knowledge_id, chunk_index)
         results = []
         for label, dist in zip(labels[0], distances[0]):
             hnswlib_id = int(label)
-            knowledge_id = hnswlib_id // 10000
-            chunk_index = hnswlib_id % 10000
+            knowledge_id, chunk_index = self.decode_chunk_id(hnswlib_id)
             results.append((knowledge_id, chunk_index, float(dist)))
 
         return results

@@ -337,6 +337,119 @@ class SQLiteStore:
                 (knowledge_id, tag_id)
             )
 
+    def insert_chunks(self, knowledge_id: int, chunks: List[str]) -> int:
+        """为知识条目插入分块文本。
+
+        Args:
+            knowledge_id: 知识条目 ID
+            chunks: 分块文本列表
+
+        Returns:
+            实际插入的分块数量
+        """
+        if knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+        if not chunks:
+            return 0
+
+        chunk_rows = []
+        for chunk_index, chunk_text in enumerate(chunks):
+            chunk_text_clean = (chunk_text or "").strip()
+            if not chunk_text_clean:
+                continue
+            chunk_rows.append((knowledge_id, chunk_index, chunk_text_clean))
+
+        if not chunk_rows:
+            return 0
+
+        with self.get_connection() as conn:
+            conn.executemany(
+                """
+                INSERT INTO content_chunks (
+                    knowledge_id, chunk_index, chunk_text
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(knowledge_id, chunk_index) DO UPDATE SET
+                    chunk_text = excluded.chunk_text
+                """,
+                chunk_rows,
+            )
+
+        logger.info(
+            f"插入内容分块: knowledge_id={knowledge_id}, count={len(chunk_rows)}"
+        )
+        return len(chunk_rows)
+
+    def get_chunks_by_knowledge_id(self, knowledge_id: int) -> List[Dict[str, Any]]:
+        """获取条目对应的全部分块。"""
+        if knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT chunk_id, knowledge_id, chunk_index, chunk_text,
+                       context_before, context_after, section_title, created_at
+                FROM content_chunks
+                WHERE knowledge_id = ?
+                ORDER BY chunk_index ASC
+                """,
+                (knowledge_id,),
+            )
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    def get_chunk_by_index(
+        self, knowledge_id: int, chunk_index: int
+    ) -> Optional[Dict[str, Any]]:
+        """按 knowledge_id 与 chunk_index 查询单个分块。"""
+        if knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+        if chunk_index < 0:
+            raise ValueError("chunk_index 不能为负数")
+
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT chunk_id, knowledge_id, chunk_index, chunk_text,
+                       context_before, context_after, section_title, created_at
+                FROM content_chunks
+                WHERE knowledge_id = ? AND chunk_index = ?
+                """,
+                (knowledge_id, chunk_index),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def delete_chunks_by_knowledge_id(self, knowledge_id: int) -> int:
+        """删除条目对应的全部分块。"""
+        if knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM content_chunks WHERE knowledge_id = ?",
+                (knowledge_id,),
+            )
+            deleted_count = cursor.rowcount
+
+        logger.info(f"删除内容分块: knowledge_id={knowledge_id}, count={deleted_count}")
+        return deleted_count
+
+    def count_chunks(self, knowledge_id: Optional[int] = None) -> int:
+        """统计分块数量。"""
+        with self.get_connection() as conn:
+            if knowledge_id is None:
+                cursor = conn.execute("SELECT COUNT(*) AS cnt FROM content_chunks")
+            else:
+                if knowledge_id <= 0:
+                    raise ValueError("knowledge_id 必须为正整数")
+                cursor = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM content_chunks WHERE knowledge_id = ?",
+                    (knowledge_id,),
+                )
+            row = cursor.fetchone()
+            return int(row["cnt"]) if row else 0
+
     def query_by_id(self, knowledge_id: int) -> Optional[Dict[str, Any]]:
         """
         根据 ID 查询知识条目

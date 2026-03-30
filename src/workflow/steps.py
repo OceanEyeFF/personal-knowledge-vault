@@ -388,13 +388,15 @@ class StoreStep(BaseStep):
                         index_dir=config.vector_index_dir,
                         dim=config.embedding_dim,
                     )
+                    sqlite_store = self._sqlite_store or SQLiteStore(config.db_path)
                     embedder = self._embedder or Embedder()
                     doc_vector = await asyncio.to_thread(embedder.embed_document, entry.content)
                     vector_store.add_doc_vector(knowledge_id, doc_vector)
 
-                    chunk_vectors, _ = await asyncio.to_thread(
+                    chunk_vectors, chunks = await asyncio.to_thread(
                         embedder.embed_chunks, entry.content, True
                     )
+                    sqlite_store.insert_chunks(knowledge_id, chunks or [])
                     for idx, vector in enumerate(chunk_vectors):
                         vector_store.add_chunk_vector(knowledge_id, idx, vector)
                 except Exception as e:
