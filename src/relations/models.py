@@ -10,6 +10,14 @@ from enum import Enum
 from typing import Any, Dict, Iterable, Optional
 
 
+PHASE_B_SCHEMA_VERSION = "phase_b.v1"
+PHASE_B_BASELINE_IMPLEMENTATION_LEVEL = "baseline"
+
+
+def _clamp_score(value: float) -> float:
+    return round(min(max(float(value), 0.0), 1.0), 4)
+
+
 class RelationType(str, Enum):
     """第一版低歧义关系类型。"""
 
@@ -196,6 +204,9 @@ class RelationSubgraphResult:
     edges: list[RelationRecord]
     grouped_edges: Dict[str, list[RelationRecord]] = field(default_factory=dict)
     truncated: bool = False
+    schema_version: str = PHASE_B_SCHEMA_VERSION
+    implementation_level: str = PHASE_B_BASELINE_IMPLEMENTATION_LEVEL
+    limitation_notes: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.seed_knowledge_id <= 0:
@@ -241,6 +252,9 @@ class RelationExplanationResult:
     intermediate_knowledge_ids: list[int] = field(default_factory=list)
     summary: str = ""
     evidence_items: list[Dict[str, Any]] = field(default_factory=list)
+    schema_version: str = PHASE_B_SCHEMA_VERSION
+    implementation_level: str = PHASE_B_BASELINE_IMPLEMENTATION_LEVEL
+    limitation_notes: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.source_knowledge_id <= 0 or self.target_knowledge_id <= 0:
@@ -280,8 +294,15 @@ class CollectedEvidenceItem:
     source_url: str = ""
     file_path: str = ""
     content_preview: str = ""
+    chunk_id: Optional[int] = None
+    chunk_index: Optional[int] = None
+    chunk_text: str = ""
     retrieval_rank: int = 1
     retrieval_score: float = 0.0
+    ranking_score: float = 0.0
+    coverage_score: float = 0.0
+    freshness_score: float = 0.0
+    relation_score: float = 0.0
     is_seed: bool = False
     relation_found: bool = False
     relation_explanation_type: str = ""
@@ -297,6 +318,14 @@ class CollectedEvidenceItem:
             raise ValueError("retrieval_rank 必须为正整数")
         if not (0.0 <= self.retrieval_score <= 1.0):
             raise ValueError("retrieval_score 必须在 [0.0, 1.0] 范围内")
+        if not (0.0 <= self.ranking_score <= 1.0):
+            raise ValueError("ranking_score 必须在 [0.0, 1.0] 范围内")
+        if not (0.0 <= self.coverage_score <= 1.0):
+            raise ValueError("coverage_score 必须在 [0.0, 1.0] 范围内")
+        if not (0.0 <= self.freshness_score <= 1.0):
+            raise ValueError("freshness_score 必须在 [0.0, 1.0] 范围内")
+        if not (0.0 <= self.relation_score <= 1.0):
+            raise ValueError("relation_score 必须在 [0.0, 1.0] 范围内")
         if self.relation_hops < 0:
             raise ValueError("relation_hops 不能为负数")
 
@@ -311,8 +340,15 @@ class CollectedEvidenceItem:
             "source_url": self.source_url,
             "file_path": self.file_path,
             "content_preview": self.content_preview,
+            "chunk_id": self.chunk_id,
+            "chunk_index": self.chunk_index,
+            "chunk_text": self.chunk_text,
             "retrieval_rank": self.retrieval_rank,
             "retrieval_score": self.retrieval_score,
+            "ranking_score": self.ranking_score,
+            "coverage_score": self.coverage_score,
+            "freshness_score": self.freshness_score,
+            "relation_score": self.relation_score,
             "is_seed": self.is_seed,
             "relation_found": self.relation_found,
             "relation_explanation_type": self.relation_explanation_type,
@@ -335,6 +371,9 @@ class CollectedEvidenceResult:
     seed_title: str = ""
     evidence: list[CollectedEvidenceItem] = field(default_factory=list)
     summary: str = ""
+    schema_version: str = PHASE_B_SCHEMA_VERSION
+    implementation_level: str = PHASE_B_BASELINE_IMPLEMENTATION_LEVEL
+    limitation_notes: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.question or not self.question.strip():
@@ -350,14 +389,42 @@ class CollectedEvidenceResult:
     def related_evidence_count(self) -> int:
         return sum(1 for item in self.evidence if item.relation_found)
 
+    @property
+    def evidence_count(self) -> int:
+        return self.total_evidence
+
+    @property
+    def confidence(self) -> float:
+        if not self.evidence:
+            return 0.0
+        scores = [
+            item.ranking_score if item.ranking_score > 0 else item.retrieval_score
+            for item in self.evidence
+        ]
+        return _clamp_score(sum(scores) / len(scores))
+
+    @property
+    def coverage(self) -> float:
+        if not self.evidence:
+            return 0.0
+        avg_coverage = sum(item.coverage_score for item in self.evidence) / len(self.evidence)
+        relation_ratio = self.related_evidence_count / len(self.evidence)
+        return _clamp_score(max(avg_coverage, relation_ratio))
+
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
+            "implementation_level": self.implementation_level,
+            "limitation_notes": list(self.limitation_notes),
             "question": self.question,
             "found": self.found,
             "seed_knowledge_id": self.seed_knowledge_id,
             "seed_title": self.seed_title,
             "total_evidence": self.total_evidence,
             "related_evidence_count": self.related_evidence_count,
+            "evidence_count": self.evidence_count,
+            "confidence": self.confidence,
+            "coverage": self.coverage,
             "summary": self.summary,
             "evidence": [item.to_dict() for item in self.evidence],
         }
@@ -404,7 +471,9 @@ class BridgeDiscoveryResult:
     max_depth: int
     items: list[BridgeCandidate] = field(default_factory=list)
     summary: str = ""
+    schema_version: str = PHASE_B_SCHEMA_VERSION
     implementation_level: str = "partial"
+    evidence_sources: list[str] = field(default_factory=list)
     limitation_notes: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -467,9 +536,12 @@ class TimelineResult:
     topic: str
     found: bool
     inferred_time_field: str = "archived_at"
+    time_source_priority: list[str] = field(default_factory=list)
     items: list[TimelinePoint] = field(default_factory=list)
     summary: str = ""
+    schema_version: str = PHASE_B_SCHEMA_VERSION
     implementation_level: str = "partial"
+    evidence_sources: list[str] = field(default_factory=list)
     limitation_notes: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -532,12 +604,15 @@ class ContrastResult:
     found: bool
     topic_a_candidates: list[ContrastCandidateItem] = field(default_factory=list)
     topic_b_candidates: list[ContrastCandidateItem] = field(default_factory=list)
+    comparison_dimensions: Dict[str, Any] = field(default_factory=dict)
     shared_tags: list[str] = field(default_factory=list)
     only_a_tags: list[str] = field(default_factory=list)
     only_b_tags: list[str] = field(default_factory=list)
     overlap_knowledge_ids: list[int] = field(default_factory=list)
     summary: str = ""
+    schema_version: str = PHASE_B_SCHEMA_VERSION
     implementation_level: str = "partial"
+    evidence_sources: list[str] = field(default_factory=list)
     limitation_notes: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:

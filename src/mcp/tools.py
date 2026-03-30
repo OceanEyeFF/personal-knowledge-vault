@@ -604,6 +604,7 @@ async def collect_evidence(
     question: str,
     top_k: int = 5,
     relation_max_depth: int = 2,
+    include_chunks: bool = False,
 ) -> dict:
     """围绕问题聚合最小证据包。
 
@@ -611,6 +612,7 @@ async def collect_evidence(
         question: 待回答的问题或主题
         top_k: 最多聚合的证据条目数，默认 5，最大 10
         relation_max_depth: 与种子条目解释关系时允许的最大跳数，默认 2，最大 4
+        include_chunks: 是否显式返回 chunk 级证据字段，默认 False
 
     Returns:
         证据聚合结果，包含 seed、summary 和 evidence[] 等字段
@@ -629,6 +631,7 @@ async def collect_evidence(
                 question=question,
                 top_k=top_k_safe,
                 relation_max_depth=relation_max_depth_safe,
+                include_chunks=bool(include_chunks),
             )
         except ValueError as e:
             return {"error": str(e)}
