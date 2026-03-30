@@ -722,6 +722,11 @@ class TestQuerySubgraph:
 
         assert result["seed_knowledge_id"] == 1
         assert result["total_nodes"] == 2
+        assert result["schema_version"] == "phase_b.v1"
+        assert result["implementation_level"] == "baseline"
+        assert result["evidence_count"] == 1
+        assert "confidence" in result
+        assert "coverage" in result
         assert result["grouped_edges"][RelationType.REFERENCES.value][0]["target_knowledge_id"] == 2
         mock_service.query_subgraph.assert_called_once()
 
@@ -784,6 +789,11 @@ class TestExplainRelation:
 
         assert result["found"] is True
         assert result["explanation_type"] == "direct"
+        assert result["schema_version"] == "phase_b.v1"
+        assert result["implementation_level"] == "baseline"
+        assert result["evidence_count"] == 1
+        assert result["confidence"] == 0.9
+        assert result["coverage"] == 1.0
         assert result["summary"] == "1 -[related_document]-> 2"
         mock_service.explain_relation.assert_called_once()
 
@@ -965,7 +975,14 @@ class TestFindBridges:
 
         assert result["found"] is True
         assert result["total_bridges"] == 1
+        assert result["schema_version"] == "phase_b.v1"
         assert result["implementation_level"] == "partial"
+        assert result["evidence_count"] == 1
+        assert "confidence" in result
+        assert "coverage" in result
+        assert "evidence_sources" in result
+        assert "structural_bridge_score" in result["items"][0]
+        assert "semantic_bridge_score" in result["items"][0]
         mock_service.find_bridges.assert_called_once()
 
 
@@ -1008,7 +1025,14 @@ class TestTimelineOf:
 
         assert result["found"] is True
         assert result["total_points"] == 1
+        assert result["schema_version"] == "phase_b.v1"
         assert result["implementation_level"] == "partial"
+        assert result["evidence_count"] == 1
+        assert "confidence" in result
+        assert "coverage" in result
+        assert "evidence_sources" in result
+        assert "time_source_priority" in result
+        assert "time_source" in result["items"][0]
         mock_service.timeline_of.assert_called_once()
 
 
@@ -1066,6 +1090,12 @@ class TestContrast:
             result = await contrast(topic_a="Topic A", topic_b="Topic B", top_k=5)
 
         assert result["found"] is True
+        assert result["schema_version"] == "phase_b.v1"
         assert result["implementation_level"] == "partial"
+        assert result["evidence_count"] == 2
+        assert "confidence" in result
+        assert "coverage" in result
+        assert "evidence_sources" in result
+        assert "comparison_dimensions" in result
         assert result["shared_tags"] == ["共同"]
         mock_service.contrast.assert_called_once()

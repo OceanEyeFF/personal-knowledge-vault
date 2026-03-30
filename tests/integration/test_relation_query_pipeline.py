@@ -313,10 +313,18 @@ def test_exploration_service_can_find_partial_bridge_candidates(
 
     assert result.found is True
     assert result.implementation_level == "partial"
+    assert result.schema_version == "phase_b.v1"
+    assert result.evidence_sources == [
+        "relation_subgraph",
+        "entry_tags",
+        "entry_title_summary",
+    ]
     assert [item.knowledge_id for item in result.items] == [relation_pipeline_env["gamma_id"]]
     assert result.items[0].connected_knowledge_ids == sorted(
         [relation_pipeline_env["alpha_id"], relation_pipeline_env["delta_id"]]
     )
+    assert result.items[0].structural_bridge_score > 0
+    assert result.items[0].semantic_bridge_score > 0
 
 
 def test_exploration_service_can_build_partial_timeline(relation_pipeline_env):
@@ -353,10 +361,13 @@ def test_exploration_service_can_build_partial_timeline(relation_pipeline_env):
 
     assert result.found is True
     assert result.implementation_level == "partial"
+    assert result.schema_version == "phase_b.v1"
     assert [item.knowledge_id for item in result.items] == [
         relation_pipeline_env["alpha_id"],
         relation_pipeline_env["beta_id"],
     ]
+    assert result.time_source_priority == ["event_time", "published_at", "archived_at"]
+    assert all(item.time_source == "archived_at" for item in result.items)
 
 
 def test_exploration_service_can_build_partial_contrast(relation_pipeline_env):
@@ -428,7 +439,278 @@ def test_exploration_service_can_build_partial_contrast(relation_pipeline_env):
 
     assert result.found is True
     assert result.implementation_level == "partial"
+    assert result.schema_version == "phase_b.v1"
     assert result.shared_tags == ["共同", "桥接"]
     assert result.only_a_tags == ["测试"]
     assert result.only_b_tags == ["终点"]
     assert result.overlap_knowledge_ids == [relation_pipeline_env["gamma_id"]]
+    assert result.comparison_dimensions["shared_tags_count"] == 2
+    assert result.evidence_sources == [
+        "query_results",
+        "entry_tags",
+        "entry_summary",
+    ]
+
+
+def test_phase_b_5_4_min_regression_dataset_is_executable(relation_pipeline_env):
+    backfill_service = RelationBackfillService(
+        db_path=relation_pipeline_env["db_path"],
+        vault_dir=relation_pipeline_env["vault_dir"],
+    )
+    relation_store = RelationStore(relation_pipeline_env["db_path"])
+    query_service = RelationQueryService(relation_store)
+
+    for case in _load_regression_cases():
+        action = case["action"]
+        expect = case["expect"]
+
+        if action == "backfill":
+            result = backfill_service.backfill(apply=case["args"]["apply"])
+            assert result.applied_relations == expect["applied_relations"], case["case_id"]
+            assert result.extracted_relations == expect["extracted_relations"], case["case_id"]
+            assert result.total_references == expect["total_references"], case["case_id"]
+            assert result.coverage_rate == expect["coverage_rate"], case["case_id"]
+            assert result.noise_rate == expect["noise_rate"], case["case_id"]
+            assert result.conflict_rate == expect["conflict_rate"], case["case_id"]
+            continue
+
+        if action == "list_relations":
+            result = query_service.list_relations(
+                seed_knowledge_id=relation_pipeline_env[case["args"]["seed_key"]],
+                direction=RelationQueryDirection(case["args"]["direction"]),
+            )
+            assert result.total == expect["total"], case["case_id"]
+            assert list(result.grouped_items.keys()) == expect["grouped_keys"], case["case_id"]
+            continue
+
+        if action == "relations_between":
+            result = query_service.get_relations_between(
+                relation_pipeline_env[case["args"]["source_key"]],
+                relation_pipeline_env[case["args"]["target_key"]],
+            )
+            assert result.total == expect["total"], case["case_id"]
+            assert list(result.grouped_items.keys()) == expect["grouped_keys"], case["case_id"]
+            continue
+
+        if action == "query_subgraph":
+            result = query_service.query_subgraph(
+                seed_knowledge_id=relation_pipeline_env[case["args"]["seed_key"]],
+                depth=case["args"]["depth"],
+            )
+            assert [node.knowledge_id for node in result.nodes] == _resolve_knowledge_ids(
+                relation_pipeline_env,
+                expect["node_keys"],
+            ), case["case_id"]
+            assert result.total_edges == expect["total_edges"], case["case_id"]
+            continue
+
+        if action == "explain_relation":
+            result = query_service.explain_relation(
+                relation_pipeline_env[case["args"]["source_key"]],
+                relation_pipeline_env[case["args"]["target_key"]],
+                max_depth=case["args"]["max_depth"],
+            )
+            assert result.found is expect["found"], case["case_id"]
+            assert result.explanation_type == expect["explanation_type"], case["case_id"]
+            assert result.hops == expect["hops"], case["case_id"]
+            assert result.intermediate_knowledge_ids == _resolve_knowledge_ids(
+                relation_pipeline_env,
+                expect["intermediate_keys"],
+            ), case["case_id"]
+            continue
+
+        if action == "collect_evidence":
+            evidence_service = EvidenceCollectionService(
+                query_router=StubQueryRouter(
+                    [
+                        SearchResult(
+                            knowledge_id=relation_pipeline_env["alpha_id"],
+                            title="Alpha",
+                            score=0.95,
+                            highlight="Alpha 摘要",
+                            metadata={"source_type": "generic", "tags": "测试"},
+                        ),
+                        SearchResult(
+                            knowledge_id=relation_pipeline_env["delta_id"],
+                            title="Delta",
+                            score=0.88,
+                            highlight="Delta 摘要",
+                            metadata={"source_type": "generic", "tags": "测试"},
+                        ),
+                    ]
+                ),
+                sqlite_store=SQLiteStore(relation_pipeline_env["db_path"]),
+                markdown_store=MarkdownStore(relation_pipeline_env["vault_dir"]),
+                relation_query_service=query_service,
+            )
+            result = evidence_service.collect_evidence(
+                question=case["args"]["question"],
+                top_k=case["args"]["top_k"],
+                relation_max_depth=case["args"]["relation_max_depth"],
+            )
+            assert result.found is expect["found"], case["case_id"]
+            assert result.total_evidence == expect["total_evidence"], case["case_id"]
+            assert result.related_evidence_count == expect["related_evidence_count"], case["case_id"]
+            assert result.seed_knowledge_id == relation_pipeline_env[expect["seed_key"]], case["case_id"]
+            assert result.evidence[1].knowledge_id == relation_pipeline_env[expect["related_key"]], case["case_id"]
+            assert result.evidence[1].relation_hops == expect["relation_hops"], case["case_id"]
+            continue
+
+        if action == "find_bridges":
+            exploration_service = ExplorationService(
+                query_router=StubQueryRouter([]),
+                sqlite_store=SQLiteStore(relation_pipeline_env["db_path"]),
+                relation_query_service=query_service,
+            )
+            result = exploration_service.find_bridges(
+                seed_knowledge_id=relation_pipeline_env[case["args"]["seed_key"]],
+                top_k=case["args"]["top_k"],
+                max_depth=case["args"]["max_depth"],
+            )
+            assert result.found is expect["found"], case["case_id"]
+            assert result.implementation_level == expect["implementation_level"], case["case_id"]
+            assert [item.knowledge_id for item in result.items] == _resolve_knowledge_ids(
+                relation_pipeline_env,
+                expect["item_keys"],
+            ), case["case_id"]
+            continue
+
+        if action == "timeline_of":
+            exploration_service = ExplorationService(
+                query_router=StubQueryRouter(
+                    [
+                        SearchResult(
+                            knowledge_id=relation_pipeline_env["beta_id"],
+                            title="Beta",
+                            score=0.85,
+                            highlight="Beta 摘要",
+                            metadata={"source_type": "generic", "tags": "测试"},
+                        ),
+                        SearchResult(
+                            knowledge_id=relation_pipeline_env["alpha_id"],
+                            title="Alpha",
+                            score=0.92,
+                            highlight="Alpha 摘要",
+                            metadata={"source_type": "generic", "tags": "测试"},
+                        ),
+                    ]
+                ),
+                sqlite_store=SQLiteStore(relation_pipeline_env["db_path"]),
+                relation_query_service=query_service,
+            )
+            result = exploration_service.timeline_of(
+                topic=case["args"]["topic"],
+                top_k=case["args"]["top_k"],
+                sort_order=case["args"]["sort_order"],
+            )
+            assert result.found is expect["found"], case["case_id"]
+            assert result.implementation_level == expect["implementation_level"], case["case_id"]
+            assert [item.knowledge_id for item in result.items] == _resolve_knowledge_ids(
+                relation_pipeline_env,
+                expect["item_keys"],
+            ), case["case_id"]
+            assert result.time_source_priority == expect["time_source_priority"], case["case_id"]
+            continue
+
+        if action == "contrast":
+            conn = sqlite3.connect(str(relation_pipeline_env["db_path"]))
+            conn.execute(
+                "UPDATE knowledge_items SET tags = ? WHERE knowledge_id = ?",
+                ("测试,共同", relation_pipeline_env["alpha_id"]),
+            )
+            conn.execute(
+                "UPDATE knowledge_items SET tags = ? WHERE knowledge_id = ?",
+                ("桥接,共同", relation_pipeline_env["gamma_id"]),
+            )
+            conn.execute(
+                "UPDATE knowledge_items SET tags = ? WHERE knowledge_id = ?",
+                ("终点,共同", relation_pipeline_env["delta_id"]),
+            )
+            conn.commit()
+            conn.close()
+
+            class ContrastRouter:
+                def search(self, query: str, limit: int = 10):
+                    if query == "Topic A":
+                        return [
+                            SearchResult(
+                                knowledge_id=relation_pipeline_env["alpha_id"],
+                                title="Alpha",
+                                score=0.92,
+                                highlight="Alpha 摘要",
+                                metadata={"source_type": "generic", "tags": "测试,共同"},
+                            ),
+                            SearchResult(
+                                knowledge_id=relation_pipeline_env["gamma_id"],
+                                title="Gamma",
+                                score=0.78,
+                                highlight="Gamma 摘要",
+                                metadata={"source_type": "generic", "tags": "桥接,共同"},
+                            ),
+                        ]
+                    return [
+                        SearchResult(
+                            knowledge_id=relation_pipeline_env["delta_id"],
+                            title="Delta",
+                            score=0.88,
+                            highlight="Delta 摘要",
+                            metadata={"source_type": "generic", "tags": "终点,共同"},
+                        ),
+                        SearchResult(
+                            knowledge_id=relation_pipeline_env["gamma_id"],
+                            title="Gamma",
+                            score=0.75,
+                            highlight="Gamma 摘要",
+                            metadata={"source_type": "generic", "tags": "桥接,共同"},
+                        ),
+                    ]
+
+            exploration_service = ExplorationService(
+                query_router=ContrastRouter(),
+                sqlite_store=SQLiteStore(relation_pipeline_env["db_path"]),
+                relation_query_service=query_service,
+            )
+            result = exploration_service.contrast(
+                topic_a=case["args"]["topic_a"],
+                topic_b=case["args"]["topic_b"],
+                top_k=case["args"]["top_k"],
+            )
+            assert result.found is expect["found"], case["case_id"]
+            assert result.implementation_level == expect["implementation_level"], case["case_id"]
+            assert result.shared_tags == expect["shared_tags"], case["case_id"]
+            assert result.only_a_tags == expect["only_a_tags"], case["case_id"]
+            assert result.only_b_tags == expect["only_b_tags"], case["case_id"]
+            assert result.overlap_knowledge_ids == _resolve_knowledge_ids(
+                relation_pipeline_env,
+                expect["overlap_keys"],
+            ), case["case_id"]
+            continue
+
+        if action == "rerun_cleanup":
+            first_report = backfill_service.backfill(
+                knowledge_ids=[relation_pipeline_env[case["args"]["seed_key"]]],
+                apply=True,
+            )
+            alpha_path = relation_pipeline_env["vault_dir"] / "alpha.md"
+            alpha_path.write_text(
+                "---\n"
+                "title: Alpha\n"
+                "---\n"
+                "# Alpha\n\n正文已删除引用\n",
+                encoding="utf-8",
+            )
+            second_report = backfill_service.backfill(
+                knowledge_ids=[relation_pipeline_env[case["args"]["seed_key"]]],
+                apply=True,
+            )
+            rows = relation_store.list_relations_for_knowledge(
+                relation_pipeline_env[case["args"]["seed_key"]],
+                direction=RelationQueryDirection.OUTGOING,
+            )
+            assert first_report.applied_relations == expect["first_applied_relations"], case["case_id"]
+            assert second_report.deleted_relations == expect["deleted_relations"], case["case_id"]
+            assert second_report.applied_relations == expect["applied_relations"], case["case_id"]
+            assert rows == [], case["case_id"]
+            continue
+
+        raise AssertionError(f"未知回归样例 action: {action}")

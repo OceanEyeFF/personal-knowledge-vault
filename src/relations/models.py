@@ -222,12 +222,36 @@ class RelationSubgraphResult:
     def total_edges(self) -> int:
         return len(self.edges)
 
+    @property
+    def evidence_count(self) -> int:
+        return self.total_edges
+
+    @property
+    def confidence(self) -> float:
+        if self.total_edges <= 0:
+            return 0.0
+        base_score = 0.8
+        if self.truncated:
+            base_score -= 0.2
+        return _clamp_score(base_score)
+
+    @property
+    def coverage(self) -> float:
+        expected_depth_span = max(self.max_depth + 1, 1)
+        return _clamp_score(self.total_nodes / expected_depth_span)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
+            "implementation_level": self.implementation_level,
+            "limitation_notes": list(self.limitation_notes),
             "seed_knowledge_id": self.seed_knowledge_id,
             "max_depth": self.max_depth,
             "total_nodes": self.total_nodes,
             "total_edges": self.total_edges,
+            "evidence_count": self.evidence_count,
+            "confidence": self.confidence,
+            "coverage": self.coverage,
             "truncated": self.truncated,
             "nodes": [node.to_dict() for node in self.nodes],
             "edges": [edge.to_dict() for edge in self.edges],
@@ -264,13 +288,43 @@ class RelationExplanationResult:
         if self.hops < 0:
             raise ValueError("hops 不能为负数")
 
+    @property
+    def evidence_count(self) -> int:
+        return max(len(self.evidence_items), len(self.path), len(self.supporting_relations))
+
+    @property
+    def confidence(self) -> float:
+        if not self.found:
+            return 0.0
+        if self.hops <= 1:
+            return 0.9
+        if self.hops == 2:
+            return 0.75
+        return 0.6
+
+    @property
+    def coverage(self) -> float:
+        if not self.found:
+            return 0.0
+        if self.path:
+            return 1.0
+        if self.supporting_relations:
+            return 0.75
+        return 0.5
+
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
+            "implementation_level": self.implementation_level,
+            "limitation_notes": list(self.limitation_notes),
             "source_knowledge_id": self.source_knowledge_id,
             "target_knowledge_id": self.target_knowledge_id,
             "found": self.found,
             "explanation_type": self.explanation_type,
             "hops": self.hops,
+            "evidence_count": self.evidence_count,
+            "confidence": self.confidence,
+            "coverage": self.coverage,
             "path": [record.to_dict() for record in self.path],
             "supporting_relations": [
                 record.to_dict() for record in self.supporting_relations
@@ -438,6 +492,8 @@ class BridgeCandidate:
     title: str
     depth: int
     bridge_score: float
+    structural_bridge_score: float = 0.0
+    semantic_bridge_score: float = 0.0
     connected_knowledge_ids: list[int] = field(default_factory=list)
     relation_types: list[str] = field(default_factory=list)
     summary: str = ""
@@ -449,6 +505,10 @@ class BridgeCandidate:
             raise ValueError("depth 不能为负数")
         if self.bridge_score < 0:
             raise ValueError("bridge_score 不能为负数")
+        if not (0.0 <= self.structural_bridge_score <= 1.0):
+            raise ValueError("structural_bridge_score 必须在 [0.0, 1.0] 范围内")
+        if not (0.0 <= self.semantic_bridge_score <= 1.0):
+            raise ValueError("semantic_bridge_score 必须在 [0.0, 1.0] 范围内")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -456,6 +516,8 @@ class BridgeCandidate:
             "title": self.title,
             "depth": self.depth,
             "bridge_score": self.bridge_score,
+            "structural_bridge_score": self.structural_bridge_score,
+            "semantic_bridge_score": self.semantic_bridge_score,
             "connected_knowledge_ids": list(self.connected_knowledge_ids),
             "relation_types": list(self.relation_types),
             "summary": self.summary,
@@ -486,14 +548,36 @@ class BridgeDiscoveryResult:
     def total_bridges(self) -> int:
         return len(self.items)
 
+    @property
+    def evidence_count(self) -> int:
+        return self.total_bridges
+
+    @property
+    def confidence(self) -> float:
+        if not self.items:
+            return 0.0
+        avg_score = sum(min(item.bridge_score, 3.0) / 3.0 for item in self.items) / len(self.items)
+        return _clamp_score(avg_score * 0.8)
+
+    @property
+    def coverage(self) -> float:
+        if not self.items:
+            return 0.0
+        return _clamp_score(self.total_bridges / max(self.max_depth, 1))
+
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
             "seed_knowledge_id": self.seed_knowledge_id,
             "found": self.found,
             "max_depth": self.max_depth,
             "total_bridges": self.total_bridges,
+            "evidence_count": self.evidence_count,
+            "confidence": self.confidence,
+            "coverage": self.coverage,
             "summary": self.summary,
             "implementation_level": self.implementation_level,
+            "evidence_sources": list(self.evidence_sources),
             "limitation_notes": list(self.limitation_notes),
             "items": [item.to_dict() for item in self.items],
         }
@@ -506,6 +590,7 @@ class TimelinePoint:
     knowledge_id: int
     title: str
     archived_at: str = ""
+    time_source: str = "archived_at"
     source_type: str = ""
     abstract: str = ""
     tags: list[str] = field(default_factory=list)
@@ -522,6 +607,7 @@ class TimelinePoint:
             "knowledge_id": self.knowledge_id,
             "title": self.title,
             "archived_at": self.archived_at,
+            "time_source": self.time_source,
             "source_type": self.source_type,
             "abstract": self.abstract,
             "tags": list(self.tags),
@@ -552,14 +638,37 @@ class TimelineResult:
     def total_points(self) -> int:
         return len(self.items)
 
+    @property
+    def evidence_count(self) -> int:
+        return self.total_points
+
+    @property
+    def confidence(self) -> float:
+        if not self.items:
+            return 0.0
+        avg_score = sum(item.retrieval_score for item in self.items) / len(self.items)
+        return _clamp_score(avg_score * 0.85)
+
+    @property
+    def coverage(self) -> float:
+        if not self.items:
+            return 0.0
+        return _clamp_score(self.total_points / 5.0)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
             "topic": self.topic,
             "found": self.found,
             "inferred_time_field": self.inferred_time_field,
+            "time_source_priority": list(self.time_source_priority),
             "total_points": self.total_points,
+            "evidence_count": self.evidence_count,
+            "confidence": self.confidence,
+            "coverage": self.coverage,
             "summary": self.summary,
             "implementation_level": self.implementation_level,
+            "evidence_sources": list(self.evidence_sources),
             "limitation_notes": list(self.limitation_notes),
             "items": [item.to_dict() for item in self.items],
         }
@@ -621,14 +730,39 @@ class ContrastResult:
         if not self.topic_b or not self.topic_b.strip():
             raise ValueError("topic_b 不能为空")
 
+    @property
+    def evidence_count(self) -> int:
+        return len(self.topic_a_candidates) + len(self.topic_b_candidates)
+
+    @property
+    def confidence(self) -> float:
+        candidates = self.topic_a_candidates + self.topic_b_candidates
+        if not candidates:
+            return 0.0
+        avg_score = sum(item.retrieval_score for item in candidates) / len(candidates)
+        return _clamp_score(avg_score * 0.8)
+
+    @property
+    def coverage(self) -> float:
+        signal_count = len(self.shared_tags) + len(self.only_a_tags) + len(self.only_b_tags)
+        if signal_count <= 0:
+            return 0.0
+        return _clamp_score(signal_count / 4.0)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
             "topic_a": self.topic_a,
             "topic_b": self.topic_b,
             "found": self.found,
+            "evidence_count": self.evidence_count,
+            "confidence": self.confidence,
+            "coverage": self.coverage,
             "summary": self.summary,
             "implementation_level": self.implementation_level,
+            "evidence_sources": list(self.evidence_sources),
             "limitation_notes": list(self.limitation_notes),
+            "comparison_dimensions": dict(self.comparison_dimensions),
             "shared_tags": list(self.shared_tags),
             "only_a_tags": list(self.only_a_tags),
             "only_b_tags": list(self.only_b_tags),

@@ -874,7 +874,14 @@ class TestToolCallWriteSecurity:
         result = parse_tool_result(raw)
         assert result["found"] is True
         assert result["total_bridges"] == 1
+        assert result["schema_version"] == "phase_b.v1"
         assert result["implementation_level"] == "partial"
+        assert result["evidence_count"] == 1
+        assert "confidence" in result
+        assert "coverage" in result
+        assert "evidence_sources" in result
+        assert "structural_bridge_score" in result["items"][0]
+        assert "semantic_bridge_score" in result["items"][0]
 
     @pytest.mark.asyncio
     async def test_timeline_of_success(self):
@@ -907,7 +914,14 @@ class TestToolCallWriteSecurity:
         result = parse_tool_result(raw)
         assert result["found"] is True
         assert result["total_points"] == 1
+        assert result["schema_version"] == "phase_b.v1"
         assert result["implementation_level"] == "partial"
+        assert result["evidence_count"] == 1
+        assert "confidence" in result
+        assert "coverage" in result
+        assert "evidence_sources" in result
+        assert "time_source_priority" in result
+        assert "time_source" in result["items"][0]
 
     @pytest.mark.asyncio
     async def test_contrast_success(self):

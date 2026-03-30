@@ -173,9 +173,17 @@ def test_find_bridges_returns_middle_node(exploration_service):
 
     assert result.found is True
     assert result.implementation_level == "partial"
+    assert result.schema_version == "phase_b.v1"
+    assert result.evidence_sources == [
+        "relation_subgraph",
+        "entry_tags",
+        "entry_title_summary",
+    ]
     assert result.total_bridges == 1
     assert result.items[0].knowledge_id == 3
     assert result.items[0].connected_knowledge_ids == [1, 4]
+    assert result.items[0].structural_bridge_score > 0
+    assert result.items[0].semantic_bridge_score > 0
     assert result.limitation_notes
 
 
@@ -184,8 +192,11 @@ def test_timeline_of_sorts_by_archived_at(exploration_service):
 
     assert result.found is True
     assert result.implementation_level == "partial"
+    assert result.schema_version == "phase_b.v1"
+    assert result.time_source_priority == ["event_time", "published_at", "archived_at"]
     assert [item.knowledge_id for item in result.items] == [1, 2]
     assert result.inferred_time_field == "archived_at"
+    assert all(item.time_source == "archived_at" for item in result.items)
 
 
 def test_contrast_returns_shared_and_distinct_tags(exploration_service):
@@ -193,10 +204,18 @@ def test_contrast_returns_shared_and_distinct_tags(exploration_service):
 
     assert result.found is True
     assert result.implementation_level == "partial"
+    assert result.schema_version == "phase_b.v1"
     assert result.shared_tags == ["图谱", "桥接"]
     assert result.only_a_tags == ["AI"]
     assert result.only_b_tags == ["时间线"]
     assert result.overlap_knowledge_ids == [3]
+    assert result.evidence_sources == [
+        "query_results",
+        "entry_tags",
+        "entry_summary",
+    ]
+    assert result.comparison_dimensions["shared_tags_count"] == 2
+    assert result.comparison_dimensions["overlap_knowledge_count"] == 1
 
 
 def test_timeline_of_rejects_empty_topic(exploration_service):
