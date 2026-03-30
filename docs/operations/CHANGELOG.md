@@ -50,6 +50,12 @@
   - `scripts/migrate.py --health-check`
   - `MigrationManager.run_health_check()`
 
+- ✅ **Phase B 5.4 回填质量验证基线**
+  - `backfill_quality_report.v1`
+  - `scripts/backfill_relations.py` 质量门禁参数
+  - `tests/fixtures/phase_b_5_4_min_regression.yaml`
+  - `docs/operations/关系回填质量验证指南.md`
+
 ### 📝 变更
 
 - `004_add_chat_sessions.sql` 标准化为 `v1.1.1`
@@ -60,6 +66,8 @@
 - 当前已补上内部 `query_subgraph` 多跳子图遍历基础，并将 `query_subgraph` / `explain_relation` 暴露为最小推理型 MCP Tool，但仍未进行真实库正式回填执行
 - 当前已补上 `collect_evidence(question)` 文档级证据包聚合 v1，并将其接入只读 MCP Tool；当前版本仍不依赖 chunk 文本落库
 - 当前已补上 `find_bridges`、`timeline_of`、`contrast` 的 partial implementation，并在返回结构中显式标注 `implementation_level=partial`
+- 当前已补上关系回填质量报告结构与可选质量门禁参数，可在测试副本库执行 `--apply` 演练并输出 JSON/YAML/Markdown 报告
+- 当前已补上最小关系推理回归样例集，并通过数据文件驱动的集成测试固定 Phase B 5.4 基线
 - 查询结果当前优先按 `relation_type` 分组，组内按 `weight DESC -> updated_at DESC -> relation_id ASC` 稳定排序
 - `README.md`、当前事实基线、阶段路线与差异清单同步更新为 `Phase A / T1+T5` 口径
 

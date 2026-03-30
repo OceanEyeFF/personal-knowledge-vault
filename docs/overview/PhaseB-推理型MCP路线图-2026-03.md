@@ -81,6 +81,12 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 - `src/mcp/tools.py`
 - `docs/specs/` 或 `docs/modules/` 补充接口约定
 
+当前阶段说明：
+
+- 已为 `query_subgraph`、`explain_relation`、`collect_evidence`、`find_bridges`、`timeline_of`、`contrast` 统一补入 `schema_version`
+- 已为上述结果统一补入 `implementation_level`、`limitation_notes`、`confidence`、`coverage`、`evidence_count`
+- 当前版本统一口径为 `schema_version=phase_b.v1`
+
 ### 5.2 证据包升级到 chunk 级（优先级 P0）
 
 **目标**：将 `collect_evidence` 从文档级 v1 升级为 chunk 级证据聚合。
@@ -101,6 +107,12 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 
 `docs/overview/PhaseB-Chunk索引去重排序-Phase1开发清单-2026-03.md`
 
+当前阶段说明：
+
+- Phase 1 已完成内部 chunk 索引、检索与证据聚合基础能力
+- Phase 2 当前通过 `collect_evidence(include_chunks: bool = False)` 以可选参数形式暴露 chunk 级证据字段，默认保持文档级兼容行为
+- Phase 3 当前在 `include_chunks=True` 路径上补入多因子排序与近重复去重，仍未引入破坏性接口升级
+
 ### 5.3 partial 工具收敛（优先级 P1）
 
 **目标**：明确 `find_bridges`、`timeline_of`、`contrast` 的可用边界，并完成最小可用升级。
@@ -117,6 +129,13 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 - `src/mcp/tools.py`
 - `docs/overview/` 与 `docs/specs/` 同步
 
+当前阶段说明：
+
+- `find_bridges` 当前已补入结构分与语义分组成的桥接候选评分，并显式返回证据来源
+- `timeline_of` 当前已明确时间来源优先级：`event_time > published_at > archived_at`
+- `contrast` 当前已补入稳定的 `comparison_dimensions` 与 `evidence_sources` 输出结构
+- 三个 Tool 当前仍属于 `partial`，但边界与限制已更明确
+
 ### 5.4 关系回填与质量验证（优先级 P1）
 
 **目标**：在测试副本库完成一次正式回填演练并输出质量报告。
@@ -131,6 +150,13 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 - `scripts/backfill_relations.py`
 - `tests/integration/`
 - `docs/operations/`
+
+当前阶段说明：
+
+- 当前已补入 `backfill_quality_report.v1`，报告中包含 `mode`、`knowledge_scope`、`quality_gate`、`conflict_samples` 与执行上下文
+- 当前 `scripts/backfill_relations.py` 已支持可选质量门禁参数：`--min-coverage`、`--max-noise`、`--max-conflict`、`--fail-on-gate`
+- 当前已补入最小关系推理回归样例集：`tests/fixtures/phase_b_5_4_min_regression.yaml`
+- 当前已新增 `docs/operations/关系回填质量验证指南.md`，用于规范测试副本库的 dry-run / apply 演练与回归命令
 
 ---
 

@@ -80,11 +80,15 @@ class BackfillReport:
     invalid_references: int = 0
     unresolved_references: int = 0
     conflicted_relations: int = 0
+    mode: str = "dry-run"
+    knowledge_scope: List[int] = field(default_factory=list)
     missing_files: List[str] = field(default_factory=list)
     skipped_references: List[Dict[str, object]] = field(default_factory=list)
+    conflict_samples: List[Dict[str, object]] = field(default_factory=list)
     limitation_notes: List[str] = field(default_factory=list)
     by_source_type: Dict[str, Dict[str, int]] = field(default_factory=dict)
     by_relation_type: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    quality_gate: Dict[str, object] = field(default_factory=dict)
     extensions: Dict[str, object] = field(default_factory=dict)
 
     @property
@@ -118,6 +122,76 @@ class BackfillReport:
             "noise_rate": "(invalid_references + unresolved_references) / total_references。",
             "conflict_rate": "conflicted_relations / resolved_references。",
         }
+
+    def evaluate_quality_gate(
+        self,
+        *,
+        min_coverage: Optional[float] = None,
+        max_noise: Optional[float] = None,
+        max_conflict: Optional[float] = None,
+    ) -> Dict[str, object]:
+        """基于阈值计算质量门禁结果。"""
+        checks: List[Dict[str, object]] = []
+
+        if min_coverage is not None:
+            checks.append(
+                self._build_quality_check(
+                    name="coverage_rate",
+                    actual=self.coverage_rate,
+                    operator=">=",
+                    threshold=min_coverage,
+                )
+            )
+        if max_noise is not None:
+            checks.append(
+                self._build_quality_check(
+                    name="noise_rate",
+                    actual=self.noise_rate,
+                    operator="<=",
+                    threshold=max_noise,
+                )
+            )
+        if max_conflict is not None:
+            checks.append(
+                self._build_quality_check(
+                    name="conflict_rate",
+                    actual=self.conflict_rate,
+                    operator="<=",
+                    threshold=max_conflict,
+                )
+            )
+
+        configured = bool(checks)
+        passed = all(bool(item["passed"]) for item in checks) if configured else None
+        failed_checks = [item for item in checks if not bool(item["passed"])]
+        self.quality_gate = {
+            "configured": configured,
+            "passed": passed,
+            "checks": checks,
+            "failed_checks": failed_checks,
+        }
+        return self.quality_gate
+
+    def register_conflict(
+        self,
+        *,
+        source_knowledge_id: int,
+        target_knowledge_id: int,
+        relation_source_type: RelationSourceType,
+        relation_type: RelationType,
+    ) -> None:
+        """记录冲突关系并保留少量审计样本。"""
+        self.conflicted_relations += 1
+        if len(self.conflict_samples) >= 10:
+            return
+        self.conflict_samples.append(
+            {
+                "source_knowledge_id": source_knowledge_id,
+                "target_knowledge_id": target_knowledge_id,
+                "relation_source_type": relation_source_type.value,
+                "relation_type": relation_type.value,
+            }
+        )
 
     def register_reference(
         self,
@@ -166,9 +240,33 @@ class BackfillReport:
         bucket[key]["total"] += 1
         bucket[key][outcome] += 1
 
+    @staticmethod
+    def _build_quality_check(
+        *,
+        name: str,
+        actual: float,
+        operator: str,
+        threshold: float,
+    ) -> Dict[str, object]:
+        if operator == ">=":
+            passed = actual >= threshold
+        elif operator == "<=":
+            passed = actual <= threshold
+        else:
+            raise ValueError(f"不支持的 quality gate operator: {operator}")
+        return {
+            "name": name,
+            "actual": round(actual, 6),
+            "operator": operator,
+            "threshold": threshold,
+            "passed": passed,
+        }
+
     def to_dict(self, include_definitions: bool = True) -> Dict[str, object]:
         return {
             "schema_version": self.schema_version,
+            "mode": self.mode,
+            "knowledge_scope": list(self.knowledge_scope),
             "scanned_entries": self.scanned_entries,
             "processed_entries": self.processed_entries,
             "extracted_relations": self.extracted_relations,
@@ -184,9 +282,11 @@ class BackfillReport:
             "conflict_rate": self.conflict_rate,
             "missing_files": list(self.missing_files),
             "skipped_references": list(self.skipped_references),
+            "conflict_samples": list(self.conflict_samples),
             "limitation_notes": list(self.limitation_notes),
             "by_source_type": dict(self.by_source_type),
             "by_relation_type": dict(self.by_relation_type),
+            "quality_gate": dict(self.quality_gate),
             "extensions": dict(self.extensions),
             "metric_definitions": self.metric_definitions() if include_definitions else {},
         }
@@ -197,6 +297,8 @@ class BackfillReport:
             "# 关系回填质量报告",
             "",
             f"- schema_version: {self.schema_version}",
+            f"- mode: {self.mode}",
+            f"- knowledge_scope: {self.knowledge_scope or 'ALL'}",
             f"- scanned_entries: {self.scanned_entries}",
             f"- processed_entries: {self.processed_entries}",
             f"- extracted_relations: {self.extracted_relations}",
@@ -213,6 +315,22 @@ class BackfillReport:
             f"- noise_rate: {self.noise_rate:.4f}",
             f"- conflict_rate: {self.conflict_rate:.4f}",
         ]
+
+        if self.quality_gate.get("configured"):
+            lines.extend(
+                [
+                    "",
+                    "## 质量门禁",
+                    f"- passed: {self.quality_gate.get('passed')}",
+                ]
+            )
+            for item in self.quality_gate.get("checks", []):
+                lines.append(
+                    "- "
+                    f"{item['name']}: actual={item['actual']}, "
+                    f"rule {item['operator']} {item['threshold']}, "
+                    f"passed={item['passed']}"
+                )
 
         if self.by_source_type:
             lines.extend(["", "## 按来源统计"])
@@ -239,9 +357,25 @@ class BackfillReport:
             for note in self.limitation_notes:
                 lines.append(f"- {note}")
 
+        if self.conflict_samples:
+            lines.extend(["", "## 冲突样本"])
+            for item in self.conflict_samples:
+                lines.append(
+                    "- "
+                    f"source={item['source_knowledge_id']} "
+                    f"target={item['target_knowledge_id']} "
+                    f"relation_type={item['relation_type']} "
+                    f"source_type={item['relation_source_type']}"
+                )
+
         lines.extend(["", "## 指标口径"])
         for key, desc in self.metric_definitions().items():
             lines.append(f"- {key}: {desc}")
+
+        if self.extensions:
+            lines.extend(["", "## 扩展上下文"])
+            for key, value in self.extensions.items():
+                lines.append(f"- {key}: {value}")
 
         return "\n".join(lines)
 
@@ -376,8 +510,18 @@ class RelationBackfillService:
         all_entries = self._load_entries()
         entries = self._filter_entries(all_entries, knowledge_ids=knowledge_ids)
         entry_maps = self._build_entry_path_maps(all_entries)
-        report = BackfillReport(scanned_entries=len(entries))
+        report = BackfillReport(
+            scanned_entries=len(entries),
+            mode="apply" if apply else "dry-run",
+            knowledge_scope=[entry.knowledge_id for entry in entries],
+        )
         can_check_conflicts = self.relation_store.table_exists()
+        report.extensions["execution"] = {
+            "db_path": str(self.db_path),
+            "vault_dir": str(self.vault_dir),
+            "apply": apply,
+            "relation_table_exists": can_check_conflicts,
+        }
         if not can_check_conflicts:
             report.limitation_notes.append("关系表不存在，未执行冲突检测。")
 
@@ -460,9 +604,15 @@ class RelationBackfillService:
                 if can_check_conflicts and self._is_conflicted_relation(
                     entry.knowledge_id,
                     target_entry.knowledge_id,
+                    raw_ref.relation_type,
                     raw_ref.relation_source_type,
                 ):
-                    report.conflicted_relations += 1
+                    report.register_conflict(
+                        source_knowledge_id=entry.knowledge_id,
+                        target_knowledge_id=target_entry.knowledge_id,
+                        relation_source_type=raw_ref.relation_source_type,
+                        relation_type=raw_ref.relation_type,
+                    )
 
                 relations.append(
                     RelationRecord(
@@ -637,6 +787,7 @@ class RelationBackfillService:
         self,
         source_knowledge_id: int,
         target_knowledge_id: int,
+        relation_type: RelationType,
         relation_source_type: RelationSourceType,
     ) -> bool:
         """判断是否与更高优先级来源冲突。"""
@@ -651,10 +802,13 @@ class RelationBackfillService:
         existing = self.relation_store.list_relations_between(
             source_knowledge_id, target_knowledge_id
         )
-        if not existing:
+        existing_same_type = [
+            item for item in existing if item.relation_type == relation_type
+        ]
+        if not existing_same_type:
             return False
         best_existing = min(
-            priority.get(item.relation_source_type, 99) for item in existing
+            priority.get(item.relation_source_type, 99) for item in existing_same_type
         )
         return best_existing < incoming_priority
 

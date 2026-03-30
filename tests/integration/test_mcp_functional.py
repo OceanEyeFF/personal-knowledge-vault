@@ -679,6 +679,11 @@ class TestToolCallWriteSecurity:
         result = parse_tool_result(raw)
         assert result["seed_knowledge_id"] == 1
         assert result["total_nodes"] == 2
+        assert result["schema_version"] == "phase_b.v1"
+        assert result["implementation_level"] == "baseline"
+        assert result["evidence_count"] == 1
+        assert "confidence" in result
+        assert "coverage" in result
         assert result["grouped_edges"][RelationType.REFERENCES.value][0]["target_knowledge_id"] == 2
 
     @pytest.mark.asyncio
@@ -724,6 +729,11 @@ class TestToolCallWriteSecurity:
         result = parse_tool_result(raw)
         assert result["found"] is True
         assert result["explanation_type"] == "direct"
+        assert result["schema_version"] == "phase_b.v1"
+        assert result["implementation_level"] == "baseline"
+        assert result["evidence_count"] == 1
+        assert result["confidence"] == 0.9
+        assert result["coverage"] == 1.0
         assert result["summary"] == "1 -[related_document]-> 2"
 
     @pytest.mark.asyncio
@@ -969,7 +979,13 @@ class TestToolCallWriteSecurity:
 
         result = parse_tool_result(raw)
         assert result["found"] is True
+        assert result["schema_version"] == "phase_b.v1"
         assert result["implementation_level"] == "partial"
+        assert result["evidence_count"] == 2
+        assert "confidence" in result
+        assert "coverage" in result
+        assert "evidence_sources" in result
+        assert "comparison_dimensions" in result
         assert result["shared_tags"] == ["共同"]
 
 

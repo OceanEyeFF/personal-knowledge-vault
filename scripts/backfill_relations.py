@@ -65,6 +65,29 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="输出 Markdown 质量报告（传入文件路径或 '-' 输出到 stdout）",
     )
+    parser.add_argument(
+        "--min-coverage",
+        type=float,
+        default=None,
+        help="质量门禁：coverage_rate 必须大于等于该阈值",
+    )
+    parser.add_argument(
+        "--max-noise",
+        type=float,
+        default=None,
+        help="质量门禁：noise_rate 必须小于等于该阈值",
+    )
+    parser.add_argument(
+        "--max-conflict",
+        type=float,
+        default=None,
+        help="质量门禁：conflict_rate 必须小于等于该阈值",
+    )
+    parser.add_argument(
+        "--fail-on-gate",
+        action="store_true",
+        help="若质量门禁失败则返回非零退出码",
+    )
     return parser.parse_args()
 
 
@@ -86,6 +109,11 @@ def main() -> int:
     report = service.backfill(
         knowledge_ids=args.knowledge_ids,
         apply=args.apply,
+    )
+    gate_result = report.evaluate_quality_gate(
+        min_coverage=args.min_coverage,
+        max_noise=args.max_noise,
+        max_conflict=args.max_conflict,
     )
 
     mode = "APPLY" if args.apply else "DRY-RUN"
@@ -109,6 +137,16 @@ def main() -> int:
     print(f"冲突率: {report.conflict_rate:.4f}")
     print(f"缺失文件: {len(report.missing_files)}")
     print(f"跳过引用: {len(report.skipped_references)}")
+
+    if gate_result.get("configured"):
+        print("\n质量门禁:")
+        print(f"  - passed: {gate_result['passed']}")
+        for item in gate_result["checks"]:
+            print(
+                "  - "
+                f"{item['name']} {item['operator']} {item['threshold']} "
+                f"(actual={item['actual']}, passed={item['passed']})"
+            )
 
     if report.missing_files:
         print("\n缺失文件:")
@@ -150,6 +188,12 @@ def main() -> int:
         )
     if args.report_md:
         _write_report(args.report_md, report.to_markdown())
+
+    if args.fail_on_gate and gate_result.get("configured") and not gate_result.get(
+        "passed"
+    ):
+        print("\n质量门禁失败：已按 `--fail-on-gate` 返回退出码 2。")
+        return 2
 
     return 0
 

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -25,6 +26,7 @@ from src.storage.relation_store import RelationStore  # noqa: E402
 
 BASE_SQL = PROJECT_ROOT / "scripts/migrations/001_initial_schema.sql"
 RELATION_SQL = PROJECT_ROOT / "scripts/migrations/006_add_relations_foundation.sql"
+REGRESSION_DATASET = PROJECT_ROOT / "tests/fixtures/phase_b_5_4_min_regression.yaml"
 
 
 def _apply_sql(db_path: Path, sql_path: Path) -> None:
@@ -229,6 +231,15 @@ class StubQueryRouter:
 
     def search(self, query: str, limit: int = 10):
         return self.results[:limit]
+
+
+def _load_regression_cases():
+    payload = yaml.safe_load(REGRESSION_DATASET.read_text(encoding="utf-8"))
+    return payload["cases"]
+
+
+def _resolve_knowledge_ids(env: dict, keys: list[str]) -> list[int]:
+    return [int(env[key]) for key in keys]
 
 
 def test_evidence_collection_service_can_collect_backfilled_evidence(

@@ -1,0 +1,144 @@
+schema_version: phase_b_5_4.min_regression.v1
+description: >
+  Phase B 5.4 最小关系推理回归样例集。所有样例均运行在测试副本库，
+  用于验证回填质量报告、关系查询、证据聚合与 partial 工具的当前稳定边界。
+cases:
+  - case_id: backfill_apply_quality
+    category: backfill
+    action: backfill
+    args:
+      apply: true
+    expect:
+      applied_relations: 4
+      extracted_relations: 4
+      total_references: 4
+      coverage_rate: 1.0
+      noise_rate: 0.0
+      conflict_rate: 0.0
+
+  - case_id: list_relations_alpha
+    category: query
+    action: list_relations
+    args:
+      seed_key: alpha_id
+      direction: both
+    expect:
+      total: 3
+      grouped_keys:
+        - references
+        - related_document
+
+  - case_id: relations_between_alpha_beta
+    category: query
+    action: relations_between
+    args:
+      source_key: alpha_id
+      target_key: beta_id
+    expect:
+      total: 2
+      grouped_keys:
+        - references
+
+  - case_id: subgraph_alpha_depth2
+    category: query
+    action: query_subgraph
+    args:
+      seed_key: alpha_id
+      depth: 2
+    expect:
+      node_keys:
+        - alpha_id
+        - beta_id
+        - gamma_id
+        - delta_id
+      total_edges: 4
+
+  - case_id: explain_alpha_delta
+    category: query
+    action: explain_relation
+    args:
+      source_key: alpha_id
+      target_key: delta_id
+      max_depth: 2
+    expect:
+      found: true
+      explanation_type: path
+      hops: 2
+      intermediate_keys:
+        - gamma_id
+
+  - case_id: collect_evidence_alpha_delta
+    category: evidence
+    action: collect_evidence
+    args:
+      question: Alpha 和 Delta 有什么证据链？
+      top_k: 2
+      relation_max_depth: 2
+    expect:
+      found: true
+      total_evidence: 2
+      related_evidence_count: 1
+      seed_key: alpha_id
+      related_key: delta_id
+      relation_hops: 2
+
+  - case_id: find_bridge_alpha
+    category: exploration
+    action: find_bridges
+    args:
+      seed_key: alpha_id
+      top_k: 5
+      max_depth: 2
+    expect:
+      found: true
+      implementation_level: partial
+      item_keys:
+        - gamma_id
+
+  - case_id: timeline_alpha
+    category: exploration
+    action: timeline_of
+    args:
+      topic: Alpha 时间线
+      top_k: 5
+      sort_order: asc
+    expect:
+      found: true
+      implementation_level: partial
+      item_keys:
+        - alpha_id
+        - beta_id
+      time_source_priority:
+        - event_time
+        - published_at
+        - archived_at
+
+  - case_id: contrast_topics
+    category: exploration
+    action: contrast
+    args:
+      topic_a: Topic A
+      topic_b: Topic B
+      top_k: 5
+    expect:
+      found: true
+      implementation_level: partial
+      shared_tags:
+        - 共同
+        - 桥接
+      only_a_tags:
+        - 测试
+      only_b_tags:
+        - 终点
+      overlap_keys:
+        - gamma_id
+
+  - case_id: rerun_sync_after_reference_removed
+    category: backfill
+    action: rerun_cleanup
+    args:
+      seed_key: alpha_id
+    expect:
+      first_applied_relations: 2
+      deleted_relations: 2
+      applied_relations: 0

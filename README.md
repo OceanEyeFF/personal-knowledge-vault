@@ -108,8 +108,8 @@ python -m src.mcp.server --transport streamable-http --port 3000
 - 已扩展 `src/relations/query_service.py`，当前提供一跳关系查询、内部 `query_subgraph` 多跳子图遍历基础、最小 `explain_relation` 能力、关系类型分组和稳定排序能力
 - 已新增 `src/relations/evidence_service.py`，当前提供文档级 `collect_evidence` 证据包聚合 v1
 - 已新增 `src/relations/exploration_service.py`，当前提供 `find_bridges`、`timeline_of`、`contrast` 的受限版本
-- 当前已把 `query_subgraph`、`explain_relation` 与 `collect_evidence` 暴露为只读 MCP Tool；其中 `collect_evidence` 当前仍是文档级证据包，不依赖 chunk 文本落库
-- 当前已把 `find_bridges`、`timeline_of`、`contrast` 暴露为只读 MCP Tool，但它们仍是 partial implementation：只基于显式关系子图、`archived_at` 和检索候选表面字段
+- 当前已把 `query_subgraph`、`explain_relation` 与 `collect_evidence` 暴露为只读 MCP Tool；其中 `collect_evidence` 默认保持文档级证据包兼容行为，显式传入 `include_chunks=true` 时可返回 chunk 级证据字段，并执行近重复去重与多因子排序
+- 当前已把 `find_bridges`、`timeline_of`、`contrast` 暴露为只读 MCP Tool，但它们仍是 partial implementation：当前分别基于显式关系子图 + 静态语义重合评分、元数据时间来源优先级，以及检索候选表面字段 + 稳定对比维度结构
 
 ## 📂 项目结构
 

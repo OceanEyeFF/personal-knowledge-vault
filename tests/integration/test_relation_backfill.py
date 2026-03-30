@@ -14,7 +14,12 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.relations.extractors import RelationBackfillService  # noqa: E402
-from src.relations.models import RelationQueryDirection, RelationType  # noqa: E402
+from src.relations.models import (  # noqa: E402
+    RelationQueryDirection,
+    RelationRecord,
+    RelationSourceType,
+    RelationType,
+)
 from src.storage.relation_store import RelationStore  # noqa: E402
 
 BASE_SQL = PROJECT_ROOT / "scripts/migrations/001_initial_schema.sql"
@@ -155,6 +160,65 @@ def test_relation_backfill_apply_writes_low_ambiguity_relations(relation_env):
         RelationType.REFERENCES,
         RelationType.RELATED_DOCUMENT,
     }
+    assert report.mode == "apply"
+    assert report.knowledge_scope == [relation_env["alpha_id"]]
+    assert report.extensions["execution"]["apply"] is True
+
+
+def test_relation_backfill_report_contains_quality_gate_context(relation_env):
+    service = RelationBackfillService(
+        db_path=relation_env["db_path"],
+        vault_dir=relation_env["vault_dir"],
+    )
+
+    report = service.backfill(
+        knowledge_ids=[relation_env["alpha_id"]],
+        apply=True,
+    )
+    gate = report.evaluate_quality_gate(
+        min_coverage=0.9,
+        max_noise=0.1,
+        max_conflict=0.0,
+    )
+    payload = report.to_dict(include_definitions=False)
+
+    assert gate["configured"] is True
+    assert gate["passed"] is True
+    assert payload["mode"] == "apply"
+    assert payload["knowledge_scope"] == [relation_env["alpha_id"]]
+    assert payload["quality_gate"]["passed"] is True
+    assert payload["extensions"]["execution"]["relation_table_exists"] is True
+    assert "# 关系回填质量报告" in report.to_markdown()
+
+
+def test_relation_backfill_conflict_detection_is_relation_type_scoped(relation_env):
+    service = RelationBackfillService(
+        db_path=relation_env["db_path"],
+        vault_dir=relation_env["vault_dir"],
+    )
+    relation_store = RelationStore(relation_env["db_path"])
+
+    # 插入“同一对节点，但不同 relation_type”的高优先级既有关系。
+    # conflict 检测应只在同一 relation_type 内比较优先级，避免误判。
+    relation_store.upsert_relation(
+        RelationRecord(
+            source_knowledge_id=relation_env["alpha_id"],
+            target_knowledge_id=relation_env["beta_id"],
+            relation_type=RelationType.VERSION_OF,
+            relation_source_type=RelationSourceType.MANUAL,
+            evidence_payload={"note": "manual_version_of"},
+        )
+    )
+
+    report = service.backfill(
+        knowledge_ids=[relation_env["alpha_id"]],
+        apply=True,
+    )
+
+    assert report.total_references == 2
+    assert report.resolved_references == 2
+    assert report.conflicted_relations == 0
+    assert report.conflict_rate == 0.0
 
 
 def test_relation_backfill_rerun_syncs_outgoing_relations(relation_env):

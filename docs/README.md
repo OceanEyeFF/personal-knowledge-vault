@@ -21,6 +21,7 @@
 - [架构设计.md](./overview/架构设计.md)
 - [QUICKSTART.md](./operations/QUICKSTART.md)
 - [维护指南.md](./operations/维护指南.md)
+- [关系回填质量验证指南.md](./operations/关系回填质量验证指南.md)
 
 ## 长期参考
 
