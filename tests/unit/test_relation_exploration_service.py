@@ -199,6 +199,44 @@ def test_timeline_of_sorts_by_archived_at(exploration_service):
     assert all(item.time_source == "archived_at" for item in result.items)
 
 
+def test_timeline_of_desc_keeps_missing_time_items_last():
+    query_router = StubQueryRouter(
+        {
+            "时间线": [
+                SearchResult(
+                    knowledge_id=1,
+                    title="Alpha",
+                    score=0.9,
+                    highlight="Alpha 摘要",
+                    metadata={},
+                ),
+                SearchResult(
+                    knowledge_id=2,
+                    title="Beta",
+                    score=0.8,
+                    highlight="Beta 摘要",
+                    metadata={},
+                ),
+            ]
+        }
+    )
+    sqlite_store = StubSQLiteStore(
+        {
+            1: {"knowledge_id": 1, "title": "Alpha", "archived_at": "2026-03-10 09:00:00"},
+            2: {"knowledge_id": 2, "title": "Beta", "archived_at": ""},
+        }
+    )
+    service = ExplorationService(
+        query_router=query_router,
+        sqlite_store=sqlite_store,
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    result = service.timeline_of(topic="时间线", top_k=5, sort_order="desc")
+
+    assert [item.knowledge_id for item in result.items] == [1, 2]
+
+
 def test_contrast_returns_shared_and_distinct_tags(exploration_service):
     result = exploration_service.contrast(topic_a="主题A", topic_b="主题B", top_k=3)
 
