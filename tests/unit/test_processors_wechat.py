@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 """
 Wechat processor unit tests.
 """
@@ -45,3 +47,29 @@ async def test_wechat_process(wechat_html: str):
     metadata = getattr(entry, "metadata", {})
     assert metadata.get("author") == "Wechat Author"
     assert metadata.get("published_time") == "2026-02-14 12:00:00"
+    assert entry.published_at == "2026-02-14 12:00:00"
+
+
+@pytest.mark.asyncio
+async def test_wechat_process_without_publish_time_keeps_published_at_empty():
+    processor = WechatProcessor()
+    html = """
+    <html>
+      <head><title>Wechat No Time</title></head>
+      <body>
+        <div id="img-content">
+          <p>Wechat main content paragraph.</p>
+        </div>
+      </body>
+    </html>
+    """
+
+    with (
+        patch.object(processor, "_fetch_html", new=AsyncMock(return_value=html)),
+        patch.object(processor, "_download_images", new=AsyncMock(return_value=None)),
+    ):
+        entry = await processor.process("https://mp.weixin.qq.com/s/no-time")
+
+    metadata = getattr(entry, "metadata", {})
+    assert "published_time" not in metadata
+    assert entry.published_at is None

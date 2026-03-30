@@ -199,6 +199,114 @@ def test_timeline_of_sorts_by_archived_at(exploration_service):
     assert all(item.time_source == "archived_at" for item in result.items)
 
 
+def test_timeline_of_prefers_real_time_sources_over_archived_at():
+    query_router = StubQueryRouter(
+        {
+            "真实时间线": [
+                SearchResult(
+                    knowledge_id=1,
+                    title="Alpha",
+                    score=0.9,
+                    highlight="Alpha 摘要",
+                    metadata={},
+                ),
+                SearchResult(
+                    knowledge_id=2,
+                    title="Beta",
+                    score=0.8,
+                    highlight="Beta 摘要",
+                    metadata={},
+                ),
+                SearchResult(
+                    knowledge_id=3,
+                    title="Gamma",
+                    score=0.7,
+                    highlight="Gamma 摘要",
+                    metadata={},
+                ),
+            ]
+        }
+    )
+    sqlite_store = StubSQLiteStore(
+        {
+            1: {
+                "knowledge_id": 1,
+                "title": "Alpha",
+                "event_time": "2026-03-01 08:00:00",
+                "published_at": "2026-03-05 09:00:00",
+                "archived_at": "2026-03-10 09:00:00",
+            },
+            2: {
+                "knowledge_id": 2,
+                "title": "Beta",
+                "published_at": "2026-03-02 09:00:00",
+                "archived_at": "2026-03-11 09:00:00",
+            },
+            3: {
+                "knowledge_id": 3,
+                "title": "Gamma",
+                "archived_at": "2026-03-03 09:00:00",
+            },
+        }
+    )
+    service = ExplorationService(
+        query_router=query_router,
+        sqlite_store=sqlite_store,
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    result = service.timeline_of(topic="真实时间线", top_k=5, sort_order="asc")
+
+    assert [item.knowledge_id for item in result.items] == [1, 2, 3]
+    assert [item.time_source for item in result.items] == [
+        "event_time",
+        "published_at",
+        "archived_at",
+    ]
+    assert [item.time_value for item in result.items] == [
+        "2026-03-01 08:00:00",
+        "2026-03-02 09:00:00",
+        "2026-03-03 09:00:00",
+    ]
+    assert result.inferred_time_field == "event_time"
+
+
+def test_timeline_of_accepts_legacy_published_time_metadata_key():
+    query_router = StubQueryRouter(
+        {
+            "旧发布时间": [
+                SearchResult(
+                    knowledge_id=7,
+                    title="Legacy",
+                    score=0.88,
+                    highlight="Legacy 摘要",
+                    metadata={"published_time": "2026-03-04 10:00:00"},
+                ),
+            ]
+        }
+    )
+    sqlite_store = StubSQLiteStore(
+        {
+            7: {
+                "knowledge_id": 7,
+                "title": "Legacy",
+                "archived_at": "2026-03-10 09:00:00",
+            }
+        }
+    )
+    service = ExplorationService(
+        query_router=query_router,
+        sqlite_store=sqlite_store,
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    result = service.timeline_of(topic="旧发布时间", top_k=5, sort_order="asc")
+
+    assert result.items[0].time_source == "published_at"
+    assert result.items[0].time_value == "2026-03-04 10:00:00"
+    assert result.items[0].published_at == "2026-03-04 10:00:00"
+
+
 def test_timeline_of_desc_keeps_missing_time_items_last():
     query_router = StubQueryRouter(
         {

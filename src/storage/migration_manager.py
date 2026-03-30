@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 import logging
 import subprocess
-import datetime
 import re
 
 logger = logging.getLogger(__name__)
@@ -256,6 +255,20 @@ class MigrationManager:
             Exception: 迁移执行失败
         """
         logger.info(f"开始迁移: {migration_file.name}")
+        metadata = self._read_migration_metadata(migration_file)
+        version = metadata.get("version")
+        description = metadata.get("description") or migration_file.name
+
+        if version == "1.2.1" and self._knowledge_items_has_timeline_columns():
+            conn = sqlite3.connect(self.db_path)
+            try:
+                self._ensure_timeline_indexes(conn)
+                self._record_schema_version(conn, version, description)
+                conn.commit()
+            finally:
+                conn.close()
+            logger.info("✓ 跳过迁移: %s（目标列已存在）", migration_file.name)
+            return
 
         # 自动备份（可选）
         if auto_backup:
@@ -360,7 +373,6 @@ class MigrationManager:
         Args:
             migration_name: 迁移脚本名称（用于备份说明）
         """
-        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         message = f"自动备份 - Schema 迁移前 ({migration_name})"
 
         logger.info(f"自动备份数据库: {message}")
@@ -457,6 +469,52 @@ class MigrationManager:
                     break
 
         return metadata
+
+    def _knowledge_items_has_timeline_columns(self) -> bool:
+        """检查 knowledge_items 是否已具备 timeline 真实时间列。"""
+        if not self.db_path.exists():
+            return False
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='knowledge_items'
+                """
+            )
+            if cursor.fetchone() is None:
+                return False
+
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(knowledge_items)")
+            }
+        return {"event_time", "published_at"}.issubset(columns)
+
+    def _ensure_timeline_indexes(self, conn: sqlite3.Connection) -> None:
+        """补齐 timeline 时间字段索引。"""
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_event_time ON knowledge_items(event_time)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_published_at ON knowledge_items(published_at)"
+        )
+
+    def _record_schema_version(
+        self,
+        conn: sqlite3.Connection,
+        version: Optional[str],
+        description: str,
+    ) -> None:
+        """写入 schema_version 记录。"""
+        if not version:
+            return
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO schema_version (version, description)
+            VALUES (?, ?)
+            """,
+            (version, description),
+        )
 
     def _version_compare(self, v1: str, v2: str) -> int:
         """

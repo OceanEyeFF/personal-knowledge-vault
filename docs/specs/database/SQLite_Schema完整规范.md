@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     search_strategy TEXT CHECK(search_strategy IN ('keyword', 'hybrid', 'vector', 'structured')),
     file_path TEXT NOT NULL UNIQUE,
     word_count INTEGER DEFAULT 0,
+    event_time TIMESTAMP,
+    published_at TIMESTAMP,
     archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
@@ -51,6 +53,8 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
 | `search_strategy` | TEXT | CHECK | NULL | 检索策略（枚举约束） |
 | `file_path` | TEXT | NOT NULL + UNIQUE | 无 | Markdown 文件路径（唯一约束） |
 | `word_count` | INTEGER | DEFAULT 0 | 0 | 字数统计 |
+| `event_time` | TIMESTAMP | 可选 | NULL | 真实事件时间；`timeline_of` 首选时间源 |
+| `published_at` | TIMESTAMP | 可选 | NULL | 来源发布时间；缺少 `event_time` 时回退使用 |
 | `archived_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | 当前时间 | 归档时间 |
 | `updated_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | 当前时间 | 更新时间（未实现自动更新） |
 
@@ -74,10 +78,20 @@ CHECK(search_strategy IN ('keyword', 'hybrid', 'vector', 'structured'))
 ```sql
 CREATE INDEX IF NOT EXISTS idx_source_url ON knowledge_items(source_url);
 CREATE INDEX IF NOT EXISTS idx_source_type ON knowledge_items(source_type);
+CREATE INDEX IF NOT EXISTS idx_event_time ON knowledge_items(event_time);
+CREATE INDEX IF NOT EXISTS idx_published_at ON knowledge_items(published_at);
 CREATE INDEX IF NOT EXISTS idx_archived_at ON knowledge_items(archived_at);
 CREATE INDEX IF NOT EXISTS idx_search_strategy ON knowledge_items(search_strategy);
 CREATE INDEX IF NOT EXISTS idx_file_path ON knowledge_items(file_path);
 ```
+
+#### 时间字段语义与回退规则
+
+- `event_time`：条目正文或结构化元数据中表达的真实事件发生时间。
+- `published_at`：来源页面/文档的发布时间。
+- `archived_at`：系统把内容落库的时间。
+- `timeline_of` 的排序取值优先级固定为 `event_time > published_at > archived_at`。
+- 当前 schema 仅存储单个规范化时间值，不做多值时间数组建模；多时间冲突由上游抽取阶段先行裁决。
 
 ---
 

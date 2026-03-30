@@ -3,7 +3,7 @@
 
 本模块实现 Phase B 第二优先级的受限版本能力：
 - find_bridges: 基于显式关系子图与简单度数启发式发现桥接节点
-- timeline_of: 基于 archived_at 的弱时间线重建
+- timeline_of: 基于结构化时间字段的弱时间线重建
 - contrast: 基于检索候选表面字段的主题对比
 
 注意：
@@ -163,7 +163,7 @@ class ExplorationService:
     ) -> TimelineResult:
         """重建 topic 的弱时间线。
 
-        当前仅按 archived_at 排序，不代表正文中的真实事件时间。
+        当前只使用结构化时间字段，不代表正文中的完整真实事件时间。
         """
         topic_clean = topic.strip()
         if not topic_clean:
@@ -178,14 +178,18 @@ class ExplorationService:
         points: list[TimelinePoint] = []
         for result in results[:top_k]:
             entry = self.sqlite_store.query_by_id(result.knowledge_id) or {}
+            resolved_times = self._resolve_time_fields(entry, result.metadata)
             time_value, time_source = self._select_time_value(
-                entry, result.metadata, time_source_priority
+                resolved_times, time_source_priority
             )
             points.append(
                 TimelinePoint(
                     knowledge_id=result.knowledge_id,
                     title=entry.get("title", result.title),
-                    archived_at=time_value,
+                    time_value=time_value,
+                    event_time=resolved_times["event_time"],
+                    published_at=resolved_times["published_at"],
+                    archived_at=resolved_times["archived_at"],
                     time_source=time_source,
                     source_type=entry.get("source_type", result.metadata.get("source_type", "")),
                     abstract=entry.get("summary_one_sentence", "") or result.highlight,
@@ -214,7 +218,7 @@ class ExplorationService:
                 "entry_metadata",
             ],
             limitation_notes=[
-                "当前只在 entry/metadata 中按 event_time > published_at > archived_at 选择时间，不代表正文中的真实事件时间",
+                "当前只在 entry/metadata 中按 event_time > published_at > archived_at 选择时间，不代表正文中的完整真实事件时间",
                 "当前未接入 video_timestamps、正文事件抽取或时间语义解析",
             ],
         )
@@ -378,15 +382,32 @@ class ExplorationService:
         return {match.group(0) for match in re.finditer(r"[\w\u4e00-\u9fff]+", text)}
 
     @staticmethod
-    def _select_time_value(
+    def _resolve_time_fields(
         entry: dict[str, Any],
         metadata: dict[str, Any],
+    ) -> dict[str, str]:
+        published_at = (
+            entry.get("published_at")
+            or metadata.get("published_at", "")
+            or metadata.get("published_time", "")
+            or metadata.get("publish_time", "")
+            or ""
+        )
+        return {
+            "event_time": str(entry.get("event_time") or metadata.get("event_time", "") or ""),
+            "published_at": str(published_at),
+            "archived_at": str(entry.get("archived_at") or metadata.get("archived_at", "") or ""),
+        }
+
+    @staticmethod
+    def _select_time_value(
+        time_fields: dict[str, str],
         priority: list[str],
     ) -> tuple[str, str]:
         for field in priority:
-            value = entry.get(field) or metadata.get(field, "")
+            value = time_fields.get(field, "")
             if value:
-                return str(value), field
+                return value, field
         return "", priority[-1]
 
     @staticmethod
@@ -399,6 +420,11 @@ class ExplorationService:
                 return (0, 0, parsed.timestamp(), "")
             except ValueError:
                 continue
+        try:
+            parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+            return (0, 0, parsed.timestamp(), "")
+        except ValueError:
+            pass
         return (0, 1, 0.0, raw_value)
 
     @classmethod
@@ -406,7 +432,7 @@ class ExplorationService:
         cls, item: TimelinePoint, sort_order: str
     ) -> tuple[int, Any]:
         missing_rank, parse_kind, parsed_ts, raw_value = cls._parse_time_sort_key(
-            item.archived_at
+            item.time_value
         )
         if sort_order == "desc":
             if missing_rank:

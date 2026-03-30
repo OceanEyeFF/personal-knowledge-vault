@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 """
 Zhihu processor unit tests.
 
@@ -71,6 +73,30 @@ async def test_zhihu_process(zhihu_html: str):
     metadata = getattr(entry, "metadata", {})
     assert metadata.get("author") == "Zhihu Author"
     assert metadata.get("published_time") == "2026-02-13 09:00:00"
+    assert entry.published_at == "2026-02-13 09:00:00"
+
+
+@pytest.mark.asyncio
+async def test_zhihu_process_without_publish_time_keeps_published_at_empty():
+    processor = ZhihuProcessor()
+    html = """
+    <html>
+      <head>
+        <title>Zhihu No Time</title>
+        <meta name="author" content="Zhihu Author"/>
+      </head>
+      <body>
+        <div class="RichContent-inner"><p>Best answer content.</p></div>
+      </body>
+    </html>
+    """
+
+    with patch.object(processor, "_fetch_html", new=AsyncMock(return_value=html)):
+        entry = await processor.process("https://www.zhihu.com/question/654321")
+
+    metadata = getattr(entry, "metadata", {})
+    assert "published_time" not in metadata
+    assert entry.published_at is None
 
 
 # ============================================================

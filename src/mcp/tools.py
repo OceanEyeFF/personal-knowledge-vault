@@ -689,11 +689,12 @@ async def timeline_of(
     top_k: int = 8,
     sort_order: str = "asc",
 ) -> dict:
-    """按 archived_at 重建主题的弱时间线。
+    """按结构化时间字段重建主题的弱时间线。
 
     注意：
-        当前是 partial implementation，只能按 archived_at 排序。
-        它不代表正文中的真实事件时间，也还未接入 video_timestamps 或事件时间抽取。
+        当前是 partial implementation，只会按 event_time > published_at > archived_at
+        选择结构化时间字段排序。
+        它不代表正文中的完整真实事件时间，也还未接入 video_timestamps 或事件时间抽取。
     """
 
     def _impl():

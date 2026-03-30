@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 """
 CLI formatter unit tests.
 """
@@ -151,3 +153,19 @@ def test_format_entry_detail(sample_entry):
     assert "评分: 4" in content
     assert "笔记:" in content
     assert "  读书笔记内容" in content
+
+
+def test_formatters_prefer_structured_published_at_when_metadata_time_missing():
+    entry = Entry(
+        title="结构化时间",
+        source_type="generic",
+        published_at="2026-03-06 09:00:00",
+        archived_at="2026-03-10 10:00:00",
+        content="正文",
+    )
+
+    markdown = format_as_markdown(entry)
+    detail = format_entry_detail(entry).renderable
+
+    assert "**时间**: 2026-03-06 09:00:00" in markdown
+    assert "发布时间: 2026-03-06 09:00:00" in detail

@@ -25,6 +25,7 @@ def _copy_active_migrations(target_dir: Path) -> None:
         "004_add_chat_sessions.sql",
         "005_add_review_system.sql",
         "006_add_relations_foundation.sql",
+        "007_add_timeline_time_fields.sql",
     ]:
         shutil.copy2(SOURCE_MIGRATIONS_DIR / name, target_dir / name)
 
@@ -50,7 +51,7 @@ def test_run_health_check_passes_for_clean_chain(tmp_path: Path) -> None:
 
     assert report["healthy"] is True
     assert report["issues"] == []
-    assert report["database"]["pending_migrations"][-1]["version"] == "1.2.0"
+    assert report["database"]["pending_migrations"][-1]["version"] == "1.2.1"
 
 
 def test_run_health_check_reports_missing_headers(tmp_path: Path) -> None:

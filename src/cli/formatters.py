@@ -21,12 +21,7 @@ def format_as_markdown(entry: Any) -> str:
     title = _get_field(entry, "title", "Untitled")
     metadata = _get_entry_metadata(entry)
     author = metadata.get("author") or metadata.get("publisher") or "未知"
-    time_value = (
-        metadata.get("published_time")
-        or metadata.get("publish_time")
-        or _get_field(entry, "archived_at", "")
-        or "未知"
-    )
+    time_value = _resolve_primary_time(entry, metadata) or "未知"
     tags_value = _get_field(entry, "tags", None) or metadata.get("tags")
     tags_text = _format_tags(tags_value) or "无"
     abstract = (
@@ -90,7 +85,7 @@ def format_entry_detail(entry: Any) -> Panel:
     lines = [
         f"标题: {title}",
         f"作者: {_format_value(metadata.get('author'))}",
-        f"发布时间: {_format_value(metadata.get('published_time') or metadata.get('publish_time'))}",
+        f"发布时间: {_format_value(_resolve_published_time(entry, metadata))}",
         f"来源类型: {_format_value(_get_field(entry, 'source_type', ''))}",
         f"来源 URL: {_format_value(_get_field(entry, 'source_url', ''))}",
         f"归档时间: {_format_value(_get_field(entry, 'archived_at', ''))}",
@@ -131,6 +126,27 @@ def _get_entry_metadata(entry: Any) -> dict:
     if isinstance(entry, Mapping):
         metadata = entry.get("metadata", metadata)
     return metadata if isinstance(metadata, Mapping) else {}
+
+
+def _resolve_primary_time(entry: Any, metadata: Mapping[str, Any]) -> str:
+    return (
+        _get_field(entry, "event_time", "")
+        or _get_field(entry, "published_at", "")
+        or metadata.get("event_time", "")
+        or metadata.get("published_at", "")
+        or metadata.get("published_time", "")
+        or metadata.get("publish_time", "")
+        or _get_field(entry, "archived_at", "")
+    )
+
+
+def _resolve_published_time(entry: Any, metadata: Mapping[str, Any]) -> str:
+    return (
+        _get_field(entry, "published_at", "")
+        or metadata.get("published_at", "")
+        or metadata.get("published_time", "")
+        or metadata.get("publish_time", "")
+    )
 
 
 def _get_field(obj: Any, name: str, default: Any = None) -> Any:

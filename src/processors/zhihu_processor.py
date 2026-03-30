@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime
 from typing import Dict, List, Optional
 
 from bs4 import BeautifulSoup, Tag
@@ -96,7 +95,6 @@ class ZhihuProcessor(BaseProcessor):
         soup = BeautifulSoup(html, "lxml")
         self._preserve_latex(soup)
         metadata = self._extract_metadata(soup)
-        metadata.setdefault("published_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         metadata["source_url"] = url
         metadata["source_type"] = "zhihu"
 
@@ -110,6 +108,7 @@ class ZhihuProcessor(BaseProcessor):
             title=title,
             source_type="zhihu",
             source_url=url,
+            published_at=metadata.get("published_time"),
             abstract=abstract,
             content=markdown,
         )

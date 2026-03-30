@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     search_strategy TEXT CHECK(search_strategy IN ('keyword', 'hybrid', 'vector', 'structured')),
     file_path TEXT NOT NULL UNIQUE,
     word_count INTEGER DEFAULT 0,
+    event_time TIMESTAMP,
+    published_at TIMESTAMP,
     archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -97,6 +99,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
 
 -- 8. 创建主表索引
 CREATE INDEX IF NOT EXISTS idx_knowledge_source_type ON knowledge_items(source_type);
+CREATE INDEX IF NOT EXISTS idx_knowledge_event_time ON knowledge_items(event_time);
+CREATE INDEX IF NOT EXISTS idx_knowledge_published_at ON knowledge_items(published_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_archived_at ON knowledge_items(archived_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_search_strategy ON knowledge_items(search_strategy);
 CREATE INDEX IF NOT EXISTS idx_knowledge_tags ON knowledge_items(tags);

@@ -5,7 +5,6 @@ Generic web page processor.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 from typing import Dict, Optional
 
 from bs4 import BeautifulSoup, Tag
@@ -60,7 +59,6 @@ class GenericProcessor(BaseProcessor):
 
         soup = BeautifulSoup(html, "lxml")
         metadata = self._extract_metadata(soup)
-        metadata.setdefault("published_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         metadata["source_url"] = url
         metadata["source_type"] = "generic"
 
@@ -74,6 +72,7 @@ class GenericProcessor(BaseProcessor):
             title=title,
             source_type="generic",
             source_url=url,
+            published_at=metadata.get("published_time"),
             abstract=abstract,
             content=markdown,
         )

@@ -589,6 +589,9 @@ class TimelinePoint:
 
     knowledge_id: int
     title: str
+    time_value: str = ""
+    event_time: str = ""
+    published_at: str = ""
     archived_at: str = ""
     time_source: str = "archived_at"
     source_type: str = ""
@@ -606,6 +609,9 @@ class TimelinePoint:
         return {
             "knowledge_id": self.knowledge_id,
             "title": self.title,
+            "time_value": self.time_value,
+            "event_time": self.event_time,
+            "published_at": self.published_at,
             "archived_at": self.archived_at,
             "time_source": self.time_source,
             "source_type": self.source_type,

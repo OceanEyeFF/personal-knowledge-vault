@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 """
 Generic processor unit tests.
 """
@@ -39,3 +41,25 @@ async def test_generic_processor_process(generic_html: str):
     metadata = getattr(entry, "metadata", {})
     assert metadata.get("author") == "Test Author"
     assert metadata.get("published_time") == "2026-02-14 10:00:00"
+    assert entry.published_at == "2026-02-14 10:00:00"
+
+
+@pytest.mark.asyncio
+async def test_generic_processor_does_not_fake_published_at_when_source_has_no_time():
+    processor = GenericProcessor()
+    html = """
+    <html>
+      <head>
+        <title>No Publish Time</title>
+        <meta name="author" content="No Time Author"/>
+      </head>
+      <body><main><p>content only</p></main></body>
+    </html>
+    """
+
+    with patch.object(processor, "_fetch_html", new=AsyncMock(return_value=html)):
+        entry = await processor.process("https://example.com/no-time")
+
+    metadata = getattr(entry, "metadata", {})
+    assert "published_time" not in metadata
+    assert entry.published_at is None

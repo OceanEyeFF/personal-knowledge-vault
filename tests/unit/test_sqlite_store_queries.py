@@ -216,3 +216,33 @@ def test_chunk_crud_roundtrip(store: SQLiteStore, tmp_path: Path) -> None:
     deleted_count = store.delete_chunks_by_knowledge_id(knowledge_id)
     assert deleted_count == 2
     assert store.count_chunks(knowledge_id) == 0
+
+
+def test_insert_entry_preserves_timeline_time_fields(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    """insert_entry should persist event_time/published_at for timeline rebuilding."""
+    entry = Entry(
+        title="Timeline Entry",
+        source_type="generic",
+        source_url="https://example.com/timeline",
+        event_time="2026-03-01 08:00:00",
+        published_at="2026-03-02 09:30:00",
+        archived_at="2026-03-10 10:00:00",
+        tags=["timeline"],
+        keywords=["timeline"],
+        content="timeline content",
+    )
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    md_path = vault_dir / "timeline.md"
+    md_path.write_text("# Timeline Entry\n\ntimeline content", encoding="utf-8")
+
+    knowledge_id = store.insert_entry(entry, str(md_path))
+    row = store.query_by_id(knowledge_id)
+
+    assert row is not None
+    assert row["event_time"] == "2026-03-01 08:00:00"
+    assert row["published_at"] == "2026-03-02 09:30:00"
+    assert row["archived_at"] == "2026-03-10 10:00:00"

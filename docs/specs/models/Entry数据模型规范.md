@@ -16,11 +16,14 @@
 | `title` | `str` | ✅ | 无 | 知识条目标题，不能为空 |
 | `source_type` | `str` | ✅ | 无 | 来源类型：`wechat`/`zhihu`/`bilibili`/`pdf`/`personal`/`ai_chat`/`text` |
 | `source_url` | `Optional[str]` | ❌ | `None` | 来源 URL，可为空（如个人笔记） |
+| `event_time` | `Optional[str]` | ❌ | `None` | 条目描述的事件发生时间；优先用于时间线排序 |
+| `published_at` | `Optional[str]` | ❌ | `None` | 来源内容发布时间；当缺少 `event_time` 时回退使用 |
 | `archived_at` | `Optional[str]` | ❌ | 当前时间 | 归档时间戳，格式：`YYYY-MM-DD HH:MM:SS` |
 
 **约束规则**:
 - `title` 不能为空字符串
 - `source_type` 必须是预定义的类型之一
+- `event_time` / `published_at` / `archived_at` 只保留单个规范化值；若传入列表，取第一个非空值
 - `archived_at` 如果未提供，会在 `__post_init__` 中自动填充为当前时间
 
 ---
@@ -128,6 +131,8 @@ def to_dict(self) -> Dict[str, Any]:
 title: "示例标题"
 source_type: "wechat"
 source_url: "https://example.com"
+event_time: "2026-02-13 20:00:00"
+published_at: "2026-02-14 08:30:00"
 archived_at: "2026-02-15 14:30:00"
 tags: ["AI", "知识管理"]
 keywords: ["向量检索", "工作流"]
@@ -173,6 +178,7 @@ entry = Entry(
 - `source_type` 默认为 `"personal"`
 - 列表字段默认为 `[]`
 - 字符串字段默认为 `""`
+- 时间字段回退优先级为 `event_time > published_at > archived_at`
 
 ---
 
@@ -181,8 +187,9 @@ entry = Entry(
 ### 当前验证机制
 
 **自动验证**:
-1. `archived_at` 自动填充当前时间（如果为 `None`）
-2. `word_count` 自动计算（如果为 0 且有内容）
+1. `event_time` / `published_at` / `archived_at` 会被规整为单个字符串值
+2. `archived_at` 自动填充当前时间（如果为 `None`）
+3. `word_count` 自动计算（如果为 0 且有内容）
 
 **缺失的验证**:
 - ⚠️ **没有** `title` 非空检查
@@ -255,6 +262,7 @@ def __post_init__(self):
 - `title` ✅
 - `content` ✅
 - `source_type` ✅
+- `event_time` / `published_at` ⭕（仅在来源可解析出真实时间时填充）
 - `archived_at` ✅ (自动填充)
 - `word_count` ✅ (自动计算)
 

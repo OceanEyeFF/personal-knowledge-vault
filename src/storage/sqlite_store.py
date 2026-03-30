@@ -64,6 +64,7 @@ class SQLiteStore:
         with self.get_connection() as conn:
             # 1. 创建主表
             self._create_tables(conn)
+            self._ensure_timeline_time_columns(conn)
 
             # 2. 创建索引
             self._create_indexes(conn)
@@ -96,6 +97,8 @@ class SQLiteStore:
                 search_strategy TEXT CHECK(search_strategy IN ('keyword', 'hybrid', 'vector', 'structured')),
                 file_path TEXT NOT NULL UNIQUE,
                 word_count INTEGER DEFAULT 0,
+                event_time TIMESTAMP,
+                published_at TIMESTAMP,
                 archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -156,6 +159,16 @@ class SQLiteStore:
 
         logger.info("✓ 数据表创建成功")
 
+    def _ensure_timeline_time_columns(self, conn: sqlite3.Connection) -> None:
+        """为旧库补齐 timeline 相关真实时间字段。"""
+        cursor = conn.execute("PRAGMA table_info(knowledge_items)")
+        columns = {row["name"] for row in cursor.fetchall()}
+
+        if "event_time" not in columns:
+            conn.execute("ALTER TABLE knowledge_items ADD COLUMN event_time TIMESTAMP")
+        if "published_at" not in columns:
+            conn.execute("ALTER TABLE knowledge_items ADD COLUMN published_at TIMESTAMP")
+
     def _create_indexes(self, conn: sqlite3.Connection):
         """创建所有索引"""
         logger.info("创建索引...")
@@ -164,6 +177,8 @@ class SQLiteStore:
             # knowledge_items 索引
             "CREATE INDEX IF NOT EXISTS idx_source_url ON knowledge_items(source_url)",
             "CREATE INDEX IF NOT EXISTS idx_source_type ON knowledge_items(source_type)",
+            "CREATE INDEX IF NOT EXISTS idx_event_time ON knowledge_items(event_time)",
+            "CREATE INDEX IF NOT EXISTS idx_published_at ON knowledge_items(published_at)",
             "CREATE INDEX IF NOT EXISTS idx_archived_at ON knowledge_items(archived_at)",
             "CREATE INDEX IF NOT EXISTS idx_search_strategy ON knowledge_items(search_strategy)",
             "CREATE INDEX IF NOT EXISTS idx_file_path ON knowledge_items(file_path)",
@@ -266,8 +281,8 @@ class SQLiteStore:
                 INSERT INTO knowledge_items (
                     title, content, summary_one_sentence, summary_100_words,
                     keywords, tags, source_type, source_url, search_strategy,
-                    file_path, word_count, archived_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    file_path, word_count, event_time, published_at, archived_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 entry.title,  # 使用原始标题（修复：不再分词）
                 entry.content,
@@ -280,6 +295,8 @@ class SQLiteStore:
                 entry.search_strategy,
                 file_path,
                 entry.word_count,
+                entry.event_time,
+                entry.published_at,
                 entry.archived_at
             ))
 

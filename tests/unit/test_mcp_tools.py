@@ -1007,7 +1007,11 @@ class TestTimelineOf:
                 TimelinePoint(
                     knowledge_id=1,
                     title="Alpha",
+                    time_value="2026-03-01 08:00:00",
+                    event_time="2026-03-01 08:00:00",
+                    published_at="2026-03-02 08:00:00",
                     archived_at="2026-03-10 10:00:00",
+                    time_source="event_time",
                     source_type="generic",
                     abstract="Alpha 摘要",
                     tags=["AI"],
@@ -1033,6 +1037,10 @@ class TestTimelineOf:
         assert "evidence_sources" in result
         assert "time_source_priority" in result
         assert "time_source" in result["items"][0]
+        assert result["items"][0]["time_value"] == "2026-03-01 08:00:00"
+        assert result["items"][0]["event_time"] == "2026-03-01 08:00:00"
+        assert result["items"][0]["published_at"] == "2026-03-02 08:00:00"
+        assert result["items"][0]["archived_at"] == "2026-03-10 10:00:00"
         mock_service.timeline_of.assert_called_once()
 
 

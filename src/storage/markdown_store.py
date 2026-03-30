@@ -7,13 +7,32 @@ Markdown 存储层
 import frontmatter
 from pathlib import Path
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import date, datetime
 from dataclasses import dataclass, field, asdict
 
 from src.utils.logger import get_logger
 from src.utils.text_utils import TextProcessor
 
 logger = get_logger(__name__)
+
+
+def _normalize_time_field(value: Any) -> Optional[str]:
+    """归一化时间字段，统一为单值字符串。"""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            normalized = _normalize_time_field(item)
+            if normalized:
+                return normalized
+        return None
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+
+    text = str(value).strip()
+    return text or None
 
 
 @dataclass
@@ -24,6 +43,8 @@ class Entry:
     title: str
     source_type: str  # wechat/zhihu/bilibili/pdf/personal
     source_url: Optional[str] = None
+    event_time: Optional[str] = None
+    published_at: Optional[str] = None
     archived_at: Optional[str] = None
 
     # 内容分析 (必填)
@@ -52,6 +73,10 @@ class Entry:
 
     def __post_init__(self):
         """初始化后处理"""
+        self.event_time = _normalize_time_field(self.event_time)
+        self.published_at = _normalize_time_field(self.published_at)
+        self.archived_at = _normalize_time_field(self.archived_at)
+
         if self.archived_at is None:
             self.archived_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -162,6 +187,8 @@ class MarkdownStore:
             title=metadata.get("title", ""),
             source_type=metadata.get("source_type", "personal"),
             source_url=metadata.get("source_url"),
+            event_time=metadata.get("event_time"),
+            published_at=metadata.get("published_at"),
             archived_at=metadata.get("archived_at"),
             tags=metadata.get("tags", []),
             keywords=metadata.get("keywords", []),
