@@ -22,6 +22,7 @@ class OpenAIClient:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
+        dimensions: Optional[int] = None,
         timeout: float = 30.0,
         max_retries: int = 3,
     ):
@@ -32,6 +33,7 @@ class OpenAIClient:
             api_key: API Key，默认从配置中读取
             base_url: API Base URL，默认从配置中读取
             model: Embedding 模型名称，默认从 Config 读取（环境变量 > config.yaml > 内置默认）
+            dimensions: Embedding 目标维度，默认从 Config 读取
             timeout: 请求超时时间（秒）
             max_retries: 最大重试次数
         """
@@ -43,6 +45,8 @@ class OpenAIClient:
 
         self.base_url = base_url or config.openai_base_url
         self.model = model or config.openai_embedding_model
+        self.dimensions = dimensions or config.embedding_dim
+        self._use_dimensions = self.dimensions is not None
         self.timeout = timeout
         self.max_retries = max_retries
 
@@ -54,7 +58,10 @@ class OpenAIClient:
             max_retries=self.max_retries,
         )
 
-        logger.info(f"OpenAI 客户端初始化成功: model={self.model}, base_url={self.base_url}")
+        logger.info(
+            "OpenAI 客户端初始化成功: "
+            f"model={self.model}, base_url={self.base_url}, dimensions={self.dimensions}"
+        )
 
     def embed(self, text: str) -> List[float]:
         """
@@ -81,12 +88,10 @@ class OpenAIClient:
         try:
             logger.debug(f"开始生成 Embedding: text_length={len(text)}")
 
-            response = self.client.embeddings.create(
-                model=self.model,
-                input=text,
-            )
+            response = self._create_embedding_response(text)
 
             embedding = response.data[0].embedding
+            self._validate_embedding_dimension(len(embedding))
 
             # 记录 token 使用情况
             usage = response.usage
@@ -155,13 +160,12 @@ class OpenAIClient:
             try:
                 logger.debug(f"处理批次 {i // batch_size + 1}: size={len(batch)}")
 
-                response = self.client.embeddings.create(
-                    model=self.model,
-                    input=batch,
-                )
+                response = self._create_embedding_response(batch)
 
                 # 提取 embedding
                 batch_embeddings = [item.embedding for item in response.data]
+                for embedding in batch_embeddings:
+                    self._validate_embedding_dimension(len(embedding))
                 all_embeddings.extend(batch_embeddings)
 
                 # 记录 token 使用情况
@@ -227,3 +231,58 @@ class OpenAIClient:
         """
         embeddings = self.embed_batch(texts, batch_size=batch_size)
         return np.array(embeddings, dtype=np.float32)
+
+    def _validate_embedding_dimension(self, actual_dim: int) -> None:
+        """校验返回向量维度与配置一致。"""
+        if actual_dim != self.dimensions:
+            raise ValueError(
+                f"Embedding 维度不匹配: expected={self.dimensions}, actual={actual_dim}"
+            )
+
+    def _create_embedding_response(self, input_payload: str | List[str]):
+        """调用 Embedding API，并在后端不支持 dimensions 时自动回退。"""
+        request_kwargs = {
+            "model": self.model,
+            "input": input_payload,
+        }
+        if self._use_dimensions and self.dimensions is not None:
+            request_kwargs["dimensions"] = self.dimensions
+
+        try:
+            return self.client.embeddings.create(**request_kwargs)
+        except TypeError as e:
+            if not self._should_retry_without_dimensions(e):
+                raise
+        except OpenAIError as e:
+            if not self._should_retry_without_dimensions(e):
+                raise
+
+        logger.warning(
+            "Embedding 后端不支持 dimensions 参数，已回退为不传该参数: model=%s",
+            self.model,
+        )
+        self._use_dimensions = False
+        fallback_kwargs = {
+            "model": self.model,
+            "input": input_payload,
+        }
+        return self.client.embeddings.create(**fallback_kwargs)
+
+    def _should_retry_without_dimensions(self, error: Exception) -> bool:
+        """判断当前异常是否表示后端不支持 dimensions 参数。"""
+        if not self._use_dimensions:
+            return False
+
+        message = str(error).lower()
+        if "dimension" not in message:
+            return False
+
+        unsupported_markers = (
+            "unknown parameter",
+            "unsupported",
+            "not supported",
+            "unexpected keyword argument",
+            "extra fields not permitted",
+            "extra_forbidden",
+        )
+        return any(marker in message for marker in unsupported_markers)

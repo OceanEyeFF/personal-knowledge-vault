@@ -6,6 +6,7 @@
 
 from typing import List
 from pathlib import Path
+from numbers import Integral
 import numpy as np
 
 from src.storage.sqlite_store import SQLiteStore
@@ -34,8 +35,14 @@ class VectorRetriever:
             embedder: 向量化工具
         """
         self.store = SQLiteStore(db_path)
-        self.vector_store = VectorStore(vector_index_dir)
         self.embedder = embedder
+        embedder_dim = getattr(embedder, "dim", None)
+        if not isinstance(embedder_dim, Integral):
+            embedder_dim = None
+        self.vector_store = VectorStore(
+            vector_index_dir,
+            dim=int(embedder_dim) if embedder_dim is not None else None,
+        )
 
     def search(self, query: str, limit: int = 10) -> List[SearchResult]:
         """

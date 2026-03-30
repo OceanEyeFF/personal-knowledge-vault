@@ -221,3 +221,18 @@ def test_vector_store_rejects_chunk_index_overflow(tmp_path: Path):
             chunk_index=VectorStore.MAX_CHUNK_INDEX + 1,
             vector=np.zeros(1536, dtype="float32"),
         )
+
+
+def test_vector_retriever_uses_embedder_dimension_for_new_store(tmp_path: Path):
+    """新建索引时应采用 embedder 维度，避免默认值分裂。"""
+    from unittest.mock import Mock
+    from src.retrieval.vector_retriever import VectorRetriever
+
+    db_path = tmp_path / "test.db"
+    vector_dir = tmp_path / "vectors"
+    mock_embedder = Mock()
+    mock_embedder.dim = 8
+
+    retriever = VectorRetriever(db_path, vector_dir, mock_embedder)
+
+    assert retriever.vector_store.dim == 8

@@ -5,6 +5,7 @@
 """
 
 import sys
+import tempfile
 from pathlib import Path
 
 # 添加项目根目录到 Python 路径
@@ -32,14 +33,14 @@ def test_config():
     print("  ✅ 配置加载成功")
 
 
-def test_logger():
+def test_logger(log_file: Path | None = None, log_level: str | None = None):
     """测试日志系统"""
     print("\n📝 测试日志系统...")
     config = get_config()
 
     LoggerSetup.setup(
-        level=config.log_level,
-        log_file=config.log_dir / "verify.log"
+        level=log_level or config.log_level,
+        log_file=log_file or config.log_dir / "verify.log"
     )
 
     logger = get_logger(__name__)
@@ -67,11 +68,11 @@ def test_text_processor():
     print("  ✅ 文本处理正常")
 
 
-def test_markdown_store():
+def test_markdown_store(vault_dir: Path | None = None):
     """测试 Markdown 存储"""
     print("\n📄 测试 Markdown 存储...")
     config = get_config()
-    store = MarkdownStore(vault_dir=config.vault_dir)
+    store = MarkdownStore(vault_dir=vault_dir or config.vault_dir)
 
     # 创建测试条目
     entry = Entry(
@@ -101,11 +102,11 @@ def test_markdown_store():
     return str(file_path)
 
 
-def test_sqlite_store():
+def test_sqlite_store(db_path: Path | None = None):
     """测试 SQLite 存储"""
     print("\n🗄️  测试 SQLite 存储...")
     config = get_config()
-    store = SQLiteStore(db_path=config.db_path)
+    store = SQLiteStore(db_path=db_path or config.db_path)
 
     # 初始化数据库
     store.initialize()
@@ -140,15 +141,18 @@ def test_sqlite_store():
     print("  ✅ SQLite 存储正常")
 
 
-def test_vector_store():
+def test_vector_store(index_dir: Path | None = None, dim: int | None = None):
     """测试向量存储"""
     print("\n🔢 测试向量存储...")
     config = get_config()
-    dim = config.embedding_dim
-    store = VectorStore(index_dir=config.vector_index_dir, dim=dim)
+    resolved_dim = dim or config.embedding_dim
+    store = VectorStore(
+        index_dir=index_dir or config.vector_index_dir,
+        dim=resolved_dim,
+    )
 
     # 添加测试向量
-    test_vector = np.random.rand(dim).astype('float32')
+    test_vector = np.random.rand(resolved_dim).astype('float32')
     store.add_doc_vector(knowledge_id=1, vector=test_vector)
     print("  ✓ 添加文档向量")
 
@@ -167,6 +171,21 @@ def test_vector_store():
     print("  ✅ 向量存储正常")
 
 
+def _build_verify_workspace(root: Path) -> dict[str, Path]:
+    """构建验证脚本使用的隔离工作区路径。"""
+    workspace = {
+        "vault_dir": root / "vault",
+        "db_path": root / "data" / "verify.db",
+        "vector_index_dir": root / "vectors",
+        "log_file": root / "logs" / "verify.log",
+    }
+    workspace["vault_dir"].mkdir(parents=True, exist_ok=True)
+    workspace["db_path"].parent.mkdir(parents=True, exist_ok=True)
+    workspace["vector_index_dir"].mkdir(parents=True, exist_ok=True)
+    workspace["log_file"].parent.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
 def main():
     """主函数"""
     print("=" * 60)
@@ -174,12 +193,23 @@ def main():
     print("=" * 60)
 
     try:
-        test_config()
-        test_logger()
-        test_text_processor()
-        test_markdown_store()
-        test_sqlite_store()
-        test_vector_store()
+        config = get_config()
+        with tempfile.TemporaryDirectory(prefix="pkv-verify-") as temp_dir:
+            workspace = _build_verify_workspace(Path(temp_dir))
+
+            test_config()
+            print(f"\n🧪 状态性验证将在隔离目录执行: {Path(temp_dir)}")
+            test_logger(
+                log_file=workspace["log_file"],
+                log_level=config.log_level,
+            )
+            test_text_processor()
+            test_markdown_store(vault_dir=workspace["vault_dir"])
+            test_sqlite_store(db_path=workspace["db_path"])
+            test_vector_store(
+                index_dir=workspace["vector_index_dir"],
+                dim=config.embedding_dim,
+            )
 
         print("\n" + "=" * 60)
         print("✅ 所有测试通过！系统安装正确！")

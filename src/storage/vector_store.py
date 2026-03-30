@@ -10,6 +10,7 @@ import numpy as np
 from pathlib import Path
 from typing import List, Tuple, Optional
 
+from src.utils.config import get_config
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -21,17 +22,17 @@ class VectorStore:
     CHUNK_ID_STRIDE = 10000
     MAX_CHUNK_INDEX = CHUNK_ID_STRIDE - 1
 
-    def __init__(self, index_dir: Path, dim: int = 1536):
+    def __init__(self, index_dir: Path, dim: Optional[int] = None):
         """
         初始化向量索引
 
         Args:
             index_dir: 向量索引目录
-            dim: 向量维度 (默认 1536，可通过 config.yaml 或环境变量 OPENAI_EMBEDDING_DIM 配置)
+            dim: 向量维度；未传入时优先沿用已有索引维度，否则回落到配置值
         """
         self.index_dir = Path(index_dir)
         self.index_dir.mkdir(parents=True, exist_ok=True)
-        self.dim = dim
+        self.dim = self._resolve_index_dim(dim)
 
         # HNSW 参数
         self.M = 16  # 每个节点的连接数
@@ -43,6 +44,43 @@ class VectorStore:
         self.chunk_index = self._init_index("chunk_vectors")
 
         logger.info(f"向量存储初始化完成: {self.index_dir}")
+
+    def _resolve_index_dim(self, requested_dim: Optional[int]) -> int:
+        """解析当前索引目录应使用的向量维度。"""
+        metadata_dims: dict[str, int] = {}
+        for name in ("doc_vectors", "chunk_vectors"):
+            metadata_path = self.index_dir / f"{name}_metadata.json"
+            if not metadata_path.exists():
+                continue
+
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+
+            dim = metadata.get("dim")
+            if dim is None:
+                raise RuntimeError(f"{name} 缺少 dim 元数据，无法安全加载索引")
+            metadata_dims[name] = int(dim)
+
+        unique_dims = set(metadata_dims.values())
+        if len(unique_dims) > 1:
+            raise RuntimeError(
+                f"索引目录存在不一致的维度定义: {metadata_dims}，请先人工修复"
+            )
+
+        existing_dim = next(iter(unique_dims), None)
+        if existing_dim is not None:
+            if requested_dim is not None and int(requested_dim) != existing_dim:
+                raise RuntimeError(
+                    "索引维度不匹配: "
+                    f"已有={existing_dim}, 当前请求={int(requested_dim)}。"
+                    "当前初始化不会自动重建索引，请先人工确认数据迁移方案。"
+                )
+            return existing_dim
+
+        if requested_dim is not None:
+            return int(requested_dim)
+
+        return int(get_config().embedding_dim)
 
     def _init_index(self, name: str) -> hnswlib.Index:
         """
@@ -57,48 +95,47 @@ class VectorStore:
         index_path = self.index_dir / f"{name}.idx"
         metadata_path = self.index_dir / f"{name}_metadata.json"
 
+        if index_path.exists() != metadata_path.exists():
+            raise RuntimeError(
+                f"{name} 索引文件与元数据不一致，无法安全初始化: "
+                f"index_exists={index_path.exists()}, metadata_exists={metadata_path.exists()}"
+            )
+
         # 创建索引对象
         index = hnswlib.Index(space='cosine', dim=self.dim)
 
         if index_path.exists():
-            # 检查已有索引的维度是否匹配
-            need_rebuild = False
-            if metadata_path.exists():
-                try:
-                    with open(metadata_path, 'r', encoding='utf-8') as f:
-                        old_meta = json.load(f)
-                    old_dim = old_meta.get("dim", self.dim)
-                    if old_dim != self.dim:
-                        logger.warning(
-                            f"⚠️ 索引维度不匹配: 已有={old_dim}, 当前配置={self.dim}，将重建索引: {name}"
-                        )
-                        need_rebuild = True
-                except (json.JSONDecodeError, KeyError):
-                    pass
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+            existing_dim = metadata.get("dim")
+            if existing_dim is None:
+                raise RuntimeError(f"{name} 缺少 dim 元数据，无法安全加载索引")
+            if int(existing_dim) != self.dim:
+                raise RuntimeError(
+                    "索引维度不匹配: "
+                    f"name={name}, 已有={int(existing_dim)}, 当前请求={self.dim}。"
+                    "当前初始化不会自动重建索引，请先人工确认数据迁移方案。"
+                )
 
-            if need_rebuild:
-                # 删除旧索引文件，重新创建
-                index_path.unlink(missing_ok=True)
-                metadata_path.unlink(missing_ok=True)
-                logger.info(f"🔄 已删除旧索引，重建中: {name}")
-            else:
-                # 加载已有索引
-                index.load_index(str(index_path))
-                # 修正容量：若 max_elements 不足则扩容到安全值
-                if index.max_elements < index.element_count + 1000:
-                    safe_size = max(10000, index.element_count + 1000)
-                    index.resize_index(safe_size)
-                    logger.info(
-                        f"🔄 索引容量不足，已扩容至 {safe_size}: {name}"
-                    )
-                logger.info(f"✅ 加载已有索引: {index_path}")
-
-        if not index_path.exists():
+            index.load_index(
+                str(index_path),
+                allow_replace_deleted=True,
+            )
+            # 修正容量：若 max_elements 不足则扩容到安全值
+            if index.max_elements < index.element_count + 1000:
+                safe_size = max(10000, index.element_count + 1000)
+                index.resize_index(safe_size)
+                logger.info(
+                    f"🔄 索引容量不足，已扩容至 {safe_size}: {name}"
+                )
+            logger.info(f"✅ 加载已有索引: {index_path}")
+        else:
             # 初始化新索引
             index.init_index(
                 max_elements=10000,  # 初始容量，由 _ensure_capacity 按需扩展
                 ef_construction=self.ef_construction,
-                M=self.M
+                M=self.M,
+                allow_replace_deleted=True,
             )
             # 保存空索引
             index.save_index(str(index_path))
@@ -138,7 +175,12 @@ class VectorStore:
                 f"🔄 索引自动扩容: {index.max_elements // 2} → {new_size}"
             )
 
-    def add_doc_vector(self, knowledge_id: int, vector: np.ndarray):
+    def add_doc_vector(
+        self,
+        knowledge_id: int,
+        vector: np.ndarray,
+        replace_deleted: bool = False,
+    ):
         """
         添加文档级向量
 
@@ -154,14 +196,24 @@ class VectorStore:
         self._ensure_capacity(self.doc_index)
 
         # 添加向量 (使用 knowledge_id 作为 hnswlib 的标签)
-        self.doc_index.add_items(vector.reshape(1, -1), ids=[knowledge_id])
+        self.doc_index.add_items(
+            vector.reshape(1, -1),
+            ids=[knowledge_id],
+            replace_deleted=replace_deleted,
+        )
 
         # 保存索引
         self._save_index("doc_vectors")
 
         logger.info(f"添加文档向量: knowledge_id={knowledge_id}")
 
-    def add_chunk_vector(self, knowledge_id: int, chunk_index: int, vector: np.ndarray):
+    def add_chunk_vector(
+        self,
+        knowledge_id: int,
+        chunk_index: int,
+        vector: np.ndarray,
+        replace_deleted: bool = False,
+    ):
         """
         添加分块级向量
 
@@ -180,7 +232,11 @@ class VectorStore:
         self._ensure_capacity(self.chunk_index)
 
         # 添加向量
-        self.chunk_index.add_items(vector.reshape(1, -1), ids=[hnswlib_id])
+        self.chunk_index.add_items(
+            vector.reshape(1, -1),
+            ids=[hnswlib_id],
+            replace_deleted=replace_deleted,
+        )
 
         # 保存映射关系
         self._update_metadata("chunk_vectors", hnswlib_id, (knowledge_id, chunk_index))
@@ -189,6 +245,61 @@ class VectorStore:
         self._save_index("chunk_vectors")
 
         logger.info(f"添加分块向量: knowledge_id={knowledge_id}, chunk_index={chunk_index}")
+
+    def add_chunk_vectors(
+        self,
+        knowledge_id: int,
+        chunk_indices: List[int],
+        vectors: np.ndarray,
+        replace_deleted: bool = False,
+    ) -> int:
+        """
+        批量添加分块级向量。
+
+        Args:
+            knowledge_id: 知识条目 ID
+            chunk_indices: 分块序号列表
+            vectors: 向量矩阵 (shape=(num_chunks, dim))
+            replace_deleted: 是否复用已标记删除的 label
+
+        Returns:
+            实际写入的向量数量
+        """
+        if knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+        if len(chunk_indices) == 0:
+            return 0
+        if vectors.ndim != 2:
+            raise ValueError("vectors 必须是二维矩阵")
+        if len(chunk_indices) != vectors.shape[0]:
+            raise ValueError("chunk_indices 与 vectors 行数必须一致")
+
+        if vectors.dtype != np.float32:
+            vectors = vectors.astype("float32")
+
+        hnswlib_ids = [
+            self.encode_chunk_id(knowledge_id, chunk_index)
+            for chunk_index in chunk_indices
+        ]
+        self._ensure_capacity(self.chunk_index, count=len(hnswlib_ids))
+        self.chunk_index.add_items(
+            vectors,
+            ids=hnswlib_ids,
+            replace_deleted=replace_deleted,
+        )
+
+        mapping = {
+            hnswlib_id: (knowledge_id, chunk_index)
+            for hnswlib_id, chunk_index in zip(hnswlib_ids, chunk_indices)
+        }
+        self._update_metadata_batch("chunk_vectors", mapping)
+        self._save_index("chunk_vectors")
+        logger.info(
+            "批量添加分块向量: knowledge_id=%s, count=%s",
+            knowledge_id,
+            len(hnswlib_ids),
+        )
+        return len(hnswlib_ids)
 
     @classmethod
     def encode_chunk_id(cls, knowledge_id: int, chunk_index: int) -> int:
@@ -286,6 +397,61 @@ class VectorStore:
 
         return stats
 
+    def get_chunk_indices_for_entry(self, knowledge_id: int) -> List[int]:
+        """获取条目当前已记录的 chunk_index 列表。"""
+        if knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+
+        metadata = self._load_metadata("chunk_vectors")
+        chunk_indices = []
+        for hnswlib_id, mapping in metadata.get("id_mapping", {}).items():
+            if int(mapping[0]) != knowledge_id:
+                continue
+            if not self._chunk_vector_exists(int(hnswlib_id)):
+                logger.warning(
+                    "检测到 chunk metadata/index 漂移: knowledge_id=%s, hnswlib_id=%s",
+                    knowledge_id,
+                    hnswlib_id,
+                )
+                continue
+            chunk_indices.append(int(mapping[1]))
+        return sorted(chunk_indices)
+
+    def delete_chunk_vectors_for_entry(self, knowledge_id: int) -> int:
+        """仅删除指定条目的分块级向量。"""
+        if knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+
+        metadata = self._load_metadata("chunk_vectors")
+        chunk_ids = [
+            int(hnswlib_id)
+            for hnswlib_id, mapping in metadata.get("id_mapping", {}).items()
+            if int(mapping[0]) == knowledge_id
+        ]
+
+        deleted_count = 0
+        for hnswlib_id in chunk_ids:
+            try:
+                self.chunk_index.mark_deleted(hnswlib_id)
+                deleted_count += 1
+            except RuntimeError:
+                logger.debug(f"分块向量不存在: hnswlib_id={hnswlib_id}")
+
+        if deleted_count > 0:
+            for hnswlib_id in chunk_ids:
+                metadata.get("id_mapping", {}).pop(str(hnswlib_id), None)
+            metadata_path = self.index_dir / "chunk_vectors_metadata.json"
+            with open(metadata_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2)
+            self._save_index("chunk_vectors")
+            logger.info(
+                "标记删除分块向量: knowledge_id=%s, count=%s",
+                knowledge_id,
+                deleted_count,
+            )
+
+        return deleted_count
+
     def search_doc(self, query_vector: np.ndarray, k: int = 10) -> List[Tuple[int, float]]:
         """
         搜索文档级向量
@@ -362,6 +528,27 @@ class VectorStore:
         metadata_path = self.index_dir / f"{name}_metadata.json"
         with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2)
+
+    def _update_metadata_batch(self, name: str, mappings: dict[int, Tuple[int, int]]):
+        """批量更新元数据映射。"""
+        if not mappings:
+            return
+
+        metadata = self._load_metadata(name)
+        for hnswlib_id, mapping in mappings.items():
+            metadata["id_mapping"][str(hnswlib_id)] = mapping
+
+        metadata_path = self.index_dir / f"{name}_metadata.json"
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+
+    def _chunk_vector_exists(self, hnswlib_id: int) -> bool:
+        """校验 metadata 中的 chunk label 是否真实存在于索引。"""
+        try:
+            vectors = self.chunk_index.get_items([hnswlib_id])
+        except RuntimeError:
+            return False
+        return vectors is not None and len(vectors) > 0
 
     def get_index_stats(self) -> dict:
         """

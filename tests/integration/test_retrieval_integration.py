@@ -11,7 +11,11 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+import numpy as np
 import pytest
+from scripts.backfill_chunks import run_chunk_backfill
+from src.relations.evidence_service import EvidenceCollectionService
+from src.relations.models import RelationExplanationResult
 from src.storage.markdown_store import MarkdownStore, Entry
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.vector_store import VectorStore
@@ -20,6 +24,68 @@ from src.retrieval.bm25_retriever import BM25Retriever
 from src.retrieval.vector_retriever import VectorRetriever
 from src.retrieval.hybrid_retriever import HybridRetriever
 from src.retrieval.query_router import QueryRouter
+from src.retrieval.result import SearchResult
+
+
+class DeterministicEmbedder:
+    """用于集成测试的确定性 Embedder。"""
+
+    dim = 1536
+
+    def embed_document(self, text: str) -> np.ndarray:
+        text_lower = (text or "").lower()
+        vector = np.zeros(self.dim, dtype=np.float32)
+        keyword_slots = {
+            "alpha": 0,
+            "beta": 1,
+            "graph": 2,
+            "relation": 3,
+            "history": 4,
+        }
+        for keyword, slot in keyword_slots.items():
+            if keyword in text_lower:
+                vector[slot] = 1.0
+        if not np.any(vector):
+            vector[10] = 1.0
+        return vector
+
+    def embed_chunks(
+        self, text: str, return_chunks: bool = False
+    ) -> tuple[np.ndarray, list[str] | None]:
+        chunks = [chunk.strip() for chunk in (text or "").split("||") if chunk.strip()]
+        if not chunks:
+            raise ValueError("测试输入未生成 chunk")
+
+        vectors = np.vstack([self.embed_document(chunk) for chunk in chunks]).astype(
+            np.float32
+        )
+        return vectors, chunks if return_chunks else None
+
+
+class StaticQueryRouter:
+    def __init__(self, results: list[SearchResult]):
+        self._results = results
+
+    def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+        return self._results[:limit]
+
+
+class NoopRelationQueryService:
+    def explain_relation(
+        self,
+        source_knowledge_id: int,
+        target_knowledge_id: int,
+        max_depth: int = 2,
+        per_node_limit: int = 100,
+    ) -> RelationExplanationResult:
+        return RelationExplanationResult(
+            source_knowledge_id=source_knowledge_id,
+            target_knowledge_id=target_knowledge_id,
+            found=False,
+            explanation_type="not_found",
+            hops=0,
+            summary="未找到关系解释",
+        )
 
 
 class TestDataPipelineIntegration:
@@ -322,6 +388,142 @@ class TestDataPipelineIntegration:
 
         # 验证准确率阈值（宽松一点，因为测试数据少）
         assert accuracy >= 0.5, f"准确率应该 >= 50%，当前: {accuracy * 100:.1f}%"
+
+    def test_chunk_backfill_apply_supports_scope_and_idempotency(self, tmp_path: Path):
+        """历史 chunk 回填应支持指定范围执行且可重复运行。"""
+        vault_dir = tmp_path / "vault"
+        db_path = tmp_path / "db" / "test.db"
+        vector_dir = tmp_path / "vectors"
+        vault_dir.mkdir(parents=True, exist_ok=True)
+        vector_dir.mkdir(parents=True, exist_ok=True)
+
+        markdown_store = MarkdownStore(vault_dir)
+        sqlite_store = SQLiteStore(db_path)
+        sqlite_store.initialize()
+        embedder = DeterministicEmbedder()
+
+        entry_alpha = Entry(
+            title="Alpha History",
+            source_type="generic",
+            content="Alpha relation chunk||Alpha history detail",
+            summary_one_sentence="Alpha summary",
+        )
+        entry_beta = Entry(
+            title="Beta History",
+            source_type="generic",
+            content="Beta graph chunk||Beta history detail",
+            summary_one_sentence="Beta summary",
+        )
+        alpha_path = markdown_store.save(entry_alpha)
+        beta_path = markdown_store.save(entry_beta)
+        alpha_id = sqlite_store.insert_entry(entry_alpha, str(alpha_path))
+        beta_id = sqlite_store.insert_entry(entry_beta, str(beta_path))
+
+        scoped_report = run_chunk_backfill(
+            db_path=db_path,
+            vector_index_dir=vector_dir,
+            knowledge_ids=[alpha_id],
+            apply=True,
+            embedding_dim=embedder.dim,
+            embedder=embedder,
+        )
+
+        assert scoped_report.applied_entries == 1
+        assert sqlite_store.count_chunks(alpha_id) == 2
+        assert sqlite_store.count_chunks(beta_id) == 0
+
+        vector_store = VectorStore(vector_dir, dim=embedder.dim)
+        assert vector_store.get_chunk_indices_for_entry(alpha_id) == [0, 1]
+
+        rerun_report = run_chunk_backfill(
+            db_path=db_path,
+            vector_index_dir=vector_dir,
+            knowledge_ids=[alpha_id],
+            apply=True,
+            embedding_dim=embedder.dim,
+            embedder=embedder,
+        )
+
+        assert rerun_report.candidate_entries == 0
+        assert rerun_report.applied_entries == 0
+        assert sqlite_store.count_chunks(alpha_id) == 2
+        assert vector_store.get_chunk_indices_for_entry(alpha_id) == [0, 1]
+
+    def test_chunk_backfill_apply_enables_chunk_retrieval_and_evidence(
+        self, tmp_path: Path
+    ):
+        """历史样本回填后应能被 chunk 检索与 EvidenceService 消费。"""
+        vault_dir = tmp_path / "vault"
+        db_path = tmp_path / "db" / "test.db"
+        vector_dir = tmp_path / "vectors"
+        vault_dir.mkdir(parents=True, exist_ok=True)
+        vector_dir.mkdir(parents=True, exist_ok=True)
+
+        markdown_store = MarkdownStore(vault_dir)
+        sqlite_store = SQLiteStore(db_path)
+        sqlite_store.initialize()
+        embedder = DeterministicEmbedder()
+
+        entry = Entry(
+            title="Alpha Retrieval History",
+            source_type="generic",
+            content="Alpha relation chunk||Neutral archive chunk",
+            summary_one_sentence="Alpha retrieval summary",
+            tags=["alpha", "graph"],
+        )
+        file_path = markdown_store.save(entry)
+        knowledge_id = sqlite_store.insert_entry(entry, str(file_path))
+
+        report = run_chunk_backfill(
+            db_path=db_path,
+            vector_index_dir=vector_dir,
+            apply=True,
+            embedding_dim=embedder.dim,
+            embedder=embedder,
+        )
+        assert report.applied_entries == 1
+
+        retriever = VectorRetriever(db_path, vector_dir, embedder)
+        chunk_results = retriever.search_chunks("Alpha relation", limit=3)
+
+        assert chunk_results
+        assert chunk_results[0].knowledge_id == knowledge_id
+        assert chunk_results[0].metadata["chunk_index"] == 0
+        assert "Alpha relation chunk" in chunk_results[0].metadata["chunk_text"]
+
+        service = EvidenceCollectionService(
+            query_router=StaticQueryRouter(
+                [
+                    SearchResult(
+                        knowledge_id=knowledge_id,
+                        title=entry.title,
+                        score=0.95,
+                        highlight=entry.summary_one_sentence,
+                        metadata={
+                            "source_type": entry.source_type,
+                            "file_path": str(file_path),
+                            "tags": ",".join(entry.tags),
+                        },
+                    )
+                ]
+            ),
+            sqlite_store=sqlite_store,
+            markdown_store=markdown_store,
+            relation_query_service=NoopRelationQueryService(),
+            chunk_searcher=retriever,
+        )
+
+        evidence_result = service.collect_evidence(
+            question="Alpha relation",
+            top_k=1,
+            include_chunks=True,
+        )
+
+        assert evidence_result.found is True
+        assert evidence_result.evidence[0].knowledge_id == knowledge_id
+        assert evidence_result.evidence[0].chunk_index == 0
+        assert evidence_result.evidence[0].chunk_text == "Alpha relation chunk"
+        assert evidence_result.evidence[0].content_preview == "Alpha relation chunk"
 
 
 class TestIndexHealth:

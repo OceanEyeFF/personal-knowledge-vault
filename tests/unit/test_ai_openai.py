@@ -11,7 +11,7 @@ sys.path.insert(0, str(project_root))
 
 import pytest
 import numpy as np
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch, MagicMock, call
 
 from src.ai.openai_client import OpenAIClient
 
@@ -24,6 +24,7 @@ def mock_config():
         config.openai_api_key = "test-openai-key"
         config.openai_base_url = "https://api.openai.com/v1"
         config.openai_embedding_model = "text-embedding-3-small"
+        config.embedding_dim = 1536
         mock.return_value = config
         yield config
 
@@ -46,6 +47,7 @@ class TestOpenAIClientInit:
             assert client.api_key == "test-openai-key"
             assert client.base_url == "https://api.openai.com/v1"
             assert client.model == "text-embedding-3-small"
+            assert client.dimensions == 1536
             assert client.timeout == 30.0
             assert client.max_retries == 3
 
@@ -64,6 +66,7 @@ class TestOpenAIClientInit:
                 api_key="custom-key",
                 base_url="https://custom.api.com",
                 model="text-embedding-3-large",
+                dimensions=1024,
                 timeout=60.0,
                 max_retries=5,
             )
@@ -71,6 +74,7 @@ class TestOpenAIClientInit:
             assert client.api_key == "custom-key"
             assert client.base_url == "https://custom.api.com"
             assert client.model == "text-embedding-3-large"
+            assert client.dimensions == 1024
             assert client.timeout == 60.0
             assert client.max_retries == 5
 
@@ -102,7 +106,51 @@ class TestOpenAIEmbed:
 
         assert len(embedding) == 1536
         assert all(isinstance(x, float) for x in embedding)
-        client.client.embeddings.create.assert_called_once()
+        client.client.embeddings.create.assert_called_once_with(
+            model="text-embedding-3-small",
+            input="Hello, world!",
+            dimensions=1536,
+        )
+
+    def test_embed_rejects_dimension_mismatch(self, client):
+        """测试返回维度与配置不一致时抛出异常。"""
+        mock_response = Mock()
+        mock_response.data = [Mock(embedding=[0.1] * 2560)]
+        mock_response.usage = Mock(prompt_tokens=10, total_tokens=10)
+
+        client.client.embeddings.create = Mock(return_value=mock_response)
+
+        with pytest.raises(ValueError, match="Embedding 维度不匹配"):
+            client.embed("dimension mismatch")
+
+    def test_embed_retries_without_dimensions_when_backend_rejects_it(self, client):
+        """测试后端不支持 dimensions 参数时回退重试。"""
+        from openai import OpenAIError
+
+        mock_response = Mock()
+        mock_response.data = [Mock(embedding=[0.1] * 1536)]
+        mock_response.usage = Mock(prompt_tokens=10, total_tokens=10)
+        client.client.embeddings.create = Mock(
+            side_effect=[
+                OpenAIError("unknown parameter: dimensions"),
+                mock_response,
+            ]
+        )
+
+        embedding = client.embed("fallback text")
+
+        assert len(embedding) == 1536
+        assert client.client.embeddings.create.call_args_list == [
+            call(
+                model="text-embedding-3-small",
+                input="fallback text",
+                dimensions=1536,
+            ),
+            call(
+                model="text-embedding-3-small",
+                input="fallback text",
+            ),
+        ]
 
     def test_embed_empty_text(self, client):
         """测试空文本时抛出异常"""
@@ -172,7 +220,11 @@ class TestOpenAIEmbedBatch:
 
         assert len(embeddings) == 3
         assert all(len(emb) == 1536 for emb in embeddings)
-        client.client.embeddings.create.assert_called_once()
+        client.client.embeddings.create.assert_called_once_with(
+            model="text-embedding-3-small",
+            input=texts,
+            dimensions=1536,
+        )
 
     def test_embed_batch_empty_list(self, client):
         """测试空列表时抛出异常"""
@@ -200,6 +252,7 @@ class TestOpenAIEmbedBatch:
         # 检查传递给 API 的文本
         call_args = client.client.embeddings.create.call_args
         assert call_args[1]['input'] == ["text1", "text2"]
+        assert call_args[1]['dimensions'] == 1536
 
     def test_embed_batch_with_batching(self, client):
         """测试分批处理"""
@@ -226,6 +279,56 @@ class TestOpenAIEmbedBatch:
         # 应该调用 3 次（100 + 100 + 50）
         assert client.client.embeddings.create.call_count == 3
         assert len(embeddings) == 250
+
+    def test_embed_batch_rejects_dimension_mismatch(self, client):
+        """测试批量返回错维度时抛出异常。"""
+        texts = ["text1", "text2"]
+
+        mock_response = Mock()
+        mock_response.data = [
+            Mock(embedding=[0.1] * 1536),
+            Mock(embedding=[0.2] * 2560),
+        ]
+        mock_response.usage = Mock(prompt_tokens=20, total_tokens=20)
+        client.client.embeddings.create = Mock(return_value=mock_response)
+
+        with pytest.raises(ValueError, match="Embedding 维度不匹配"):
+            client.embed_batch(texts)
+
+    def test_embed_batch_retries_without_dimensions_when_backend_rejects_it(
+        self, client
+    ):
+        """测试批量请求在后端不支持 dimensions 时回退重试。"""
+        from openai import OpenAIError
+
+        texts = ["text1", "text2"]
+        mock_response = Mock()
+        mock_response.data = [
+            Mock(embedding=[0.1] * 1536),
+            Mock(embedding=[0.2] * 1536),
+        ]
+        mock_response.usage = Mock(prompt_tokens=20, total_tokens=20)
+        client.client.embeddings.create = Mock(
+            side_effect=[
+                OpenAIError("dimensions is not supported"),
+                mock_response,
+            ]
+        )
+
+        embeddings = client.embed_batch(texts)
+
+        assert len(embeddings) == 2
+        assert client.client.embeddings.create.call_args_list == [
+            call(
+                model="text-embedding-3-small",
+                input=texts,
+                dimensions=1536,
+            ),
+            call(
+                model="text-embedding-3-small",
+                input=texts,
+            ),
+        ]
 
 
 class TestOpenAIEmbedNumpy:
