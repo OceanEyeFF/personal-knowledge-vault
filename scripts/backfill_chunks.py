@@ -125,6 +125,18 @@ def _validate_vector_index_dim(index_dir: Path, embedding_dim: int) -> None:
             )
 
 
+def _resolve_embedder_dim(embedder: Embedder) -> int:
+    """解析当前 embedder 的实际向量维度。"""
+    embedder_dim = getattr(embedder, "dim", None)
+    if embedder_dim is not None:
+        return int(embedder_dim)
+
+    if hasattr(embedder, "resolve_dim"):
+        return int(embedder.resolve_dim())
+
+    raise RuntimeError("当前 embedder 无法提供向量维度，请显式传入 embedding_dim")
+
+
 def _load_chunk_vector_indices(index_dir: Path, knowledge_id: int) -> list[int]:
     metadata_path = Path(index_dir) / "chunk_vectors_metadata.json"
     index_path = Path(index_dir) / "chunk_vectors.idx"
@@ -209,13 +221,12 @@ def run_chunk_backfill(
     vector_index_dir: Path,
     knowledge_ids: Optional[Sequence[int]] = None,
     apply: bool = False,
-    embedding_dim: int = 1536,
+    embedding_dim: Optional[int] = 1536,
     embedder: Optional[Embedder] = None,
 ) -> ChunkBackfillReport:
     store = SQLiteStore(Path(db_path))
     target_knowledge_ids = _normalize_knowledge_ids(knowledge_ids)
     rows = _load_entry_rows(store, target_knowledge_ids)
-    _validate_vector_index_dim(Path(vector_index_dir), embedding_dim)
     report = ChunkBackfillReport(
         mode="apply" if apply else "dry-run",
         db_path=Path(db_path),
@@ -245,10 +256,17 @@ def run_chunk_backfill(
 
     report.candidate_entries = len(candidates)
     if not apply:
+        if embedding_dim is not None:
+            _validate_vector_index_dim(Path(vector_index_dir), embedding_dim)
         return report
 
     active_embedder = embedder or Embedder()
-    vector_store = VectorStore(Path(vector_index_dir), dim=embedding_dim)
+    resolved_embedding_dim = embedding_dim
+    if resolved_embedding_dim is None:
+        resolved_embedding_dim = _resolve_embedder_dim(active_embedder)
+
+    _validate_vector_index_dim(Path(vector_index_dir), resolved_embedding_dim)
+    vector_store = VectorStore(Path(vector_index_dir), dim=resolved_embedding_dim)
     for row, reasons in candidates:
         knowledge_id = int(row["knowledge_id"])
         title = row["title"]

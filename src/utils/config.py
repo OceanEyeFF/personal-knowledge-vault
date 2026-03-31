@@ -5,6 +5,7 @@
 """
 
 import os
+import json
 import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -40,6 +41,7 @@ class Config:
             self._config: Dict[str, Any] = yaml.safe_load(f)
 
         self._project_root = Path(__file__).parent.parent.parent
+        self._resolved_embedding_dim = self._load_persisted_embedding_dim()
 
     def get(self, key: str, default: Any = None) -> Any:
         """
@@ -175,6 +177,11 @@ class Config:
         return self._project_root / path
 
     @property
+    def runtime_embedding_dim_path(self) -> Path:
+        """自动探测出的 Embedding 维度缓存文件路径。"""
+        return self.data_dir / "runtime" / "embedding_dim.json"
+
+    @property
     def deepseek_api_key(self) -> Optional[str]:
         """DeepSeek API Key"""
         return self.get_env("DEEPSEEK_API_KEY")
@@ -203,12 +210,55 @@ class Config:
         )
 
     @property
-    def embedding_dim(self) -> int:
-        """Embedding 向量维度（支持环境变量覆盖 > config.yaml > 默认 1536）"""
+    def embedding_dim_raw(self) -> Any:
+        """Embedding 维度原始配置值。"""
         env_val = self.get_env("OPENAI_EMBEDDING_DIM")
-        if env_val:
-            return int(env_val)
-        return int(self.get("ai.openai.embedding_dim", 1536))
+        if env_val is not None and env_val != "":
+            return env_val
+        return self.get("ai.openai.embedding_dim", 1536)
+
+    @property
+    def embedding_dim_is_auto(self) -> bool:
+        """当前 Embedding 维度是否启用自动探测。"""
+        raw_val = self.embedding_dim_raw
+        return isinstance(raw_val, str) and raw_val.strip().lower() == "auto"
+
+    @property
+    def embedding_dim(self) -> Optional[int]:
+        """Embedding 向量维度；auto 模式下返回已解析的运行期维度。"""
+        if self.embedding_dim_is_auto:
+            return self._resolved_embedding_dim
+
+        raw_val = self.embedding_dim_raw
+        if raw_val is None:
+            return None
+        return int(raw_val)
+
+    def set_runtime_embedding_dim(self, dim: int) -> None:
+        """写入运行期解析出的 Embedding 维度，并持久化到本地缓存。"""
+        self._resolved_embedding_dim = int(dim)
+        target_path = self.runtime_embedding_dim_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"embedding_dim": self._resolved_embedding_dim}
+        with open(target_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    def _load_persisted_embedding_dim(self) -> Optional[int]:
+        """加载持久化的 Embedding 维度缓存。"""
+        target_path = self.data_dir / "runtime" / "embedding_dim.json"
+        if not target_path.exists():
+            return None
+
+        try:
+            with open(target_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return None
+
+        # 当前版本只缓存维度，不校验后端模型是否已切换。
+        # 如果用户更换了 Embedding 服务或模型，维护者需要手动清理缓存并重建索引。
+        dim = payload.get("embedding_dim")
+        return int(dim) if dim is not None else None
 
     @property
     def zhihu_cookie(self) -> Optional[str]:
@@ -228,6 +278,7 @@ class Config:
             self.vector_index_dir,
             self.log_dir,
             self.tmp_dir,
+            self.runtime_embedding_dim_path.parent,
         ]
 
         for dir_path in dirs:

@@ -146,6 +146,10 @@ def test_vector_store(index_dir: Path | None = None, dim: int | None = None):
     print("\n🔢 测试向量存储...")
     config = get_config()
     resolved_dim = dim or config.embedding_dim
+    if resolved_dim is None:
+        from src.ai.openai_client import OpenAIClient
+
+        resolved_dim = OpenAIClient().resolve_dimensions()
     store = VectorStore(
         index_dir=index_dir or config.vector_index_dir,
         dim=resolved_dim,

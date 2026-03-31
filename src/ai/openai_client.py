@@ -4,6 +4,8 @@ OpenAI API 客户端
 封装 OpenAI Embedding API 调用
 """
 
+from __future__ import annotations
+
 from typing import List, Optional
 import numpy as np
 from openai import OpenAI, OpenAIError, RateLimitError, APITimeoutError
@@ -16,6 +18,8 @@ logger = get_logger(__name__)
 
 class OpenAIClient:
     """OpenAI API 客户端（专注于 Embedding 功能）"""
+
+    _AUTO_DIM_PROBE_TEXT = "__pkv_embedding_dimension_probe__"
 
     def __init__(
         self,
@@ -38,6 +42,7 @@ class OpenAIClient:
             max_retries: 最大重试次数
         """
         config = get_config()
+        self._config = config
 
         self.api_key = api_key or config.openai_api_key
         if not self.api_key:
@@ -45,7 +50,13 @@ class OpenAIClient:
 
         self.base_url = base_url or config.openai_base_url
         self.model = model or config.openai_embedding_model
-        self.dimensions = dimensions or config.embedding_dim
+        configured_dimensions = dimensions if dimensions is not None else config.embedding_dim
+        self.dimensions = int(configured_dimensions) if configured_dimensions is not None else None
+        self._auto_dimensions_pending = (
+            dimensions is None
+            and getattr(config, "embedding_dim_is_auto", False)
+            and self.dimensions is None
+        )
         self._use_dimensions = self.dimensions is not None
         self.timeout = timeout
         self.max_retries = max_retries
@@ -195,6 +206,23 @@ class OpenAIClient:
         logger.info(f"批量 Embedding 完成: total={len(all_embeddings)}")
         return all_embeddings
 
+    @property
+    def dim(self) -> Optional[int]:
+        """当前已知的向量维度；auto 模式首次成功前可能为空。"""
+        return self.dimensions
+
+    def resolve_dimensions(self) -> int:
+        """解析并返回当前模型实际输出维度。"""
+        if self.dimensions is not None and not self._auto_dimensions_pending:
+            return self.dimensions
+
+        response = self._create_embedding_response(self._AUTO_DIM_PROBE_TEXT)
+        embedding = response.data[0].embedding
+        self._validate_embedding_dimension(len(embedding))
+        if self.dimensions is None:
+            raise RuntimeError("Embedding 维度解析失败")
+        return self.dimensions
+
     def embed_numpy(self, text: str) -> np.ndarray:
         """
         生成单个文本的 Embedding 向量（返回 numpy 数组）
@@ -234,10 +262,22 @@ class OpenAIClient:
 
     def _validate_embedding_dimension(self, actual_dim: int) -> None:
         """校验返回向量维度与配置一致。"""
+        if self._auto_dimensions_pending or self.dimensions is None:
+            self._lock_detected_dimension(actual_dim)
+            return
+
         if actual_dim != self.dimensions:
             raise ValueError(
                 f"Embedding 维度不匹配: expected={self.dimensions}, actual={actual_dim}"
             )
+
+    def _lock_detected_dimension(self, actual_dim: int) -> None:
+        """在 auto 模式下锁定首次成功返回的向量维度。"""
+        self.dimensions = int(actual_dim)
+        self._auto_dimensions_pending = False
+        if hasattr(self._config, "set_runtime_embedding_dim"):
+            self._config.set_runtime_embedding_dim(self.dimensions)
+        logger.info("Embedding auto 维度已锁定: dim=%s", self.dimensions)
 
     def _create_embedding_response(self, input_payload: str | List[str]):
         """调用 Embedding API，并在后端不支持 dimensions 时自动回退。"""

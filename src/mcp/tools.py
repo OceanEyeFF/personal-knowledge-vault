@@ -443,7 +443,7 @@ async def get_related(knowledge_id: str, limit: int = 5) -> dict:
             config = get_config()
             vector_store = VectorStore(
                 index_dir=config.vector_index_dir,
-                dim=config.embedding_dim,
+                dim=None,
             )
 
             doc_vector = vector_store.get_doc_vector(kid)

@@ -151,7 +151,7 @@ def add_doc_vector(self, knowledge_id: int, vector: np.ndarray) -> int:
 
 **输入**:
 - `knowledge_id: int` - 知识条目 ID
-- `vector: np.ndarray` - 1536 维向量
+- `vector: np.ndarray` - 当前 Embedding 模型真实维度的向量
 
 **输出**:
 - `int` - 内部向量 ID（hnswlib label）

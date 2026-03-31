@@ -73,14 +73,22 @@ class VectorStore:
                 raise RuntimeError(
                     "索引维度不匹配: "
                     f"已有={existing_dim}, 当前请求={int(requested_dim)}。"
-                    "当前初始化不会自动重建索引，请先人工确认数据迁移方案。"
+                    "当前初始化不会自动重建索引。"
+                    "如果要继续使用现有索引，请切回原来的 Embedding 服务/模型/维度配置；"
+                    "如果确认切换模型，请先重建向量索引。"
                 )
             return existing_dim
 
         if requested_dim is not None:
             return int(requested_dim)
 
-        return int(get_config().embedding_dim)
+        config_dim = get_config().embedding_dim
+        if config_dim is None:
+            raise RuntimeError(
+                "当前未解析 Embedding 维度，无法创建新索引。"
+                "请先完成一次 Embedding 请求以写入运行期缓存，或显式传入 dim。"
+            )
+        return int(config_dim)
 
     def _init_index(self, name: str) -> hnswlib.Index:
         """
@@ -114,7 +122,9 @@ class VectorStore:
                 raise RuntimeError(
                     "索引维度不匹配: "
                     f"name={name}, 已有={int(existing_dim)}, 当前请求={self.dim}。"
-                    "当前初始化不会自动重建索引，请先人工确认数据迁移方案。"
+                    "当前初始化不会自动重建索引。"
+                    "如果要继续使用现有索引，请切回原来的 Embedding 服务/模型/维度配置；"
+                    "如果确认切换模型，请先重建向量索引。"
                 )
 
             index.load_index(

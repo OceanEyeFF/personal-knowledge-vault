@@ -160,7 +160,7 @@ def search(self, query: str, limit: int = 10) -> List[SearchResult]:
 
 #### 关键特性
 
-- ✅ OpenAI Embedding（1536 维）
+- ✅ OpenAI Embedding（维度取决于当前模型，常见默认值为 1536）
 - ✅ hnswlib 索引（HNSW 算法）
 - ✅ 余弦距离 → 相似度转换
 

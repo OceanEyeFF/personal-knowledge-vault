@@ -39,6 +39,15 @@ class Embedder:
             f"Embedder 初始化成功: chunk_size={chunk_size}, chunk_overlap={chunk_overlap}"
         )
 
+    @property
+    def dim(self) -> Optional[int]:
+        """返回当前已知维度；auto 模式首次成功前可能为空。"""
+        return self.client.dim
+
+    def resolve_dim(self) -> int:
+        """显式解析 Embedding 维度。"""
+        return self.client.resolve_dimensions()
+
     def embed_document(self, text: str) -> np.ndarray:
         """
         生成文档级 Embedding（整篇文档的向量表示）

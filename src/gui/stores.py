@@ -68,7 +68,7 @@ def get_vector_store() -> "VectorStore":
         config = get_config()
         _vector_store = VectorStore(
             index_dir=config.vector_index_dir,
-            dim=config.embedding_dim,
+            dim=None,
         )
         logger.info(f"VectorStore 初始化: {config.vector_index_dir}")
     return _vector_store

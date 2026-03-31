@@ -384,12 +384,15 @@ class StoreStep(BaseStep):
                 errors.append("缺少 knowledge_id，跳过向量索引")
             else:
                 try:
+                    embedder = self._embedder or Embedder()
+                    resolved_dim = getattr(embedder, "dim", None)
+                    if resolved_dim is None and hasattr(embedder, "resolve_dim"):
+                        resolved_dim = embedder.resolve_dim()
                     vector_store = self._vector_store or VectorStore(
                         index_dir=config.vector_index_dir,
-                        dim=config.embedding_dim,
+                        dim=resolved_dim,
                     )
                     sqlite_store = self._sqlite_store or SQLiteStore(config.db_path)
-                    embedder = self._embedder or Embedder()
                     doc_vector = await asyncio.to_thread(embedder.embed_document, entry.content)
                     vector_store.add_doc_vector(knowledge_id, doc_vector)
 

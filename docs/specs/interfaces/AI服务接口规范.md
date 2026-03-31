@@ -280,7 +280,7 @@ def embed_document(self, text: str) -> np.ndarray:
 - `text: str` - 文档文本
 
 **输出**:
-- `np.ndarray` - 文档向量（shape=(1536,)）
+- `np.ndarray` - 文档向量（shape=(dim,)）
 
 **异常**:
 - `ValueError` - 文本为空
@@ -312,6 +312,8 @@ avg_vector = np.mean(chunk_vectors, axis=0)
 **注意**:
 - ⚠️ OpenAI Embedding API 限制：约 8191 tokens（约 8000 字符）
 - ⚠️ 长文档会被分块并平均，可能损失部分语义信息
+- ⚠️ `dim` 不再固定为 `1536`，而是取决于当前 Embedding 模型的真实输出维度
+- ⚠️ 当 `OPENAI_EMBEDDING_DIM=auto` 时，客户端会在首次成功请求后锁定真实维度
 
 ---
 
@@ -333,7 +335,7 @@ def embed_chunks(
 
 **输出**:
 - `Tuple[np.ndarray, Optional[List[str]]]`
-  - 分块向量矩阵：shape=(num_chunks, 1536)
+  - 分块向量矩阵：shape=(num_chunks, dim)
   - 分块文本列表：如果 `return_chunks=True` 则返回，否则返回 `None`
 
 **实现**:
@@ -354,6 +356,7 @@ else:
 **使用场景**:
 - 向量存储（VectorStore）需要分块向量
 - 长文档的细粒度检索
+- 在 `auto` 模式下，调用方应以运行期解析出的 `dim` 为准初始化向量索引
 
 ---
 
@@ -371,7 +374,7 @@ def embed_batch_documents(self, texts: List[str]) -> np.ndarray:
 - `texts: List[str]` - 文档文本列表
 
 **输出**:
-- `np.ndarray` - 文档向量矩阵（shape=(num_docs, 1536)）
+- `np.ndarray` - 文档向量矩阵（shape=(num_docs, dim)，其中 `dim` 为当前 Embedding 模型的真实维度）
 
 **处理逻辑**:
 ```python
@@ -410,8 +413,8 @@ def cosine_similarity(
 ```
 
 **输入**:
-- `vector1: np.ndarray` - 向量 1（shape=(1536,)）
-- `vector2: np.ndarray` - 向量 2（shape=(1536,)）
+- `vector1: np.ndarray` - 向量 1（shape=(dim,)）
+- `vector2: np.ndarray` - 向量 2（shape=(dim,)）
 
 **输出**:
 - `float` - 余弦相似度（-1 到 1）
@@ -441,8 +444,8 @@ def batch_cosine_similarity(
 ```
 
 **输入**:
-- `query_vector: np.ndarray` - 查询向量（shape=(1536,)）
-- `vectors: np.ndarray` - 向量矩阵（shape=(n, 1536)）
+- `query_vector: np.ndarray` - 查询向量（shape=(dim,)）
+- `vectors: np.ndarray` - 向量矩阵（shape=(n, dim)）
 
 **输出**:
 - `np.ndarray` - 相似度数组（shape=(n,)）
@@ -649,7 +652,7 @@ embedder = Embedder(chunk_size=500, chunk_overlap=50)
 
 # 2. 文档级向量化
 doc_vector = embedder.embed_document("这是一篇文档")
-print(f"向量维度: {doc_vector.shape}")  # (1536,)
+print(f"向量维度: {doc_vector.shape}")  # (dim,)
 
 # 3. 分块级向量化
 chunk_vectors, chunks = embedder.embed_chunks(

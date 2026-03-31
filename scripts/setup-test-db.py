@@ -308,16 +308,21 @@ def _update_related_docs(file_path: Path, related_ids: List[int]) -> None:
 def _populate_vectors(vector_dir: Path, entry_ids: List[int], seed: int | None) -> None:
     try:
         import numpy as np
+        from src.ai.openai_client import OpenAIClient
         from src.storage.vector_store import VectorStore
     except Exception:
         return
 
     config = get_config()
-    vector_store = VectorStore(index_dir=vector_dir, dim=config.embedding_dim)
+    resolved_dim = config.embedding_dim
+    if resolved_dim is None:
+        resolved_dim = OpenAIClient().resolve_dimensions()
+
+    vector_store = VectorStore(index_dir=vector_dir, dim=resolved_dim)
     np_rng = np.random.default_rng(seed if seed is not None else 0)
 
     for knowledge_id in entry_ids:
-        vector = np_rng.random(config.embedding_dim).astype("float32")
+        vector = np_rng.random(resolved_dim).astype("float32")
         vector_store.add_doc_vector(knowledge_id, vector)
 
 

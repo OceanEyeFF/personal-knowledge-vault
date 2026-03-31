@@ -397,7 +397,7 @@ print(f"✅ 已索引: {entry_id}")
 
 **参数**:
 - `entry_id` (str): 条目 ID
-- `embedding` (np.ndarray): 向量（shape: (1536,)）
+- `embedding` (np.ndarray): 向量（shape: `(dim,)`，由当前模型实际维度决定）
 
 **示例**:
 
@@ -406,9 +406,14 @@ from src.storage.vector_store import VectorStore
 
 vector_store = VectorStore(index_path=".data/vectors/embeddings.index")
 
-embedding = embedder.embed(entry.content)  # shape: (1536,)
+embedding = embedder.embed(entry.content)  # shape: (dim,)
 vector_store.add(entry.id, embedding)
 ```
+
+说明：
+
+- 如果配置 `OPENAI_EMBEDDING_DIM=auto`，`dim` 会在首次成功的 Embedding 请求后锁定
+- 新建索引前必须确保 `VectorStore` 使用的维度与 Embedding 服务实际返回维度一致
 
 ---
 

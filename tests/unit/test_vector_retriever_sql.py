@@ -140,6 +140,7 @@ def test_vector_retriever_get_metadata():
 
     # Mock Embedder 和 VectorStore
     mock_embedder = Mock()
+    mock_embedder.dim = 1536
 
     # 创建 VectorRetriever 实例
     retriever = VectorRetriever(db_path, vector_dir, mock_embedder)
@@ -192,10 +193,11 @@ def test_vector_retriever_search_chunks_returns_chunk_metadata():
     knowledge_id = sql_store.insert_entry(entry, str(file_path))
     sql_store.insert_chunks(knowledge_id, ["第一段", "第二段"])
 
-    vector_store = VectorStore(vector_dir)
+    vector_store = VectorStore(vector_dir, dim=1536)
     vector_store.add_chunk_vector(knowledge_id, 0, np.ones(1536, dtype="float32"))
 
     mock_embedder = Mock()
+    mock_embedder.dim = 1536
     mock_embedder.embed_document.return_value = np.ones(1536, dtype="float32")
 
     retriever = VectorRetriever(db_path, vector_dir, mock_embedder)
@@ -213,7 +215,7 @@ def test_vector_retriever_search_chunks_returns_chunk_metadata():
 
 def test_vector_store_rejects_chunk_index_overflow(tmp_path: Path):
     """chunk_index beyond encoding range should raise ValueError."""
-    vector_store = VectorStore(tmp_path / "vectors")
+    vector_store = VectorStore(tmp_path / "vectors", dim=1536)
 
     with pytest.raises(ValueError, match="chunk_index 超出编码范围"):
         vector_store.add_chunk_vector(

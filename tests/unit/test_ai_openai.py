@@ -25,6 +25,8 @@ def mock_config():
         config.openai_base_url = "https://api.openai.com/v1"
         config.openai_embedding_model = "text-embedding-3-small"
         config.embedding_dim = 1536
+        config.embedding_dim_is_auto = False
+        config.set_runtime_embedding_dim = Mock()
         mock.return_value = config
         yield config
 
@@ -151,6 +153,53 @@ class TestOpenAIEmbed:
                 input="fallback text",
             ),
         ]
+
+    def test_embed_auto_detects_dimension_on_first_success(self, mock_config):
+        """测试 auto 模式会锁定首次成功返回的真实维度。"""
+        mock_config.embedding_dim = None
+        mock_config.embedding_dim_is_auto = True
+
+        with patch('src.ai.openai_client.OpenAI'):
+            client = OpenAIClient()
+
+        mock_response = Mock()
+        mock_response.data = [Mock(embedding=[0.1] * 2560)]
+        mock_response.usage = Mock(prompt_tokens=10, total_tokens=10)
+        client.client.embeddings.create = Mock(return_value=mock_response)
+
+        embedding = client.embed("auto dimension text")
+
+        assert len(embedding) == 2560
+        assert client.dimensions == 2560
+        client.client.embeddings.create.assert_called_once_with(
+            model="text-embedding-3-small",
+            input="auto dimension text",
+        )
+        mock_config.set_runtime_embedding_dim.assert_called_once_with(2560)
+
+    def test_embed_uses_persisted_auto_dimension_after_restart(self, mock_config):
+        """测试 auto 模式在已持久化维度后会直接复用该维度。"""
+        mock_config.embedding_dim = 2560
+        mock_config.embedding_dim_is_auto = True
+
+        with patch('src.ai.openai_client.OpenAI'):
+            client = OpenAIClient()
+
+        mock_response = Mock()
+        mock_response.data = [Mock(embedding=[0.1] * 2560)]
+        mock_response.usage = Mock(prompt_tokens=10, total_tokens=10)
+        client.client.embeddings.create = Mock(return_value=mock_response)
+
+        embedding = client.embed("persisted auto dimension text")
+
+        assert len(embedding) == 2560
+        assert client.dimensions == 2560
+        client.client.embeddings.create.assert_called_once_with(
+            model="text-embedding-3-small",
+            input="persisted auto dimension text",
+            dimensions=2560,
+        )
+        mock_config.set_runtime_embedding_dim.assert_not_called()
 
     def test_embed_empty_text(self, client):
         """测试空文本时抛出异常"""
@@ -329,6 +378,33 @@ class TestOpenAIEmbedBatch:
                 input=texts,
             ),
         ]
+
+    def test_embed_batch_auto_detects_dimension_on_first_success(self, mock_config):
+        """测试批量请求在 auto 模式下锁定首次成功返回的真实维度。"""
+        mock_config.embedding_dim = None
+        mock_config.embedding_dim_is_auto = True
+
+        with patch('src.ai.openai_client.OpenAI'):
+            client = OpenAIClient()
+
+        texts = ["text1", "text2"]
+        mock_response = Mock()
+        mock_response.data = [
+            Mock(embedding=[0.1] * 2560),
+            Mock(embedding=[0.2] * 2560),
+        ]
+        mock_response.usage = Mock(prompt_tokens=20, total_tokens=20)
+        client.client.embeddings.create = Mock(return_value=mock_response)
+
+        embeddings = client.embed_batch(texts)
+
+        assert len(embeddings) == 2
+        assert client.dimensions == 2560
+        client.client.embeddings.create.assert_called_once_with(
+            model="text-embedding-3-small",
+            input=texts,
+        )
+        mock_config.set_runtime_embedding_dim.assert_called_once_with(2560)
 
 
 class TestOpenAIEmbedNumpy:
