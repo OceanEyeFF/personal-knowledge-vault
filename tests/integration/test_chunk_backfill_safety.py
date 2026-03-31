@@ -33,11 +33,14 @@ class DeterministicEmbedder:
     def embed_chunks(
         self, text: str, return_chunks: bool = False
     ) -> tuple[np.ndarray, list[str] | None]:
-        chunks = [chunk.strip() for chunk in text.split("||") if chunk.strip()]
+        chunks = self.split_chunks(text)
         vectors = np.vstack([self.embed_document(chunk) for chunk in chunks]).astype(
             np.float32
         )
         return vectors, chunks if return_chunks else None
+
+    def split_chunks(self, text: str) -> list[str]:
+        return [chunk.strip() for chunk in text.split("||") if chunk.strip()]
 
 
 def test_chunk_backfill_detects_metadata_and_index_drift(tmp_path: Path):
@@ -90,4 +93,117 @@ def test_chunk_backfill_detects_metadata_and_index_drift(tmp_path: Path):
 
     assert report.candidate_entries == 1
     assert report.candidates[0].knowledge_id == knowledge_id
-    assert "chunk_vector_mismatch" in report.candidates[0].reasons
+    assert {"chunk_vector_mismatch", "irregular_chunk_rows"} & set(
+        report.candidates[0].reasons
+    )
+
+
+def test_chunk_backfill_detects_stale_chunk_rows_even_when_indices_are_complete(
+    tmp_path: Path,
+):
+    """dry-run 应识别当前内容切块结果与已落库 chunk 文本不一致的条目。"""
+    vault_dir = tmp_path / "vault"
+    db_path = tmp_path / "data" / "test.db"
+    vector_dir = tmp_path / "vectors"
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    vector_dir.mkdir(parents=True, exist_ok=True)
+
+    markdown_store = MarkdownStore(vault_dir)
+    sqlite_store = SQLiteStore(db_path)
+    sqlite_store.initialize()
+    embedder = DeterministicEmbedder()
+
+    entry = Entry(
+        title="Alpha Stale Chunks",
+        source_type="generic",
+        content="alpha current chunk||alpha fresh chunk",
+        summary_one_sentence="stale rows test",
+    )
+    file_path = markdown_store.save(entry)
+    knowledge_id = sqlite_store.insert_entry(entry, str(file_path))
+    sqlite_store.insert_chunks(
+        knowledge_id,
+        ["beta stale chunk", "beta stale chunk"],
+    )
+
+    vector_store = VectorStore(vector_dir, dim=embedder.dim)
+    vector_store.add_chunk_vectors(
+        knowledge_id=knowledge_id,
+        chunk_indices=[0, 1],
+        vectors=np.vstack(
+            [
+                embedder.embed_document("beta stale chunk"),
+                embedder.embed_document("beta stale chunk"),
+            ]
+        ).astype(np.float32),
+    )
+
+    report = run_chunk_backfill(
+        db_path=db_path,
+        vector_index_dir=vector_dir,
+        apply=False,
+        embedding_dim=embedder.dim,
+        embedder=embedder,
+    )
+
+    assert report.candidate_entries == 1
+    assert report.candidates[0].knowledge_id == knowledge_id
+    assert "stale_chunk_rows" in report.candidates[0].reasons
+
+
+def test_chunk_backfill_rewrites_orphan_vectors_when_chunk_rows_are_missing(
+    tmp_path: Path,
+):
+    """apply 模式下补写 chunk 行时，也应同步重写遗留的旧 chunk 向量。"""
+    vault_dir = tmp_path / "vault"
+    db_path = tmp_path / "data" / "test.db"
+    vector_dir = tmp_path / "vectors"
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    vector_dir.mkdir(parents=True, exist_ok=True)
+
+    markdown_store = MarkdownStore(vault_dir)
+    sqlite_store = SQLiteStore(db_path)
+    sqlite_store.initialize()
+    embedder = DeterministicEmbedder()
+
+    entry = Entry(
+        title="Alpha Rewrite",
+        source_type="generic",
+        content="alpha first chunk||alpha second chunk",
+        summary_one_sentence="rewrite test",
+    )
+    file_path = markdown_store.save(entry)
+    knowledge_id = sqlite_store.insert_entry(entry, str(file_path))
+
+    vector_store = VectorStore(vector_dir, dim=embedder.dim)
+    vector_store.add_chunk_vectors(
+        knowledge_id=knowledge_id,
+        chunk_indices=[0, 1],
+        vectors=np.vstack(
+            [
+                embedder.embed_document("beta stale chunk"),
+                embedder.embed_document("beta stale chunk"),
+            ]
+        ).astype(np.float32),
+    )
+
+    report = run_chunk_backfill(
+        db_path=db_path,
+        vector_index_dir=vector_dir,
+        apply=True,
+        embedding_dim=embedder.dim,
+        embedder=embedder,
+    )
+
+    rewritten_store = VectorStore(vector_dir, dim=embedder.dim)
+    chunk_label = VectorStore.encode_chunk_id(knowledge_id, 0)
+    chunk_vector = rewritten_store.chunk_index.get_items([chunk_label])[0]
+    chunk_rows = sqlite_store.get_chunks_by_knowledge_id(knowledge_id)
+
+    assert report.candidate_entries == 1
+    assert report.applied_entries == 1
+    assert [row["chunk_text"] for row in chunk_rows] == [
+        "alpha first chunk",
+        "alpha second chunk",
+    ]
+    assert chunk_vector == embedder.embed_document("alpha first chunk").tolist()

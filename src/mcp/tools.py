@@ -441,6 +441,11 @@ async def get_related(knowledge_id: str, limit: int = 5) -> dict:
         try:
             from src.storage.vector_store import VectorStore
             config = get_config()
+            if not VectorStore.has_index_artifacts(config.vector_index_dir):
+                return {
+                    "results": [],
+                    "message": "该条目暂无向量索引，无法获取关联知识",
+                }
             vector_store = VectorStore(
                 index_dir=config.vector_index_dir,
                 dim=None,

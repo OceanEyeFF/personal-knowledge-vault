@@ -23,6 +23,7 @@ from src.ai.embedder import Embedder
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.vector_store import VectorStore
 from src.utils.config import Config
+from src.utils.text_utils import split_text_into_chunks
 
 
 @dataclass
@@ -170,15 +171,20 @@ def _load_chunk_vector_indices(index_dir: Path, knowledge_id: int) -> list[int]:
 def _build_candidate_reasons(
     chunk_rows: list[dict],
     vector_chunk_indices: list[int],
+    expected_chunks: list[str],
 ) -> list[str]:
     reasons: list[str] = []
-    chunk_indices = sorted(int(row["chunk_index"]) for row in chunk_rows)
-    expected_chunk_indices = list(range(len(chunk_rows)))
+    sorted_chunk_rows = sorted(chunk_rows, key=lambda row: int(row["chunk_index"]))
+    chunk_indices = [int(row["chunk_index"]) for row in sorted_chunk_rows]
+    stored_chunks = [str(row.get("chunk_text") or "").strip() for row in sorted_chunk_rows]
+    expected_chunk_indices = list(range(len(expected_chunks)))
 
     if not chunk_rows:
         reasons.append("missing_chunks")
     elif chunk_indices != expected_chunk_indices:
         reasons.append("irregular_chunk_rows")
+    elif expected_chunks and stored_chunks != expected_chunks:
+        reasons.append("stale_chunk_rows")
 
     if chunk_rows and sorted(vector_chunk_indices) != expected_chunk_indices:
         reasons.append("chunk_vector_mismatch")
@@ -215,6 +221,27 @@ def _normalize_chunk_payload(
     return normalized_vector_matrix, normalized_chunks
 
 
+def _normalize_expected_chunks(
+    content: str,
+    embedder: Optional[Embedder] = None,
+) -> list[str]:
+    """按当前切块规则生成并清洗期望 chunk 文本。"""
+    if not content or not content.strip():
+        return []
+
+    if embedder is not None and hasattr(embedder, "split_chunks"):
+        raw_chunks = getattr(embedder, "split_chunks")(content)
+    else:
+        raw_chunks = split_text_into_chunks(content)
+
+    normalized_chunks: list[str] = []
+    for chunk_text in raw_chunks:
+        chunk_text_clean = (chunk_text or "").strip()
+        if chunk_text_clean:
+            normalized_chunks.append(chunk_text_clean)
+    return normalized_chunks
+
+
 def run_chunk_backfill(
     *,
     db_path: Path,
@@ -225,6 +252,7 @@ def run_chunk_backfill(
     embedder: Optional[Embedder] = None,
 ) -> ChunkBackfillReport:
     store = SQLiteStore(Path(db_path))
+    active_embedder = embedder or (Embedder() if apply else None)
     target_knowledge_ids = _normalize_knowledge_ids(knowledge_ids)
     rows = _load_entry_rows(store, target_knowledge_ids)
     report = ChunkBackfillReport(
@@ -241,7 +269,15 @@ def run_chunk_backfill(
         vector_chunk_indices = _load_chunk_vector_indices(
             Path(vector_index_dir), knowledge_id
         )
-        reasons = _build_candidate_reasons(chunk_rows, vector_chunk_indices)
+        expected_chunks = _normalize_expected_chunks(
+            str(row.get("content") or ""),
+            active_embedder,
+        )
+        reasons = _build_candidate_reasons(
+            chunk_rows,
+            vector_chunk_indices,
+            expected_chunks,
+        )
         if reasons:
             candidates.append((row, reasons))
             report.candidates.append(
@@ -260,7 +296,8 @@ def run_chunk_backfill(
             _validate_vector_index_dim(Path(vector_index_dir), embedding_dim)
         return report
 
-    active_embedder = embedder or Embedder()
+    if active_embedder is None:
+        active_embedder = Embedder()
     resolved_embedding_dim = embedding_dim
     if resolved_embedding_dim is None:
         resolved_embedding_dim = _resolve_embedder_dim(active_embedder)
@@ -293,7 +330,10 @@ def run_chunk_backfill(
             existing_vector_indices = vector_store.get_chunk_indices_for_entry(knowledge_id)
 
             chunk_rewrite_needed = existing_chunk_texts != chunks
-            vector_rewrite_needed = sorted(existing_vector_indices) != expected_indices
+            vector_rewrite_needed = (
+                chunk_rewrite_needed
+                or sorted(existing_vector_indices) != expected_indices
+            )
 
             if chunk_rewrite_needed and existing_chunk_rows:
                 store.delete_chunks_by_knowledge_id(knowledge_id)

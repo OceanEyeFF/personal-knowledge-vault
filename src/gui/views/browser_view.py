@@ -517,7 +517,8 @@ class BrowserView(QWidget):
         try:
             from src.gui.stores import get_vector_store
             vs = get_vector_store()
-            vs.delete_vectors_for_entry(knowledge_id)
+            if vs is not None:
+                vs.delete_vectors_for_entry(knowledge_id)
         except Exception as exc:
             logger.warning(f"向量索引删除失败（不影响主功能）: {exc}")
 

@@ -625,11 +625,8 @@ class TestGetRelated:
         mock_store = MagicMock()
         mock_store.query_by_id.return_value = MOCK_ENTRY_DB
 
-        mock_vector_store = MagicMock()
-        mock_vector_store.get_doc_vector.return_value = None
-
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.storage.vector_store.VectorStore", return_value=mock_vector_store), \
+             patch("src.storage.vector_store.VectorStore.has_index_artifacts", return_value=False), \
              patch("src.mcp.tools.get_config") as mock_config:
             mock_config.return_value.vector_index_dir = "/tmp/vectors"
             mock_config.return_value.get.return_value = 1536
