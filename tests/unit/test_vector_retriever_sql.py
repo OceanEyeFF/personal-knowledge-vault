@@ -238,3 +238,23 @@ def test_vector_retriever_uses_embedder_dimension_for_new_store(tmp_path: Path):
     retriever = VectorRetriever(db_path, vector_dir, mock_embedder)
 
     assert retriever.vector_store.dim == 8
+
+
+def test_vector_retriever_auto_mode_skips_empty_index_cold_start(tmp_path: Path):
+    """auto 模式在空索引目录下不应在初始化阶段报错。"""
+    from unittest.mock import Mock
+    from src.retrieval.vector_retriever import VectorRetriever
+
+    db_path = tmp_path / "test.db"
+    vector_dir = tmp_path / "vectors"
+    vector_dir.mkdir()
+
+    mock_embedder = Mock()
+    mock_embedder.dim = None
+
+    retriever = VectorRetriever(db_path, vector_dir, mock_embedder)
+    results = retriever.search("cold start query")
+
+    assert retriever.vector_store is None
+    assert results == []
+    mock_embedder.embed_document.assert_not_called()

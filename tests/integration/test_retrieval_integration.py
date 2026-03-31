@@ -52,7 +52,7 @@ class DeterministicEmbedder:
     def embed_chunks(
         self, text: str, return_chunks: bool = False
     ) -> tuple[np.ndarray, list[str] | None]:
-        chunks = [chunk.strip() for chunk in (text or "").split("||") if chunk.strip()]
+        chunks = self.split_chunks(text)
         if not chunks:
             raise ValueError("测试输入未生成 chunk")
 
@@ -60,6 +60,9 @@ class DeterministicEmbedder:
             np.float32
         )
         return vectors, chunks if return_chunks else None
+
+    def split_chunks(self, text: str) -> list[str]:
+        return [chunk.strip() for chunk in (text or "").split("||") if chunk.strip()]
 
 
 class StaticQueryRouter:

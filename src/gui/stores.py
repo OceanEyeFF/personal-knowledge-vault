@@ -55,7 +55,7 @@ def get_markdown_store() -> "MarkdownStore":
     return _markdown_store
 
 
-def get_vector_store() -> "VectorStore":
+def get_vector_store() -> Optional["VectorStore"]:
     """获取 VectorStore 单例（延迟初始化，仅删除时需要）。
 
     Returns:
@@ -66,6 +66,12 @@ def get_vector_store() -> "VectorStore":
         from src.storage.vector_store import VectorStore
         from src.utils.config import get_config
         config = get_config()
+        if (
+            not VectorStore.has_index_artifacts(config.vector_index_dir)
+            and config.embedding_dim is None
+        ):
+            logger.info("VectorStore 延迟初始化: 索引不存在且 embedding 维度尚未解析")
+            return None
         _vector_store = VectorStore(
             index_dir=config.vector_index_dir,
             dim=None,

@@ -182,6 +182,14 @@ class Config:
         return self.data_dir / "runtime" / "embedding_dim.json"
 
     @property
+    def embedding_runtime_fingerprint(self) -> Dict[str, str]:
+        """当前 Embedding 配置指纹，用于校验运行期维度缓存是否仍然有效。"""
+        return {
+            "base_url": self.openai_base_url,
+            "embedding_model": self.openai_embedding_model,
+        }
+
+    @property
     def deepseek_api_key(self) -> Optional[str]:
         """DeepSeek API Key"""
         return self.get_env("DEEPSEEK_API_KEY")
@@ -239,7 +247,10 @@ class Config:
         self._resolved_embedding_dim = int(dim)
         target_path = self.runtime_embedding_dim_path
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"embedding_dim": self._resolved_embedding_dim}
+        payload = {
+            "embedding_dim": self._resolved_embedding_dim,
+            "fingerprint": self.embedding_runtime_fingerprint,
+        }
         with open(target_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
 
@@ -255,10 +266,20 @@ class Config:
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             return None
 
-        # 当前版本只缓存维度，不校验后端模型是否已切换。
-        # 如果用户更换了 Embedding 服务或模型，维护者需要手动清理缓存并重建索引。
+        fingerprint = payload.get("fingerprint")
+        if not self._runtime_embedding_fingerprint_matches(fingerprint):
+            return None
+
         dim = payload.get("embedding_dim")
         return int(dim) if dim is not None else None
+
+    def _runtime_embedding_fingerprint_matches(self, payload: Any) -> bool:
+        """检查运行期维度缓存是否仍然对应当前 Embedding 配置。"""
+        if not isinstance(payload, dict):
+            return False
+
+        expected = self.embedding_runtime_fingerprint
+        return all(str(payload.get(key, "")) == value for key, value in expected.items())
 
     @property
     def zhihu_cookie(self) -> Optional[str]:

@@ -45,6 +45,17 @@ class VectorStore:
 
         logger.info(f"向量存储初始化完成: {self.index_dir}")
 
+    @classmethod
+    def has_index_artifacts(cls, index_dir: Path) -> bool:
+        """检查索引目录中是否已经存在向量索引相关文件。"""
+        target_dir = Path(index_dir)
+        for name in ("doc_vectors", "chunk_vectors"):
+            index_path = target_dir / f"{name}.idx"
+            metadata_path = target_dir / f"{name}_metadata.json"
+            if index_path.exists() or metadata_path.exists():
+                return True
+        return False
+
     def _resolve_index_dim(self, requested_dim: Optional[int]) -> int:
         """解析当前索引目录应使用的向量维度。"""
         metadata_dims: dict[str, int] = {}
