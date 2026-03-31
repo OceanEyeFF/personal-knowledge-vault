@@ -61,7 +61,7 @@
 - `004_add_chat_sessions.sql` 标准化为 `v1.1.1`
 - `005_add_review_system.sql` 标准化为 `v1.1.2`
 - `006_add_relations_foundation.sql` 作为 `v1.2.0` 接入当前有效迁移链
-- Batch2 当前只覆盖低歧义关系：Markdown 显式链接与 Front Matter `related_docs`
+- Batch2 当前覆盖低歧义关系：Markdown 显式链接、Front Matter `related_docs`，以及 Front Matter 关系字段 `children` / `version_of`
 - `scripts/backfill_relations.py` 默认 `dry-run`，仅在显式传入 `--apply` 时写入关系表
 - 当前已补上内部 `query_subgraph` 多跳子图遍历基础，并将 `query_subgraph` / `explain_relation` 暴露为最小推理型 MCP Tool，但仍未进行真实库正式回填执行
 - 当前已补上 `collect_evidence(question)` 文档级证据包聚合 v1，并将其接入只读 MCP Tool；当前版本仍不依赖 chunk 文本落库
@@ -83,7 +83,7 @@
 - `tests/unit/test_relation_query_service.py` 当前补充两跳子图查询与深度限制断言
 - `tests/integration/test_relation_query_pipeline.py` 当前补充 `backfill -> query_subgraph` 与 `backfill -> explain_relation` 联通验证，并把样例图扩展到 `Alpha -> Gamma -> Delta`
 - `tests/unit/test_relation_exploration_service.py` 与 `tests/integration/test_relation_query_pipeline.py` 当前补充探索能力增强后的断言，覆盖图桥接信号、真实时间优先级与关系图对比信号
-- 当前工作区文档同步范围已覆盖 `README.md`、`当前事实基线-2026-03.md`、`当前战略与路线收敛-2026-03.md`、`PhaseB-推理型MCP路线图-2026-03.md` 与 `docs/modules/mcp/` 下的相关文档
+- 当前工作区文档同步范围已覆盖 `README.md`、`当前事实基线-2026-03.md`、`当前战略与路线收敛-2026-03.md`、`PhaseB-推理型MCP路线图-2026-03.md`、`docs/modules/relations/RELATION_LAYER_DESIGN.md`、`docs/specs/interfaces/Relations接口规范.md` 与 `docs/modules/mcp/` 下的相关文档
 - 当前语义上应理解为 `Phase A closeout with Phase B bootstrap`：主归属仍是 `Phase A` 收尾，`query_subgraph` 只作为 `Phase B` 的最小起步能力
 
 ### 🧪 测试

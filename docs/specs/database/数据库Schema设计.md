@@ -4,6 +4,11 @@
 >
 > 设计者：幽浮喵 | 版本：v1.0 | 日期：2026-02-05
 
+> **当前代码补注（2026-03-31）**：
+> - 本文保留设计层说明，不替代当前可执行 schema 合同
+> - 当前 SQLite 真相请优先参考 `docs/specs/database/SQLite_Schema完整规范.md`
+> - 关系表 `knowledge_relations` 与其约束来源于 `scripts/migrations/006_add_relations_foundation.sql`，接口合同见 `docs/specs/interfaces/Relations接口规范.md`
+
 ---
 
 ## 📋 概述

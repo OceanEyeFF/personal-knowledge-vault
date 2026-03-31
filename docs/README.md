@@ -19,6 +19,8 @@
 - [文档与代码差异清单-2026-03.md](./overview/文档与代码差异清单-2026-03.md)
 - [personal-knowledge-vault-prd.md](./overview/personal-knowledge-vault-prd.md)
 - [架构设计.md](./overview/架构设计.md)
+- [RELATION_LAYER_DESIGN.md](./modules/relations/RELATION_LAYER_DESIGN.md)
+- [Relations接口规范.md](./specs/interfaces/Relations接口规范.md)
 - [QUICKSTART.md](./operations/QUICKSTART.md)
 - [维护指南.md](./operations/维护指南.md)
 - [关系回填质量验证指南.md](./operations/关系回填质量验证指南.md)
@@ -27,6 +29,8 @@
 
 - [技术选型.md](./overview/技术选型.md)
 - [项目结构说明.md](./overview/项目结构说明.md)
+- [modules/relations/RELATION_LAYER_DESIGN.md](./modules/relations/RELATION_LAYER_DESIGN.md)
+- [specs/interfaces/Relations接口规范.md](./specs/interfaces/Relations接口规范.md)
 - [modules/](./modules/)
 - [specs/](./specs/)
 - [history/README.md](./history/README.md)

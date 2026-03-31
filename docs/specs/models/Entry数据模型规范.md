@@ -1,9 +1,15 @@
 # Entry 数据模型规范
 
-> **版本**: 1.0
+> **版本**: 1.1
 > **创建日期**: 2026-02-15
+> **最后更新**: 2026-03-31
 > **文件位置**: `src/storage/markdown_store.py`
 > **作用**: 知识条目的核心数据结构，贯穿整个系统的数据流
+
+> **当前代码补注（2026-03-31）**：
+> - `Entry` dataclass 当前只内建 `related_docs`，不内建 `children` / `version_of`
+> - `children` / `version_of` 当前属于原始 Markdown Front Matter 扩展字段，由 `src/relations/extractors.py` 直接解析
+> - 当前自动回填只消费显式低歧义关系字段，不消费纯语义推断信号
 
 ---
 
@@ -78,11 +84,27 @@ if self.word_count == 0 and self.content:
 
 | 字段名 | 类型 | 必填 | 默认值 | 说明 |
 |--------|------|------|--------|------|
-| `related_docs` | `list` | ❌ | `[]` | 相关文档列表 |
+| `related_docs` | `list[str]` | ❌ | `[]` | 显式相关文档相对路径列表，对应 `related_document` |
 
 **约束规则**:
-- 列表元素类型未严格定义（可以是文件路径、knowledge_id 或 URL）
-- 目前主要由用户手动维护
+- `related_docs` 当前约束为 `list[str]`
+- 列表元素使用 vault 内相对路径字符串
+- 当前自动回填会把 `related_docs` 抽取为 `related_document`
+
+### Front Matter 扩展关系字段（非 Entry 标准字段）
+
+下列字段当前**不属于** `Entry` dataclass 的标准属性，但关系层会直接从 Markdown 原文 Front Matter 中读取：
+
+| 字段名 | 类型 | 当前自动映射 | 说明 |
+|--------|------|--------------|------|
+| `children` | `list[str]` | `parent_of` | 当前文档声明的子文档列表 |
+| `version_of` | `str` | `version_of` | 当前文档的版本基线文档 |
+
+说明：
+
+- 这两个字段当前由 `src/relations/extractors.py` 通过 `parse_front_matter()` 直接解析
+- `MarkdownStore.load()` / `MarkdownStore.save()` 当前不会把它们 round-trip 到 `Entry`
+- 若后续要进入 `Entry` dataclass，必须先更新 `src/storage/markdown_store.py` 与相关工作流
 
 ---
 
@@ -333,12 +355,12 @@ keywords_str = ",".join(entry.keywords) if entry.keywords else ""
 
 ---
 
-### 问题 5: `related_docs` 元素类型未定义
+### 问题 5: 关系字段当前只支持白名单与相对路径
 
-**问题描述**: 列表元素类型不明确（文件路径？knowledge_id？URL？）
-**影响范围**: 无法自动关联相关文档
-**优先级**: 低
-**建议**: 定义为 `list[str]` 并明确存储 `knowledge_id`
+**问题描述**: 关系层当前只对白名单字段 `related_docs` / `children` / `version_of` 执行自动抽取，且 `children` / `version_of` 还未进入 `Entry` dataclass
+**影响范围**: `parent`、URL、`knowledge_id`、别名字段不会被自动回填；`MarkdownStore.save()` 也不会主动写出这两个扩展字段
+**优先级**: 中
+**建议**: 若后续需要扩展，必须先定义方向语义、证据结构和幂等清理合同
 
 ---
 
@@ -401,7 +423,7 @@ assert loaded_entry.title == entry.title
 ⚠️ 缺少字段验证机制
 ⚠️ 部分字段未被实际使用
 ⚠️ 类型不一致问题（keywords）
-⚠️ 缺少字段语义文档（related_docs）
+⚠️ 关系字段当前仍限于白名单，不支持别名自动映射
 
 ---
 

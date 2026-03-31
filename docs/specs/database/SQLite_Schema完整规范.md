@@ -1,9 +1,14 @@
 # SQLite Schema 完整规范
 
-> **版本**: 1.0
+> **版本**: 1.1
 > **创建日期**: 2026-02-15
+> **最后更新**: 2026-03-31
 > **文件位置**: `src/storage/sqlite_store.py`
 > **作用**: 定义知识库的关系型数据存储结构和索引策略
+
+> **当前代码补注（2026-03-31）**：
+> - `knowledge_items` 及大部分基础表由 `src/storage/sqlite_store.py` 使用
+> - `knowledge_relations` 由 `scripts/migrations/006_add_relations_foundation.sql` 定义，并由 `src/storage/relation_store.py` 读写
 
 ---
 
@@ -241,7 +246,108 @@ CREATE INDEX IF NOT EXISTS idx_kt_tag_id ON knowledge_tags(tag_id);
 
 ---
 
-### 5. video_timestamps (视频时间轴表)
+### 5. knowledge_relations (关系表)
+
+**作用**: 存储显式低歧义关系边，为回填、查询、解释和探索服务提供统一底座。
+
+**CREATE TABLE 语句**:
+```sql
+CREATE TABLE IF NOT EXISTS knowledge_relations (
+    relation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_knowledge_id INTEGER NOT NULL,
+    target_knowledge_id INTEGER NOT NULL,
+    relation_type TEXT NOT NULL CHECK(relation_type IN (
+        'references',
+        'related_document',
+        'parent_of',
+        'version_of'
+    )),
+    relation_source_type TEXT NOT NULL CHECK(relation_source_type IN (
+        'markdown_link',
+        'frontmatter_related_docs',
+        'frontmatter_field',
+        'manual',
+        'backfill'
+    )),
+    direction TEXT NOT NULL DEFAULT 'directed'
+        CHECK(direction IN ('directed', 'bidirectional')),
+    weight REAL NOT NULL DEFAULT 1.0 CHECK(weight > 0),
+    evidence_payload TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (source_knowledge_id) REFERENCES knowledge_items(knowledge_id) ON DELETE CASCADE,
+    FOREIGN KEY (target_knowledge_id) REFERENCES knowledge_items(knowledge_id) ON DELETE CASCADE,
+    CHECK(source_knowledge_id != target_knowledge_id),
+    UNIQUE(source_knowledge_id, target_knowledge_id, relation_type, relation_source_type)
+)
+```
+
+#### 字段定义
+
+| 字段名 | 类型 | 约束 | 默认值 | 说明 |
+|--------|------|------|--------|------|
+| `relation_id` | INTEGER | PRIMARY KEY AUTOINCREMENT | 自增 | 关系主键 |
+| `source_knowledge_id` | INTEGER | NOT NULL + FOREIGN KEY | 无 | 源条目 ID |
+| `target_knowledge_id` | INTEGER | NOT NULL + FOREIGN KEY | 无 | 目标条目 ID |
+| `relation_type` | TEXT | NOT NULL + CHECK | 无 | 关系类型枚举 |
+| `relation_source_type` | TEXT | NOT NULL + CHECK | 无 | 来源类型枚举 |
+| `direction` | TEXT | NOT NULL + CHECK | `directed` | 关系方向语义 |
+| `weight` | REAL | NOT NULL + CHECK | `1.0` | 关系权重 |
+| `evidence_payload` | TEXT | NOT NULL | `{}` | JSON 文本证据载荷 |
+| `created_at` | TIMESTAMP | NOT NULL | 当前时间 | 创建时间 |
+| `updated_at` | TIMESTAMP | NOT NULL | 当前时间 | 更新时间 |
+
+#### 当前关系类型
+
+- `references`
+- `related_document`
+- `parent_of`
+- `version_of`
+
+#### 当前来源类型
+
+- `markdown_link`
+- `frontmatter_related_docs`
+- `frontmatter_field`
+- `manual`
+- `backfill`
+
+#### 索引
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_relations_source_knowledge_id
+ON knowledge_relations(source_knowledge_id);
+
+CREATE INDEX IF NOT EXISTS idx_relations_target_knowledge_id
+ON knowledge_relations(target_knowledge_id);
+
+CREATE INDEX IF NOT EXISTS idx_relations_type
+ON knowledge_relations(relation_type);
+
+CREATE INDEX IF NOT EXISTS idx_relations_source_type
+ON knowledge_relations(relation_source_type);
+```
+
+#### 触发器
+
+```sql
+CREATE TRIGGER IF NOT EXISTS trg_knowledge_relations_updated_at
+AFTER UPDATE ON knowledge_relations
+FOR EACH ROW
+BEGIN
+    UPDATE knowledge_relations
+    SET updated_at = CURRENT_TIMESTAMP
+    WHERE relation_id = OLD.relation_id;
+END;
+```
+
+#### 设计说明
+
+- 当前关系表只存显式低歧义事实边，不存高噪声推断边
+- `evidence_payload` 当前保存来源字段、目标路径与声明位置，用于审计与解释
+- `UNIQUE(source, target, relation_type, relation_source_type)` 保证同一来源下重跑回填不会重复造边
+
+### 6. video_timestamps (视频时间轴表)
 
 **作用**: 存储视频内容的时间戳和章节信息（Phase 2 功能）
 
