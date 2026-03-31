@@ -103,7 +103,7 @@ python -m src.mcp.server --transport streamable-http --port 3000
 - 已新增 `src/relations/models.py`，定义低歧义关系的类型、方向、来源和查询结果结构
 - 已新增 `src/storage/relation_store.py`，提供 `knowledge_relations` 的最小读写能力
 - 已新增 `scripts/migrations/006_add_relations_foundation.sql`，显式引入关系表与索引
-- 已新增 `src/relations/extractors.py`，当前支持 Markdown 显式链接与 Front Matter `related_docs` 的低歧义关系抽取
+- 已新增 `src/relations/extractors.py`，当前支持 Markdown 显式链接、Front Matter `related_docs`，以及 Front Matter 关系字段 `children` / `version_of` 的低歧义关系抽取
 - 已新增 `scripts/backfill_relations.py`，默认 `dry-run`，仅在显式传入 `--apply` 时写入关系表
 - 已扩展 `src/relations/query_service.py`，当前提供一跳关系查询、内部 `query_subgraph` 多跳子图遍历基础、最小 `explain_relation` 能力、关系类型分组和稳定排序能力
 - 已新增 `src/relations/evidence_service.py`，当前提供文档级 `collect_evidence` 证据包聚合 v1
