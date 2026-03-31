@@ -493,6 +493,7 @@ class BridgeCandidate:
     depth: int
     bridge_score: float
     structural_bridge_score: float = 0.0
+    graph_bridge_score: float = 0.0
     semantic_bridge_score: float = 0.0
     connected_knowledge_ids: list[int] = field(default_factory=list)
     relation_types: list[str] = field(default_factory=list)
@@ -507,6 +508,8 @@ class BridgeCandidate:
             raise ValueError("bridge_score 不能为负数")
         if not (0.0 <= self.structural_bridge_score <= 1.0):
             raise ValueError("structural_bridge_score 必须在 [0.0, 1.0] 范围内")
+        if not (0.0 <= self.graph_bridge_score <= 1.0):
+            raise ValueError("graph_bridge_score 必须在 [0.0, 1.0] 范围内")
         if not (0.0 <= self.semantic_bridge_score <= 1.0):
             raise ValueError("semantic_bridge_score 必须在 [0.0, 1.0] 范围内")
 
@@ -517,6 +520,7 @@ class BridgeCandidate:
             "depth": self.depth,
             "bridge_score": self.bridge_score,
             "structural_bridge_score": self.structural_bridge_score,
+            "graph_bridge_score": self.graph_bridge_score,
             "semantic_bridge_score": self.semantic_bridge_score,
             "connected_knowledge_ids": list(self.connected_knowledge_ids),
             "relation_types": list(self.relation_types),
@@ -691,12 +695,16 @@ class ContrastCandidateItem:
     source_type: str = ""
     tags: list[str] = field(default_factory=list)
     retrieval_score: float = 0.0
+    relation_signal_score: float = 0.0
+    relation_types: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.knowledge_id <= 0:
             raise ValueError("knowledge_id 必须为正整数")
         if not (0.0 <= self.retrieval_score <= 1.0):
             raise ValueError("retrieval_score 必须在 [0.0, 1.0] 范围内")
+        if not (0.0 <= self.relation_signal_score <= 1.0):
+            raise ValueError("relation_signal_score 必须在 [0.0, 1.0] 范围内")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -707,6 +715,8 @@ class ContrastCandidateItem:
             "source_type": self.source_type,
             "tags": list(self.tags),
             "retrieval_score": self.retrieval_score,
+            "relation_signal_score": self.relation_signal_score,
+            "relation_types": list(self.relation_types),
         }
 
 

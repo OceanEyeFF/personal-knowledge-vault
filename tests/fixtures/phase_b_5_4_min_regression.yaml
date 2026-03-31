@@ -94,6 +94,10 @@ cases:
       implementation_level: partial
       item_keys:
         - gamma_id
+      required_evidence_sources:
+        - relation_subgraph
+        - graph_bridge_signal
+      min_graph_bridge_score: 0.5
 
   - case_id: timeline_alpha
     category: exploration
@@ -108,10 +112,18 @@ cases:
       item_keys:
         - alpha_id
         - beta_id
+      inferred_time_field: event_time
       time_source_priority:
         - event_time
         - published_at
         - archived_at
+      time_sources:
+        - event_time
+        - published_at
+      required_evidence_sources:
+        - query_results
+        - entry_metadata
+        - structured_time_fields
 
   - case_id: contrast_topics
     category: exploration
@@ -132,6 +144,17 @@ cases:
         - 终点
       overlap_keys:
         - gamma_id
+      required_evidence_sources:
+        - query_results
+        - relation_graph
+      relation_graph_signal:
+        connected_candidate_pairs_count: 3
+        topic_a_connected_candidate_count: 2
+        topic_b_connected_candidate_count: 2
+        shared_relation_types:
+          - references
+          - related_document
+        max_relation_hops: 2
 
   - case_id: rerun_sync_after_reference_removed
     category: backfill

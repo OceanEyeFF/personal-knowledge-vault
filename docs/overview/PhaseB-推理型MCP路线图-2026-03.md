@@ -131,9 +131,9 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 
 当前阶段说明：
 
-- `find_bridges` 当前已补入结构分与语义分组成的桥接候选评分，并显式返回证据来源
-- `timeline_of` 当前已明确时间来源优先级：`event_time > published_at > archived_at`
-- `contrast` 当前已补入稳定的 `comparison_dimensions` 与 `evidence_sources` 输出结构
+- `find_bridges` 当前已补入结构分、局部图桥接信号 `graph_bridge_score` 与轻量文本重合评分，并显式返回 `graph_bridge_signal`
+- `timeline_of` 当前已明确时间来源优先级：`event_time > published_at > archived_at`，并把 `structured_time_fields` 作为证据来源
+- `contrast` 当前已补入稳定的 `comparison_dimensions` 与 `evidence_sources` 输出结构，并新增 `relation_graph_signal` 与候选级 `relation_signal_score` / `relation_types`
 - 三个 Tool 当前仍属于 `partial`，但边界与限制已更明确
 
 ### 5.4 关系回填与质量验证（优先级 P1）

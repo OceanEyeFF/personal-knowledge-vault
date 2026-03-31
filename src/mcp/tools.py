@@ -654,7 +654,7 @@ async def find_bridges(
     """发现 seed 周围关系子图中的桥接候选。
 
     注意：
-        当前是 partial implementation，只基于显式关系子图和简单邻接度启发式。
+        当前是 partial implementation，已引入局部图桥接信号与轻量文本重合。
         它适合作为桥接探索入口，不代表完整主题桥接发现。
     """
 
@@ -692,8 +692,8 @@ async def timeline_of(
     """按结构化时间字段重建主题的弱时间线。
 
     注意：
-        当前是 partial implementation，只会按 event_time > published_at > archived_at
-        选择结构化时间字段排序。
+        当前是 partial implementation，会优先使用 event_time > published_at > archived_at
+        的结构化真实时间字段排序，缺失时才回退 archived_at。
         它不代表正文中的完整真实事件时间，也还未接入 video_timestamps 或事件时间抽取。
     """
 
@@ -726,10 +726,10 @@ async def contrast(
     topic_b: str,
     top_k: int = 5,
 ) -> dict:
-    """对比两个主题的检索候选表面特征。
+    """对比两个主题的检索候选与显式关系图信号。
 
     注意：
-        当前是 partial implementation，只对比候选集、标签和摘要。
+        当前是 partial implementation，已引入跨主题显式关系路径信号。
         它不代表完整语义对比，也未引入 contrast 关系类型。
     """
 

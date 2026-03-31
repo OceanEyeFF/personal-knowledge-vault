@@ -109,7 +109,7 @@ python -m src.mcp.server --transport streamable-http --port 3000
 - 已新增 `src/relations/evidence_service.py`，当前提供文档级 `collect_evidence` 证据包聚合 v1
 - 已新增 `src/relations/exploration_service.py`，当前提供 `find_bridges`、`timeline_of`、`contrast` 的受限版本
 - 当前已把 `query_subgraph`、`explain_relation` 与 `collect_evidence` 暴露为只读 MCP Tool；其中 `collect_evidence` 默认保持文档级证据包兼容行为，显式传入 `include_chunks=true` 时可返回 chunk 级证据字段，并执行近重复去重与多因子排序
-- 当前已把 `find_bridges`、`timeline_of`、`contrast` 暴露为只读 MCP Tool，但它们仍是 partial implementation：当前分别基于显式关系子图 + 静态语义重合评分、元数据时间来源优先级，以及检索候选表面字段 + 稳定对比维度结构
+- 当前已把 `find_bridges`、`timeline_of`、`contrast` 暴露为只读 MCP Tool，但它们仍是 partial implementation：`find_bridges` 当前结合显式关系子图、局部图桥接信号与轻量文本重合；`timeline_of` 当前优先使用 `event_time > published_at > archived_at` 的结构化真实时间字段；`contrast` 当前在稳定对比维度之外补入跨主题显式关系路径信号与候选级 `relation_signal_score` / `relation_types`
 
 ## 📂 项目结构
 

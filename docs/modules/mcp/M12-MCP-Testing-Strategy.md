@@ -47,9 +47,9 @@ npx @modelcontextprotocol/inspector python -m src.mcp.server
 - [ ] `query_subgraph {knowledge_id}` → 返回 nodes / edges / truncated
 - [ ] `explain_relation {source_id, target_id}` → 返回 summary / path
 - [ ] `collect_evidence {question}` → 返回 seed / evidence[]
-- [ ] `find_bridges {seed_id}` → 返回 `implementation_level=partial`
-- [ ] `timeline_of {topic}` → 返回 `inferred_time_field=archived_at`
-- [ ] `contrast {topic_a, topic_b}` → 返回 `shared_tags / only_a_tags / only_b_tags`
+- [ ] `find_bridges {seed_id}` → 返回 `implementation_level=partial`，且 `evidence_sources` 中包含 `graph_bridge_signal`
+- [ ] `timeline_of {topic}` → 当存在真实时间字段时返回 `inferred_time_field=event_time` 或 `published_at`，并包含 `structured_time_fields`
+- [ ] `contrast {topic_a, topic_b}` → 返回 `shared_tags / only_a_tags / only_b_tags`，且 `comparison_dimensions` 中包含 `relation_graph_signal`
 - [ ] `archive_url "https://example.com"` → 成功/失败响应
 - [ ] 无效参数测试 → 返回合理的错误信息
 - [ ] 大数据量返回 → 不超时不崩溃

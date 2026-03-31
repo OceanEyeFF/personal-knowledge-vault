@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.relations.exploration_service import ExplorationService  # noqa: E402
-from src.relations.models import RelationRecord, RelationSourceType, RelationSubgraphNode, RelationSubgraphResult, RelationType  # noqa: E402
+from src.relations.models import RelationExplanationResult, RelationRecord, RelationSourceType, RelationSubgraphNode, RelationSubgraphResult, RelationType  # noqa: E402
 from src.retrieval.result import SearchResult  # noqa: E402
 
 
@@ -68,6 +68,53 @@ class StubRelationQueryService:
             edges=[edge_alpha_gamma, edge_gamma_delta],
             grouped_edges={},
             truncated=False,
+        )
+
+    def explain_relation(
+        self,
+        source_knowledge_id: int,
+        target_knowledge_id: int,
+        max_depth: int = 2,
+    ):
+        relation_type_mapping = {
+            frozenset({1, 3}): RelationType.RELATED_DOCUMENT,
+            frozenset({2, 3}): RelationType.REFERENCES,
+        }
+        relation_type = relation_type_mapping.get(
+            frozenset({source_knowledge_id, target_knowledge_id})
+        )
+        if relation_type is None:
+            return RelationExplanationResult(
+                source_knowledge_id=source_knowledge_id,
+                target_knowledge_id=target_knowledge_id,
+                found=False,
+                explanation_type="none",
+                hops=0,
+                summary="",
+            )
+
+        relation_source_type = (
+            RelationSourceType.FRONTMATTER_RELATED_DOCS
+            if relation_type == RelationType.RELATED_DOCUMENT
+            else RelationSourceType.MARKDOWN_LINK
+        )
+        relation_record = RelationRecord(
+            source_knowledge_id=source_knowledge_id,
+            target_knowledge_id=target_knowledge_id,
+            relation_type=relation_type,
+            relation_source_type=relation_source_type,
+            evidence_payload={"stub": True},
+        )
+        return RelationExplanationResult(
+            source_knowledge_id=source_knowledge_id,
+            target_knowledge_id=target_knowledge_id,
+            found=True,
+            explanation_type="path",
+            hops=1,
+            path=[relation_record],
+            supporting_relations=[relation_record],
+            summary="stub relation",
+            evidence_items=[{"relation_type": relation_type.value}],
         )
 
 
@@ -176,6 +223,7 @@ def test_find_bridges_returns_middle_node(exploration_service):
     assert result.schema_version == "phase_b.v1"
     assert result.evidence_sources == [
         "relation_subgraph",
+        "graph_bridge_signal",
         "entry_tags",
         "entry_title_summary",
     ]
@@ -183,8 +231,45 @@ def test_find_bridges_returns_middle_node(exploration_service):
     assert result.items[0].knowledge_id == 3
     assert result.items[0].connected_knowledge_ids == [1, 4]
     assert result.items[0].structural_bridge_score > 0
+    assert result.items[0].graph_bridge_score > 0
     assert result.items[0].semantic_bridge_score > 0
     assert result.limitation_notes
+
+
+def test_find_bridges_can_keep_graph_only_candidate():
+    service = ExplorationService(
+        query_router=StubQueryRouter({}),
+        sqlite_store=StubSQLiteStore(
+            {
+                1: {
+                    "knowledge_id": 1,
+                    "title": "Alpha",
+                    "summary_one_sentence": "主入口",
+                    "tags": "AI",
+                },
+                3: {
+                    "knowledge_id": 3,
+                    "title": "Gamma",
+                    "summary_one_sentence": "独立桥节点",
+                    "tags": "桥节点",
+                },
+                4: {
+                    "knowledge_id": 4,
+                    "title": "Delta",
+                    "summary_one_sentence": "终点主题",
+                    "tags": "终点",
+                },
+            }
+        ),
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    result = service.find_bridges(seed_knowledge_id=1, top_k=3, max_depth=2)
+
+    assert result.found is True
+    assert result.items[0].knowledge_id == 3
+    assert result.items[0].graph_bridge_score >= 0.6
+    assert result.items[0].semantic_bridge_score == 0.0
 
 
 def test_timeline_of_sorts_by_archived_at(exploration_service):
@@ -268,6 +353,54 @@ def test_timeline_of_prefers_real_time_sources_over_archived_at():
         "2026-03-02 09:00:00",
         "2026-03-03 09:00:00",
     ]
+    assert result.inferred_time_field == "event_time"
+
+
+def test_timeline_of_prefers_any_real_time_source_for_inferred_field():
+    query_router = StubQueryRouter(
+        {
+            "混合时间线": [
+                SearchResult(
+                    knowledge_id=1,
+                    title="Alpha",
+                    score=0.9,
+                    highlight="Alpha 摘要",
+                    metadata={},
+                ),
+                SearchResult(
+                    knowledge_id=2,
+                    title="Beta",
+                    score=0.8,
+                    highlight="Beta 摘要",
+                    metadata={},
+                ),
+            ]
+        }
+    )
+    sqlite_store = StubSQLiteStore(
+        {
+            1: {
+                "knowledge_id": 1,
+                "title": "Alpha",
+                "archived_at": "2026-03-01 08:00:00",
+            },
+            2: {
+                "knowledge_id": 2,
+                "title": "Beta",
+                "event_time": "2026-03-05 09:00:00",
+                "archived_at": "2026-03-10 09:00:00",
+            },
+        }
+    )
+    service = ExplorationService(
+        query_router=query_router,
+        sqlite_store=sqlite_store,
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    result = service.timeline_of(topic="混合时间线", top_k=5, sort_order="asc")
+
+    assert [item.knowledge_id for item in result.items] == [1, 2]
     assert result.inferred_time_field == "event_time"
 
 
@@ -357,11 +490,21 @@ def test_contrast_returns_shared_and_distinct_tags(exploration_service):
     assert result.overlap_knowledge_ids == [3]
     assert result.evidence_sources == [
         "query_results",
+        "relation_graph",
         "entry_tags",
         "entry_summary",
     ]
     assert result.comparison_dimensions["shared_tags_count"] == 2
     assert result.comparison_dimensions["overlap_knowledge_count"] == 1
+    assert result.comparison_dimensions["relation_graph_signal"] == {
+        "connected_candidate_pairs_count": 2,
+        "topic_a_connected_candidate_count": 2,
+        "topic_b_connected_candidate_count": 2,
+        "shared_relation_types": ["references", "related_document"],
+        "max_relation_hops": 1,
+    }
+    assert result.topic_a_candidates[0].relation_signal_score > 0
+    assert result.topic_b_candidates[0].relation_types == ["references"]
 
 
 def test_timeline_of_rejects_empty_topic(exploration_service):

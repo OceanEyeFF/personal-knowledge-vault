@@ -41,6 +41,11 @@ def _insert_entry(
     file_path: Path,
     title: str,
     source_url: str,
+    *,
+    event_time: str = "",
+    published_at: str = "",
+    archived_at: str = "",
+    tags: str = "测试",
 ) -> int:
     conn = sqlite3.connect(str(db_path))
     cursor = conn.execute(
@@ -54,8 +59,11 @@ def _insert_entry(
             summary_one_sentence,
             summary_100_words,
             tags,
-            keywords
-        ) VALUES (?, 'generic', ?, ?, ?, ?, ?, ?, ?)
+            keywords,
+            event_time,
+            published_at,
+            archived_at
+        ) VALUES (?, 'generic', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             title,
@@ -64,8 +72,11 @@ def _insert_entry(
             file_path.read_text(encoding="utf-8"),
             f"{title} 摘要",
             f"{title} 详细摘要",
-            "测试",
+            tags,
             "test",
+            event_time or None,
+            published_at or None,
+            archived_at or None,
         ),
     )
     conn.commit()
@@ -101,10 +112,40 @@ def relation_pipeline_env(tmp_path: Path):
     gamma_path.write_text("# Gamma\n\n继续参考 [Delta](./delta.md)\n", encoding="utf-8")
     delta_path.write_text("# Delta\n\n正文", encoding="utf-8")
 
-    alpha_id = _insert_entry(db_path, alpha_path, "Alpha", "https://example.com/a")
-    beta_id = _insert_entry(db_path, beta_path, "Beta", "https://example.com/b")
-    gamma_id = _insert_entry(db_path, gamma_path, "Gamma", "https://example.com/c")
-    delta_id = _insert_entry(db_path, delta_path, "Delta", "https://example.com/d")
+    alpha_id = _insert_entry(
+        db_path,
+        alpha_path,
+        "Alpha",
+        "https://example.com/a",
+        event_time="2026-03-01 08:00:00",
+        archived_at="2026-03-10 09:00:00",
+        tags="测试,共同",
+    )
+    beta_id = _insert_entry(
+        db_path,
+        beta_path,
+        "Beta",
+        "https://example.com/b",
+        published_at="2026-03-02 09:00:00",
+        archived_at="2026-03-11 09:00:00",
+        tags="测试",
+    )
+    gamma_id = _insert_entry(
+        db_path,
+        gamma_path,
+        "Gamma",
+        "https://example.com/c",
+        archived_at="2026-03-12 09:00:00",
+        tags="桥接,共同",
+    )
+    delta_id = _insert_entry(
+        db_path,
+        delta_path,
+        "Delta",
+        "https://example.com/d",
+        archived_at="2026-03-13 09:00:00",
+        tags="终点,共同",
+    )
 
     return {
         "db_path": db_path,
@@ -327,6 +368,7 @@ def test_exploration_service_can_find_partial_bridge_candidates(
     assert result.schema_version == "phase_b.v1"
     assert result.evidence_sources == [
         "relation_subgraph",
+        "graph_bridge_signal",
         "entry_tags",
         "entry_title_summary",
     ]
@@ -335,6 +377,7 @@ def test_exploration_service_can_find_partial_bridge_candidates(
         [relation_pipeline_env["alpha_id"], relation_pipeline_env["delta_id"]]
     )
     assert result.items[0].structural_bridge_score > 0
+    assert result.items[0].graph_bridge_score > 0
     assert result.items[0].semantic_bridge_score > 0
 
 
@@ -378,10 +421,20 @@ def test_exploration_service_can_build_partial_timeline(relation_pipeline_env):
         relation_pipeline_env["beta_id"],
     ]
     assert result.time_source_priority == ["event_time", "published_at", "archived_at"]
-    assert all(item.time_source == "archived_at" for item in result.items)
+    assert [item.time_source for item in result.items] == [
+        "event_time",
+        "published_at",
+    ]
+    assert result.inferred_time_field == "event_time"
 
 
 def test_exploration_service_can_build_partial_contrast(relation_pipeline_env):
+    backfill_service = RelationBackfillService(
+        db_path=relation_pipeline_env["db_path"],
+        vault_dir=relation_pipeline_env["vault_dir"],
+    )
+    backfill_service.backfill(apply=True)
+
     conn = sqlite3.connect(str(relation_pipeline_env["db_path"]))
     conn.execute(
         "UPDATE knowledge_items SET tags = ? WHERE knowledge_id = ?",
@@ -456,8 +509,16 @@ def test_exploration_service_can_build_partial_contrast(relation_pipeline_env):
     assert result.only_b_tags == ["终点"]
     assert result.overlap_knowledge_ids == [relation_pipeline_env["gamma_id"]]
     assert result.comparison_dimensions["shared_tags_count"] == 2
+    assert result.comparison_dimensions["relation_graph_signal"] == {
+        "connected_candidate_pairs_count": 3,
+        "topic_a_connected_candidate_count": 2,
+        "topic_b_connected_candidate_count": 2,
+        "shared_relation_types": ["references", "related_document"],
+        "max_relation_hops": 2,
+    }
     assert result.evidence_sources == [
         "query_results",
+        "relation_graph",
         "entry_tags",
         "entry_summary",
     ]
@@ -584,6 +645,11 @@ def test_phase_b_5_4_min_regression_dataset_is_executable(relation_pipeline_env)
                 relation_pipeline_env,
                 expect["item_keys"],
             ), case["case_id"]
+            if "required_evidence_sources" in expect:
+                for source in expect["required_evidence_sources"]:
+                    assert source in result.evidence_sources, case["case_id"]
+            if "min_graph_bridge_score" in expect:
+                assert result.items[0].graph_bridge_score >= expect["min_graph_bridge_score"], case["case_id"]
             continue
 
         if action == "timeline_of":
@@ -620,7 +686,14 @@ def test_phase_b_5_4_min_regression_dataset_is_executable(relation_pipeline_env)
                 relation_pipeline_env,
                 expect["item_keys"],
             ), case["case_id"]
+            if "inferred_time_field" in expect:
+                assert result.inferred_time_field == expect["inferred_time_field"], case["case_id"]
             assert result.time_source_priority == expect["time_source_priority"], case["case_id"]
+            if "time_sources" in expect:
+                assert [item.time_source for item in result.items] == expect["time_sources"], case["case_id"]
+            if "required_evidence_sources" in expect:
+                for source in expect["required_evidence_sources"]:
+                    assert source in result.evidence_sources, case["case_id"]
             continue
 
         if action == "contrast":
@@ -695,6 +768,11 @@ def test_phase_b_5_4_min_regression_dataset_is_executable(relation_pipeline_env)
                 relation_pipeline_env,
                 expect["overlap_keys"],
             ), case["case_id"]
+            if "required_evidence_sources" in expect:
+                for source in expect["required_evidence_sources"]:
+                    assert source in result.evidence_sources, case["case_id"]
+            if "relation_graph_signal" in expect:
+                assert result.comparison_dimensions["relation_graph_signal"] == expect["relation_graph_signal"], case["case_id"]
             continue
 
         if action == "rerun_cleanup":

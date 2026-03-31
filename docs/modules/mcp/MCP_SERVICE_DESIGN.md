@@ -4,9 +4,14 @@
 >
 > **文档版本**: v1.1
 > **创建日期**: 2026-02-16
-> **最后更新**: 2026-02-18 (v1.1: 修复接口不匹配、补充单例/安全/运维/扩展设计)
+> **最后更新**: 2026-03-31 (补充当前代码基线的推理型 MCP Tool 状态说明)
 > **作者**: 幽浮喵 (猫娘工程师)
 > **目标版本**: v0.7.0
+
+> **当前代码补注（2026-03-31）**：
+> - 本文主体仍保留 `v0.7.0` 设计稿结构；当前代码真相以 `README.md`、`docs/overview/当前事实基线-2026-03.md` 与 `src/mcp/tools.py` 为准。
+> - 当前 MCP 代码基线已扩展为 `14` 个 Tool，其中 `query_subgraph`、`explain_relation`、`collect_evidence`、`find_bridges`、`timeline_of`、`contrast` 已落地。
+> - `find_bridges`、`timeline_of`、`contrast` 仍属于 `partial`：当前分别补入 `graph_bridge_signal`、`structured_time_fields`、`relation_graph_signal` 等受限推理信号。
 
 ---
 
