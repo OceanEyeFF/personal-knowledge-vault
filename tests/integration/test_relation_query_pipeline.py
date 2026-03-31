@@ -98,6 +98,10 @@ def relation_pipeline_env(tmp_path: Path):
     beta_path = vault_dir / "beta.md"
     gamma_path = vault_dir / "gamma.md"
     delta_path = vault_dir / "delta.md"
+    outline_path = vault_dir / "outline.md"
+    chapter_path = vault_dir / "chapter-1.md"
+    version_base_path = vault_dir / "version-base.md"
+    version_v2_path = vault_dir / "version-v2.md"
 
     alpha_path.write_text(
         "---\n"
@@ -111,6 +115,25 @@ def relation_pipeline_env(tmp_path: Path):
     beta_path.write_text("# Beta\n\n回链到 [Alpha](./alpha.md)\n", encoding="utf-8")
     gamma_path.write_text("# Gamma\n\n继续参考 [Delta](./delta.md)\n", encoding="utf-8")
     delta_path.write_text("# Delta\n\n正文", encoding="utf-8")
+    outline_path.write_text(
+        "---\n"
+        "title: Outline\n"
+        "children:\n"
+        "  - chapter-1.md\n"
+        "---\n"
+        "# Outline\n\n正文\n",
+        encoding="utf-8",
+    )
+    chapter_path.write_text("# Chapter 1\n\n正文", encoding="utf-8")
+    version_base_path.write_text("# Version Base\n\n正文", encoding="utf-8")
+    version_v2_path.write_text(
+        "---\n"
+        "title: Version V2\n"
+        "version_of: version-base.md\n"
+        "---\n"
+        "# Version V2\n\n正文\n",
+        encoding="utf-8",
+    )
 
     alpha_id = _insert_entry(
         db_path,
@@ -146,6 +169,38 @@ def relation_pipeline_env(tmp_path: Path):
         archived_at="2026-03-13 09:00:00",
         tags="终点,共同",
     )
+    outline_id = _insert_entry(
+        db_path,
+        outline_path,
+        "Outline",
+        "https://example.com/o",
+        archived_at="2026-03-14 09:00:00",
+        tags="结构",
+    )
+    chapter_id = _insert_entry(
+        db_path,
+        chapter_path,
+        "Chapter 1",
+        "https://example.com/c1",
+        archived_at="2026-03-15 09:00:00",
+        tags="结构",
+    )
+    version_base_id = _insert_entry(
+        db_path,
+        version_base_path,
+        "Version Base",
+        "https://example.com/vb",
+        archived_at="2026-03-16 09:00:00",
+        tags="版本",
+    )
+    version_v2_id = _insert_entry(
+        db_path,
+        version_v2_path,
+        "Version V2",
+        "https://example.com/v2",
+        archived_at="2026-03-17 09:00:00",
+        tags="版本",
+    )
 
     return {
         "db_path": db_path,
@@ -154,6 +209,10 @@ def relation_pipeline_env(tmp_path: Path):
         "beta_id": beta_id,
         "gamma_id": gamma_id,
         "delta_id": delta_id,
+        "outline_id": outline_id,
+        "chapter_id": chapter_id,
+        "version_base_id": version_base_id,
+        "version_v2_id": version_v2_id,
     }
 
 
@@ -171,7 +230,7 @@ def test_relation_query_service_reads_grouped_results_from_backfill(relation_pip
         direction=RelationQueryDirection.BOTH,
     )
 
-    assert report.applied_relations == 4
+    assert report.applied_relations == 6
     assert result.total == 3
     assert list(result.grouped_items.keys()) == [
         RelationType.REFERENCES.value,
@@ -264,6 +323,40 @@ def test_relation_query_service_can_explain_backfilled_relation_path(
         RelationType.REFERENCES.value,
         RelationType.RELATED_DOCUMENT.value,
     ]
+
+
+def test_relation_query_service_can_read_frontmatter_field_relations(
+    relation_pipeline_env,
+):
+    service = RelationBackfillService(
+        db_path=relation_pipeline_env["db_path"],
+        vault_dir=relation_pipeline_env["vault_dir"],
+    )
+    query_service = RelationQueryService(
+        RelationStore(relation_pipeline_env["db_path"])
+    )
+
+    service.backfill(apply=True)
+    outline_result = query_service.list_relations(
+        seed_knowledge_id=relation_pipeline_env["outline_id"],
+        direction=RelationQueryDirection.OUTGOING,
+        relation_source_types=["frontmatter_field"],
+    )
+    version_result = query_service.explain_relation(
+        relation_pipeline_env["version_v2_id"],
+        relation_pipeline_env["version_base_id"],
+    )
+
+    assert outline_result.total == 1
+    assert list(outline_result.grouped_items.keys()) == [RelationType.PARENT_OF.value]
+    assert outline_result.items[0].target_knowledge_id == relation_pipeline_env["chapter_id"]
+    assert version_result.found is True
+    assert version_result.explanation_type == "direct"
+    assert version_result.summary == (
+        f"{relation_pipeline_env['version_v2_id']} -[{RelationType.VERSION_OF.value}]-> "
+        f"{relation_pipeline_env['version_base_id']}"
+    )
+    assert version_result.evidence_items[0]["relation_source_type"] == "frontmatter_field"
 
 
 class StubQueryRouter:

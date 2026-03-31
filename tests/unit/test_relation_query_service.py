@@ -76,6 +76,10 @@ def query_env(tmp_path: Path):
     beta_id = _insert_entry(db_path, "Beta")
     gamma_id = _insert_entry(db_path, "Gamma")
     delta_id = _insert_entry(db_path, "Delta")
+    outline_id = _insert_entry(db_path, "Outline")
+    chapter_id = _insert_entry(db_path, "Chapter")
+    version_base_id = _insert_entry(db_path, "VersionBase")
+    version_v2_id = _insert_entry(db_path, "VersionV2")
 
     relation_store.upsert_relation(
         RelationRecord(
@@ -127,6 +131,26 @@ def query_env(tmp_path: Path):
             evidence_payload={"field": "related_docs"},
         )
     )
+    relation_store.upsert_relation(
+        RelationRecord(
+            source_knowledge_id=outline_id,
+            target_knowledge_id=chapter_id,
+            relation_type=RelationType.PARENT_OF,
+            relation_source_type=RelationSourceType.FRONTMATTER_FIELD,
+            weight=1.2,
+            evidence_payload={"field": "children"},
+        )
+    )
+    relation_store.upsert_relation(
+        RelationRecord(
+            source_knowledge_id=version_v2_id,
+            target_knowledge_id=version_base_id,
+            relation_type=RelationType.VERSION_OF,
+            relation_source_type=RelationSourceType.FRONTMATTER_FIELD,
+            weight=1.1,
+            evidence_payload={"field": "version_of"},
+        )
+    )
 
     return {
         "query_service": query_service,
@@ -134,6 +158,10 @@ def query_env(tmp_path: Path):
         "beta_id": beta_id,
         "gamma_id": gamma_id,
         "delta_id": delta_id,
+        "outline_id": outline_id,
+        "chapter_id": chapter_id,
+        "version_base_id": version_base_id,
+        "version_v2_id": version_v2_id,
     }
 
 
@@ -192,6 +220,40 @@ def test_get_relations_between_returns_bidirectional_matches(query_env):
         (gamma_id, alpha_id),
     }
     assert result.to_dict()["grouped_items"][RelationType.REFERENCES.value][0]["weight"] == 2.0
+
+
+def test_list_relations_can_filter_frontmatter_field_source(query_env):
+    query_service = query_env["query_service"]
+
+    result = query_service.list_relations(
+        seed_knowledge_id=query_env["outline_id"],
+        direction=RelationQueryDirection.OUTGOING,
+        relation_source_types=[RelationSourceType.FRONTMATTER_FIELD],
+    )
+
+    assert result.total == 1
+    assert list(result.grouped_items.keys()) == [RelationType.PARENT_OF.value]
+    assert result.items[0].target_knowledge_id == query_env["chapter_id"]
+
+
+def test_explain_relation_supports_frontmatter_field_direct_edges(query_env):
+    query_service = query_env["query_service"]
+
+    result = query_service.explain_relation(
+        query_env["version_v2_id"],
+        query_env["version_base_id"],
+    )
+
+    assert result.found is True
+    assert result.explanation_type == "direct"
+    assert result.hops == 1
+    assert result.summary == (
+        f"{query_env['version_v2_id']} -[{RelationType.VERSION_OF.value}]-> "
+        f"{query_env['version_base_id']}"
+    )
+    assert result.evidence_items[0]["relation_source_type"] == (
+        RelationSourceType.FRONTMATTER_FIELD.value
+    )
 
 
 def test_query_subgraph_can_expand_to_second_hop(query_env):

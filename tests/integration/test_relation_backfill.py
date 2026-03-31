@@ -110,6 +110,57 @@ def relation_env(tmp_path: Path):
     }
 
 
+@pytest.fixture
+def frontmatter_field_env(tmp_path: Path):
+    db_path = tmp_path / "frontmatter.db"
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir(parents=True, exist_ok=True)
+
+    _apply_sql(db_path, BASE_SQL)
+    _apply_sql(db_path, RELATION_SQL)
+
+    outline_path = vault_dir / "outline.md"
+    chapter_path = vault_dir / "chapter-1.md"
+    beta_path = vault_dir / "beta.md"
+    beta_v2_path = vault_dir / "beta-v2.md"
+
+    outline_path.write_text(
+        "---\n"
+        "title: Outline\n"
+        "children:\n"
+        "  - chapter-1.md\n"
+        "---\n"
+        "# Outline\n\n正文\n",
+        encoding="utf-8",
+    )
+    chapter_path.write_text("# Chapter 1\n\n正文", encoding="utf-8")
+    beta_path.write_text("# Beta\n\n正文", encoding="utf-8")
+    beta_v2_path.write_text(
+        "---\n"
+        "title: Beta V2\n"
+        "version_of: beta.md\n"
+        "---\n"
+        "# Beta V2\n\n正文\n",
+        encoding="utf-8",
+    )
+
+    outline_id = _insert_entry(db_path, outline_path, "Outline", "https://example.com/o")
+    chapter_id = _insert_entry(db_path, chapter_path, "Chapter 1", "https://example.com/c1")
+    beta_id = _insert_entry(db_path, beta_path, "Beta", "https://example.com/b")
+    beta_v2_id = _insert_entry(db_path, beta_v2_path, "Beta V2", "https://example.com/b2")
+
+    return {
+        "db_path": db_path,
+        "vault_dir": vault_dir,
+        "outline_path": outline_path,
+        "beta_v2_path": beta_v2_path,
+        "outline_id": outline_id,
+        "chapter_id": chapter_id,
+        "beta_id": beta_id,
+        "beta_v2_id": beta_v2_id,
+    }
+
+
 def test_relation_backfill_dry_run_does_not_write(relation_env):
     service = RelationBackfillService(
         db_path=relation_env["db_path"],
@@ -252,3 +303,83 @@ def test_relation_backfill_rerun_syncs_outgoing_relations(relation_env):
     assert second_report.deleted_relations == 2
     assert second_report.applied_relations == 0
     assert rows == []
+
+
+def test_relation_backfill_apply_writes_frontmatter_field_relations(frontmatter_field_env):
+    service = RelationBackfillService(
+        db_path=frontmatter_field_env["db_path"],
+        vault_dir=frontmatter_field_env["vault_dir"],
+    )
+    relation_store = RelationStore(frontmatter_field_env["db_path"])
+
+    report = service.backfill(apply=True)
+    outline_rows = relation_store.list_relations_for_knowledge(
+        frontmatter_field_env["outline_id"],
+        direction=RelationQueryDirection.OUTGOING,
+        relation_source_types=[RelationSourceType.FRONTMATTER_FIELD],
+    )
+    version_rows = relation_store.list_relations_for_knowledge(
+        frontmatter_field_env["beta_v2_id"],
+        direction=RelationQueryDirection.OUTGOING,
+        relation_source_types=[RelationSourceType.FRONTMATTER_FIELD],
+    )
+
+    assert report.total_references == 2
+    assert report.resolved_references == 2
+    assert report.invalid_references == 0
+    assert report.unresolved_references == 0
+    assert report.by_source_type[RelationSourceType.FRONTMATTER_FIELD.value]["resolved"] == 2
+    assert len(outline_rows) == 1
+    assert outline_rows[0].relation_type == RelationType.PARENT_OF
+    assert outline_rows[0].target_knowledge_id == frontmatter_field_env["chapter_id"]
+    assert outline_rows[0].evidence_payload["field"] == "children"
+    assert len(version_rows) == 1
+    assert version_rows[0].relation_type == RelationType.VERSION_OF
+    assert version_rows[0].target_knowledge_id == frontmatter_field_env["beta_id"]
+    assert version_rows[0].evidence_payload["field"] == "version_of"
+
+
+def test_relation_backfill_rerun_syncs_frontmatter_field_relations(frontmatter_field_env):
+    service = RelationBackfillService(
+        db_path=frontmatter_field_env["db_path"],
+        vault_dir=frontmatter_field_env["vault_dir"],
+    )
+    relation_store = RelationStore(frontmatter_field_env["db_path"])
+
+    first_report = service.backfill(apply=True)
+    frontmatter_field_env["outline_path"].write_text(
+        "---\n"
+        "title: Outline\n"
+        "---\n"
+        "# Outline\n\n正文已删除子文档\n",
+        encoding="utf-8",
+    )
+    frontmatter_field_env["beta_v2_path"].write_text(
+        "---\n"
+        "title: Beta V2\n"
+        "---\n"
+        "# Beta V2\n\n正文已删除版本关联\n",
+        encoding="utf-8",
+    )
+
+    second_report = service.backfill(
+        knowledge_ids=[
+            frontmatter_field_env["outline_id"],
+            frontmatter_field_env["beta_v2_id"],
+        ],
+        apply=True,
+    )
+    remaining_rows = relation_store.list_relations_for_knowledge(
+        frontmatter_field_env["outline_id"],
+        direction=RelationQueryDirection.OUTGOING,
+        relation_source_types=[RelationSourceType.FRONTMATTER_FIELD],
+    ) + relation_store.list_relations_for_knowledge(
+        frontmatter_field_env["beta_v2_id"],
+        direction=RelationQueryDirection.OUTGOING,
+        relation_source_types=[RelationSourceType.FRONTMATTER_FIELD],
+    )
+
+    assert first_report.applied_relations == 2
+    assert second_report.deleted_relations == 2
+    assert second_report.applied_relations == 0
+    assert remaining_rows == []

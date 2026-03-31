@@ -9,9 +9,9 @@ cases:
     args:
       apply: true
     expect:
-      applied_relations: 4
-      extracted_relations: 4
-      total_references: 4
+      applied_relations: 6
+      extracted_relations: 6
+      total_references: 6
       coverage_rate: 1.0
       noise_rate: 0.0
       conflict_rate: 0.0
@@ -38,6 +38,28 @@ cases:
       total: 2
       grouped_keys:
         - references
+
+  - case_id: list_relations_outline
+    category: query
+    action: list_relations
+    args:
+      seed_key: outline_id
+      direction: outgoing
+    expect:
+      total: 1
+      grouped_keys:
+        - parent_of
+
+  - case_id: relations_between_version_v2_base
+    category: query
+    action: relations_between
+    args:
+      source_key: version_v2_id
+      target_key: version_base_id
+    expect:
+      total: 1
+      grouped_keys:
+        - version_of
 
   - case_id: subgraph_alpha_depth2
     category: query

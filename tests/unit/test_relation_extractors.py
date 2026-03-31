@@ -12,6 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.relations.extractors import (  # noqa: E402
     BackfillReport,
+    extract_frontmatter_relation_fields,
     extract_frontmatter_related_docs,
     extract_markdown_link_references,
     parse_front_matter,
@@ -73,6 +74,55 @@ def test_extract_frontmatter_related_docs_handles_list_only():
     assert refs[0].relation_type == RelationType.RELATED_DOCUMENT
     assert refs[0].relation_source_type == RelationSourceType.FRONTMATTER_RELATED_DOCS
     assert refs[0].raw_target == "docs/beta.md"
+
+
+def test_extract_frontmatter_relation_fields_handles_children_and_version_of():
+    markdown_text = (
+        "---\n"
+        "children:\n"
+        "  - docs/chapter-1.md\n"
+        "  - ./chapter-2.md\n"
+        "version_of: beta.md\n"
+        "---\n"
+        "Body"
+    )
+
+    refs, issues = extract_frontmatter_relation_fields(markdown_text)
+
+    assert issues == []
+    assert len(refs) == 3
+    assert [ref.relation_type for ref in refs] == [
+        RelationType.PARENT_OF,
+        RelationType.PARENT_OF,
+        RelationType.VERSION_OF,
+    ]
+    assert all(
+        ref.relation_source_type == RelationSourceType.FRONTMATTER_FIELD
+        for ref in refs
+    )
+    assert refs[0].evidence_payload["field"] == "children"
+    assert refs[2].evidence_payload["field"] == "version_of"
+
+
+def test_extract_frontmatter_relation_fields_rejects_invalid_values():
+    markdown_text = (
+        "---\n"
+        "children: chapter-1.md\n"
+        "version_of: https://example.com/base.md\n"
+        "---\n"
+        "Body"
+    )
+
+    refs, issues = extract_frontmatter_relation_fields(markdown_text)
+
+    assert refs == []
+    assert len(issues) == 2
+    assert issues[0].relation_type == RelationType.PARENT_OF
+    assert issues[0].reason == "invalid_field_type"
+    assert issues[0].detail["field"] == "children"
+    assert issues[1].relation_type == RelationType.VERSION_OF
+    assert issues[1].reason == "external_link"
+    assert issues[1].detail["field"] == "version_of"
 
 
 def test_backfill_report_quality_gate_and_markdown_summary():

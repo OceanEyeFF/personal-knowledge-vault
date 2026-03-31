@@ -23,6 +23,7 @@ MARKDOWN_LINK_PATTERN = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
 EXTRACTION_SOURCE_TYPES: tuple[RelationSourceType, ...] = (
     RelationSourceType.MARKDOWN_LINK,
     RelationSourceType.FRONTMATTER_RELATED_DOCS,
+    RelationSourceType.FRONTMATTER_FIELD,
 )
 
 
@@ -485,6 +486,107 @@ def extract_frontmatter_related_docs(
     return extracted, issues
 
 
+def extract_frontmatter_relation_fields(
+    markdown_text: str,
+) -> tuple[List[ExtractedReference], List[ReferenceIssue]]:
+    """提取 Front Matter 中定义的低歧义结构关系字段。"""
+    metadata, _ = parse_front_matter(markdown_text)
+    extracted: List[ExtractedReference] = []
+    issues: List[ReferenceIssue] = []
+
+    children_raw = metadata.get("children")
+    if children_raw not in (None, []):
+        if not isinstance(children_raw, list):
+            issues.append(
+                ReferenceIssue(
+                    relation_type=RelationType.PARENT_OF,
+                    relation_source_type=RelationSourceType.FRONTMATTER_FIELD,
+                    raw_target=str(children_raw),
+                    reason="invalid_field_type",
+                    detail={"field": "children", "expected_type": "list[str]"},
+                )
+            )
+        else:
+            for raw_target in children_raw:
+                if not isinstance(raw_target, str) or not raw_target.strip():
+                    issues.append(
+                        ReferenceIssue(
+                            relation_type=RelationType.PARENT_OF,
+                            relation_source_type=RelationSourceType.FRONTMATTER_FIELD,
+                            raw_target=str(raw_target),
+                            reason="invalid_target",
+                            detail={"field": "children"},
+                        )
+                    )
+                    continue
+
+                cleaned_target, reason = _normalize_structured_target(raw_target)
+                if cleaned_target is None:
+                    issues.append(
+                        ReferenceIssue(
+                            relation_type=RelationType.PARENT_OF,
+                            relation_source_type=RelationSourceType.FRONTMATTER_FIELD,
+                            raw_target=str(raw_target),
+                            reason=reason or "invalid_target",
+                            detail={"field": "children"},
+                        )
+                    )
+                    continue
+
+                extracted.append(
+                    ExtractedReference(
+                        relation_type=RelationType.PARENT_OF,
+                        relation_source_type=RelationSourceType.FRONTMATTER_FIELD,
+                        raw_target=cleaned_target,
+                        evidence_payload={
+                            "field": "children",
+                            "raw_target": raw_target.strip(),
+                            "normalized_target": cleaned_target,
+                        },
+                    )
+                )
+
+    version_of_raw = metadata.get("version_of")
+    if version_of_raw not in (None, ""):
+        if not isinstance(version_of_raw, str) or not version_of_raw.strip():
+            issues.append(
+                ReferenceIssue(
+                    relation_type=RelationType.VERSION_OF,
+                    relation_source_type=RelationSourceType.FRONTMATTER_FIELD,
+                    raw_target=str(version_of_raw),
+                    reason="invalid_target",
+                    detail={"field": "version_of"},
+                )
+            )
+        else:
+            cleaned_target, reason = _normalize_structured_target(version_of_raw)
+            if cleaned_target is None:
+                issues.append(
+                    ReferenceIssue(
+                        relation_type=RelationType.VERSION_OF,
+                        relation_source_type=RelationSourceType.FRONTMATTER_FIELD,
+                        raw_target=version_of_raw,
+                        reason=reason or "invalid_target",
+                        detail={"field": "version_of"},
+                    )
+                )
+            else:
+                extracted.append(
+                    ExtractedReference(
+                        relation_type=RelationType.VERSION_OF,
+                        relation_source_type=RelationSourceType.FRONTMATTER_FIELD,
+                        raw_target=cleaned_target,
+                        evidence_payload={
+                            "field": "version_of",
+                            "raw_target": version_of_raw.strip(),
+                            "normalized_target": cleaned_target,
+                        },
+                    )
+                )
+
+    return extracted, issues
+
+
 class RelationBackfillService:
     """基于 Markdown + SQLite 的第一版关系回填服务。"""
 
@@ -537,8 +639,13 @@ class RelationBackfillService:
             frontmatter_refs, frontmatter_issues = extract_frontmatter_related_docs(
                 markdown_text
             )
-            raw_refs = markdown_refs + frontmatter_refs
-            all_issues = markdown_issues + frontmatter_issues
+            frontmatter_field_refs, frontmatter_field_issues = (
+                extract_frontmatter_relation_fields(markdown_text)
+            )
+            raw_refs = markdown_refs + frontmatter_refs + frontmatter_field_refs
+            all_issues = (
+                markdown_issues + frontmatter_issues + frontmatter_field_issues
+            )
             report.processed_entries += 1
 
             relations: List[RelationRecord] = []
@@ -622,6 +729,8 @@ class RelationBackfillService:
                         relation_source_type=raw_ref.relation_source_type,
                         evidence_payload={
                             **raw_ref.evidence_payload,
+                            "declared_in_knowledge_id": entry.knowledge_id,
+                            "source_file_path": str(entry.file_path),
                             "target_file_path": str(target_entry.file_path),
                         },
                     )
@@ -836,6 +945,23 @@ def _normalize_link_target(raw_target: str) -> tuple[Optional[str], Optional[str
         return None, "anchor_link"
 
     cleaned = unquote(parsed.path or target)
+    if not cleaned or cleaned.startswith("#"):
+        return None, "invalid_target"
+    return cleaned, None
+
+
+def _normalize_structured_target(raw_target: str) -> tuple[Optional[str], Optional[str]]:
+    target = raw_target.strip()
+    if not target:
+        return None, "invalid_target"
+
+    parsed = urlparse(target)
+    if parsed.scheme in {"http", "https", "mailto"}:
+        return None, "external_link"
+    if target.startswith("#"):
+        return None, "anchor_link"
+
+    cleaned = unquote(parsed.path or target).strip()
     if not cleaned or cleaned.startswith("#"):
         return None, "invalid_target"
     return cleaned, None
