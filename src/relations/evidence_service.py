@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from difflib import SequenceMatcher
+import logging
 from pathlib import Path
 import re
 from typing import Any, Optional
@@ -16,11 +17,17 @@ from typing import Any, Optional
 from src.relations.models import CollectedEvidenceItem, CollectedEvidenceResult
 from src.utils.text_utils import get_text_processor
 
+logger = logging.getLogger(__name__)
+
 
 class EvidenceCollectionService:
     """面向 Phase B 的最小证据聚合服务。"""
 
     EXACT_DUPLICATE_THRESHOLD = 0.95
+    CHUNK_STATUS_NOT_REQUESTED = "not_requested"
+    CHUNK_STATUS_SUCCESS = "success"
+    CHUNK_STATUS_NO_HITS = "no_hits"
+    CHUNK_STATUS_DEGRADED = "degraded"
 
     def __init__(
         self,
@@ -54,17 +61,24 @@ class EvidenceCollectionService:
             raise ValueError("relation_max_depth 必须大于 0")
 
         search_results = self.query_router.search(question_clean, limit=top_k)
-        chunk_results = (
-            self._search_chunk_results(question_clean, limit=max(top_k * 2, top_k))
-            if include_chunks
-            else []
-        )
+        limitation_notes: list[str] = []
+        chunk_retrieval_status = self.CHUNK_STATUS_NOT_REQUESTED
+        if include_chunks:
+            chunk_results, chunk_retrieval_status, chunk_limitation_note = (
+                self._search_chunk_results(question_clean, limit=max(top_k * 2, top_k))
+            )
+            if chunk_limitation_note:
+                limitation_notes.append(chunk_limitation_note)
+        else:
+            chunk_results = []
 
         if not search_results and not chunk_results:
             return CollectedEvidenceResult(
                 question=question_clean,
                 found=False,
                 summary=f"未找到与问题「{question_clean}」直接相关的证据",
+                limitation_notes=limitation_notes,
+                chunk_retrieval_status=chunk_retrieval_status,
             )
 
         seed_result = search_results[0] if search_results else chunk_results[0]
@@ -89,6 +103,8 @@ class EvidenceCollectionService:
                 seed_title=seed_title,
                 evidence=evidence_items,
                 summary=summary,
+                limitation_notes=limitation_notes,
+                chunk_retrieval_status=chunk_retrieval_status,
             )
 
         chunk_result_by_key = {
@@ -187,6 +203,8 @@ class EvidenceCollectionService:
             seed_title=seed_title,
             evidence=evidence_items,
             summary=summary,
+            limitation_notes=limitation_notes,
+            chunk_retrieval_status=chunk_retrieval_status,
         )
 
     def _build_evidence_item(
@@ -246,19 +264,34 @@ class EvidenceCollectionService:
             ),
         )
 
-    def _search_chunk_results(self, question: str, limit: int) -> list[Any]:
+    def _search_chunk_results(
+        self, question: str, limit: int
+    ) -> tuple[list[Any], str, Optional[str]]:
         chunk_searcher = self.chunk_searcher
         if chunk_searcher is None:
             hybrid_retriever = getattr(self.query_router, "hybrid_retriever", None)
             chunk_searcher = getattr(hybrid_retriever, "vector_retriever", None)
 
         if chunk_searcher is None or not hasattr(chunk_searcher, "search_chunks"):
-            return []
+            logger.warning("chunk 检索路径不可用，已降级为文档级证据")
+            return (
+                [],
+                self.CHUNK_STATUS_DEGRADED,
+                "chunk 检索路径不可用，已降级为文档级证据",
+            )
 
         try:
-            return chunk_searcher.search_chunks(question, limit=limit)
+            chunk_results = chunk_searcher.search_chunks(question, limit=limit)
         except Exception:
-            return []
+            logger.exception("chunk 检索异常，已降级为文档级证据")
+            return (
+                [],
+                self.CHUNK_STATUS_DEGRADED,
+                "chunk 检索异常，已降级为文档级证据",
+            )
+        if not chunk_results:
+            return ([], self.CHUNK_STATUS_NO_HITS, None)
+        return (list(chunk_results), self.CHUNK_STATUS_SUCCESS, None)
 
     def _deduplicate_evidence_items(
         self, evidence_items: list[CollectedEvidenceItem]

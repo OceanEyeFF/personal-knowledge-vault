@@ -428,6 +428,7 @@ class CollectedEvidenceResult:
     schema_version: str = PHASE_B_SCHEMA_VERSION
     implementation_level: str = PHASE_B_BASELINE_IMPLEMENTATION_LEVEL
     limitation_notes: list[str] = field(default_factory=list)
+    chunk_retrieval_status: str = "not_requested"
 
     def __post_init__(self) -> None:
         if not self.question or not self.question.strip():
@@ -470,6 +471,7 @@ class CollectedEvidenceResult:
             "schema_version": self.schema_version,
             "implementation_level": self.implementation_level,
             "limitation_notes": list(self.limitation_notes),
+            "chunk_retrieval_status": self.chunk_retrieval_status,
             "question": self.question,
             "found": self.found,
             "seed_knowledge_id": self.seed_knowledge_id,

@@ -4,6 +4,7 @@ Unit tests for EvidenceCollectionService.
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -106,6 +107,11 @@ class StubChunkSearcher:
         return self.results[:limit]
 
 
+class StubFailingChunkSearcher:
+    def search_chunks(self, query: str, limit: int = 10):
+        raise RuntimeError("chunk backend unavailable")
+
+
 def test_collect_evidence_aggregates_search_results_and_relation_hints():
     query_router = StubQueryRouter(
         [
@@ -172,6 +178,7 @@ def test_collect_evidence_aggregates_search_results_and_relation_hints():
     assert result.seed_knowledge_id == 1
     assert result.total_evidence == 2
     assert result.related_evidence_count == 1
+    assert result.chunk_retrieval_status == "not_requested"
     assert result.evidence[0].is_seed is True
     assert result.evidence[0].content_preview == "# Alpha Alpha full content"
     assert result.evidence[1].relation_found is True
@@ -269,6 +276,8 @@ def test_collect_evidence_prefers_chunk_preview_and_exposes_chunk_fields():
     assert result.evidence[0].chunk_text == "Alpha chunk"
     assert result.evidence[0].ranking_score > 0
     assert result.evidence[0].coverage_score > 0
+    assert result.chunk_retrieval_status == "success"
+    assert result.limitation_notes == []
     assert result.evidence[1].content_preview == "Beta chunk"
     assert result.evidence[1].chunk_index == 1
 
@@ -572,6 +581,92 @@ def test_collect_evidence_returns_not_found_when_search_empty():
     assert result.found is False
     assert result.total_evidence == 0
     assert "未找到" in result.summary
+
+
+def test_collect_evidence_distinguishes_no_chunk_hits_without_degradation():
+    query_router = StubQueryRouter(
+        [
+            SearchResult(
+                knowledge_id=1,
+                title="Alpha",
+                score=0.95,
+                highlight="Alpha 摘要",
+                metadata={"source_type": "generic", "tags": "AI,测试"},
+            )
+        ]
+    )
+    sqlite_store = StubSQLiteStore(
+        {
+            1: {
+                "knowledge_id": 1,
+                "title": "Alpha",
+                "summary_one_sentence": "Alpha 一句话摘要",
+                "source_type": "generic",
+                "archived_at": "2026-03-10 10:00:00",
+                "tags": "AI,测试",
+                "source_url": "https://example.com/alpha",
+                "file_path": "/tmp/alpha.md",
+            }
+        }
+    )
+    markdown_store = StubMarkdownStore({"/tmp/alpha.md": "# Alpha\n\nAlpha full content"})
+    service = EvidenceCollectionService(
+        query_router=query_router,
+        sqlite_store=sqlite_store,
+        markdown_store=markdown_store,
+        relation_query_service=StubRelationQueryService(),
+        chunk_searcher=StubChunkSearcher([]),
+    )
+
+    result = service.collect_evidence(question="Alpha?", top_k=3, include_chunks=True)
+
+    assert result.found is True
+    assert result.chunk_retrieval_status == "no_hits"
+    assert result.limitation_notes == []
+
+
+def test_collect_evidence_marks_chunk_degradation_on_exception(caplog):
+    query_router = StubQueryRouter(
+        [
+            SearchResult(
+                knowledge_id=1,
+                title="Alpha",
+                score=0.95,
+                highlight="Alpha 摘要",
+                metadata={"source_type": "generic", "tags": "AI,测试"},
+            )
+        ]
+    )
+    sqlite_store = StubSQLiteStore(
+        {
+            1: {
+                "knowledge_id": 1,
+                "title": "Alpha",
+                "summary_one_sentence": "Alpha 一句话摘要",
+                "source_type": "generic",
+                "archived_at": "2026-03-10 10:00:00",
+                "tags": "AI,测试",
+                "source_url": "https://example.com/alpha",
+                "file_path": "/tmp/alpha.md",
+            }
+        }
+    )
+    markdown_store = StubMarkdownStore({"/tmp/alpha.md": "# Alpha\n\nAlpha full content"})
+    service = EvidenceCollectionService(
+        query_router=query_router,
+        sqlite_store=sqlite_store,
+        markdown_store=markdown_store,
+        relation_query_service=StubRelationQueryService(),
+        chunk_searcher=StubFailingChunkSearcher(),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        result = service.collect_evidence(question="Alpha?", top_k=3, include_chunks=True)
+
+    assert result.found is True
+    assert result.chunk_retrieval_status == "degraded"
+    assert "chunk 检索异常，已降级为文档级证据" in result.limitation_notes
+    assert "chunk 检索异常，已降级为文档级证据" in caplog.text
 
 
 def test_collect_evidence_rejects_empty_question():

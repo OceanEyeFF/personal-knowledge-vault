@@ -902,6 +902,7 @@ class TestCollectEvidence:
                 ),
             ],
             summary="围绕问题共聚合 1 条证据",
+            chunk_retrieval_status="success",
         )
 
         with patch(
@@ -922,8 +923,58 @@ class TestCollectEvidence:
         assert result["evidence"][0]["chunk_text"] == "Alpha chunk"
         assert result["evidence"][0]["ranking_score"] == 0.91
         assert result["evidence"][0]["coverage_score"] == 0.8
+        assert result["chunk_retrieval_status"] == "success"
         assert result["schema_version"] == "phase_b.v1"
         assert result["implementation_level"] == "baseline"
+        mock_service.collect_evidence.assert_called_once_with(
+            question="Alpha 和 Beta 有什么关系？",
+            top_k=5,
+            relation_max_depth=2,
+            include_chunks=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_include_chunks_degraded_is_observable(self):
+        mock_service = MagicMock()
+        mock_service.collect_evidence.return_value = CollectedEvidenceResult(
+            question="Alpha 和 Beta 有什么关系？",
+            found=True,
+            seed_knowledge_id=1,
+            seed_title="Alpha",
+            evidence=[
+                CollectedEvidenceItem(
+                    knowledge_id=1,
+                    title="Alpha",
+                    abstract="Alpha 摘要",
+                    source_type="generic",
+                    archived_at="2026-03-10 10:00:00",
+                    tags=["AI"],
+                    retrieval_rank=1,
+                    retrieval_score=0.95,
+                    is_seed=True,
+                )
+            ],
+            summary="围绕问题共聚合 1 条证据",
+            limitation_notes=["chunk 检索异常，已降级为文档级证据"],
+            chunk_retrieval_status="degraded",
+        )
+
+        with patch(
+            "src.mcp.tools.get_evidence_collection_service",
+            return_value=mock_service,
+        ):
+            from src.mcp.tools import collect_evidence
+
+            result = await collect_evidence(
+                question="Alpha 和 Beta 有什么关系？",
+                top_k=5,
+                relation_max_depth=2,
+                include_chunks=True,
+            )
+
+        assert result["found"] is True
+        assert result["chunk_retrieval_status"] == "degraded"
+        assert "chunk 检索异常，已降级为文档级证据" in result["limitation_notes"]
         mock_service.collect_evidence.assert_called_once_with(
             question="Alpha 和 Beta 有什么关系？",
             top_k=5,
