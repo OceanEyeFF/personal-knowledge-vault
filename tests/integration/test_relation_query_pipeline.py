@@ -518,7 +518,52 @@ def test_exploration_service_can_build_partial_timeline(relation_pipeline_env):
         "event_time",
         "published_at",
     ]
-    assert result.inferred_time_field == "event_time"
+    assert result.inferred_time_field == "published_at"
+
+
+def test_exploration_service_timeline_uses_conservative_inferred_time_field(
+    relation_pipeline_env,
+):
+    exploration_service = ExplorationService(
+        query_router=StubQueryRouter(
+            [
+                SearchResult(
+                    knowledge_id=relation_pipeline_env["alpha_id"],
+                    title="Alpha",
+                    score=0.92,
+                    highlight="Alpha 摘要",
+                    metadata={"source_type": "generic", "tags": "测试"},
+                ),
+                SearchResult(
+                    knowledge_id=relation_pipeline_env["gamma_id"],
+                    title="Gamma",
+                    score=0.78,
+                    highlight="Gamma 摘要",
+                    metadata={"source_type": "generic", "tags": "测试"},
+                ),
+            ]
+        ),
+        sqlite_store=SQLiteStore(relation_pipeline_env["db_path"]),
+        relation_query_service=RelationQueryService(
+            RelationStore(relation_pipeline_env["db_path"])
+        ),
+    )
+
+    result = exploration_service.timeline_of(
+        topic="混合时间源时间线",
+        top_k=5,
+        sort_order="asc",
+    )
+
+    assert [item.knowledge_id for item in result.items] == [
+        relation_pipeline_env["alpha_id"],
+        relation_pipeline_env["gamma_id"],
+    ]
+    assert [item.time_source for item in result.items] == [
+        "event_time",
+        "archived_at",
+    ]
+    assert result.inferred_time_field == "archived_at"
 
 
 def test_exploration_service_can_build_partial_contrast(relation_pipeline_env):

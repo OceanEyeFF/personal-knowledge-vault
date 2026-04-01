@@ -353,10 +353,10 @@ def test_timeline_of_prefers_real_time_sources_over_archived_at():
         "2026-03-02 09:00:00",
         "2026-03-03 09:00:00",
     ]
-    assert result.inferred_time_field == "event_time"
+    assert result.inferred_time_field == "archived_at"
 
 
-def test_timeline_of_prefers_any_real_time_source_for_inferred_field():
+def test_timeline_of_uses_conservative_inferred_field_for_mixed_sources():
     query_router = StubQueryRouter(
         {
             "混合时间线": [
@@ -401,7 +401,57 @@ def test_timeline_of_prefers_any_real_time_source_for_inferred_field():
     result = service.timeline_of(topic="混合时间线", top_k=5, sort_order="asc")
 
     assert [item.knowledge_id for item in result.items] == [1, 2]
-    assert result.inferred_time_field == "event_time"
+    assert result.inferred_time_field == "archived_at"
+
+
+def test_timeline_of_uses_conservative_inferred_field_for_event_and_published():
+    query_router = StubQueryRouter(
+        {
+            "事件与发布时间": [
+                SearchResult(
+                    knowledge_id=1,
+                    title="Alpha",
+                    score=0.9,
+                    highlight="Alpha 摘要",
+                    metadata={},
+                ),
+                SearchResult(
+                    knowledge_id=2,
+                    title="Beta",
+                    score=0.8,
+                    highlight="Beta 摘要",
+                    metadata={},
+                ),
+            ]
+        }
+    )
+    sqlite_store = StubSQLiteStore(
+        {
+            1: {
+                "knowledge_id": 1,
+                "title": "Alpha",
+                "event_time": "2026-03-01 08:00:00",
+                "archived_at": "2026-03-10 09:00:00",
+            },
+            2: {
+                "knowledge_id": 2,
+                "title": "Beta",
+                "published_at": "2026-03-02 09:00:00",
+                "archived_at": "2026-03-11 09:00:00",
+            },
+        }
+    )
+    service = ExplorationService(
+        query_router=query_router,
+        sqlite_store=sqlite_store,
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    result = service.timeline_of(topic="事件与发布时间", top_k=5, sort_order="asc")
+
+    assert [item.knowledge_id for item in result.items] == [1, 2]
+    assert [item.time_source for item in result.items] == ["event_time", "published_at"]
+    assert result.inferred_time_field == "published_at"
 
 
 def test_timeline_of_accepts_legacy_published_time_metadata_key():
@@ -476,6 +526,70 @@ def test_timeline_of_desc_keeps_missing_time_items_last():
     result = service.timeline_of(topic="时间线", top_k=5, sort_order="desc")
 
     assert [item.knowledge_id for item in result.items] == [1, 2]
+
+
+def test_timeline_of_sorting_handles_parseable_unparseable_and_missing_time():
+    query_router = StubQueryRouter(
+        {
+            "边界时间线": [
+                SearchResult(
+                    knowledge_id=1,
+                    title="Parseable-A",
+                    score=0.95,
+                    highlight="A",
+                    metadata={},
+                ),
+                SearchResult(
+                    knowledge_id=2,
+                    title="Unparseable-Z",
+                    score=0.9,
+                    highlight="B",
+                    metadata={},
+                ),
+                SearchResult(
+                    knowledge_id=3,
+                    title="Unparseable-A",
+                    score=0.85,
+                    highlight="C",
+                    metadata={},
+                ),
+                SearchResult(
+                    knowledge_id=4,
+                    title="Missing",
+                    score=0.8,
+                    highlight="D",
+                    metadata={},
+                ),
+                SearchResult(
+                    knowledge_id=5,
+                    title="Parseable-B",
+                    score=0.75,
+                    highlight="E",
+                    metadata={},
+                ),
+            ]
+        }
+    )
+    sqlite_store = StubSQLiteStore(
+        {
+            1: {"knowledge_id": 1, "title": "Parseable-A", "archived_at": "2026-03-10 09:00:00"},
+            2: {"knowledge_id": 2, "title": "Unparseable-Z", "archived_at": "zzz"},
+            3: {"knowledge_id": 3, "title": "Unparseable-A", "archived_at": "abc"},
+            4: {"knowledge_id": 4, "title": "Missing", "archived_at": ""},
+            5: {"knowledge_id": 5, "title": "Parseable-B", "archived_at": "2026-03-11 09:00:00"},
+        }
+    )
+    service = ExplorationService(
+        query_router=query_router,
+        sqlite_store=sqlite_store,
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    asc_result = service.timeline_of(topic="边界时间线", top_k=5, sort_order="asc")
+    desc_result = service.timeline_of(topic="边界时间线", top_k=5, sort_order="desc")
+
+    assert [item.knowledge_id for item in asc_result.items] == [1, 5, 3, 2, 4]
+    assert [item.knowledge_id for item in desc_result.items] == [5, 1, 2, 3, 4]
 
 
 def test_contrast_returns_shared_and_distinct_tags(exploration_service):

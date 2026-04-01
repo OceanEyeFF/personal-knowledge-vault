@@ -516,11 +516,18 @@ class ExplorationService:
         points: list[TimelinePoint],
         priority: list[str],
     ) -> str:
-        resolved_sources = {item.time_source for item in points if item.time_value}
-        for field in priority:
-            if field in resolved_sources:
-                return field
-        return priority[-1] if priority else "archived_at"
+        if not priority:
+            return "archived_at"
+
+        resolved_sources = [item.time_source for item in points if item.time_value]
+        if not resolved_sources:
+            return priority[-1]
+
+        source_rank = {field: idx for idx, field in enumerate(priority)}
+        most_conservative_rank = max(
+            source_rank.get(source, len(priority) - 1) for source in resolved_sources
+        )
+        return priority[most_conservative_rank]
 
     @staticmethod
     def _parse_time_sort_key(raw_value: str) -> tuple[int, int, float, str]:
@@ -539,6 +546,10 @@ class ExplorationService:
             pass
         return (0, 1, 0.0, raw_value)
 
+    @staticmethod
+    def _descending_text_key(raw_value: str) -> tuple[int, ...]:
+        return tuple([-ord(char) for char in raw_value] + [1])
+
     @classmethod
     def _timeline_sort_key(
         cls, item: TimelinePoint, sort_order: str
@@ -551,7 +562,7 @@ class ExplorationService:
                 return (1, 1, 0.0, "", item.knowledge_id)
             if parse_kind == 0:
                 return (0, 0, -parsed_ts, "", item.knowledge_id)
-            return (0, 1, 0.0, raw_value, item.knowledge_id)
+            return (0, 1, cls._descending_text_key(raw_value), item.knowledge_id)
         return (missing_rank, parse_kind, parsed_ts, raw_value, item.knowledge_id)
 
     def _collect_contrast_relation_signals(
