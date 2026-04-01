@@ -17,7 +17,12 @@ from scripts.backfill_chunks import run_chunk_backfill
 from src.relations.evidence_service import EvidenceCollectionService
 from src.relations.models import RelationExplanationResult
 from src.storage.markdown_store import MarkdownStore, Entry
-from src.storage.sqlite_store import SQLiteStore
+from src.storage.migration_manager import MigrationManager
+from src.storage.sqlite_store import (
+    FTS_TABLE_NAME,
+    LEGACY_FTS_TABLE_NAME,
+    SQLiteStore,
+)
 from src.storage.vector_store import VectorStore
 from src.ai.embedder import Embedder
 from src.retrieval.bm25_retriever import BM25Retriever
@@ -185,7 +190,7 @@ class TestDataPipelineIntegration:
         # 验证 FTS5 索引
         with stores["sqlite"].get_connection() as conn:
             cursor = conn.execute(
-                "SELECT COUNT(*) FROM knowledge_items_fts WHERE rowid = ?",
+                f"SELECT COUNT(*) FROM {FTS_TABLE_NAME} WHERE rowid = ?",
                 (knowledge_id,),
             )
             count = cursor.fetchone()[0]
@@ -301,6 +306,68 @@ class TestDataPipelineIntegration:
         # 验证分数范围
         for result in results:
             assert 0.0 <= result.score <= 1.0, "分数应该在 [0.0, 1.0] 范围内"
+
+    def test_migration_created_db_supports_bm25(self, tmp_path: Path):
+        """迁移链创建的新库应使用统一 FTS 合同并支持 BM25。"""
+        vault_dir = tmp_path / "vault"
+        db_path = tmp_path / "migrated.db"
+        vault_dir.mkdir(parents=True, exist_ok=True)
+
+        manager = MigrationManager(
+            db_path,
+            project_root / "scripts" / "migrations",
+        )
+        assert manager.apply_all_pending(auto_backup=False) > 0
+
+        markdown_store = MarkdownStore(vault_dir)
+        sqlite_store = SQLiteStore(db_path)
+        entry = Entry(
+            title="Python migration retrieval",
+            content="Python migration retrieval validates the FTS contract.",
+            abstract="migration bm25",
+            summary_one_sentence="migration bm25 summary",
+            summary_100_words="Python migration retrieval summary",
+            tags=["Python", "migration"],
+            keywords="Python,migration",
+            source_type="test",
+            source_url="https://example.com/migration-bm25",
+        )
+        file_path = markdown_store.save(entry)
+        knowledge_id = sqlite_store.insert_entry(entry, str(file_path))
+
+        with sqlite_store.get_connection() as conn:
+            current = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (FTS_TABLE_NAME,),
+            ).fetchone()
+            legacy = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (LEGACY_FTS_TABLE_NAME,),
+            ).fetchone()
+            assert current is not None
+            assert legacy is None
+
+        results = BM25Retriever(db_path).search("Python", limit=5)
+        assert results
+        assert results[0].knowledge_id == knowledge_id
+
+    def test_initialize_created_db_uses_single_fts_contract(self, tmp_path: Path):
+        """运行时初始化的新库不应保留旧 FTS 表名。"""
+        db_path = tmp_path / "runtime.db"
+        store = SQLiteStore(db_path)
+        store.initialize()
+
+        with store.get_connection() as conn:
+            current = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (FTS_TABLE_NAME,),
+            ).fetchone()
+            legacy = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (LEGACY_FTS_TABLE_NAME,),
+            ).fetchone()
+            assert current is not None
+            assert legacy is None
 
     @pytest.mark.skipif(
         not Path(".env").exists(), reason="需要 .env 文件配置 API Keys"
@@ -539,12 +606,21 @@ class TestIndexHealth:
             pytest.skip("主数据库不存在，跳过测试")
 
         store = SQLiteStore(db_path)
+        store.initialize()
         with store.get_connection() as conn:
             cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_items_fts'"
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (FTS_TABLE_NAME,),
             )
             result = cursor.fetchone()
             assert result is not None, "FTS5 索引表应该存在"
+
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (LEGACY_FTS_TABLE_NAME,),
+            )
+            legacy_result = cursor.fetchone()
+            assert legacy_result is None, "旧 FTS 表名不应继续存在"
 
     def test_vector_index_exists(self):
         """验证向量索引是否存在"""

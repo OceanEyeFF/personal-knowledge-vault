@@ -7,7 +7,7 @@ BM25 关键词检索器
 from typing import List
 from pathlib import Path
 
-from src.storage.sqlite_store import SQLiteStore
+from src.storage.sqlite_store import FTS_TABLE_NAME, SQLiteStore
 from src.utils.text_utils import TextProcessor
 from src.utils.logger import get_logger
 from src.retrieval.result import SearchResult
@@ -58,7 +58,7 @@ class BM25Retriever:
             results = []
             with self.store.get_connection() as conn:
                 cursor = conn.execute(
-                    """
+                    f"""
                     SELECT
                         ki.knowledge_id,
                         ki.title,
@@ -71,11 +71,11 @@ class BM25Retriever:
                         ki.file_path,
                         ki.archived_at,
                         ki.updated_at,
-                        bm25(knowledge_items_fts) as bm25_score,
-                        snippet(knowledge_items_fts, 0, '...', '...', '', 64) as snippet
+                        bm25({FTS_TABLE_NAME}) as bm25_score,
+                        snippet({FTS_TABLE_NAME}, 0, '...', '...', '', 64) as snippet
                     FROM knowledge_items ki
-                    JOIN knowledge_items_fts ON ki.knowledge_id = knowledge_items_fts.rowid
-                    WHERE knowledge_items_fts MATCH ?
+                    JOIN {FTS_TABLE_NAME} ON ki.knowledge_id = {FTS_TABLE_NAME}.rowid
+                    WHERE {FTS_TABLE_NAME} MATCH ?
                     ORDER BY bm25_score ASC
                     LIMIT ?
                     """,

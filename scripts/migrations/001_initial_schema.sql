@@ -88,13 +88,13 @@ CREATE TABLE IF NOT EXISTS video_timestamps (
 );
 
 -- 7. 创建 FTS5 全文搜索虚拟表
-CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
-    knowledge_id UNINDEXED,
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_items_fts USING fts5(
     title,
-    content,
+    summary_100_words,
     keywords,
     tags,
-    tokenize = 'porter unicode61'
+    content=knowledge_items,
+    content_rowid=knowledge_id
 );
 
 -- 8. 创建主表索引
@@ -119,27 +119,27 @@ CREATE INDEX IF NOT EXISTS idx_timestamps_time ON video_timestamps(knowledge_id,
 
 -- 12. 创建 FTS5 同步触发器
 -- 触发器：插入时同步到 FTS5
-CREATE TRIGGER IF NOT EXISTS knowledge_fts_insert
+CREATE TRIGGER IF NOT EXISTS knowledge_items_ai
 AFTER INSERT ON knowledge_items
 BEGIN
-    INSERT INTO knowledge_fts (knowledge_id, title, content, keywords, tags)
-    VALUES (new.knowledge_id, new.title, new.content, new.keywords, new.tags);
+    INSERT INTO knowledge_items_fts(rowid, title, summary_100_words, keywords, tags)
+    VALUES (new.knowledge_id, new.title, new.summary_100_words, new.keywords, new.tags);
 END;
 
 -- 触发器：更新时同步到 FTS5
-CREATE TRIGGER IF NOT EXISTS knowledge_fts_update
+CREATE TRIGGER IF NOT EXISTS knowledge_items_au
 AFTER UPDATE ON knowledge_items
 BEGIN
-    DELETE FROM knowledge_fts WHERE knowledge_id = old.knowledge_id;
-    INSERT INTO knowledge_fts (knowledge_id, title, content, keywords, tags)
-    VALUES (new.knowledge_id, new.title, new.content, new.keywords, new.tags);
+    DELETE FROM knowledge_items_fts WHERE rowid = old.knowledge_id;
+    INSERT INTO knowledge_items_fts(rowid, title, summary_100_words, keywords, tags)
+    VALUES (new.knowledge_id, new.title, new.summary_100_words, new.keywords, new.tags);
 END;
 
 -- 触发器：删除时清理 FTS5
-CREATE TRIGGER IF NOT EXISTS knowledge_fts_delete
+CREATE TRIGGER IF NOT EXISTS knowledge_items_ad
 AFTER DELETE ON knowledge_items
 BEGIN
-    DELETE FROM knowledge_fts WHERE knowledge_id = old.knowledge_id;
+    DELETE FROM knowledge_items_fts WHERE rowid = old.knowledge_id;
 END;
 
 -- 13. 插入初始版本记录
@@ -153,10 +153,10 @@ VALUES ('1.0.0', '初始 Schema - M1 基础设施层');
 -- 注意：初始 Schema 不建议回滚，仅用于全新环境
 -- 如果需要清空数据库，执行以下 SQL：
 
--- DROP TRIGGER IF EXISTS knowledge_fts_delete;
--- DROP TRIGGER IF EXISTS knowledge_fts_update;
--- DROP TRIGGER IF EXISTS knowledge_fts_insert;
--- DROP TABLE IF EXISTS knowledge_fts;
+-- DROP TRIGGER IF EXISTS knowledge_items_ad;
+-- DROP TRIGGER IF EXISTS knowledge_items_au;
+-- DROP TRIGGER IF EXISTS knowledge_items_ai;
+-- DROP TABLE IF EXISTS knowledge_items_fts;
 -- DROP TABLE IF EXISTS video_timestamps;
 -- DROP TABLE IF EXISTS knowledge_tags;
 -- DROP TABLE IF EXISTS tags;

@@ -16,6 +16,14 @@ from src.storage.markdown_store import Entry
 
 logger = get_logger(__name__)
 
+FTS_TABLE_NAME = "knowledge_items_fts"
+LEGACY_FTS_TABLE_NAME = "knowledge_fts"
+LEGACY_FTS_TRIGGER_NAMES = (
+    "knowledge_fts_insert",
+    "knowledge_fts_update",
+    "knowledge_fts_delete",
+)
+
 
 class SQLiteStore:
     """SQLite 数据库存储管理器"""
@@ -70,7 +78,9 @@ class SQLiteStore:
             self._create_indexes(conn)
 
             # 3. 创建 FTS5 虚拟表和触发器
-            self._create_fts5_table(conn)
+            rebuild_fts = self._ensure_fts5_contract(conn)
+            if rebuild_fts:
+                self._rebuild_fts5_index(conn)
 
             # 4. 验证完整性
             self._verify_integrity(conn)
@@ -201,13 +211,22 @@ class SQLiteStore:
 
         logger.info("✓ 索引创建成功")
 
+    def _ensure_fts5_contract(self, conn: sqlite3.Connection) -> bool:
+        """确保运行时与迁移链使用同一套 FTS 合同。"""
+        legacy_exists = self._sqlite_object_exists(conn, "table", LEGACY_FTS_TABLE_NAME)
+        current_exists = self._sqlite_object_exists(conn, "table", FTS_TABLE_NAME)
+
+        self._drop_legacy_fts_contract(conn)
+        self._create_fts5_table(conn)
+        return legacy_exists or not current_exists
+
     def _create_fts5_table(self, conn: sqlite3.Connection):
         """创建 FTS5 全文搜索虚拟表和触发器"""
         logger.info("创建 FTS5 全文搜索虚拟表...")
 
         # 创建 FTS5 虚拟表
-        conn.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_items_fts USING fts5(
+        conn.execute(f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS {FTS_TABLE_NAME} USING fts5(
                 title,
                 summary_100_words,
                 keywords,
@@ -218,30 +237,91 @@ class SQLiteStore:
         """)
 
         # 创建触发器: 插入
-        conn.execute("""
+        conn.execute(f"""
             CREATE TRIGGER IF NOT EXISTS knowledge_items_ai AFTER INSERT ON knowledge_items BEGIN
-                INSERT INTO knowledge_items_fts(rowid, title, summary_100_words, keywords, tags)
+                INSERT INTO {FTS_TABLE_NAME}(rowid, title, summary_100_words, keywords, tags)
                 VALUES (new.knowledge_id, new.title, new.summary_100_words, new.keywords, new.tags);
             END
         """)
 
         # 创建触发器: 删除
-        conn.execute("""
+        conn.execute(f"""
             CREATE TRIGGER IF NOT EXISTS knowledge_items_ad AFTER DELETE ON knowledge_items BEGIN
-                DELETE FROM knowledge_items_fts WHERE rowid = old.knowledge_id;
+                DELETE FROM {FTS_TABLE_NAME} WHERE rowid = old.knowledge_id;
             END
         """)
 
         # 创建触发器: 更新
-        conn.execute("""
+        conn.execute(f"""
             CREATE TRIGGER IF NOT EXISTS knowledge_items_au AFTER UPDATE ON knowledge_items BEGIN
-                DELETE FROM knowledge_items_fts WHERE rowid = old.knowledge_id;
-                INSERT INTO knowledge_items_fts(rowid, title, summary_100_words, keywords, tags)
+                DELETE FROM {FTS_TABLE_NAME} WHERE rowid = old.knowledge_id;
+                INSERT INTO {FTS_TABLE_NAME}(rowid, title, summary_100_words, keywords, tags)
                 VALUES (new.knowledge_id, new.title, new.summary_100_words, new.keywords, new.tags);
             END
         """)
 
         logger.info("✓ FTS5 虚拟表和触发器创建成功")
+
+    def _drop_legacy_fts_contract(self, conn: sqlite3.Connection) -> None:
+        """清理旧版 knowledge_fts 合同。"""
+        for trigger_name in LEGACY_FTS_TRIGGER_NAMES:
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+        conn.execute(f"DROP TABLE IF EXISTS {LEGACY_FTS_TABLE_NAME}")
+
+    def _rebuild_fts5_index(self, conn: sqlite3.Connection) -> None:
+        """为已有条目重建 FTS5 索引。"""
+        cursor = conn.execute(
+            """
+            SELECT knowledge_id, title, summary_100_words, keywords, tags
+            FROM knowledge_items
+            ORDER BY knowledge_id ASC
+            """
+        )
+        rows = cursor.fetchall()
+
+        conn.execute(f"DELETE FROM {FTS_TABLE_NAME}")
+        if not rows:
+            return
+
+        fts_rows = []
+        for row in rows:
+            fts5_data = self.text_processor.prepare_fts5_data(
+                row["title"] or "",
+                row["summary_100_words"] or "",
+                row["keywords"] or "",
+                row["tags"] or "",
+            )
+            fts_rows.append(
+                (
+                    row["knowledge_id"],
+                    fts5_data["title"],
+                    fts5_data["summary_100_words"],
+                    fts5_data["keywords"],
+                    fts5_data["tags"],
+                )
+            )
+
+        conn.executemany(
+            f"""
+            INSERT INTO {FTS_TABLE_NAME}(rowid, title, summary_100_words, keywords, tags)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            fts_rows,
+        )
+
+    @staticmethod
+    def _sqlite_object_exists(
+        conn: sqlite3.Connection, object_type: str, name: str
+    ) -> bool:
+        cursor = conn.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = ? AND name = ?
+            """,
+            (object_type, name),
+        )
+        return cursor.fetchone() is not None
 
     def _verify_integrity(self, conn: sqlite3.Connection):
         """验证数据库完整性"""
@@ -312,11 +392,11 @@ class SQLiteStore:
             )
 
             # 删除触发器自动插入的原始数据
-            conn.execute("DELETE FROM knowledge_items_fts WHERE rowid = ?", (knowledge_id,))
+            conn.execute(f"DELETE FROM {FTS_TABLE_NAME} WHERE rowid = ?", (knowledge_id,))
 
             # 插入分词后的数据
-            conn.execute("""
-                INSERT INTO knowledge_items_fts(rowid, title, summary_100_words, keywords, tags)
+            conn.execute(f"""
+                INSERT INTO {FTS_TABLE_NAME}(rowid, title, summary_100_words, keywords, tags)
                 VALUES (?, ?, ?, ?, ?)
             """, (
                 knowledge_id,
