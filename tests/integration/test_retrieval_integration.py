@@ -4,6 +4,7 @@
 测试完整的数据流：Entry → Storage → Retrieval
 """
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -350,6 +351,62 @@ class TestDataPipelineIntegration:
         results = BM25Retriever(db_path).search("Python", limit=5)
         assert results
         assert results[0].knowledge_id == knowledge_id
+
+    def test_migration_alignment_rebuilds_existing_chinese_fts_rows(self, tmp_path: Path):
+        """升级到 1.2.2 后，已有条目也应回到与运行时一致的中文分词召回。"""
+        db_path = tmp_path / "legacy-upgrade.db"
+
+        manager = MigrationManager(
+            db_path,
+            project_root / "scripts" / "migrations",
+        )
+        for migration_name in (
+            "001_initial_schema.sql",
+            "002_add_cli_tables.sql",
+            "004_add_chat_sessions.sql",
+            "005_add_review_system.sql",
+            "006_add_relations_foundation.sql",
+            "007_add_timeline_time_fields.sql",
+        ):
+            manager.apply_migration(
+                project_root / "scripts" / "migrations" / migration_name,
+                auto_backup=False,
+            )
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                """
+                INSERT INTO knowledge_items (
+                    title,
+                    summary_one_sentence,
+                    summary_100_words,
+                    keywords,
+                    tags,
+                    source_type,
+                    source_url,
+                    file_path,
+                    word_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "分布式系统设计",
+                    "分布式系统摘要",
+                    "分布式系统的核心挑战包括一致性和可用性",
+                    "分布式系统,架构",
+                    "分布式系统,架构",
+                    "test",
+                    "https://example.com/migration-upgrade-bm25",
+                    "/tmp/migration-upgrade-bm25.md",
+                    10,
+                ),
+            )
+            conn.commit()
+
+        assert manager.apply_all_pending(auto_backup=False) == 1
+
+        results = BM25Retriever(db_path).search("一致性", limit=5)
+        assert results
+        assert results[0].title == "分布式系统设计"
 
     def test_initialize_created_db_uses_single_fts_contract(self, tmp_path: Path):
         """运行时初始化的新库不应保留旧 FTS 表名。"""

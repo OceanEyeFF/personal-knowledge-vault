@@ -353,10 +353,10 @@ def test_timeline_of_prefers_real_time_sources_over_archived_at():
         "2026-03-02 09:00:00",
         "2026-03-03 09:00:00",
     ]
-    assert result.inferred_time_field == "archived_at"
+    assert result.inferred_time_field == "event_time"
 
 
-def test_timeline_of_uses_conservative_inferred_field_for_mixed_sources():
+def test_timeline_of_prefers_best_available_inferred_field_for_mixed_sources():
     query_router = StubQueryRouter(
         {
             "混合时间线": [
@@ -401,10 +401,10 @@ def test_timeline_of_uses_conservative_inferred_field_for_mixed_sources():
     result = service.timeline_of(topic="混合时间线", top_k=5, sort_order="asc")
 
     assert [item.knowledge_id for item in result.items] == [1, 2]
-    assert result.inferred_time_field == "archived_at"
+    assert result.inferred_time_field == "event_time"
 
 
-def test_timeline_of_uses_conservative_inferred_field_for_event_and_published():
+def test_timeline_of_prefers_event_time_for_inferred_field_when_available():
     query_router = StubQueryRouter(
         {
             "事件与发布时间": [
@@ -451,7 +451,7 @@ def test_timeline_of_uses_conservative_inferred_field_for_event_and_published():
 
     assert [item.knowledge_id for item in result.items] == [1, 2]
     assert [item.time_source for item in result.items] == ["event_time", "published_at"]
-    assert result.inferred_time_field == "published_at"
+    assert result.inferred_time_field == "event_time"
 
 
 def test_timeline_of_accepts_legacy_published_time_metadata_key():

@@ -309,6 +309,12 @@ class SQLiteStore:
             fts_rows,
         )
 
+    def rebuild_fts5_index(self) -> None:
+        """公开的 FTS5 重建入口，供迁移链收敛到统一分词合同。"""
+        with self.get_connection() as conn:
+            self._create_fts5_table(conn)
+            self._rebuild_fts5_index(conn)
+
     @staticmethod
     def _sqlite_object_exists(
         conn: sqlite3.Connection, object_type: str, name: str

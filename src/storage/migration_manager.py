@@ -11,6 +11,8 @@ import logging
 import subprocess
 import re
 
+from src.storage.sqlite_store import SQLiteStore
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,6 +21,7 @@ EXPECTED_TABLES_BY_VERSION = {
     "1.1.2": ("review_queue", "review_history"),
     "1.2.0": ("knowledge_relations",),
 }
+FTS_ALIGNMENT_VERSION = "1.2.2"
 
 
 class MigrationManager:
@@ -318,6 +321,7 @@ class MigrationManager:
             return 0
 
         success_count = 0
+        needs_fts_alignment = any(version == FTS_ALIGNMENT_VERSION for version, _ in pending)
 
         for version, migration_file in pending:
             try:
@@ -326,6 +330,9 @@ class MigrationManager:
             except Exception as e:
                 logger.error(f"迁移中断: {e}")
                 raise
+
+        if needs_fts_alignment:
+            SQLiteStore(self.db_path).rebuild_fts5_index()
 
         logger.info(f"迁移完成: 成功执行 {success_count} 个脚本")
         return success_count

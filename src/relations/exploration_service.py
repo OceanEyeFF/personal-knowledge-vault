@@ -519,15 +519,11 @@ class ExplorationService:
         if not priority:
             return "archived_at"
 
-        resolved_sources = [item.time_source for item in points if item.time_value]
-        if not resolved_sources:
-            return priority[-1]
-
-        source_rank = {field: idx for idx, field in enumerate(priority)}
-        most_conservative_rank = max(
-            source_rank.get(source, len(priority) - 1) for source in resolved_sources
-        )
-        return priority[most_conservative_rank]
+        resolved_sources = {item.time_source for item in points if item.time_value}
+        for field in priority:
+            if field in resolved_sources:
+                return field
+        return priority[-1]
 
     @staticmethod
     def _parse_time_sort_key(raw_value: str) -> tuple[int, int, float, str]:

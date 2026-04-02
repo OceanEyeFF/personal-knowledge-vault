@@ -34,13 +34,22 @@ def test_migration_versions_are_monotonic_for_active_chain(tmp_path: Path) -> No
         "005_add_review_system.sql",
         "006_add_relations_foundation.sql",
         "007_add_timeline_time_fields.sql",
+        "008_align_fts_contract.sql",
     ]
     parsed_versions = [
         manager._parse_version_from_file(MIGRATIONS_DIR / name)
         for name in migration_names
     ]
 
-    assert parsed_versions == ["1.0.0", "1.1.0", "1.1.1", "1.1.2", "1.2.0", "1.2.1"]
+    assert parsed_versions == [
+        "1.0.0",
+        "1.1.0",
+        "1.1.1",
+        "1.1.2",
+        "1.2.0",
+        "1.2.1",
+        "1.2.2",
+    ]
 
 
 def test_get_pending_migrations_keeps_007_when_version_missing_even_if_columns_exist(
@@ -54,12 +63,19 @@ def test_get_pending_migrations_keeps_007_when_version_missing_even_if_columns_e
     manager = MigrationManager(db_path, MIGRATIONS_DIR)
     pending = manager.get_pending_migrations()
 
-    assert [version for version, _ in pending] == ["1.1.1", "1.1.2", "1.2.0", "1.2.1"]
+    assert [version for version, _ in pending] == [
+        "1.1.1",
+        "1.1.2",
+        "1.2.0",
+        "1.2.1",
+        "1.2.2",
+    ]
     assert [path.name for _, path in pending] == [
         "004_add_chat_sessions.sql",
         "005_add_review_system.sql",
         "006_add_relations_foundation.sql",
         "007_add_timeline_time_fields.sql",
+        "008_align_fts_contract.sql",
     ]
 
 
@@ -119,7 +135,7 @@ def test_get_pending_migrations_keeps_007_for_legacy_schema(tmp_path: Path) -> N
     manager = MigrationManager(db_path, MIGRATIONS_DIR)
     pending = manager.get_pending_migrations()
 
-    assert [version for version, _ in pending] == ["1.2.1"]
+    assert [version for version, _ in pending] == ["1.2.1", "1.2.2"]
 
 
 def test_apply_migration_007_creates_missing_indexes_when_columns_already_exist(
