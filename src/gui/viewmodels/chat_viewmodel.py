@@ -11,11 +11,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QObject, Signal
@@ -80,10 +78,10 @@ class ChatViewModel(QObject):
         self.current_total_tokens: int = 0
         self.current_round_count: int = 0
 
-        # OpenAI 客户端配置
-        self.api_key = self.config.get_env("DEEPSEEK_API_KEY")
-        self.base_url = "https://api.deepseek.com/v1"
-        self.model = "deepseek-chat"
+        # OpenAI-compatible LLM 客户端配置
+        self.api_key = self.config.llm_api_key
+        self.base_url = self.config.llm_base_url
+        self.model = self.config.llm_model
         self.max_tokens = 2000  # 单次响应最大 token 数
 
         # 停止标志
@@ -241,7 +239,7 @@ class ChatViewModel(QObject):
             return
 
         if not self.api_key:
-            self.error_occurred.emit("未配置 DEEPSEEK_API_KEY，请检查 .env 文件")
+            self.error_occurred.emit("未配置 PKV_LLM_API_KEY，请检查 .env 文件")
             return
 
         try:

@@ -66,7 +66,7 @@
 3. **编辑 .env 文件**:
    ```powershell
    notepad .env
-   # 填入你的 DeepSeek 和 OpenAI API Keys
+   # 填入你的 PKV_LLM_API_KEY 和 PKV_EMBD_API_KEY
    ```
 
 4. **运行验证测试**:
@@ -187,8 +187,8 @@ notepad .env.test
 DB_PATH=.data-test/db/knowledge_vault.db
 
 # 测试用 API Keys（可选）
-DEEPSEEK_API_KEY=sk-test-your-key
-OPENAI_API_KEY=sk-test-your-key
+PKV_LLM_API_KEY=sk-test-your-key
+PKV_EMBD_API_KEY=sk-test-your-key
 
 # 日志级别（DEBUG 获取详细日志）
 LOG_LEVEL=DEBUG

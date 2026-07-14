@@ -4,13 +4,12 @@ BM25 关键词检索器
 基于 SQLite FTS5 全文索引的关键词检索
 """
 
-from typing import List
 from pathlib import Path
 
 from src.storage.sqlite_store import FTS_TABLE_NAME, SQLiteStore
 from src.utils.text_utils import TextProcessor
 from src.utils.logger import get_logger
-from src.retrieval.result import SearchResult
+from src.retrieval.result import SearchResponse, SearchResult
 
 logger = get_logger(__name__)
 
@@ -32,7 +31,7 @@ class BM25Retriever:
         self.store = SQLiteStore(db_path)
         self.text_processor = TextProcessor()
 
-    def search(self, query: str, limit: int = 10) -> List[SearchResult]:
+    def search(self, query: str, limit: int = 10) -> SearchResponse:
         """
         执行 BM25 关键词检索
 
@@ -41,18 +40,18 @@ class BM25Retriever:
             limit: 返回结果数量
 
         Returns:
-            搜索结果列表，按相关性降序排列
+            检索响应；通过 status 区分 success/no_results/invalid_query/error
         """
         if not query or not query.strip():
             logger.debug("查询文本为空，返回空结果")
-            return []
+            return SearchResponse(results=[], status="invalid_query")
 
         try:
             # 构建 FTS5 查询
             match_query = self._build_match_query(query)
             if not match_query:
                 logger.warning(f"查询 '{query}' 分词后为空，无法执行 BM25 检索")
-                return []
+                return SearchResponse(results=[], status="invalid_query")
 
             # 执行 FTS5 查询
             results = []
@@ -116,11 +115,17 @@ class BM25Retriever:
                     results.append(result)
 
             logger.info(f"BM25 检索完成: 查询='{query}', 结果数={len(results)}")
-            return results
+            status = "success" if results else "no_results"
+            return SearchResponse(results=results, status=status)
 
         except Exception as e:
             logger.error(f"BM25 检索失败: {e}", exc_info=True)
-            return []
+            return SearchResponse(
+                results=[],
+                status="error",
+                error_message=str(e),
+                error_type=type(e).__name__,
+            )
 
     def _build_match_query(self, query: str) -> str:
         """

@@ -50,8 +50,8 @@ class ChatProcessor(BaseProcessor):
         config = get_config()
         self.max_summary_words = int(config.get("chat.summary_max_words", max_summary_words))
         self._deepseek_client = deepseek_client
-        self._deepseek_model = config.get("ai.deepseek.model", "deepseek-chat")
-        self._summary_temperature = float(config.get("ai.deepseek.temperature", 0.7))
+        self._deepseek_model = config.llm_model
+        self._summary_temperature = float(config.get("ai.llm.temperature", 0.7))
 
     @classmethod
     def can_handle(cls, url: str) -> bool:

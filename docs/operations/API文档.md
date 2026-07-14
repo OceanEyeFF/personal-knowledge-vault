@@ -412,8 +412,9 @@ vector_store.add(entry.id, embedding)
 
 说明：
 
-- 如果配置 `OPENAI_EMBEDDING_DIM=auto`，`dim` 会在首次成功的 Embedding 请求后锁定
+- 如果配置 `PKV_EMBD_DIM=auto`，`dim` 会在首次成功的 Embedding 请求后锁定
 - 新建索引前必须确保 `VectorStore` 使用的维度与 Embedding 服务实际返回维度一致
+- Embedding 模型同样属于索引契约；更换模型后，即使维度相同，也应重建向量索引并重新生成 Embedding
 
 ---
 
@@ -993,8 +994,8 @@ python -m src.main config get <key>
 
 **示例**:
 ```bash
-# 查询 DeepSeek 模型
-python -m src.main config get ai.deepseek.model
+# 查询 LLM 模型
+python -m src.main config get ai.llm.model
 
 # 查询数据库路径
 python -m src.main config get db_path
@@ -1007,8 +1008,8 @@ python -m src.main config set <key> <value>
 
 **示例**:
 ```bash
-# 设置 API Key
-python -m src.main config set DEEPSEEK_API_KEY sk-xxxxx
+# 设置 LLM API Key
+python -m src.main config set PKV_LLM_API_KEY sk-xxxxx
 
 # 设置日志级别
 python -m src.main config set LOG_LEVEL DEBUG

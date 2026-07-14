@@ -2,16 +2,11 @@
 DeepSeek API 客户端单元测试
 """
 
-import sys
 from pathlib import Path
-
-# 添加项目根目录到 Python 路径
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-import pytest
 from unittest.mock import Mock, patch, MagicMock
-import json
+
+import httpx
+import pytest
 
 from src.ai.deepseek_client import DeepSeekClient
 
@@ -21,8 +16,9 @@ def mock_config():
     """Mock 配置"""
     with patch('src.ai.deepseek_client.get_config') as mock:
         config = Mock()
-        config.deepseek_api_key = "test-api-key"
-        config.deepseek_base_url = "https://api.deepseek.com/v1"
+        config.llm_api_key = "test-api-key"
+        config.llm_base_url = "https://api.deepseek.com/v1"
+        config.llm_model = "configured-model"
         mock.return_value = config
         yield config
 
@@ -42,9 +38,17 @@ class TestDeepSeekClientInit:
 
         assert client.api_key == "test-api-key"
         assert client.base_url == "https://api.deepseek.com/v1"
-        assert client.model == "deepseek-chat"
+        assert client.model == "configured-model"
         assert client.timeout == 30.0
         assert client.max_retries == 3
+
+    def test_init_with_configured_model(self, mock_config):
+        """测试默认模型从统一配置入口读取"""
+        mock_config.llm_model = "deepseek-reasoner"
+
+        client = DeepSeekClient()
+
+        assert client.model == "deepseek-reasoner"
 
     def test_init_with_custom_params(self, mock_config):
         """测试使用自定义参数初始化"""
@@ -66,11 +70,12 @@ class TestDeepSeekClientInit:
         """测试没有 API Key 时抛出异常"""
         with patch('src.ai.deepseek_client.get_config') as mock:
             config = Mock()
-            config.deepseek_api_key = None
-            config.deepseek_base_url = "https://api.deepseek.com/v1"
+            config.llm_api_key = None
+            config.llm_base_url = "https://api.deepseek.com/v1"
+            config.llm_model = "configured-model"
             mock.return_value = config
 
-            with pytest.raises(ValueError, match="DeepSeek API Key 未配置"):
+            with pytest.raises(ValueError, match="LLM API Key 未配置"):
                 DeepSeekClient()
 
     def test_load_prompts(self, client):
@@ -79,6 +84,13 @@ class TestDeepSeekClientInit:
         assert client._extract_tags_prompt
         assert "{content}" in client._summarize_prompt
         assert "{content}" in client._extract_tags_prompt
+
+    def test_load_prompt_missing_file(self, client, tmp_path: Path):
+        """测试 Prompt 文件缺失时抛出异常"""
+        client._prompts_dir = tmp_path
+
+        with pytest.raises(FileNotFoundError, match="Prompt 模板不存在"):
+            client._load_prompt("missing.txt")
 
 
 class TestDeepSeekSummarize:
@@ -142,6 +154,23 @@ class TestDeepSeekExtractTags:
             assert len(tags) == 5
             assert tags == ["tag1", "tag2", "tag3", "tag4", "tag5"]
 
+    def test_extract_tags_with_less_than_3_tags(self, client):
+        """测试 API 返回少于 3 个标签时保持返回并记录告警"""
+        with patch.object(client, '_call_api') as mock_call:
+            mock_call.return_value = '["tag1", "tag2"]'
+
+            tags = client.extract_tags("content")
+
+            assert tags == ["tag1", "tag2"]
+
+    def test_extract_tags_non_list_json_response(self, client):
+        """测试 API 返回 JSON 但不是列表时抛出异常"""
+        with patch.object(client, '_call_api') as mock_call:
+            mock_call.return_value = '{"tag": "tag1"}'
+
+            with pytest.raises(ValueError, match="API 返回的标签格式不是列表"):
+                client.extract_tags("content")
+
     def test_extract_tags_empty_content(self, client):
         """测试空内容时抛出异常"""
         with pytest.raises(ValueError, match="提取标签的内容不能为空"):
@@ -167,6 +196,24 @@ class TestDeepSeekExtractTags:
             assert "tag1" in tags
             assert "tag2" in tags
             assert "tag3" in tags
+
+    def test_extract_tags_json_array_embedded_in_text(self, client):
+        """测试从说明文字中提取 JSON 数组"""
+        with patch.object(client, '_call_api') as mock_call:
+            mock_call.return_value = '标签如下：["tag1", "tag2", "tag3", "tag4", "tag5", "tag6"]'
+
+            tags = client.extract_tags("content")
+
+            assert tags == ["tag1", "tag2", "tag3", "tag4", "tag5"]
+
+    def test_extract_tags_invalid_embedded_json_falls_back_to_quotes(self, client):
+        """测试嵌入 JSON 数组解析失败后使用引号降级方案"""
+        with patch.object(client, '_call_api') as mock_call:
+            mock_call.return_value = '标签如下：["broken", invalid] "tag1" "tag2" "tag3"'
+
+            tags = client.extract_tags("content")
+
+            assert tags == ["broken", "tag1", "tag2", "tag3"]
 
     def test_extract_tags_invalid_response(self, client):
         """测试无法解析的响应"""
@@ -285,3 +332,35 @@ class TestDeepSeekAPICall:
             with patch('time.sleep'):
                 with pytest.raises(Exception, match="DeepSeek API 调用失败"):
                     client._call_api([{"role": "user", "content": "test"}])
+
+    def test_api_call_timeout_max_retries_exceeded(self, client):
+        """测试请求超时超过最大重试次数"""
+        client.max_retries = 2
+
+        with patch('httpx.Client') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__enter__.return_value = mock_client
+            mock_client.post.side_effect = httpx.TimeoutException("timeout")
+            mock_client_class.return_value = mock_client
+
+            with patch('time.sleep'):
+                with pytest.raises(Exception, match="DeepSeek API 请求超时"):
+                    client._call_api([{"role": "user", "content": "test"}])
+
+        assert mock_client.post.call_count == 2
+
+    def test_api_call_network_error_max_retries_exceeded(self, client):
+        """测试网络错误超过最大重试次数"""
+        client.max_retries = 2
+
+        with patch('httpx.Client') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__enter__.return_value = mock_client
+            mock_client.post.side_effect = httpx.NetworkError("network down")
+            mock_client_class.return_value = mock_client
+
+            with patch('time.sleep'):
+                with pytest.raises(Exception, match="DeepSeek API 网络错误"):
+                    client._call_api([{"role": "user", "content": "test"}])
+
+        assert mock_client.post.call_count == 2

@@ -225,13 +225,16 @@ class Embedder:
 在 `.env` 文件中配置:
 
 ```bash
-# DeepSeek API
-DEEPSEEK_API_KEY=sk-xxx
-DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+# OpenAI-compatible LLM
+PKV_LLM_API_KEY=sk-xxx
+PKV_LLM_BASE_URL=https://api.deepseek.com/v1
+PKV_LLM_MODEL=deepseek-chat
 
-# OpenAI API
-OPENAI_API_KEY=sk-xxx
-OPENAI_BASE_URL=https://api.openai.com/v1
+# OpenAI-compatible Embedding
+PKV_EMBD_API_KEY=sk-xxx
+PKV_EMBD_BASE_URL=https://api.openai.com/v1
+PKV_EMBD_MODEL=text-embedding-3-small
+PKV_EMBD_DIM=1536
 ```
 
 ### 配置文件

@@ -18,7 +18,7 @@ M12 手动测试：qasync 集成验证（技术决策 D003 最终方案）
 环境要求：
     - PySide6 已安装（pip install PySide6）
     - qasync 已安装（pip install qasync>=0.28.0）
-    - 可选：DEEPSEEK_API_KEY（用于真实 API 测试）
+    - 可选：PKV_LLM_API_KEY（用于真实 API 测试）
 """
 
 import asyncio
@@ -127,9 +127,9 @@ class ChatViewModel(QObject):
     @asyncSlot()
     async def test_openai_sdk_integration(self):
         """测试 5: OpenAI SDK 集成（真实 DeepSeek API 调用）"""
-        api_key = os.getenv("DEEPSEEK_API_KEY")
+        api_key = os.getenv("PKV_LLM_API_KEY")
         if not api_key:
-            self.error_occurred.emit("未配置 DEEPSEEK_API_KEY，跳过此测试")
+            self.error_occurred.emit("未配置 PKV_LLM_API_KEY，跳过此测试")
             self.finished.emit()
             return
 
@@ -143,7 +143,7 @@ class ChatViewModel(QObject):
             http_client = httpx.AsyncClient(timeout=30.0)
             client = AsyncOpenAI(
                 api_key=api_key,
-                base_url="https://api.deepseek.com/v1",
+                base_url=os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1"),
                 http_client=http_client,
             )
 
@@ -153,7 +153,7 @@ class ChatViewModel(QObject):
 
             # 流式调用（与 M12 真实架构一致）
             stream = await client.chat.completions.create(
-                model="deepseek-chat",
+                model=os.getenv("PKV_LLM_MODEL", "deepseek-chat"),
                 messages=messages,
                 stream=True,
                 stream_options={"include_usage": True},

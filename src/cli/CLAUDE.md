@@ -264,8 +264,10 @@ python -m src.main config set ai.temperature 0.8
 **配置键路径**:
 - `storage.vault_dir`
 - `storage.db_path`
-- `ai.deepseek_model`
-- `ai.temperature`
+- `ai.llm.model`
+- `ai.llm.temperature`
+- `ai.embedding.model`
+- `ai.embedding.dim`
 - `retrieval.bm25_k1`
 
 ---

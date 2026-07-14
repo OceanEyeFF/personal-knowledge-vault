@@ -365,7 +365,7 @@ class TestDataPipelineIntegration:
     @pytest.fixture
     def embedder(self):
         """创建 Embedder 实例"""
-        # 注意：这里需要真实的 OpenAI API Key
+        # 注意：这里需要真实的 Embedding API Key
         # 如果没有，可以 mock
         try:
             return Embedder()

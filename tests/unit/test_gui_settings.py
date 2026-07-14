@@ -68,6 +68,12 @@ def mock_config():
     config.deepseek_base_url = MOCK_SETTINGS["deepseek_base_url"]
     config.openai_api_key = MOCK_SETTINGS["openai_api_key"]
     config.openai_base_url = MOCK_SETTINGS["openai_base_url"]
+    config.llm_api_key = MOCK_SETTINGS["deepseek_api_key"]
+    config.llm_base_url = MOCK_SETTINGS["deepseek_base_url"]
+    config.llm_model = "deepseek-chat"
+    config.embd_api_key = MOCK_SETTINGS["openai_api_key"]
+    config.embd_base_url = MOCK_SETTINGS["openai_base_url"]
+    config.embd_model = "text-embedding-3-small"
     config.db_path = ".data-test/db/test.db"
     config.vault_dir = ".data-test/vault"
     config.vector_index_dir = ".data-test/vectors"
@@ -161,19 +167,19 @@ class TestSettingsViewData:
     """验证 SettingsView 数据加载。"""
 
     def test_deepseek_key_loaded(self, settings_view):
-        """DeepSeek API Key 已填充。"""
+        """LLM API Key 已填充。"""
         assert settings_view._deepseek_key_input.text() == "sk-test-deepseek"
 
     def test_openai_key_loaded(self, settings_view):
-        """OpenAI API Key 已填充。"""
+        """Embedding API Key 已填充。"""
         assert settings_view._openai_key_input.text() == "sk-test-openai"
 
     def test_deepseek_url_loaded(self, settings_view):
-        """DeepSeek Base URL 已填充。"""
+        """LLM Base URL 已填充。"""
         assert settings_view._deepseek_url_input.text() == "https://api.deepseek.com"
 
     def test_openai_url_loaded(self, settings_view):
-        """OpenAI Base URL 已填充。"""
+        """Embedding Base URL 已填充。"""
         assert settings_view._openai_url_input.text() == "https://api.openai.com/v1"
 
     def test_strategy_default_is_auto(self, settings_view):
@@ -206,7 +212,7 @@ class TestSettingsViewModel:
     def test_save_writes_env_file(self, tmp_path, mock_config):
         """save_settings 写入 .env 文件。"""
         env_file = tmp_path / ".env"
-        env_file.write_text("# test\nDEEPSEEK_API_KEY=old-key\n", encoding="utf-8")
+        env_file.write_text("# test\nPKV_LLM_API_KEY=old-key\n", encoding="utf-8")
 
         with patch("src.gui.viewmodels.settings_viewmodel.get_config", return_value=mock_config):
             from src.gui.viewmodels.settings_viewmodel import SettingsViewModel
@@ -228,6 +234,8 @@ class TestSettingsViewModel:
 
             # 验证文件内容已更新
             content = env_file.read_text(encoding="utf-8")
+            assert "PKV_LLM_API_KEY=sk-new-key" in content
+            assert "PKV_EMBD_API_KEY=sk-openai-new" in content
             assert "sk-new-key" in content
 
     def test_save_emits_success_signal(self, tmp_path, mock_config, qtbot):
@@ -257,7 +265,7 @@ class TestPasswordToggle:
     """验证密码显示/隐藏切换。"""
 
     def test_toggle_deepseek_key_visibility(self, settings_view):
-        """切换 DeepSeek API Key 可见性。"""
+        """切换 LLM API Key 可见性。"""
         # 初始为 Password 模式
         assert settings_view._deepseek_key_input.echoMode() == QLineEdit.Password  # type: ignore[attr-defined]
 
@@ -270,7 +278,7 @@ class TestPasswordToggle:
         assert settings_view._deepseek_key_input.echoMode() == QLineEdit.Password  # type: ignore[attr-defined]
 
     def test_toggle_openai_key_visibility(self, settings_view):
-        """切换 OpenAI API Key 可见性。"""
+        """切换 Embedding API Key 可见性。"""
         settings_view._openai_key_toggle.click()
         assert settings_view._openai_key_input.echoMode() == QLineEdit.Normal  # type: ignore[attr-defined]
 

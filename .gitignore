@@ -57,6 +57,7 @@ logs/
 # Testing
 .pytest_cache/
 .coverage
+.coverage.module.json
 htmlcov/
 .tox/
 .data-test/db/knowledge_vault.db

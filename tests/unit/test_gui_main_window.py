@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings
 from PySide6.QtGui import QCloseEvent
 
 # 确保项目根目录在 sys.path 中
@@ -46,6 +46,12 @@ def mock_stores():
     mock_config.deepseek_base_url = ""
     mock_config.openai_api_key = ""
     mock_config.openai_base_url = ""
+    mock_config.llm_api_key = ""
+    mock_config.llm_base_url = ""
+    mock_config.llm_model = "deepseek-chat"
+    mock_config.embd_api_key = ""
+    mock_config.embd_base_url = ""
+    mock_config.embd_model = "text-embedding-3-small"
     mock_config.db_path = ".data-test/db/test.db"
     mock_config.vault_dir = ".data-test/vault"
     mock_config.vector_index_dir = ".data-test/vectors"

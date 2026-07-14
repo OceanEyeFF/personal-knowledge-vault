@@ -7,7 +7,7 @@ DeepSeek API 客户端
 import json
 import time
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 import httpx
 
 from src.utils.config import get_config
@@ -23,7 +23,7 @@ class DeepSeekClient:
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        model: str = "deepseek-chat",
+        model: Optional[str] = None,
         timeout: float = 30.0,
         max_retries: int = 3,
     ):
@@ -33,18 +33,18 @@ class DeepSeekClient:
         Args:
             api_key: API Key，默认从配置中读取
             base_url: API Base URL，默认从配置中读取
-            model: 使用的模型名称
+            model: 使用的模型名称，默认从配置中读取
             timeout: 请求超时时间（秒）
             max_retries: 最大重试次数
         """
         config = get_config()
 
-        self.api_key = api_key or config.deepseek_api_key
+        self.api_key = api_key or config.llm_api_key
         if not self.api_key:
-            raise ValueError("DeepSeek API Key 未配置，请设置环境变量 DEEPSEEK_API_KEY")
+            raise ValueError("LLM API Key 未配置，请设置环境变量 PKV_LLM_API_KEY")
 
-        self.base_url = (base_url or config.deepseek_base_url).rstrip("/")
-        self.model = model
+        self.base_url = (base_url or config.llm_base_url).rstrip("/")
+        self.model = model or config.llm_model
         self.timeout = timeout
         self.max_retries = max_retries
 
@@ -53,7 +53,7 @@ class DeepSeekClient:
         self._summarize_prompt = self._load_prompt("summarize.txt")
         self._extract_tags_prompt = self._load_prompt("extract_tags.txt")
 
-        logger.info(f"DeepSeek 客户端初始化成功: model={model}, base_url={self.base_url}")
+        logger.info(f"DeepSeek 客户端初始化成功: model={self.model}, base_url={self.base_url}")
 
     def _load_prompt(self, filename: str) -> str:
         """
@@ -139,7 +139,10 @@ class DeepSeekClient:
 
                 elif response.status_code >= 500:
                     # 服务器错误，重试
-                    logger.warning(f"DeepSeek API 服务器错误 ({response.status_code})，重试中 (第 {attempt}/{self.max_retries} 次)")
+                    logger.warning(
+                        f"DeepSeek API 服务器错误 ({response.status_code})，"
+                        f"重试中 (第 {attempt}/{self.max_retries} 次)"
+                    )
                     time.sleep(1)
                     continue
 
@@ -279,7 +282,7 @@ class DeepSeekClient:
             if len(tags) < 3:
                 logger.warning(f"提取的标签数量不足 3 个，实际: {len(tags)}")
             elif len(tags) > 5:
-                logger.warning(f"提取的标签数量超过 5 个，截取前 5 个")
+                logger.warning("提取的标签数量超过 5 个，截取前 5 个")
                 tags = tags[:5]
 
             logger.info(f"标签提取完成: tags={tags}")

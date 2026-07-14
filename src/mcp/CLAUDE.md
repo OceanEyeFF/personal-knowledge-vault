@@ -117,8 +117,8 @@ MCP Server 共享主配置 `config/config.yaml` 和环境变量:
 
 ```bash
 # 必需
-DEEPSEEK_API_KEY=sk-...    # AI 摘要/标签
-OPENAI_API_KEY=sk-...       # Embedding 向量
+PKV_LLM_API_KEY=sk-...      # AI 摘要/标签
+PKV_EMBD_API_KEY=sk-...     # Embedding 向量
 
 # 可选
 DB_PATH=.data/db/knowledge_vault.db  # 数据库路径
@@ -275,7 +275,7 @@ Authorization: Bearer my-secret-token-here
 ### Q5: get_related 返回空结果怎么办?
 
 可能原因:
-1. 该条目归档时未生成向量索引(需要 OpenAI API Key)
+1. 该条目归档时未生成向量索引(需要 PKV_EMBD_API_KEY)
 2. 知识库条目太少,无足够相似内容
 3. hnswlib 索引文件不存在或损坏
 

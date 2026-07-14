@@ -371,8 +371,8 @@ notepad .env.test
 DB_PATH=.data-test/db/knowledge_vault.db
 
 # 测试用 API Keys(可选)
-DEEPSEEK_API_KEY=sk-test-your-key
-OPENAI_API_KEY=sk-test-your-key
+PKV_LLM_API_KEY=sk-test-your-key
+PKV_EMBD_API_KEY=sk-test-your-key
 
 # 日志级别(DEBUG 获取详细日志)
 LOG_LEVEL=DEBUG

@@ -123,13 +123,13 @@ class SettingsView(QWidget):
         """构建 API 密钥配置分组。
 
         Returns:
-            包含 DeepSeek 和 OpenAI 配置的 QGroupBox。
+            包含 LLM 和 Embedding 配置的 QGroupBox。
         """
         group = QGroupBox("API 密钥配置", self)
         form = QFormLayout(group)
         form.setSpacing(8)
 
-        # DeepSeek API Key
+        # LLM API Key
         ds_key_row = QHBoxLayout()
         self._deepseek_key_input = QLineEdit(self)
         self._deepseek_key_input.setEchoMode(QLineEdit.Password)  # type: ignore[attr-defined]
@@ -138,14 +138,14 @@ class SettingsView(QWidget):
         self._deepseek_key_toggle = QPushButton("显示", self)
         self._deepseek_key_toggle.setFixedWidth(50)
         ds_key_row.addWidget(self._deepseek_key_toggle)
-        form.addRow("DeepSeek API Key:", ds_key_row)
+        form.addRow("LLM API Key:", ds_key_row)
 
-        # DeepSeek Base URL
+        # LLM Base URL
         self._deepseek_url_input = QLineEdit(self)
-        self._deepseek_url_input.setPlaceholderText("https://api.deepseek.com")
-        form.addRow("DeepSeek Base URL:", self._deepseek_url_input)
+        self._deepseek_url_input.setPlaceholderText("https://api.deepseek.com/v1")
+        form.addRow("LLM Base URL:", self._deepseek_url_input)
 
-        # OpenAI API Key
+        # Embedding API Key
         oai_key_row = QHBoxLayout()
         self._openai_key_input = QLineEdit(self)
         self._openai_key_input.setEchoMode(QLineEdit.Password)  # type: ignore[attr-defined]
@@ -154,12 +154,12 @@ class SettingsView(QWidget):
         self._openai_key_toggle = QPushButton("显示", self)
         self._openai_key_toggle.setFixedWidth(50)
         oai_key_row.addWidget(self._openai_key_toggle)
-        form.addRow("OpenAI API Key:", oai_key_row)
+        form.addRow("Embedding API Key:", oai_key_row)
 
-        # OpenAI Base URL
+        # Embedding Base URL
         self._openai_url_input = QLineEdit(self)
         self._openai_url_input.setPlaceholderText("https://api.openai.com/v1")
-        form.addRow("OpenAI Base URL:", self._openai_url_input)
+        form.addRow("Embedding Base URL:", self._openai_url_input)
 
         return group
 

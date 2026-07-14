@@ -43,7 +43,7 @@
 - **智能摘要**: 三层摘要（一句话/100字/详细版）
 - **标签提取**: 自动生成标签和关键词
 - **内容分析**: 识别内容类型、评估字数复杂度
-- **Embedding**: OpenAI text-embedding-3-small 模型
+- **Embedding**: 默认 OpenAI text-embedding-3-small；模型/维度与向量索引绑定，不建议随意更换
 - **成本控制**: DeepSeek API 低成本方案
 
 ### 💻 CLI 命令 (v0.6.0 新增)
@@ -241,7 +241,7 @@ cd personal-knowledge-vault
 
 # 3️⃣ 配置 API Keys
 cp .env.example .env
-notepad .env  # 填入你的 DeepSeek 和 OpenAI API Keys
+notepad .env  # 填入你的 PKV_LLM_API_KEY 和 PKV_EMBD_API_KEY
 
 # ✅ 验证安装
 .\scripts\test-conda.ps1
@@ -342,6 +342,11 @@ python src/main.py --help
 - 所有数据可从 Markdown 完全重建
 - SQLite + 向量仅为缓存，可随时删除重建
 - 数据主权完全掌控，避免厂商锁定
+
+**Embedding 约束**:
+- Embedding 模型和维度是向量索引契约；更换模型或维度后，旧向量不再可信。
+- 如需切换模型，应作为索引迁移处理：重建向量索引，并重新生成文档级和分块级 Embedding。
+- 如果只是临时试用本地 OpenAI-compatible 服务，优先保持与现有索引一致的模型和维度。
 
 ### 🧠 智能检索路由
 

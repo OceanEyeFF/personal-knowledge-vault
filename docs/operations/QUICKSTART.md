@@ -28,8 +28,8 @@
 
 ### 必需 API Keys
 
-- `DEEPSEEK_API_KEY`：用于摘要、标签、部分 AI 能力
-- `OPENAI_API_KEY`：用于 Embedding
+- `PKV_LLM_API_KEY`：用于摘要、标签、部分 AI 能力
+- `PKV_EMBD_API_KEY`：用于 Embedding
 
 ---
 
@@ -56,8 +56,8 @@ notepad .env
 填入至少以下内容：
 
 ```bash
-DEEPSEEK_API_KEY=sk-xxx
-OPENAI_API_KEY=sk-xxx
+PKV_LLM_API_KEY=sk-xxx
+PKV_EMBD_API_KEY=sk-xxx
 ```
 
 ### Step 3：运行验证

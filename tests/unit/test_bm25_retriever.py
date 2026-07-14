@@ -37,7 +37,11 @@ class _FakeConnection:
 def test_search_returns_empty_for_blank_query(tmp_path: Path) -> None:
     retriever = BM25Retriever(tmp_path / "blank.db")
 
-    assert retriever.search("   ") == []
+    response = retriever.search("   ")
+
+    assert response == []
+    assert response.status == "invalid_query"
+    assert response.ok is True
 
 
 def test_search_returns_empty_when_tokenized_query_is_empty(
@@ -51,7 +55,10 @@ def test_search_returns_empty_when_tokenized_query_is_empty(
         lambda query: '"" *',
     )
 
-    assert retriever.search("特殊字符") == []
+    response = retriever.search("特殊字符")
+
+    assert response == []
+    assert response.status == "invalid_query"
 
 
 def test_search_normalizes_positive_bm25_scores_and_builds_metadata(
@@ -89,6 +96,8 @@ def test_search_normalizes_positive_bm25_scores_and_builds_metadata(
     results = retriever.search("ranked", limit=1)
 
     assert len(results) == 1
+    assert results.status == "success"
+    assert results.ok is True
     assert results[0].knowledge_id == 7
     assert results[0].score == 0.5
     assert results[0].highlight == "summary 100"
@@ -96,7 +105,7 @@ def test_search_normalizes_positive_bm25_scores_and_builds_metadata(
     assert fake_conn.executed[0][1] == ("ranked", 1)
 
 
-def test_search_returns_empty_on_storage_exception(
+def test_search_returns_error_response_on_storage_exception(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -110,7 +119,13 @@ def test_search_returns_empty_on_storage_exception(
     monkeypatch.setattr(retriever, "_build_match_query", lambda query: "alpha")
     monkeypatch.setattr(retriever.store, "get_connection", _broken_get_connection)
 
-    assert retriever.search("alpha") == []
+    response = retriever.search("alpha")
+
+    assert response == []
+    assert response.status == "error"
+    assert response.failed is True
+    assert response.error_type == "RuntimeError"
+    assert response.error_message == "fts unavailable"
 
 
 def test_helper_methods_cover_sanitization_and_normalization(tmp_path: Path) -> None:

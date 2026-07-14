@@ -2,16 +2,10 @@
 OpenAI API 客户端单元测试
 """
 
-import sys
-from pathlib import Path
+from unittest.mock import Mock, patch, call
 
-# 添加项目根目录到 Python 路径
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-import pytest
 import numpy as np
-from unittest.mock import Mock, patch, MagicMock, call
+import pytest
 
 from src.ai.openai_client import OpenAIClient
 
@@ -21,9 +15,9 @@ def mock_config():
     """Mock 配置"""
     with patch('src.ai.openai_client.get_config') as mock:
         config = Mock()
-        config.openai_api_key = "test-openai-key"
-        config.openai_base_url = "https://api.openai.com/v1"
-        config.openai_embedding_model = "text-embedding-3-small"
+        config.embd_api_key = "test-openai-key"
+        config.embd_base_url = "https://api.openai.com/v1"
+        config.embd_model = "text-embedding-3-small"
         config.embedding_dim = 1536
         config.embedding_dim_is_auto = False
         config.set_runtime_embedding_dim = Mock()
@@ -84,11 +78,14 @@ class TestOpenAIClientInit:
         """测试没有 API Key 时抛出异常"""
         with patch('src.ai.openai_client.get_config') as mock:
             config = Mock()
-            config.openai_api_key = None
-            config.openai_base_url = "https://api.openai.com/v1"
+            config.embd_api_key = None
+            config.embd_base_url = "https://api.openai.com/v1"
+            config.embd_model = "text-embedding-3-small"
+            config.embedding_dim = 1536
+            config.embedding_dim_is_auto = False
             mock.return_value = config
 
-            with pytest.raises(ValueError, match="OpenAI API Key 未配置"):
+            with pytest.raises(ValueError, match="Embedding API Key 未配置"):
                 OpenAIClient()
 
 

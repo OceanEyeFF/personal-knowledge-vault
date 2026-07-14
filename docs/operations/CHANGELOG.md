@@ -290,8 +290,8 @@
   - 扩展开发
 
 - ✅ **环境变量模板** ([.env.example](.env.example))
-  - DEEPSEEK_API_KEY
-  - OPENAI_API_KEY
+  - PKV_LLM_API_KEY
+  - PKV_EMBD_API_KEY
 
 ### 📝 变更
 

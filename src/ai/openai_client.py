@@ -44,12 +44,12 @@ class OpenAIClient:
         config = get_config()
         self._config = config
 
-        self.api_key = api_key or config.openai_api_key
+        self.api_key = api_key or config.embd_api_key
         if not self.api_key:
-            raise ValueError("OpenAI API Key 未配置，请设置环境变量 OPENAI_API_KEY")
+            raise ValueError("Embedding API Key 未配置，请设置环境变量 PKV_EMBD_API_KEY")
 
-        self.base_url = base_url or config.openai_base_url
-        self.model = model or config.openai_embedding_model
+        self.base_url = base_url or config.embd_base_url
+        self.model = model or config.embd_model
         configured_dimensions = dimensions if dimensions is not None else config.embedding_dim
         self.dimensions = int(configured_dimensions) if configured_dimensions is not None else None
         self._auto_dimensions_pending = (

@@ -185,45 +185,93 @@ class Config:
     def embedding_runtime_fingerprint(self) -> Dict[str, str]:
         """当前 Embedding 配置指纹，用于校验运行期维度缓存是否仍然有效。"""
         return {
-            "base_url": self.openai_base_url,
-            "embedding_model": self.openai_embedding_model,
+            "base_url": self.embd_base_url,
+            "embedding_model": self.embd_model,
         }
 
     @property
+    def llm_api_key(self) -> Optional[str]:
+        """OpenAI-compatible LLM API Key。"""
+        return self.get_env("PKV_LLM_API_KEY")
+
+    @property
+    def llm_base_url(self) -> str:
+        """OpenAI-compatible LLM API Base URL。"""
+        return (
+            self.get_env("PKV_LLM_BASE_URL")
+            or self.get("ai.llm.base_url")
+            or "https://api.deepseek.com/v1"
+        )
+
+    @property
+    def llm_model(self) -> str:
+        """OpenAI-compatible LLM 模型名称。"""
+        return (
+            self.get_env("PKV_LLM_MODEL")
+            or self.get("ai.llm.model")
+            or "deepseek-chat"
+        )
+
+    @property
     def deepseek_api_key(self) -> Optional[str]:
-        """DeepSeek API Key"""
-        return self.get_env("DEEPSEEK_API_KEY")
+        """兼容旧代码属性名：OpenAI-compatible LLM API Key。"""
+        return self.llm_api_key
 
     @property
     def deepseek_base_url(self) -> str:
-        """DeepSeek API Base URL"""
-        return self.get_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+        """兼容旧代码属性名：OpenAI-compatible LLM API Base URL。"""
+        return self.llm_base_url
+
+    @property
+    def deepseek_model(self) -> str:
+        """兼容旧代码属性名：OpenAI-compatible LLM 模型名称。"""
+        return self.llm_model
+
+    @property
+    def embd_api_key(self) -> Optional[str]:
+        """OpenAI-compatible Embedding API Key。"""
+        return self.get_env("PKV_EMBD_API_KEY")
+
+    @property
+    def embd_base_url(self) -> str:
+        """OpenAI-compatible Embedding API Base URL。"""
+        return (
+            self.get_env("PKV_EMBD_BASE_URL")
+            or self.get("ai.embedding.base_url")
+            or "https://api.openai.com/v1"
+        )
+
+    @property
+    def embd_model(self) -> str:
+        """OpenAI-compatible Embedding 模型名称。"""
+        return (
+            self.get_env("PKV_EMBD_MODEL")
+            or self.get("ai.embedding.model")
+            or "text-embedding-3-small"
+        )
 
     @property
     def openai_api_key(self) -> Optional[str]:
-        """OpenAI API Key"""
-        return self.get_env("OPENAI_API_KEY")
+        """兼容旧代码属性名：OpenAI-compatible Embedding API Key。"""
+        return self.embd_api_key
 
     @property
     def openai_base_url(self) -> str:
-        """OpenAI API Base URL"""
-        return self.get_env("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        """兼容旧代码属性名：OpenAI-compatible Embedding API Base URL。"""
+        return self.embd_base_url
 
     @property
     def openai_embedding_model(self) -> str:
-        """OpenAI Embedding 模型名称（支持环境变量覆盖 > config.yaml > 默认值）"""
-        return (
-            self.get_env("OPENAI_EMBEDDING_MODEL")
-            or self.get("ai.openai.embedding_model", "text-embedding-3-small")
-        )
+        """兼容旧代码属性名：OpenAI-compatible Embedding 模型名称。"""
+        return self.embd_model
 
     @property
     def embedding_dim_raw(self) -> Any:
         """Embedding 维度原始配置值。"""
-        env_val = self.get_env("OPENAI_EMBEDDING_DIM")
+        env_val = self.get_env("PKV_EMBD_DIM")
         if env_val is not None and env_val != "":
             return env_val
-        return self.get("ai.openai.embedding_dim", 1536)
+        return self.get("ai.embedding.dim", 1536)
 
     @property
     def embedding_dim_is_auto(self) -> bool:

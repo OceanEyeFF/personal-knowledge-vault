@@ -346,7 +346,7 @@ def sample_knowledge_db(test_env: TestEnv) -> Dict[str, object]:
 
     vector_enabled = False
     vector_error = ""
-    if os.getenv("OPENAI_API_KEY"):
+    if os.getenv("PKV_EMBD_API_KEY"):
         try:
             from src.utils.config import get_config
             from src.ai.embedder import Embedder

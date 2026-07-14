@@ -22,10 +22,10 @@ logger = logging.getLogger("pkv.gui.viewmodels.settings")
 
 # .env 中需要管理的环境变量键名与设置字典键名的映射
 _ENV_KEY_MAP: Dict[str, str] = {
-    "deepseek_api_key": "DEEPSEEK_API_KEY",
-    "deepseek_base_url": "DEEPSEEK_BASE_URL",
-    "openai_api_key": "OPENAI_API_KEY",
-    "openai_base_url": "OPENAI_BASE_URL",
+    "deepseek_api_key": "PKV_LLM_API_KEY",
+    "deepseek_base_url": "PKV_LLM_BASE_URL",
+    "openai_api_key": "PKV_EMBD_API_KEY",
+    "openai_base_url": "PKV_EMBD_BASE_URL",
 }
 
 
@@ -63,19 +63,19 @@ class SettingsViewModel(QObject):
 
         Returns:
             设置字典，包含以下键:
-            - deepseek_api_key: DeepSeek API Key
-            - deepseek_base_url: DeepSeek API Base URL
-            - openai_api_key: OpenAI API Key
-            - openai_base_url: OpenAI API Base URL
+            - deepseek_api_key: LLM API Key（旧 UI 字段名，写入 PKV_LLM_API_KEY）
+            - deepseek_base_url: LLM API Base URL（旧 UI 字段名，写入 PKV_LLM_BASE_URL）
+            - openai_api_key: Embedding API Key（旧 UI 字段名，写入 PKV_EMBD_API_KEY）
+            - openai_base_url: Embedding API Base URL（旧 UI 字段名，写入 PKV_EMBD_BASE_URL）
             - theme: 当前主题（从 QSettings 读取，此处返回空字符串占位）
             - search_strategy: 检索策略（auto / bm25 / vector / hybrid）
         """
         config = get_config()
         return {
-            "deepseek_api_key": config.deepseek_api_key or "",
-            "deepseek_base_url": config.deepseek_base_url or "",
-            "openai_api_key": config.openai_api_key or "",
-            "openai_base_url": config.openai_base_url or "",
+            "deepseek_api_key": config.llm_api_key or "",
+            "deepseek_base_url": config.llm_base_url or "",
+            "openai_api_key": config.embd_api_key or "",
+            "openai_base_url": config.embd_base_url or "",
             "theme": "",  # 主题由 MainWindow.current_theme 管理
             "search_strategy": config.get("retrieval.default_strategy", "auto") or "auto",
         }
@@ -152,7 +152,7 @@ class SettingsViewModel(QObject):
         保留所有注释行和其他非目标变量行。
 
         Args:
-            updates: 环境变量名到值的映射，如 {"DEEPSEEK_API_KEY": "sk-xxx"}。
+            updates: 环境变量名到值的映射，如 {"PKV_LLM_API_KEY": "sk-xxx"}。
         """
         env_path = self._find_env_file()
 

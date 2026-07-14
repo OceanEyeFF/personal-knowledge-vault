@@ -152,7 +152,7 @@ class AnalyzeStep(BaseStep):
         errors: List[str] = []
 
         config = get_config()
-        model = config.get("ai.deepseek.model", "deepseek-chat")
+        model = config.llm_model
         max_words = int(self.config.get("max_words", 300))
         num_tags = int(self.config.get("num_tags", 5))
 
@@ -762,7 +762,7 @@ class ReviewStep(BaseStep):
             (new_summary, new_tags) 元组
         """
         config = get_config()
-        model = config.get("ai.deepseek.model", "deepseek-chat")
+        model = config.llm_model
         client = self._deepseek_client or DeepSeekClient(model=model)
 
         messages = [

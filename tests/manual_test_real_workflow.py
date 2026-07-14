@@ -285,18 +285,18 @@ async def main():
 
     # 检查 API Keys
     print("[准备] 检查 API Keys...")
-    deepseek_key = config.get_env("DEEPSEEK_API_KEY")
-    openai_key = config.get_env("OPENAI_API_KEY")
+    llm_key = config.llm_api_key
+    embd_key = config.embd_api_key
 
-    if not deepseek_key:
-        print("[WARN] 未设置 DEEPSEEK_API_KEY，AI 分析可能失败")
+    if not llm_key:
+        print("[WARN] 未设置 PKV_LLM_API_KEY，AI 分析可能失败")
     else:
-        print(f"[OK] DEEPSEEK_API_KEY: {deepseek_key[:10]}...")
+        print(f"[OK] PKV_LLM_API_KEY: {llm_key[:10]}...")
 
-    if not openai_key:
-        print("[WARN] 未设置 OPENAI_API_KEY，向量存储可能失败")
+    if not embd_key:
+        print("[WARN] 未设置 PKV_EMBD_API_KEY，向量存储可能失败")
     else:
-        print(f"[OK] OPENAI_API_KEY: {openai_key[:10]}...")
+        print(f"[OK] PKV_EMBD_API_KEY: {embd_key[:10]}...")
     print()
 
     # 执行测试

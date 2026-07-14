@@ -28,8 +28,8 @@ async def test_archive_url_workflow():
     注意: 这是一个演示测试，使用 Mock 数据
     真实场景需要:
     - 有效的 URL
-    - DeepSeek API Key
-    - OpenAI API Key
+    - PKV_LLM_API_KEY
+    - PKV_EMBD_API_KEY
     """
     print("=" * 70)
     print("端到端测试: Archive URL 工作流")

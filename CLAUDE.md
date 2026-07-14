@@ -215,7 +215,7 @@ conda activate pkv-py311
 
 # 2. 配置 API Keys
 notepad .env
-# 填入: DEEPSEEK_API_KEY, OPENAI_API_KEY
+# 填入: PKV_LLM_API_KEY, PKV_EMBD_API_KEY
 
 # 3. 验证安装
 .\scripts\test-conda.ps1

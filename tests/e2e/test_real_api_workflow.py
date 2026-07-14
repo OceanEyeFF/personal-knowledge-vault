@@ -1,7 +1,7 @@
 """端到端测试 - 使用真实 API 进行完整工作流测试。
 
 ⚠️ 注意：
-1. 此测试需要有效的 DEEPSEEK_API_KEY 和 OPENAI_API_KEY
+1. 此测试需要有效的 PKV_LLM_API_KEY 和 PKV_EMBD_API_KEY
 2. 会产生真实的 API 调用费用（预计 <$0.01）
 3. 需要网络连接
 
@@ -28,10 +28,10 @@ load_dotenv()
 
 def has_api_keys() -> bool:
     """检查是否配置了 API Keys。"""
-    return bool(os.getenv("DEEPSEEK_API_KEY")) and bool(os.getenv("OPENAI_API_KEY"))
+    return bool(os.getenv("PKV_LLM_API_KEY")) and bool(os.getenv("PKV_EMBD_API_KEY"))
 
 
-@pytest.mark.skipif(not has_api_keys(), reason="需要配置 DEEPSEEK_API_KEY 和 OPENAI_API_KEY")
+@pytest.mark.skipif(not has_api_keys(), reason="需要配置 PKV_LLM_API_KEY 和 PKV_EMBD_API_KEY")
 class TestRealAPIWorkflow:
     """真实 API 端到端测试。"""
 

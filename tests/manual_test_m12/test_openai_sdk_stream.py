@@ -12,7 +12,7 @@ M12 手动测试：OpenAI SDK + DeepSeek API 流式验证
 
 环境要求：
     - openai>=1.0.0 已安装
-    - DEEPSEEK_API_KEY 已配置（.env 文件）
+    - PKV_LLM_API_KEY 已配置（.env 文件）
 """
 
 import asyncio
@@ -56,13 +56,14 @@ async def test_basic_stream():
     print("测试 1: 基本流式输出（OpenAI SDK + DeepSeek）")
     print("=" * 60)
 
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = os.getenv("PKV_LLM_API_KEY")
     if not api_key:
-        print("[错误] DEEPSEEK_API_KEY 未配置")
+        print("[错误] PKV_LLM_API_KEY 未配置")
         return
 
+    base_url = os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1")
     print(f"[配置] API Key: {api_key[:8]}...{api_key[-4:]}")
-    print(f"[配置] Base URL: https://api.deepseek.com/v1\n")
+    print(f"[配置] Base URL: {base_url}\n")
 
     try:
         # 创建自定义 httpx 客户端（避免代理问题）
@@ -70,7 +71,7 @@ async def test_basic_stream():
 
         client = AsyncOpenAI(
             api_key=api_key,
-            base_url="https://api.deepseek.com/v1",
+            base_url=os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1"),
             http_client=http_client
         )
 
@@ -83,7 +84,7 @@ async def test_basic_stream():
         print()
 
         stream = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=os.getenv("PKV_LLM_MODEL", "deepseek-chat"),
             messages=messages,
             stream=True,
             max_tokens=100
@@ -120,10 +121,11 @@ async def test_stream_with_usage():
     print("测试 2: 流式输出 + Token 统计（stream_usage=True）")
     print("=" * 60)
 
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = os.getenv("PKV_LLM_API_KEY")
     if not api_key:
-        print("[错误] DEEPSEEK_API_KEY 未配置")
+        print("[错误] PKV_LLM_API_KEY 未配置")
         return
+    base_url = os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1")
 
     try:
         # 创建自定义 httpx 客户端（避免代理问题）
@@ -131,7 +133,7 @@ async def test_stream_with_usage():
 
         client = AsyncOpenAI(
             api_key=api_key,
-            base_url="https://api.deepseek.com/v1",
+            base_url=base_url,
             http_client=http_client
         )
 
@@ -144,7 +146,7 @@ async def test_stream_with_usage():
         print()
 
         stream = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=os.getenv("PKV_LLM_MODEL", "deepseek-chat"),
             messages=messages,
             stream=True,
             stream_options={"include_usage": True},  # ✅ 正确参数：开启 token 统计
@@ -221,9 +223,9 @@ async def test_long_conversation():
     print("测试 3: 多轮对话 + Token 累计统计")
     print("=" * 60)
 
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = os.getenv("PKV_LLM_API_KEY")
     if not api_key:
-        print("[错误] DEEPSEEK_API_KEY 未配置")
+        print("[错误] PKV_LLM_API_KEY 未配置")
         return
 
     try:
@@ -232,7 +234,7 @@ async def test_long_conversation():
 
         client = AsyncOpenAI(
             api_key=api_key,
-            base_url="https://api.deepseek.com/v1",
+            base_url=os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1"),
             http_client=http_client
         )
 
@@ -248,7 +250,7 @@ async def test_long_conversation():
         print()
 
         stream = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=os.getenv("PKV_LLM_MODEL", "deepseek-chat"),
             messages=conversation,
             stream=True,
             stream_options={"include_usage": True},
@@ -306,12 +308,12 @@ async def test_error_handling():
 
         client = AsyncOpenAI(
             api_key="sk-invalid-key",
-            base_url="https://api.deepseek.com/v1",
+            base_url=os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1"),
             http_client=http_client
         )
 
         stream = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=os.getenv("PKV_LLM_MODEL", "deepseek-chat"),
             messages=[{"role": "user", "content": "测试"}],
             stream=True
         )
@@ -333,9 +335,9 @@ async def test_max_tokens_limit():
     print("测试 5: max_tokens 限制（单轮输出质量控制）")
     print("=" * 60)
 
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = os.getenv("PKV_LLM_API_KEY")
     if not api_key:
-        print("[错误] DEEPSEEK_API_KEY 未配置")
+        print("[错误] PKV_LLM_API_KEY 未配置")
         return
 
     try:
@@ -344,7 +346,7 @@ async def test_max_tokens_limit():
 
         client = AsyncOpenAI(
             api_key=api_key,
-            base_url="https://api.deepseek.com/v1",
+            base_url=os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1"),
             http_client=http_client
         )
 
@@ -356,7 +358,7 @@ async def test_max_tokens_limit():
         print("[预期] 输出应在约 50 tokens 后停止\n")
 
         stream = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=os.getenv("PKV_LLM_MODEL", "deepseek-chat"),
             messages=messages,
             stream=True,
             stream_options={"include_usage": True},

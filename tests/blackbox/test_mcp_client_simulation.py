@@ -283,7 +283,7 @@ def test_env(monkeypatch) -> Dict[str, Path]:
     vector_dir.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setenv("DB_PATH", str(db_path))
-    monkeypatch.setenv("OPENAI_EMBEDDING_DIM", "4")
+    monkeypatch.setenv("PKV_EMBD_DIM", "4")
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
 
     # 重置配置与 MCP 单例缓存
@@ -320,7 +320,7 @@ def populated_env(test_env) -> Dict[str, Any]:
         entry_ids.append(entry_id)
 
     # 构造向量索引，保证 get_related 可用
-    dim = int(os.environ.get("OPENAI_EMBEDDING_DIM", "4"))
+    dim = int(os.environ.get("PKV_EMBD_DIM", "4"))
     vector_store = VectorStore(test_env["vector_dir"], dim=dim)
 
     vectors = [

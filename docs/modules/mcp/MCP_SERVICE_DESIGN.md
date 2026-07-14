@@ -697,8 +697,8 @@ def idea_sharpen(content: str, entry_id: str = "") -> str:
       "args": ["-m", "src.mcp.server"],
       "cwd": "/path/to/personal-knowledge-vault",
       "env": {
-        "DEEPSEEK_API_KEY": "sk-xxx",
-        "OPENAI_API_KEY": "sk-xxx"
+        "PKV_LLM_API_KEY": "sk-xxx",
+        "PKV_EMBD_API_KEY": "sk-xxx"
       }
     }
   }
@@ -971,7 +971,7 @@ nohup python -m src.mcp.server --transport streamable-http --port 3000 &
 |------|------|---------|
 | Claude Code 无法发现 Tool | MCP Server 未启动或配置错误 | 检查 `claude_desktop_config.json` 中的 `cwd` 和 `command` |
 | Tool 调用返回空结果 | 数据库为空或路径错误 | 检查 `.env` 中的 `DB_PATH` 是否指向有数据的 `.data/` |
-| 归档超时 | 网络不通或 AI API 超时 | 检查 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` 是否有效 |
+| 归档超时 | 网络不通或 AI API 超时 | 检查 `PKV_LLM_API_KEY` / `PKV_EMBD_API_KEY` 是否有效 |
 | HTTP 模式 401 | Token 未配置或不匹配 | 检查 `PKV_MCP_AUTH_TOKEN` 环境变量 |
 | "冻结"无响应 | 同步阻塞了事件循环 | 检查所有 handler 是否使用了 `async def` + `anyio.to_thread.run_sync()` |
 

@@ -2,16 +2,9 @@
 SearchResult 数据类单元测试
 """
 
-import sys
-from pathlib import Path
-
-# Add project root to Python path
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
 import pytest
 
-from src.retrieval.result import SearchResult
+from src.retrieval.result import SearchResponse, SearchResult
 
 
 def test_search_result_creation():
@@ -64,3 +57,45 @@ def test_search_result_score_validation():
         SearchResult(
             knowledge_id=1, title="测试", score=-0.1, highlight="摘要", metadata={}
         )
+
+
+def test_search_response_preserves_list_like_behavior():
+    """SearchResponse 应能表达状态，同时兼容旧列表调用方式。"""
+    item = SearchResult(
+        knowledge_id=1,
+        title="测试",
+        score=0.8,
+        highlight="摘要",
+        metadata={},
+    )
+    response = SearchResponse(results=[item], status="success")
+
+    assert response.ok is True
+    assert response.failed is False
+    assert len(response) == 1
+    assert list(response) == [item]
+    assert response[0] == item
+    assert response[:1] == [item]
+    assert response != []
+    assert response == SearchResponse(results=[item], status="success")
+    assert response != SearchResponse(results=[], status="no_results")
+    assert response != object()
+
+
+def test_search_response_distinguishes_error_from_no_results():
+    """空结果和检索错误都可保持旧列表兼容，但状态不同。"""
+    no_results = SearchResponse(results=[], status="no_results")
+    failed = SearchResponse(
+        results=[],
+        status="error",
+        error_message="fts unavailable",
+        error_type="OperationalError",
+    )
+
+    assert no_results == []
+    assert no_results.ok is True
+    assert no_results.failed is False
+    assert failed == []
+    assert failed.ok is False
+    assert failed.failed is True
+    assert failed.error_type == "OperationalError"

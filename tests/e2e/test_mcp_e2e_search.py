@@ -47,8 +47,8 @@ def _parse_time(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def _has_openai_key() -> bool:
-    return bool(os.getenv("OPENAI_API_KEY"))
+def _has_embedding_key() -> bool:
+    return bool(os.getenv("PKV_EMBD_API_KEY"))
 
 
 async def _call_search(session, payload: Dict[str, Any], timeout_s: float = 60.0):
@@ -117,7 +117,7 @@ async def test_search_strategy_selection(mcp_server, sample_knowledge_db):
     _assert_search_payload(bm25_data, min_total=1)
     assert auto_data["results"][0]["title"] == bm25_data["results"][0]["title"]
 
-    if not _has_openai_key() or not sample_knowledge_db.get("vector_enabled"):
+    if not _has_embedding_key() or not sample_knowledge_db.get("vector_enabled"):
         return
 
     long_query = "如何设计一个可扩展的 AI 工作流 系统 并进行效果评估"

@@ -5,7 +5,6 @@ Unit tests for CLI commands.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -14,9 +13,6 @@ import pytest
 from click.testing import CliRunner
 from rich.panel import Panel
 from rich.table import Table
-
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
 
 import src.cli.commands as commands
 from src.retrieval.result import SearchResult
@@ -35,10 +31,16 @@ class DummyConfig:
         self.tmp_dir = base_path / "tmp"
         self.deepseek_api_key: Optional[str] = None
         self.openai_api_key: Optional[str] = None
+        self.llm_api_key: Optional[str] = None
+        self.embd_api_key: Optional[str] = None
         self.log_level = "INFO"
+        self.llm_base_url = "https://api.deepseek.com/v1"
+        self.llm_model = "deepseek-chat"
+        self.embd_base_url = "https://api.openai.com/v1"
+        self.embd_model = "text-embedding-3-small"
+        self.embedding_dim = 1536
+        self.embedding_dim_is_auto = False
         self._values = {
-            "ai.deepseek.model": "deepseek-chat",
-            "ai.openai.embedding_model": "text-embedding-3-small",
             "storage.vault_dir": str(self.vault_dir),
         }
         self._env: Dict[str, str] = {}

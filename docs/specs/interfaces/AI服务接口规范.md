@@ -42,9 +42,9 @@ def __init__(
 
 | 参数 | 环境变量 | 配置文件键 | 默认值 |
 |------|---------|-----------|--------|
-| `api_key` | `DEEPSEEK_API_KEY` | `deepseek.api_key` | 无（必填） |
-| `base_url` | `DEEPSEEK_BASE_URL` | `deepseek.base_url` | `https://api.deepseek.com/v1` |
-| `model` | - | `ai.deepseek.model` | `"deepseek-chat"` |
+| `api_key` | `PKV_LLM_API_KEY` | - | 无（必填） |
+| `base_url` | `PKV_LLM_BASE_URL` | `ai.llm.base_url` | `https://api.deepseek.com/v1` |
+| `model` | `PKV_LLM_MODEL` | `ai.llm.model` | `"deepseek-chat"` |
 | `timeout` | - | - | `30.0` |
 | `max_retries` | - | - | `3` |
 
@@ -313,7 +313,8 @@ avg_vector = np.mean(chunk_vectors, axis=0)
 - ⚠️ OpenAI Embedding API 限制：约 8191 tokens（约 8000 字符）
 - ⚠️ 长文档会被分块并平均，可能损失部分语义信息
 - ⚠️ `dim` 不再固定为 `1536`，而是取决于当前 Embedding 模型的真实输出维度
-- ⚠️ 当 `OPENAI_EMBEDDING_DIM=auto` 时，客户端会在首次成功请求后锁定真实维度
+- ⚠️ 当 `PKV_EMBD_DIM=auto` 时，客户端会在首次成功请求后锁定真实维度
+- ⚠️ Embedding 模型/维度是向量索引契约；更换后必须重建索引并重新生成文档级、分块级 Embedding
 
 ---
 

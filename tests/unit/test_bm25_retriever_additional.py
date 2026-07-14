@@ -18,7 +18,10 @@ from src.retrieval.bm25_retriever import BM25Retriever  # noqa: E402
 def test_search_returns_empty_for_blank_query(tmp_path: Path) -> None:
     retriever = BM25Retriever(tmp_path / "test.db")
 
-    assert retriever.search("   ") == []
+    response = retriever.search("   ")
+
+    assert response == []
+    assert response.status == "invalid_query"
 
 
 def test_search_returns_empty_when_all_tokens_are_sanitized(
@@ -27,7 +30,10 @@ def test_search_returns_empty_when_all_tokens_are_sanitized(
     retriever = BM25Retriever(tmp_path / "test.db")
     retriever.text_processor.tokenize_chinese = lambda _: '" * ""'  # type: ignore[method-assign]
 
-    assert retriever.search("特殊符号") == []
+    response = retriever.search("特殊符号")
+
+    assert response == []
+    assert response.status == "invalid_query"
 
 
 def test_search_returns_empty_when_store_raises(tmp_path: Path) -> None:
@@ -41,7 +47,11 @@ def test_search_returns_empty_when_store_raises(tmp_path: Path) -> None:
 
     retriever.store.get_connection = broken_connection  # type: ignore[assignment]
 
-    assert retriever.search("alpha") == []
+    response = retriever.search("alpha")
+
+    assert response == []
+    assert response.status == "error"
+    assert response.error_type == "OperationalError"
 
 
 def test_helper_methods_cover_sanitize_and_positive_score_branch(tmp_path: Path) -> None:

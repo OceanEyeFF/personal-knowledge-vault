@@ -210,11 +210,11 @@ jieba.load_userdict("config/custom_dict.txt")
 
 **配置项**:
 ```env
-# DeepSeek API
-DEEPSEEK_API_KEY=sk-your-deepseek-key
+# OpenAI-compatible LLM
+PKV_LLM_API_KEY=sk-your-llm-key
 
-# OpenAI API
-OPENAI_API_KEY=sk-your-openai-key
+# OpenAI-compatible Embedding
+PKV_EMBD_API_KEY=sk-your-embedding-key
 
 # 数据库路径 (可选,默认使用 config.yaml)
 DB_PATH=.data/db/knowledge_vault.db
@@ -244,8 +244,8 @@ notepad .env
 DB_PATH=.data-test/db/knowledge_vault.db
 
 # 测试用 API Keys (可选)
-DEEPSEEK_API_KEY=sk-test-your-key
-OPENAI_API_KEY=sk-test-your-key
+PKV_LLM_API_KEY=sk-test-your-key
+PKV_EMBD_API_KEY=sk-test-your-key
 
 # 日志级别 (DEBUG 获取详细日志)
 LOG_LEVEL=DEBUG

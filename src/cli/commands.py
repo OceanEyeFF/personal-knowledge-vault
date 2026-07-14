@@ -300,9 +300,9 @@ def _friendly_hint(message: str) -> None:
     if "processor" in msg or "抓取" in msg or "url" in msg:
         console.print("[yellow]提示: 请检查 URL 是否正确，或稍后重试[/yellow]")
     if "openai" in msg or "embedding" in msg or "openai_api_key" in msg:
-        console.print("[yellow]提示: 请检查 OPENAI_API_KEY 配置[/yellow]")
-    if "deepseek" in msg or "deepseek_api_key" in msg:
-        console.print("[yellow]提示: 请检查 DEEPSEEK_API_KEY 配置[/yellow]")
+        console.print("[yellow]提示: 请检查 PKV_EMBD_API_KEY 配置[/yellow]")
+    if "deepseek" in msg or "llm" in msg or "deepseek_api_key" in msg:
+        console.print("[yellow]提示: 请检查 PKV_LLM_API_KEY 配置[/yellow]")
 
 
 @click.group()
@@ -472,7 +472,7 @@ def search(query: str, strategy: str, limit: int, output_format: str) -> None:
 
         if output_format == "markdown":
             lines = [
-                f"# 搜索结果\n",
+                "# 搜索结果\n",
                 f"- 查询: {query}",
                 f"- 策略: {strategy_used}",
                 f"- 结果数: {len(results)}\n",
@@ -607,6 +607,13 @@ def config_show() -> None:
     """显示主要配置。"""
     try:
         config = _load_config()
+        embedding_dim = (
+            f"auto -> {config.embedding_dim}"
+            if getattr(config, "embedding_dim_is_auto", False) and config.embedding_dim is not None
+            else "auto (pending)"
+            if getattr(config, "embedding_dim_is_auto", False)
+            else config.embedding_dim
+        )
 
         table = Table(title="当前配置")
         table.add_column("键")
@@ -622,11 +629,14 @@ def config_show() -> None:
             ("storage.vector_index_dir", str(config.vector_index_dir)),
             ("storage.log_dir", str(config.log_dir)),
             ("storage.tmp_dir", str(config.tmp_dir)),
-            ("ai.deepseek.model", config.get("ai.deepseek.model")),
-            ("ai.openai.embedding_model", config.get("ai.openai.embedding_model")),
+            ("ai.llm.base_url", config.llm_base_url),
+            ("ai.llm.model", config.llm_model),
+            ("ai.embedding.base_url", config.embd_base_url),
+            ("ai.embedding.model", config.embd_model),
+            ("ai.embedding.dim", embedding_dim),
             ("logging.level", config.log_level),
-            ("DEEPSEEK_API_KEY", "已设置" if config.deepseek_api_key else "未设置"),
-            ("OPENAI_API_KEY", "已设置" if config.openai_api_key else "未设置"),
+            ("ai.llm.api_key", "已设置" if config.llm_api_key else "未设置"),
+            ("ai.embedding.api_key", "已设置" if config.embd_api_key else "未设置"),
         ]
 
         for key, value in rows:

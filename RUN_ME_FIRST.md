@@ -52,13 +52,13 @@ notepad .env
 
 填入你的 API Keys:
 ```bash
-DEEPSEEK_API_KEY=sk-你的-deepseek-api-key
-OPENAI_API_KEY=sk-你的-openai-api-key
+PKV_LLM_API_KEY=sk-你的-llm-api-key
+PKV_EMBD_API_KEY=sk-你的-embedding-api-key
 ```
 
 > **如果你还没有 API Keys**:
-> - DeepSeek: https://platform.deepseek.com/
-> - OpenAI: https://platform.openai.com/
+> - LLM: 使用 OpenAI-compatible Chat Completions 服务
+> - Embedding: 使用 OpenAI-compatible Embeddings 服务
 
 #### Step 3: 运行验证测试
 
@@ -93,13 +93,13 @@ notepad .env
 
 填入你的 API Keys:
 ```bash
-DEEPSEEK_API_KEY=sk-你的-deepseek-api-key
-OPENAI_API_KEY=sk-你的-openai-api-key
+PKV_LLM_API_KEY=sk-你的-llm-api-key
+PKV_EMBD_API_KEY=sk-你的-embedding-api-key
 ```
 
 > **如果你还没有 API Keys**:
-> - DeepSeek: https://platform.deepseek.com/
-> - OpenAI: https://platform.openai.com/
+> - LLM: 使用 OpenAI-compatible Chat Completions 服务
+> - Embedding: 使用 OpenAI-compatible Embeddings 服务
 
 ---
 

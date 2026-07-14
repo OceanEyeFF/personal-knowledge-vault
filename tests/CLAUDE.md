@@ -56,7 +56,7 @@
 |------|----------|
 | `test_real_api_workflow.py` | 真实 API 环境工作流 |
 
-**注意**: 需要真实 API Keys (DEEPSEEK_API_KEY, OPENAI_API_KEY)
+**注意**: 需要真实 API Keys (`PKV_LLM_API_KEY`, `PKV_EMBD_API_KEY`)
 
 ---
 
@@ -321,8 +321,8 @@ import pytest
 import os
 
 @pytest.mark.skipif(
-    not os.getenv("DEEPSEEK_API_KEY"),
-    reason="需要 DEEPSEEK_API_KEY"
+    not os.getenv("PKV_LLM_API_KEY"),
+    reason="需要 PKV_LLM_API_KEY"
 )
 def test_with_api():
     # 测试逻辑

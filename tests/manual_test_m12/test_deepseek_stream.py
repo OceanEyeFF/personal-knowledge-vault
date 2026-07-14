@@ -10,7 +10,7 @@ M12 手动测试：DeepSeek API 流式调用验证
     python tests/manual_test_m12/test_deepseek_stream.py
 
 环境要求：
-    - DEEPSEEK_API_KEY 环境变量已配置
+    - PKV_LLM_API_KEY 环境变量已配置
     - httpx 已安装（pip install httpx）
 """
 
@@ -48,18 +48,20 @@ async def test_basic_stream():
     print("测试 1: 基本流式请求")
     print("=" * 60)
 
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = os.getenv("PKV_LLM_API_KEY")
     if not api_key:
-        print("[错误] 环境变量 DEEPSEEK_API_KEY 未设置")
+        print("[错误] 环境变量 PKV_LLM_API_KEY 未设置")
         return
 
-    url = "https://api.deepseek.com/v1/chat/completions"
+    base_url = os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
+    model = os.getenv("PKV_LLM_MODEL", "deepseek-chat")
+    url = f"{base_url}/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": "deepseek-chat",
+        "model": model,
         "messages": [{"role": "user", "content": "你好"}],
         "stream": True,
     }
@@ -109,13 +111,14 @@ async def test_error_handling():
     print("测试 2: 错误处理（无效 API Key）")
     print("=" * 60)
 
-    url = "https://api.deepseek.com/v1/chat/completions"
+    base_url = os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
+    url = f"{base_url}/chat/completions"
     headers = {
         "Authorization": "Bearer sk-invalid-key",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": "deepseek-chat",
+        "model": os.getenv("PKV_LLM_MODEL", "deepseek-chat"),
         "messages": [{"role": "user", "content": "Hello"}],
         "stream": True,
     }
@@ -143,18 +146,19 @@ async def test_long_response():
     print("测试 3: 长回复流式传输")
     print("=" * 60)
 
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+    api_key = os.getenv("PKV_LLM_API_KEY")
     if not api_key:
-        print("[错误] DEEPSEEK_API_KEY 未设置，跳过此测试")
+        print("[错误] PKV_LLM_API_KEY 未设置，跳过此测试")
         return
 
-    url = "https://api.deepseek.com/v1/chat/completions"
+    base_url = os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
+    url = f"{base_url}/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": "deepseek-chat",
+        "model": os.getenv("PKV_LLM_MODEL", "deepseek-chat"),
         "messages": [
             {"role": "user", "content": "请用 200 字介绍 Python asyncio 的核心概念"}
         ],
