@@ -14,6 +14,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.retrieval.bm25_retriever import BM25Retriever  # noqa: E402
+from src.storage.markdown_store import Entry  # noqa: E402
+from src.storage.sqlite_store import SQLiteStore  # noqa: E402
 
 
 class _FakeCursor:
@@ -102,7 +104,37 @@ def test_search_normalizes_positive_bm25_scores_and_builds_metadata(
     assert results[0].score == 0.5
     assert results[0].highlight == "summary 100"
     assert results[0].metadata["bm25_score"] == 5.0
+    assert results[0].metadata["bm25_match_query"] == "ranked"
+    assert results[0].metadata["bm25_match_mode"] == "strict"
     assert fake_conn.executed[0][1] == ("ranked", 1)
+
+
+def test_search_relaxes_english_multi_term_query_when_strict_match_has_no_results(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "english.db"
+    store = SQLiteStore(db_path)
+    store.initialize()
+    knowledge_id = store.insert_entry(
+        Entry(
+            title="Human Bottlenecks",
+            source_type="generic",
+            source_url="https://borretti.me/article/human-bottlenecks",
+            tags=["AI Augmentation Limits"],
+            keywords=["Knowledge Bottleneck"],
+            summary_100_words="AI productivity is limited by human bottlenecks.",
+            content="AI productivity is limited by human bottlenecks.",
+        ),
+        str(tmp_path / "human-bottlenecks.md"),
+    )
+
+    response = BM25Retriever(db_path).search("Borretti human bottlenecks", limit=5)
+
+    assert response.status == "success"
+    assert response[0].knowledge_id == knowledge_id
+    assert response[0].title == "Human Bottlenecks"
+    assert response[0].metadata["bm25_match_query"] == "Borretti OR human OR bottlenecks"
+    assert response[0].metadata["bm25_match_mode"] == "relaxed_or"
 
 
 def test_search_returns_error_response_on_storage_exception(
@@ -132,6 +164,7 @@ def test_helper_methods_cover_sanitization_and_normalization(tmp_path: Path) -> 
     retriever = BM25Retriever(tmp_path / "helpers.db")
 
     assert retriever._build_match_query('Alpha "Beta"*') == "Alpha Beta"
+    assert retriever._build_match_query("alpha OR beta") == "alpha beta"
     assert retriever._sanitize_token('  "tag"*  ') == "tag"
     assert retriever._normalize_score(-25.0, 1) == 0.5
     assert retriever._normalize_score(2.0, 1) == 0.2

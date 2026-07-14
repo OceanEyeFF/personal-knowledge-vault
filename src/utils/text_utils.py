@@ -6,7 +6,7 @@
 
 import re
 import jieba
-from typing import List
+from typing import List, Sequence
 from pathlib import Path
 
 
@@ -51,15 +51,20 @@ class TextProcessor:
         return " ".join(words)
 
     @staticmethod
-    def prepare_fts5_data(title: str, summary: str, keywords: List[str], tags: List[str]) -> dict:
+    def prepare_fts5_data(
+        title: str,
+        summary: str,
+        keywords: str | Sequence[str] | None,
+        tags: str | Sequence[str] | None,
+    ) -> dict:
         """
         准备 FTS5 虚拟表的数据（预分词）
 
         Args:
             title: 标题
             summary: 摘要
-            keywords: 关键词列表
-            tags: 标签列表
+            keywords: 关键词列表或逗号分隔字符串
+            tags: 标签列表或逗号分隔字符串
 
         Returns:
             包含预分词后字段的字典
@@ -67,9 +72,18 @@ class TextProcessor:
         return {
             "title": TextProcessor.tokenize_chinese(title),
             "summary_100_words": TextProcessor.tokenize_chinese(summary),
-            "keywords": TextProcessor.tokenize_chinese(" ".join(keywords)),
-            "tags": TextProcessor.tokenize_chinese(" ".join(tags)),
+            "keywords": TextProcessor.tokenize_chinese(TextProcessor._normalize_terms(keywords)),
+            "tags": TextProcessor.tokenize_chinese(TextProcessor._normalize_terms(tags)),
         }
+
+    @staticmethod
+    def _normalize_terms(terms: str | Sequence[str] | None) -> str:
+        """将标签/关键词统一成适合 FTS 分词的文本。"""
+        if not terms:
+            return ""
+        if isinstance(terms, str):
+            return re.sub(r"[,，;；|]+", " ", terms).strip()
+        return " ".join(str(term).strip() for term in terms if str(term).strip())
 
     @staticmethod
     def sanitize_filename(title: str, max_length: int = 100) -> str:

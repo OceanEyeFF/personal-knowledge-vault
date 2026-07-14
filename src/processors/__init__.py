@@ -18,17 +18,31 @@ _PROCESSORS: Optional[List[Type[BaseProcessor]]] = None
 
 def _load_processors() -> List[Type[BaseProcessor]]:
     """Load processor classes in priority order."""
-    from src.processors.wechat_processor import WechatProcessor
-    from src.processors.zhihu_processor import ZhihuProcessor
     from src.processors.chat_processor import ChatProcessor
     from src.processors.ai_chat_processor import AIChatProcessor
+    try:
+        from src.processors.wechat_processor import WechatProcessor
+    except ModuleNotFoundError as exc:
+        if exc.name != "playwright":
+            raise
+        WechatProcessor = None
+        logger.warning("Playwright 未安装，跳过 WechatProcessor")
+
+    try:
+        from src.processors.zhihu_processor import ZhihuProcessor
+    except ModuleNotFoundError as exc:
+        if exc.name != "playwright":
+            raise
+        ZhihuProcessor = None
+        logger.warning("Playwright 未安装，跳过 ZhihuProcessor")
+
     try:
         from src.processors.text_fallback_processor import TextFallbackProcessor
     except ModuleNotFoundError:
         TextFallbackProcessor = None
     from src.processors.generic_processor import GenericProcessor
 
-    processors: List[Type[BaseProcessor]] = [
+    processors: List[Optional[Type[BaseProcessor]]] = [
         WechatProcessor,
         ZhihuProcessor,
         ChatProcessor,
@@ -39,7 +53,7 @@ def _load_processors() -> List[Type[BaseProcessor]]:
 
     # GenericProcessor must be last as a fallback.
     processors.append(GenericProcessor)
-    return processors
+    return [processor for processor in processors if processor is not None]
 
 
 def get_processor(url: str) -> BaseProcessor:

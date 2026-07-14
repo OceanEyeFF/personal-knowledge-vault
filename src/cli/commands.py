@@ -332,6 +332,7 @@ def archive(url_or_path: str, skip_sharpen: bool, tags: Optional[str], quiet: bo
         input_data: Dict[str, Any] = {
             "url": url_or_path,
             "skip_sharpen": bool(skip_sharpen or quiet),
+            "skip_review": bool(quiet),
         }
 
         manual_tags = _parse_tags(tags)

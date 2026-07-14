@@ -5,6 +5,7 @@ BM25 关键词检索器
 """
 
 from pathlib import Path
+import sqlite3
 
 from src.storage.sqlite_store import FTS_TABLE_NAME, SQLiteStore
 from src.utils.text_utils import TextProcessor
@@ -53,66 +54,16 @@ class BM25Retriever:
                 logger.warning(f"查询 '{query}' 分词后为空，无法执行 BM25 检索")
                 return SearchResponse(results=[], status="invalid_query")
 
-            # 执行 FTS5 查询
-            results = []
             with self.store.get_connection() as conn:
-                cursor = conn.execute(
-                    f"""
-                    SELECT
-                        ki.knowledge_id,
-                        ki.title,
-                        ki.summary_one_sentence,
-                        ki.summary_100_words,
-                        ki.source_type,
-                        ki.source_url,
-                        ki.tags,
-                        ki.keywords,
-                        ki.file_path,
-                        ki.archived_at,
-                        ki.updated_at,
-                        bm25({FTS_TABLE_NAME}) as bm25_score,
-                        snippet({FTS_TABLE_NAME}, 0, '...', '...', '', 64) as snippet
-                    FROM knowledge_items ki
-                    JOIN {FTS_TABLE_NAME} ON ki.knowledge_id = {FTS_TABLE_NAME}.rowid
-                    WHERE {FTS_TABLE_NAME} MATCH ?
-                    ORDER BY bm25_score ASC
-                    LIMIT ?
-                    """,
-                    (match_query, limit),
-                )
-
-                for rank, row in enumerate(cursor.fetchall(), start=1):
-                    knowledge_id = row[0]
-                    title = row[1] or f"条目 {knowledge_id}"
-                    summary_one = row[2] or ""
-                    summary_100 = row[3] or ""
-                    raw_score = row[11]  # bm25_score
-                    snippet = row[12] or summary_one or summary_100
-
-                    # 归一化分数到 [0.0, 1.0]
-                    normalized_score = self._normalize_score(raw_score, rank)
-
-                    # 构建元数据
-                    metadata = {
-                        "source_type": row[4],
-                        "source_url": row[5],
-                        "tags": row[6],
-                        "keywords": row[7],
-                        "file_path": row[8],
-                        "archived_at": row[9],
-                        "updated_at": row[10],
-                        "bm25_score": raw_score,
-                        "bm25_rank": rank,
-                    }
-
-                    result = SearchResult(
-                        knowledge_id=knowledge_id,
-                        title=title,
-                        score=normalized_score,
-                        highlight=snippet[:200],  # 限制长度
-                        metadata=metadata,
+                results = self._execute_match_query(conn, match_query, limit, "strict")
+                relaxed_query = self._build_relaxed_match_query(query)
+                if not results and relaxed_query and relaxed_query != match_query:
+                    logger.info(
+                        "BM25 严格查询无结果，尝试放宽查询: query='%s', relaxed='%s'",
+                        query,
+                        relaxed_query,
                     )
-                    results.append(result)
+                    results = self._execute_match_query(conn, relaxed_query, limit, "relaxed_or")
 
             logger.info(f"BM25 检索完成: 查询='{query}', 结果数={len(results)}")
             status = "success" if results else "no_results"
@@ -137,16 +88,96 @@ class BM25Retriever:
         Returns:
             FTS5 查询字符串
         """
-        # 使用 jieba 分词
-        tokenized = self.text_processor.tokenize_chinese(query)
-        tokens = [self._sanitize_token(token) for token in tokenized.split()]
-        tokens = [token for token in tokens if token]
+        tokens = self._query_tokens(query)
 
         if not tokens:
             return ""
 
-        # FTS5 使用空格分隔的词
+        # FTS5 使用空格分隔的词，语义为严格匹配全部 token
         return " ".join(tokens)
+
+    def _build_relaxed_match_query(self, query: str) -> str:
+        """构建多词 OR fallback 查询字符串。"""
+        tokens = self._query_tokens(query)
+        if len(tokens) <= 1:
+            return ""
+        return " OR ".join(tokens)
+
+    def _query_tokens(self, query: str) -> list[str]:
+        """将用户查询转换为安全的 FTS token 列表。"""
+        tokenized = self.text_processor.tokenize_chinese(query)
+        tokens = [self._sanitize_token(token) for token in tokenized.split()]
+        return [token for token in tokens if token]
+
+    def _execute_match_query(
+        self,
+        conn: sqlite3.Connection,
+        match_query: str,
+        limit: int,
+        match_mode: str,
+    ) -> list[SearchResult]:
+        """执行一次 FTS5 MATCH 查询并转换为统一结果。"""
+        cursor = conn.execute(
+            f"""
+            SELECT
+                ki.knowledge_id,
+                ki.title,
+                ki.summary_one_sentence,
+                ki.summary_100_words,
+                ki.source_type,
+                ki.source_url,
+                ki.tags,
+                ki.keywords,
+                ki.file_path,
+                ki.archived_at,
+                ki.updated_at,
+                bm25({FTS_TABLE_NAME}) as bm25_score,
+                snippet({FTS_TABLE_NAME}, 0, '...', '...', '', 64) as snippet
+            FROM knowledge_items ki
+            JOIN {FTS_TABLE_NAME} ON ki.knowledge_id = {FTS_TABLE_NAME}.rowid
+            WHERE {FTS_TABLE_NAME} MATCH ?
+            ORDER BY bm25_score ASC
+            LIMIT ?
+            """,
+            (match_query, limit),
+        )
+
+        results = []
+        for rank, row in enumerate(cursor.fetchall(), start=1):
+            knowledge_id = row[0]
+            title = row[1] or f"条目 {knowledge_id}"
+            summary_one = row[2] or ""
+            summary_100 = row[3] or ""
+            raw_score = row[11]  # bm25_score
+            snippet = row[12] or summary_one or summary_100
+
+            # 归一化分数到 [0.0, 1.0]
+            normalized_score = self._normalize_score(raw_score, rank)
+
+            # 构建元数据
+            metadata = {
+                "source_type": row[4],
+                "source_url": row[5],
+                "tags": row[6],
+                "keywords": row[7],
+                "file_path": row[8],
+                "archived_at": row[9],
+                "updated_at": row[10],
+                "bm25_score": raw_score,
+                "bm25_rank": rank,
+                "bm25_match_query": match_query,
+                "bm25_match_mode": match_mode,
+            }
+
+            result = SearchResult(
+                knowledge_id=knowledge_id,
+                title=title,
+                score=normalized_score,
+                highlight=snippet[:200],  # 限制长度
+                metadata=metadata,
+            )
+            results.append(result)
+        return results
 
     @staticmethod
     def _sanitize_token(token: str) -> str:
@@ -159,11 +190,14 @@ class BM25Retriever:
         Returns:
             清理后的 token
         """
-        # 移除 FTS5 特殊字符
+        # 移除 FTS5 特殊字符和裸操作符，避免用户输入破坏 MATCH 语法。
         special_chars = '"*'
         for char in special_chars:
             token = token.replace(char, "")
-        return token.strip()
+        token = token.strip()
+        if token.upper() in {"AND", "OR", "NOT", "NEAR"}:
+            return ""
+        return token
 
     @staticmethod
     def _normalize_score(raw_score: float, rank: int) -> float:
