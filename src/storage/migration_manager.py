@@ -21,7 +21,7 @@ EXPECTED_TABLES_BY_VERSION = {
     "1.1.2": ("review_queue", "review_history"),
     "1.2.0": ("knowledge_relations",),
 }
-FTS_ALIGNMENT_VERSION = "1.2.2"
+FTS_REBUILD_VERSIONS = {"1.2.2", "1.2.3"}
 
 
 class MigrationManager:
@@ -321,7 +321,9 @@ class MigrationManager:
             return 0
 
         success_count = 0
-        needs_fts_alignment = any(version == FTS_ALIGNMENT_VERSION for version, _ in pending)
+        fts_alignment_versions = [
+            version for version, _ in pending if version in FTS_REBUILD_VERSIONS
+        ]
 
         for version, migration_file in pending:
             try:
@@ -331,11 +333,28 @@ class MigrationManager:
                 logger.error(f"迁移中断: {e}")
                 raise
 
-        if needs_fts_alignment:
-            SQLiteStore(self.db_path).rebuild_fts5_index()
+        if fts_alignment_versions:
+            try:
+                SQLiteStore(self.db_path).rebuild_fts5_index()
+            except Exception:
+                self._remove_applied_versions(fts_alignment_versions)
+                logger.error("FTS 重建失败，已回滚 FTS 对齐版本标记以便下次重试", exc_info=True)
+                raise
 
         logger.info(f"迁移完成: 成功执行 {success_count} 个脚本")
         return success_count
+
+    def _remove_applied_versions(self, versions: List[str]) -> None:
+        """移除已记录的迁移版本，用于后置校验失败后的可重试回滚。"""
+        if not versions:
+            return
+
+        placeholders = ", ".join("?" for _ in versions)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                f"DELETE FROM schema_version WHERE version IN ({placeholders})",
+                tuple(versions),
+            )
 
     def check_and_prompt_upgrade(self) -> bool:
         """

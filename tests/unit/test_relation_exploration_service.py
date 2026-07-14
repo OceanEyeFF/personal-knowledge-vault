@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,7 +14,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.relations.exploration_service import ExplorationService  # noqa: E402
-from src.relations.models import RelationExplanationResult, RelationRecord, RelationSourceType, RelationSubgraphNode, RelationSubgraphResult, RelationType  # noqa: E402
+from src.relations.models import RelationExplanationResult, RelationRecord, RelationSourceType, RelationSubgraphNode, RelationSubgraphResult, RelationType, TimelinePoint  # noqa: E402
 from src.retrieval.result import SearchResult  # noqa: E402
 
 
@@ -284,7 +285,7 @@ def test_timeline_of_sorts_by_archived_at(exploration_service):
     assert all(item.time_source == "archived_at" for item in result.items)
 
 
-def test_timeline_of_prefers_real_time_sources_over_archived_at():
+def test_timeline_of_marks_mixed_inferred_field_for_multi_source_timeline():
     query_router = StubQueryRouter(
         {
             "真实时间线": [
@@ -353,10 +354,10 @@ def test_timeline_of_prefers_real_time_sources_over_archived_at():
         "2026-03-02 09:00:00",
         "2026-03-03 09:00:00",
     ]
-    assert result.inferred_time_field == "event_time"
+    assert result.inferred_time_field == "mixed"
 
 
-def test_timeline_of_prefers_best_available_inferred_field_for_mixed_sources():
+def test_timeline_of_marks_mixed_inferred_field_for_event_and_archived_sources():
     query_router = StubQueryRouter(
         {
             "混合时间线": [
@@ -401,10 +402,10 @@ def test_timeline_of_prefers_best_available_inferred_field_for_mixed_sources():
     result = service.timeline_of(topic="混合时间线", top_k=5, sort_order="asc")
 
     assert [item.knowledge_id for item in result.items] == [1, 2]
-    assert result.inferred_time_field == "event_time"
+    assert result.inferred_time_field == "mixed"
 
 
-def test_timeline_of_prefers_event_time_for_inferred_field_when_available():
+def test_timeline_of_marks_mixed_inferred_field_for_event_and_published_sources():
     query_router = StubQueryRouter(
         {
             "事件与发布时间": [
@@ -451,7 +452,7 @@ def test_timeline_of_prefers_event_time_for_inferred_field_when_available():
 
     assert [item.knowledge_id for item in result.items] == [1, 2]
     assert [item.time_source for item in result.items] == ["event_time", "published_at"]
-    assert result.inferred_time_field == "event_time"
+    assert result.inferred_time_field == "mixed"
 
 
 def test_timeline_of_accepts_legacy_published_time_metadata_key():
@@ -589,7 +590,7 @@ def test_timeline_of_sorting_handles_parseable_unparseable_and_missing_time():
     desc_result = service.timeline_of(topic="边界时间线", top_k=5, sort_order="desc")
 
     assert [item.knowledge_id for item in asc_result.items] == [1, 5, 3, 2, 4]
-    assert [item.knowledge_id for item in desc_result.items] == [5, 1, 2, 3, 4]
+    assert [item.knowledge_id for item in desc_result.items] == [5, 1, 3, 2, 4]
 
 
 def test_contrast_returns_shared_and_distinct_tags(exploration_service):
@@ -624,3 +625,82 @@ def test_contrast_returns_shared_and_distinct_tags(exploration_service):
 def test_timeline_of_rejects_empty_topic(exploration_service):
     with pytest.raises(ValueError):
         exploration_service.timeline_of("   ")
+
+
+def test_exploration_services_reject_invalid_inputs(exploration_service) -> None:
+    with pytest.raises(ValueError):
+        exploration_service.find_bridges(seed_knowledge_id=0)
+    with pytest.raises(ValueError):
+        exploration_service.find_bridges(seed_knowledge_id=1, top_k=0)
+    with pytest.raises(ValueError):
+        exploration_service.find_bridges(seed_knowledge_id=1, max_depth=0)
+    with pytest.raises(ValueError):
+        exploration_service.timeline_of("时间线", top_k=0)
+    with pytest.raises(ValueError):
+        exploration_service.timeline_of("时间线", sort_order="middle")
+    with pytest.raises(ValueError):
+        exploration_service.contrast("  ", "主题B")
+    with pytest.raises(ValueError):
+        exploration_service.contrast("主题A", "  ")
+    with pytest.raises(ValueError):
+        exploration_service.contrast("主题A", "主题B", top_k=0)
+
+
+def test_exploration_helper_fallback_branches(
+    exploration_service,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        exploration_service.text_processor,
+        "tokenize_chinese",
+        lambda text: "   ",
+    )
+
+    assert exploration_service._parse_tags(["图谱", "", " 桥接 "]) == ["图谱", "桥接"]
+    assert exploration_service._entry_tokens({}) == set()
+    assert exploration_service._entry_tokens({"title": "Alpha-Beta"}) == {"alpha", "beta"}
+    assert exploration_service._compute_semantic_bridge_score({}, {}, set(), {}) == 0.0
+    assert (
+        exploration_service._compute_semantic_bridge_score(
+            {},
+            {"title": "Alpha"},
+            {99},
+            {99: {}},
+        )
+        == 0.0
+    )
+    assert exploration_service._token_overlap(set(), {"alpha"}) == 0.0
+    assert exploration_service._infer_timeline_source([], []) == "archived_at"
+    assert (
+        exploration_service._infer_timeline_source(
+            [
+                TimelinePoint(
+                    knowledge_id=9,
+                    title="NoTime",
+                    time_value="",
+                    time_source="archived_at",
+                    retrieval_score=0.1,
+                )
+            ],
+            ["event_time", "published_at", "archived_at"],
+        )
+        == "archived_at"
+    )
+    assert ExplorationService._parse_time_sort_key("2026-03-01T08:00:00Z")[:2] == (0, 0)
+
+
+def test_extract_relation_types_falls_back_to_evidence_items() -> None:
+    explanation = SimpleNamespace(
+        path=[],
+        supporting_relations=[],
+        evidence_items=[
+            {"relation_type": "references"},
+            {"relation_type": ""},
+            {"relation_type": "related_document"},
+        ],
+    )
+
+    assert ExplorationService._extract_relation_types(explanation) == [
+        "references",
+        "related_document",
+    ]

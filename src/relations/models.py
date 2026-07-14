@@ -12,6 +12,16 @@ from typing import Any, Dict, Iterable, Optional
 
 PHASE_B_SCHEMA_VERSION = "phase_b.v1"
 PHASE_B_BASELINE_IMPLEMENTATION_LEVEL = "baseline"
+CHUNK_RETRIEVAL_STATUSES = frozenset(
+    {
+        "not_requested",
+        "success",
+        "no_hits",
+        "path_unavailable",
+        "search_error",
+    }
+)
+TIMELINE_INFERRED_TIME_MIXED = "mixed"
 
 
 def _clamp_score(value: float) -> float:
@@ -435,6 +445,11 @@ class CollectedEvidenceResult:
             raise ValueError("question 不能为空")
         if self.seed_knowledge_id is not None and self.seed_knowledge_id <= 0:
             raise ValueError("seed_knowledge_id 必须为正整数")
+        if self.chunk_retrieval_status not in CHUNK_RETRIEVAL_STATUSES:
+            raise ValueError(
+                "chunk_retrieval_status 必须是 "
+                + ", ".join(sorted(CHUNK_RETRIEVAL_STATUSES))
+            )
 
     @property
     def total_evidence(self) -> int:
@@ -629,7 +644,11 @@ class TimelinePoint:
 
 @dataclass
 class TimelineResult:
-    """时间线重建结果。"""
+    """时间线重建结果。
+
+    `inferred_time_field` 表示当前时间线整体最可代表的时间来源。
+    当多种时间源并列主导、无法安全归因为单一字段时，允许返回 `mixed`。
+    """
 
     topic: str
     found: bool

@@ -79,9 +79,9 @@ personal-knowledge-vault/
 
 **索引**：
 - `idx_source_url`：唯一索引，快速查重
-- `idx_source_type`：按来源类型过滤
-- `idx_archived_at`：按时间排序
-- `idx_search_strategy`：按检索策略分类
+- `idx_knowledge_source_type`：按来源类型过滤
+- `idx_knowledge_archived_at`：按时间排序
+- `idx_knowledge_search_strategy`：按检索策略分类
 
 **注意事项**：
 - `content` 字段可选存储，如果项目强调"零冗余"可省略，通过 `file_path` 读取
@@ -113,8 +113,8 @@ personal-knowledge-vault/
 | `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | 创建时间 |
 
 **索引**：
-- `idx_knowledge_chunk`：`(knowledge_id, chunk_index)` 复合唯一索引
-- `idx_knowledge_id`：外键索引，用于级联查询
+- `idx_chunks_index`：`(knowledge_id, chunk_index)` 分块定位索引
+- `idx_chunks_knowledge_id`：外键索引，用于级联查询
 
 **向量存储关联**：
 - 块向量存储在 `pkv_vectors/chunk_vectors.idx`
@@ -174,8 +174,8 @@ personal-knowledge-vault/
 
 **索引**：
 - `PRIMARY KEY (knowledge_id, tag_id)`：复合主键
-- `idx_knowledge_id`：外键索引
-- `idx_tag_id`：外键索引
+- `idx_knowledge_tags_knowledge_id`：外键索引
+- `idx_knowledge_tags_tag_id`：外键索引
 
 **注意事项**：
 - 删除知识条目时需要级联删除关联记录
@@ -204,8 +204,8 @@ personal-knowledge-vault/
 | `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | 创建时间 |
 
 **索引**：
-- `idx_knowledge_timestamp`：`(knowledge_id, timestamp_seconds)` 复合唯一索引
-- `idx_knowledge_id`：外键索引
+- `idx_timestamps_time`：`(knowledge_id, timestamp_seconds)` 时间点查询索引
+- `idx_timestamps_knowledge_id`：外键索引
 
 **向量存储关联**：
 - 时段向量（可选）存储在 hnswlib 独立索引中
@@ -361,9 +361,9 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
 
 -- 创建索引
 CREATE INDEX idx_source_url ON knowledge_items(source_url);
-CREATE INDEX idx_source_type ON knowledge_items(source_type);
-CREATE INDEX idx_archived_at ON knowledge_items(archived_at);
-CREATE INDEX idx_search_strategy ON knowledge_items(search_strategy);
+CREATE INDEX idx_knowledge_source_type ON knowledge_items(source_type);
+CREATE INDEX idx_knowledge_archived_at ON knowledge_items(archived_at);
+CREATE INDEX idx_knowledge_search_strategy ON knowledge_items(search_strategy);
 CREATE INDEX idx_file_path ON knowledge_items(file_path);
 
 -- ===========================
@@ -383,8 +383,8 @@ CREATE TABLE IF NOT EXISTS content_chunks (
 );
 
 -- 创建索引
-CREATE INDEX idx_knowledge_chunk ON content_chunks(knowledge_id, chunk_index);
-CREATE INDEX idx_knowledge_id ON content_chunks(knowledge_id);
+CREATE INDEX idx_chunks_index ON content_chunks(knowledge_id, chunk_index);
+CREATE INDEX idx_chunks_knowledge_id ON content_chunks(knowledge_id);
 
 -- ===========================
 -- 3. tags（标签表）
@@ -414,8 +414,8 @@ CREATE TABLE IF NOT EXISTS knowledge_tags (
 );
 
 -- 创建索引
-CREATE INDEX idx_kt_knowledge_id ON knowledge_tags(knowledge_id);
-CREATE INDEX idx_kt_tag_id ON knowledge_tags(tag_id);
+CREATE INDEX idx_knowledge_tags_knowledge_id ON knowledge_tags(knowledge_id);
+CREATE INDEX idx_knowledge_tags_tag_id ON knowledge_tags(tag_id);
 
 -- ===========================
 -- 5. video_timestamps（视频时间轴表，Phase 2）
@@ -432,8 +432,8 @@ CREATE TABLE IF NOT EXISTS video_timestamps (
 );
 
 -- 创建索引
-CREATE INDEX idx_knowledge_timestamp ON video_timestamps(knowledge_id, timestamp_seconds);
-CREATE INDEX idx_vt_knowledge_id ON video_timestamps(knowledge_id);
+CREATE INDEX idx_timestamps_time ON video_timestamps(knowledge_id, timestamp_seconds);
+CREATE INDEX idx_timestamps_knowledge_id ON video_timestamps(knowledge_id);
 ```
 
 ### 3. FTS5 全文搜索虚拟表
@@ -446,28 +446,26 @@ CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_items_fts USING fts5(
     title,
     summary_100_words,
     keywords,
-    tags,
-    content=knowledge_items,  -- 关联主表
-    content_rowid=id          -- 使用 knowledge_items.id 作为 rowid
+    tags
 );
 
 -- 创建触发器：自动同步 FTS5 虚拟表
 -- 插入
 CREATE TRIGGER IF NOT EXISTS knowledge_items_ai AFTER INSERT ON knowledge_items BEGIN
     INSERT INTO knowledge_items_fts(rowid, title, summary_100_words, keywords, tags)
-    VALUES (new.id, new.title, new.summary_100_words, new.keywords, new.tags);
+    VALUES (new.knowledge_id, new.title, new.summary_100_words, new.keywords, new.tags);
 END;
 
 -- 删除
 CREATE TRIGGER IF NOT EXISTS knowledge_items_ad AFTER DELETE ON knowledge_items BEGIN
-    DELETE FROM knowledge_items_fts WHERE rowid = old.id;
+    DELETE FROM knowledge_items_fts WHERE rowid = old.knowledge_id;
 END;
 
 -- 更新
 CREATE TRIGGER IF NOT EXISTS knowledge_items_au AFTER UPDATE ON knowledge_items BEGIN
-    DELETE FROM knowledge_items_fts WHERE rowid = old.id;
+    DELETE FROM knowledge_items_fts WHERE rowid = old.knowledge_id;
     INSERT INTO knowledge_items_fts(rowid, title, summary_100_words, keywords, tags)
-    VALUES (new.id, new.title, new.summary_100_words, new.keywords, new.tags);
+    VALUES (new.knowledge_id, new.title, new.summary_100_words, new.keywords, new.tags);
 END;
 ```
 
@@ -487,19 +485,19 @@ END;
 | 表名 | 索引名 | 字段 | 类型 | 说明 |
 |------|--------|------|------|------|
 | `knowledge_items` | `idx_source_url` | `source_url` | UNIQUE | 防止重复归档 |
-| `knowledge_items` | `idx_source_type` | `source_type` | INDEX | 按来源类型过滤 |
-| `knowledge_items` | `idx_archived_at` | `archived_at` | INDEX | 按时间排序 |
-| `knowledge_items` | `idx_search_strategy` | `search_strategy` | INDEX | 按检索策略分类 |
+| `knowledge_items` | `idx_knowledge_source_type` | `source_type` | INDEX | 按来源类型过滤 |
+| `knowledge_items` | `idx_knowledge_archived_at` | `archived_at` | INDEX | 按时间排序 |
+| `knowledge_items` | `idx_knowledge_search_strategy` | `search_strategy` | INDEX | 按检索策略分类 |
 | `knowledge_items` | `idx_file_path` | `file_path` | UNIQUE | 文件路径唯一 |
-| `content_chunks` | `idx_knowledge_chunk` | `(knowledge_id, chunk_index)` | UNIQUE | 复合唯一索引 |
-| `content_chunks` | `idx_knowledge_id` | `knowledge_id` | INDEX | 外键索引 |
+| `content_chunks` | `idx_chunks_index` | `(knowledge_id, chunk_index)` | INDEX | 分块定位索引 |
+| `content_chunks` | `idx_chunks_knowledge_id` | `knowledge_id` | INDEX | 外键索引 |
 | `tags` | `idx_tag_name` | `name` | UNIQUE | 标签名唯一 |
 | `tags` | `idx_tag_group` | `tag_group` | INDEX | 按分组过滤 |
 | `knowledge_tags` | `PRIMARY KEY` | `(knowledge_id, tag_id)` | UNIQUE | 复合主键 |
-| `knowledge_tags` | `idx_kt_knowledge_id` | `knowledge_id` | INDEX | 外键索引 |
-| `knowledge_tags` | `idx_kt_tag_id` | `tag_id` | INDEX | 外键索引 |
-| `video_timestamps` | `idx_knowledge_timestamp` | `(knowledge_id, timestamp_seconds)` | UNIQUE | 复合唯一索引 |
-| `video_timestamps` | `idx_vt_knowledge_id` | `knowledge_id` | INDEX | 外键索引 |
+| `knowledge_tags` | `idx_knowledge_tags_knowledge_id` | `knowledge_id` | INDEX | 外键索引 |
+| `knowledge_tags` | `idx_knowledge_tags_tag_id` | `tag_id` | INDEX | 外键索引 |
+| `video_timestamps` | `idx_timestamps_time` | `(knowledge_id, timestamp_seconds)` | INDEX | 时间点查询索引 |
+| `video_timestamps` | `idx_timestamps_knowledge_id` | `knowledge_id` | INDEX | 外键索引 |
 
 ---
 
@@ -874,26 +872,26 @@ class DatabaseInitializer:
         # knowledge_items 索引
         indexes = [
             ("idx_source_url", "knowledge_items", "source_url"),
-            ("idx_source_type", "knowledge_items", "source_type"),
-            ("idx_archived_at", "knowledge_items", "archived_at"),
-            ("idx_search_strategy", "knowledge_items", "search_strategy"),
+            ("idx_knowledge_source_type", "knowledge_items", "source_type"),
+            ("idx_knowledge_archived_at", "knowledge_items", "archived_at"),
+            ("idx_knowledge_search_strategy", "knowledge_items", "search_strategy"),
             ("idx_file_path", "knowledge_items", "file_path"),
 
             # content_chunks 索引
-            ("idx_knowledge_chunk", "content_chunks", "knowledge_id, chunk_index"),
-            ("idx_knowledge_id", "content_chunks", "knowledge_id"),
+            ("idx_chunks_index", "content_chunks", "knowledge_id, chunk_index"),
+            ("idx_chunks_knowledge_id", "content_chunks", "knowledge_id"),
 
             # tags 索引
             ("idx_tag_name", "tags", "name", True),
             ("idx_tag_group", "tags", "tag_group"),
 
             # knowledge_tags 索引
-            ("idx_kt_knowledge_id", "knowledge_tags", "knowledge_id"),
-            ("idx_kt_tag_id", "knowledge_tags", "tag_id"),
+            ("idx_knowledge_tags_knowledge_id", "knowledge_tags", "knowledge_id"),
+            ("idx_knowledge_tags_tag_id", "knowledge_tags", "tag_id"),
 
             # video_timestamps 索引
-            ("idx_knowledge_timestamp", "video_timestamps", "knowledge_id, timestamp_seconds"),
-            ("idx_vt_knowledge_id", "video_timestamps", "knowledge_id"),
+            ("idx_timestamps_time", "video_timestamps", "knowledge_id, timestamp_seconds"),
+            ("idx_timestamps_knowledge_id", "video_timestamps", "knowledge_id"),
         ]
 
         for index_data in indexes:
@@ -919,9 +917,7 @@ class DatabaseInitializer:
                 title,
                 summary_100_words,
                 keywords,
-                tags,
-                content=knowledge_items,
-                content_rowid=id
+                tags
             )
         """)
         print("  ✓ knowledge_items_fts 虚拟表创建成功")
@@ -930,7 +926,7 @@ class DatabaseInitializer:
         self.conn.execute("""
             CREATE TRIGGER IF NOT EXISTS knowledge_items_ai AFTER INSERT ON knowledge_items BEGIN
                 INSERT INTO knowledge_items_fts(rowid, title, summary_100_words, keywords, tags)
-                VALUES (new.id, new.title, new.summary_100_words, new.keywords, new.tags);
+                VALUES (new.knowledge_id, new.title, new.summary_100_words, new.keywords, new.tags);
             END
         """)
         print("  ✓ 插入触发器创建成功")
@@ -938,7 +934,7 @@ class DatabaseInitializer:
         # 创建触发器：删除
         self.conn.execute("""
             CREATE TRIGGER IF NOT EXISTS knowledge_items_ad AFTER DELETE ON knowledge_items BEGIN
-                DELETE FROM knowledge_items_fts WHERE rowid = old.id;
+                DELETE FROM knowledge_items_fts WHERE rowid = old.knowledge_id;
             END
         """)
         print("  ✓ 删除触发器创建成功")
@@ -946,9 +942,9 @@ class DatabaseInitializer:
         # 创建触发器：更新
         self.conn.execute("""
             CREATE TRIGGER IF NOT EXISTS knowledge_items_au AFTER UPDATE ON knowledge_items BEGIN
-                DELETE FROM knowledge_items_fts WHERE rowid = old.id;
+                DELETE FROM knowledge_items_fts WHERE rowid = old.knowledge_id;
                 INSERT INTO knowledge_items_fts(rowid, title, summary_100_words, keywords, tags)
-                VALUES (new.id, new.title, new.summary_100_words, new.keywords, new.tags);
+                VALUES (new.knowledge_id, new.title, new.summary_100_words, new.keywords, new.tags);
             END
         """)
         print("  ✓ 更新触发器创建成功")
@@ -1275,7 +1271,7 @@ class SearchEngine:
         cursor = self.db_conn.execute("""
             SELECT ki.*, rank
             FROM knowledge_items ki
-            JOIN knowledge_items_fts fts ON ki.id = fts.rowid
+            JOIN knowledge_items_fts fts ON ki.knowledge_id = fts.rowid
             WHERE fts MATCH ?
             ORDER BY rank
             LIMIT ?

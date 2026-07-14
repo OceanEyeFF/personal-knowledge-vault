@@ -518,10 +518,10 @@ def test_exploration_service_can_build_partial_timeline(relation_pipeline_env):
         "event_time",
         "published_at",
     ]
-    assert result.inferred_time_field == "event_time"
+    assert result.inferred_time_field == "mixed"
 
 
-def test_exploration_service_timeline_prefers_best_available_inferred_time_field(
+def test_exploration_service_timeline_marks_mixed_inferred_time_field_for_multi_sources(
     relation_pipeline_env,
 ):
     exploration_service = ExplorationService(
@@ -563,7 +563,7 @@ def test_exploration_service_timeline_prefers_best_available_inferred_time_field
         "event_time",
         "archived_at",
     ]
-    assert result.inferred_time_field == "event_time"
+    assert result.inferred_time_field == "mixed"
 
 
 def test_exploration_service_can_build_partial_contrast(relation_pipeline_env):

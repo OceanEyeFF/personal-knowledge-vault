@@ -518,12 +518,36 @@ class ExplorationService:
     ) -> str:
         if not priority:
             return "archived_at"
+        source_counts = {field: 0 for field in priority}
+        parseable_counts = {field: 0 for field in priority}
 
-        resolved_sources = {item.time_source for item in points if item.time_value}
-        for field in priority:
-            if field in resolved_sources:
-                return field
-        return priority[-1]
+        for item in points:
+            if not item.time_value or item.time_source not in source_counts:
+                continue
+            source_counts[item.time_source] += 1
+            missing_rank, parse_kind, _, _ = ExplorationService._parse_time_sort_key(
+                item.time_value
+            )
+            if missing_rank == 0 and parse_kind == 0:
+                parseable_counts[item.time_source] += 1
+
+        # 优先看可解析时间，避免单条高优先级时间值把整体时间源判断得过于乐观。
+        baseline_counts = (
+            parseable_counts
+            if any(count > 0 for count in parseable_counts.values())
+            else source_counts
+        )
+        nonzero = {
+            source: count for source, count in baseline_counts.items() if count > 0
+        }
+        if not nonzero:
+            return priority[-1]
+
+        max_count = max(nonzero.values())
+        leaders = [source for source, count in nonzero.items() if count == max_count]
+        if len(leaders) == 1:
+            return leaders[0]
+        return "mixed"
 
     @staticmethod
     def _parse_time_sort_key(raw_value: str) -> tuple[int, int, float, str]:
@@ -542,10 +566,6 @@ class ExplorationService:
             pass
         return (0, 1, 0.0, raw_value)
 
-    @staticmethod
-    def _descending_text_key(raw_value: str) -> tuple[int, ...]:
-        return tuple([-ord(char) for char in raw_value] + [1])
-
     @classmethod
     def _timeline_sort_key(
         cls, item: TimelinePoint, sort_order: str
@@ -558,7 +578,8 @@ class ExplorationService:
                 return (1, 1, 0.0, "", item.knowledge_id)
             if parse_kind == 0:
                 return (0, 0, -parsed_ts, "", item.knowledge_id)
-            return (0, 1, cls._descending_text_key(raw_value), item.knowledge_id)
+            # 不可解析时间值不带方向语义，保持中性且稳定的文本排序。
+            return (0, 1, raw_value, item.knowledge_id)
         return (missing_rank, parse_kind, parsed_ts, raw_value, item.knowledge_id)
 
     def _collect_contrast_relation_signals(

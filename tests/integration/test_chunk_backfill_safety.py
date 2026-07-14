@@ -3,13 +3,9 @@ Chunk 回填安全性集成测试
 """
 
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
-
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 from scripts.backfill_chunks import run_chunk_backfill
 from src.storage.markdown_store import MarkdownStore, Entry
@@ -206,4 +202,7 @@ def test_chunk_backfill_rewrites_orphan_vectors_when_chunk_rows_are_missing(
         "alpha first chunk",
         "alpha second chunk",
     ]
-    assert chunk_vector == embedder.embed_document("alpha first chunk").tolist()
+    assert np.allclose(
+        chunk_vector,
+        embedder.embed_document("alpha first chunk"),
+    )

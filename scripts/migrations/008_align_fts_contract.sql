@@ -11,15 +11,17 @@
 DROP TRIGGER IF EXISTS knowledge_fts_delete;
 DROP TRIGGER IF EXISTS knowledge_fts_update;
 DROP TRIGGER IF EXISTS knowledge_fts_insert;
+DROP TRIGGER IF EXISTS knowledge_items_ad;
+DROP TRIGGER IF EXISTS knowledge_items_au;
+DROP TRIGGER IF EXISTS knowledge_items_ai;
+DROP TABLE IF EXISTS knowledge_items_fts;
 DROP TABLE IF EXISTS knowledge_fts;
 
 CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_items_fts USING fts5(
     title,
     summary_100_words,
     keywords,
-    tags,
-    content=knowledge_items,
-    content_rowid=knowledge_id
+    tags
 );
 
 CREATE TRIGGER IF NOT EXISTS knowledge_items_ai
@@ -42,8 +44,6 @@ AFTER DELETE ON knowledge_items
 BEGIN
     DELETE FROM knowledge_items_fts WHERE rowid = old.knowledge_id;
 END;
-
-DELETE FROM knowledge_items_fts;
 
 INSERT INTO knowledge_items_fts(rowid, title, summary_100_words, keywords, tags)
 SELECT knowledge_id, title, summary_100_words, keywords, tags

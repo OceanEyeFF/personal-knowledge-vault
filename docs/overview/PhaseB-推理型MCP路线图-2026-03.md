@@ -3,6 +3,7 @@
 > 文档类型：执行路线 / Roadmap  
 > 创建日期：2026-03-27  
 > 目的：把 Phase B 的目标、边界、任务分解、交付物与退出条件固化为可执行清单
+> 当前状态：`closeout pending`（已完成核心闭环，剩余收口与验收项）
 
 ---
 
@@ -26,7 +27,8 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 - `find_bridges`、`timeline_of`、`contrast` 已暴露 MCP Tool，但标注为 partial
 - 关系层具备模型、存储、显式抽取、回填、一跳查询与最小验证闭环
 - 关系层当前已固定正式关系类型 / 来源合同，并把结构化 Front Matter 关系字段扩展到 `children` / `version_of`
-- evidence 仍为文档级聚合 v1，尚未到 chunk 级证据管理
+- `collect_evidence` 已支持 chunk-aware 路径（`include_chunks=True`），并保留默认文档级兼容行为
+- `collect_evidence` 当前已固定 `chunk_retrieval_status`：`not_requested` / `success` / `no_hits` / `path_unavailable` / `search_error`
 
 ---
 
@@ -34,9 +36,9 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 
 > 说明：以下为 Phase B 未完成项，以及对应“上游未完成/不足”的实际阻塞点。
 
-1. **证据包仍是文档级 v1**  
-   - 未完成项：`collect_evidence` 仍停留在文档级聚合  
-   - 上游缺口：chunk 索引与证据去重/排序策略未落地
+1. **chunk-aware 证据包收口仍未完成**
+   - 当前状态：`collect_evidence` 已支持 chunk-aware 路径与文档级兼容路径
+   - 未完成项：chunk 证据质量门禁与更完整的可观测性验收仍待收口
 2. **`find_bridges/timeline_of/contrast` 仍是 partial**  
    - 未完成项：工具仍是弱语义/启发式版本  
    - 上游缺口：语义桥接评分、事件时间字段与对比维度规则未稳定
@@ -93,7 +95,7 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 
 ### 5.2 证据包升级到 chunk 级（优先级 P0）
 
-**目标**：将 `collect_evidence` 从文档级 v1 升级为 chunk 级证据聚合。
+**目标**：将 `collect_evidence` 从文档级兼容模式收口为稳定的 chunk-aware 证据聚合。
 
 交付物：
 
@@ -137,6 +139,7 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 
 - `find_bridges` 当前已补入结构分、局部图桥接信号 `graph_bridge_score` 与轻量文本重合评分，并显式返回 `graph_bridge_signal`
 - `timeline_of` 当前已明确时间来源优先级：`event_time > published_at > archived_at`，并把 `structured_time_fields` 作为证据来源
+- `timeline_of` 当前在多时间源并列主导时会返回 `inferred_time_field=mixed`，避免整体时间源判断偏乐观
 - `contrast` 当前已补入稳定的 `comparison_dimensions` 与 `evidence_sources` 输出结构，并新增 `relation_graph_signal` 与候选级 `relation_signal_score` / `relation_types`
 - 三个 Tool 当前仍属于 `partial`，但边界与限制已更明确
 

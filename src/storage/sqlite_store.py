@@ -6,6 +6,7 @@ SQLite 存储层
 
 import sqlite3
 import json
+import re
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from contextlib import contextmanager
@@ -18,10 +19,26 @@ logger = get_logger(__name__)
 
 FTS_TABLE_NAME = "knowledge_items_fts"
 LEGACY_FTS_TABLE_NAME = "knowledge_fts"
+CURRENT_FTS_TRIGGER_NAMES = (
+    "knowledge_items_ai",
+    "knowledge_items_au",
+    "knowledge_items_ad",
+)
 LEGACY_FTS_TRIGGER_NAMES = (
     "knowledge_fts_insert",
     "knowledge_fts_update",
     "knowledge_fts_delete",
+)
+OBSOLETE_INDEX_NAMES = (
+    "idx_source_type",
+    "idx_event_time",
+    "idx_published_at",
+    "idx_archived_at",
+    "idx_search_strategy",
+    "idx_knowledge_chunk",
+    "idx_knowledge_id",
+    "idx_knowledge_timestamp",
+    "idx_vt_knowledge_id",
 )
 
 
@@ -102,7 +119,12 @@ class SQLiteStore:
                 keywords TEXT,
                 tags TEXT,
                 outline TEXT,
-                source_type TEXT NOT NULL CHECK(source_type IN ('wechat', 'zhihu', 'bilibili', 'webpage', 'article', 'document', 'generic', 'personal', 'ai_chat', 'text', 'test')),
+                source_type TEXT NOT NULL CHECK(
+                    source_type IN (
+                        'wechat', 'zhihu', 'bilibili', 'webpage', 'article',
+                        'document', 'generic', 'personal', 'ai_chat', 'text', 'test'
+                    )
+                ),
                 source_url TEXT UNIQUE,
                 search_strategy TEXT CHECK(search_strategy IN ('keyword', 'hybrid', 'vector', 'structured')),
                 file_path TEXT NOT NULL UNIQUE,
@@ -182,28 +204,29 @@ class SQLiteStore:
     def _create_indexes(self, conn: sqlite3.Connection):
         """创建所有索引"""
         logger.info("创建索引...")
+        self._drop_obsolete_indexes(conn)
 
         indexes = [
             # knowledge_items 索引
             "CREATE INDEX IF NOT EXISTS idx_source_url ON knowledge_items(source_url)",
-            "CREATE INDEX IF NOT EXISTS idx_source_type ON knowledge_items(source_type)",
-            "CREATE INDEX IF NOT EXISTS idx_event_time ON knowledge_items(event_time)",
-            "CREATE INDEX IF NOT EXISTS idx_published_at ON knowledge_items(published_at)",
-            "CREATE INDEX IF NOT EXISTS idx_archived_at ON knowledge_items(archived_at)",
-            "CREATE INDEX IF NOT EXISTS idx_search_strategy ON knowledge_items(search_strategy)",
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_source_type ON knowledge_items(source_type)",
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_event_time ON knowledge_items(event_time)",
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_published_at ON knowledge_items(published_at)",
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_archived_at ON knowledge_items(archived_at)",
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_search_strategy ON knowledge_items(search_strategy)",
             "CREATE INDEX IF NOT EXISTS idx_file_path ON knowledge_items(file_path)",
             # content_chunks 索引
-            "CREATE INDEX IF NOT EXISTS idx_knowledge_chunk ON content_chunks(knowledge_id, chunk_index)",
-            "CREATE INDEX IF NOT EXISTS idx_knowledge_id ON content_chunks(knowledge_id)",
+            "CREATE INDEX IF NOT EXISTS idx_chunks_index ON content_chunks(knowledge_id, chunk_index)",
+            "CREATE INDEX IF NOT EXISTS idx_chunks_knowledge_id ON content_chunks(knowledge_id)",
             # tags 索引
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_tag_name ON tags(name)",
             "CREATE INDEX IF NOT EXISTS idx_tag_group ON tags(tag_group)",
             # knowledge_tags 索引
-            "CREATE INDEX IF NOT EXISTS idx_kt_knowledge_id ON knowledge_tags(knowledge_id)",
-            "CREATE INDEX IF NOT EXISTS idx_kt_tag_id ON knowledge_tags(tag_id)",
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_tags_knowledge_id ON knowledge_tags(knowledge_id)",
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_tags_tag_id ON knowledge_tags(tag_id)",
             # video_timestamps 索引
-            "CREATE INDEX IF NOT EXISTS idx_knowledge_timestamp ON video_timestamps(knowledge_id, timestamp_seconds)",
-            "CREATE INDEX IF NOT EXISTS idx_vt_knowledge_id ON video_timestamps(knowledge_id)",
+            "CREATE INDEX IF NOT EXISTS idx_timestamps_time ON video_timestamps(knowledge_id, timestamp_seconds)",
+            "CREATE INDEX IF NOT EXISTS idx_timestamps_knowledge_id ON video_timestamps(knowledge_id)",
         ]
 
         for sql in indexes:
@@ -215,10 +238,15 @@ class SQLiteStore:
         """确保运行时与迁移链使用同一套 FTS 合同。"""
         legacy_exists = self._sqlite_object_exists(conn, "table", LEGACY_FTS_TABLE_NAME)
         current_exists = self._sqlite_object_exists(conn, "table", FTS_TABLE_NAME)
+        current_is_external_content = current_exists and self._fts_uses_external_content(
+            conn, FTS_TABLE_NAME
+        )
 
         self._drop_legacy_fts_contract(conn)
+        if current_is_external_content:
+            self._drop_current_fts_contract(conn)
         self._create_fts5_table(conn)
-        return legacy_exists or not current_exists
+        return legacy_exists or not current_exists or current_is_external_content
 
     def _create_fts5_table(self, conn: sqlite3.Connection):
         """创建 FTS5 全文搜索虚拟表和触发器"""
@@ -230,9 +258,7 @@ class SQLiteStore:
                 title,
                 summary_100_words,
                 keywords,
-                tags,
-                content=knowledge_items,
-                content_rowid=knowledge_id
+                tags
             )
         """)
 
@@ -267,6 +293,12 @@ class SQLiteStore:
         for trigger_name in LEGACY_FTS_TRIGGER_NAMES:
             conn.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
         conn.execute(f"DROP TABLE IF EXISTS {LEGACY_FTS_TABLE_NAME}")
+
+    def _drop_current_fts_contract(self, conn: sqlite3.Connection) -> None:
+        """重建 knowledge_items_fts 前清理现有表与触发器。"""
+        for trigger_name in CURRENT_FTS_TRIGGER_NAMES:
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+        conn.execute(f"DROP TABLE IF EXISTS {FTS_TABLE_NAME}")
 
     def _rebuild_fts5_index(self, conn: sqlite3.Connection) -> None:
         """为已有条目重建 FTS5 索引。"""
@@ -328,6 +360,42 @@ class SQLiteStore:
             (object_type, name),
         )
         return cursor.fetchone() is not None
+
+    @staticmethod
+    def _sqlite_object_sql(
+        conn: sqlite3.Connection, object_type: str, name: str
+    ) -> str:
+        cursor = conn.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = ? AND name = ?
+            """,
+            (object_type, name),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return ""
+        sql = row["sql"] if isinstance(row, sqlite3.Row) else row[0]
+        return str(sql or "")
+
+    @classmethod
+    def _fts_uses_external_content(
+        cls, conn: sqlite3.Connection, table_name: str
+    ) -> bool:
+        table_sql = cls._sqlite_object_sql(conn, "table", table_name).lower()
+        normalized_sql = re.sub(r"\s+", "", table_sql)
+        return bool(
+            re.search(
+                r"content=['\"]?knowledge_items['\"]?",
+                normalized_sql,
+            )
+        )
+
+    @staticmethod
+    def _drop_obsolete_indexes(conn: sqlite3.Connection) -> None:
+        for index_name in OBSOLETE_INDEX_NAMES:
+            conn.execute(f"DROP INDEX IF EXISTS {index_name}")
 
     def _verify_integrity(self, conn: sqlite3.Connection):
         """验证数据库完整性"""

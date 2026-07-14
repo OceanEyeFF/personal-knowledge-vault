@@ -92,18 +92,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_items_fts USING fts5(
     title,
     summary_100_words,
     keywords,
-    tags,
-    content=knowledge_items,
-    content_rowid=knowledge_id
+    tags
 );
 
 -- 8. 创建主表索引
+CREATE INDEX IF NOT EXISTS idx_source_url ON knowledge_items(source_url);
 CREATE INDEX IF NOT EXISTS idx_knowledge_source_type ON knowledge_items(source_type);
 CREATE INDEX IF NOT EXISTS idx_knowledge_event_time ON knowledge_items(event_time);
 CREATE INDEX IF NOT EXISTS idx_knowledge_published_at ON knowledge_items(published_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_archived_at ON knowledge_items(archived_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_search_strategy ON knowledge_items(search_strategy);
-CREATE INDEX IF NOT EXISTS idx_knowledge_tags ON knowledge_items(tags);
+CREATE INDEX IF NOT EXISTS idx_file_path ON knowledge_items(file_path);
 
 -- 9. 创建分块表索引
 CREATE INDEX IF NOT EXISTS idx_chunks_knowledge_id ON content_chunks(knowledge_id);

@@ -82,11 +82,11 @@ CHECK(search_strategy IN ('keyword', 'hybrid', 'vector', 'structured'))
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_source_url ON knowledge_items(source_url);
-CREATE INDEX IF NOT EXISTS idx_source_type ON knowledge_items(source_type);
-CREATE INDEX IF NOT EXISTS idx_event_time ON knowledge_items(event_time);
-CREATE INDEX IF NOT EXISTS idx_published_at ON knowledge_items(published_at);
-CREATE INDEX IF NOT EXISTS idx_archived_at ON knowledge_items(archived_at);
-CREATE INDEX IF NOT EXISTS idx_search_strategy ON knowledge_items(search_strategy);
+CREATE INDEX IF NOT EXISTS idx_knowledge_source_type ON knowledge_items(source_type);
+CREATE INDEX IF NOT EXISTS idx_knowledge_event_time ON knowledge_items(event_time);
+CREATE INDEX IF NOT EXISTS idx_knowledge_published_at ON knowledge_items(published_at);
+CREATE INDEX IF NOT EXISTS idx_knowledge_archived_at ON knowledge_items(archived_at);
+CREATE INDEX IF NOT EXISTS idx_knowledge_search_strategy ON knowledge_items(search_strategy);
 CREATE INDEX IF NOT EXISTS idx_file_path ON knowledge_items(file_path);
 ```
 
@@ -150,8 +150,8 @@ UNIQUE(knowledge_id, chunk_index)
 #### 索引
 
 ```sql
-CREATE INDEX IF NOT EXISTS idx_knowledge_chunk ON content_chunks(knowledge_id, chunk_index);
-CREATE INDEX IF NOT EXISTS idx_knowledge_id ON content_chunks(knowledge_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_index ON content_chunks(knowledge_id, chunk_index);
+CREATE INDEX IF NOT EXISTS idx_chunks_knowledge_id ON content_chunks(knowledge_id);
 ```
 
 ---
@@ -240,8 +240,8 @@ FOREIGN KEY (tag_id) REFERENCES tags(tag_id) ON DELETE CASCADE
 #### 索引
 
 ```sql
-CREATE INDEX IF NOT EXISTS idx_kt_knowledge_id ON knowledge_tags(knowledge_id);
-CREATE INDEX IF NOT EXISTS idx_kt_tag_id ON knowledge_tags(tag_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_tags_knowledge_id ON knowledge_tags(knowledge_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_tags_tag_id ON knowledge_tags(tag_id);
 ```
 
 ---
@@ -393,8 +393,8 @@ FOREIGN KEY (knowledge_id) REFERENCES knowledge_items(knowledge_id) ON DELETE CA
 #### 索引
 
 ```sql
-CREATE INDEX IF NOT EXISTS idx_knowledge_timestamp ON video_timestamps(knowledge_id, timestamp_seconds);
-CREATE INDEX IF NOT EXISTS idx_vt_knowledge_id ON video_timestamps(knowledge_id);
+CREATE INDEX IF NOT EXISTS idx_timestamps_time ON video_timestamps(knowledge_id, timestamp_seconds);
+CREATE INDEX IF NOT EXISTS idx_timestamps_knowledge_id ON video_timestamps(knowledge_id);
 ```
 
 ---
@@ -411,9 +411,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_items_fts USING fts5(
     title,
     summary_100_words,
     keywords,
-    tags,
-    content=knowledge_items,
-    content_rowid=knowledge_id
+    tags
 )
 ```
 
@@ -421,8 +419,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_items_fts USING fts5(
 
 | 配置项 | 值 | 说明 |
 |--------|------|------|
-| `content` | `knowledge_items` | 指定实际存储数据的表 |
-| `content_rowid` | `knowledge_id` | 指定行 ID 对应的列 |
+| `FTS 模式` | `contentless` | 不使用 external-content 合同，避免 runtime / migration 行为分叉 |
+| `rowid` | `knowledge_id` | 通过触发器显式写入 `rowid` 与主表主键保持一致 |
 
 #### 索引字段
 
@@ -555,8 +553,8 @@ FOREIGN KEY (tag_id) REFERENCES tags(tag_id)
 **示例**:
 ```sql
 CREATE INDEX IF NOT EXISTS idx_source_url ON knowledge_items(source_url);
-CREATE INDEX IF NOT EXISTS idx_kt_knowledge_id ON knowledge_tags(knowledge_id);
-CREATE INDEX IF NOT EXISTS idx_knowledge_chunk ON content_chunks(knowledge_id, chunk_index);
+CREATE INDEX IF NOT EXISTS idx_knowledge_tags_knowledge_id ON knowledge_tags(knowledge_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_index ON content_chunks(knowledge_id, chunk_index);
 ```
 
 ---

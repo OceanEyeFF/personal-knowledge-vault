@@ -1,8 +1,9 @@
 """
 证据聚合服务。
 
-基于检索、关系解释和条目元数据构建文档级证据包。
-当前版本先返回条目级证据，不依赖 chunk 文本落库。
+基于检索、关系解释和条目元数据构建最小证据包。
+当前版本默认返回条目级证据，并在 `include_chunks=True` 时启用
+chunk-aware 检索路径；若 chunk 路径不可用或检索异常，会显式退化回文档级证据。
 """
 
 from __future__ import annotations
@@ -27,7 +28,10 @@ class EvidenceCollectionService:
     CHUNK_STATUS_NOT_REQUESTED = "not_requested"
     CHUNK_STATUS_SUCCESS = "success"
     CHUNK_STATUS_NO_HITS = "no_hits"
-    CHUNK_STATUS_DEGRADED = "degraded"
+    CHUNK_STATUS_PATH_UNAVAILABLE = "path_unavailable"
+    CHUNK_STATUS_SEARCH_ERROR = "search_error"
+    CHUNK_DEGRADED_REASON_PATH_UNAVAILABLE = "path_unavailable"
+    CHUNK_DEGRADED_REASON_SEARCH_ERROR = "search_error"
 
     def __init__(
         self,
@@ -107,10 +111,6 @@ class EvidenceCollectionService:
                 chunk_retrieval_status=chunk_retrieval_status,
             )
 
-        chunk_result_by_key = {
-            self._evidence_key(result.knowledge_id, result.metadata.get("chunk_index")): result
-            for result in chunk_results
-        }
         chunk_result_by_knowledge: dict[int, Any] = {}
         for result in chunk_results:
             existing = chunk_result_by_knowledge.get(result.knowledge_id)
@@ -273,25 +273,38 @@ class EvidenceCollectionService:
             chunk_searcher = getattr(hybrid_retriever, "vector_retriever", None)
 
         if chunk_searcher is None or not hasattr(chunk_searcher, "search_chunks"):
-            logger.warning("chunk 检索路径不可用，已降级为文档级证据")
+            limitation_note = self._build_chunk_degradation_note(
+                self.CHUNK_DEGRADED_REASON_PATH_UNAVAILABLE,
+                "chunk 检索路径不可用，已降级为文档级证据",
+            )
+            logger.warning("%s", limitation_note)
             return (
                 [],
-                self.CHUNK_STATUS_DEGRADED,
-                "chunk 检索路径不可用，已降级为文档级证据",
+                self.CHUNK_STATUS_PATH_UNAVAILABLE,
+                limitation_note,
             )
 
         try:
             chunk_results = chunk_searcher.search_chunks(question, limit=limit)
         except Exception:
-            logger.exception("chunk 检索异常，已降级为文档级证据")
+            limitation_note = self._build_chunk_degradation_note(
+                self.CHUNK_DEGRADED_REASON_SEARCH_ERROR,
+                "chunk 检索异常，已降级为文档级证据",
+            )
+            logger.exception("%s", limitation_note)
             return (
                 [],
-                self.CHUNK_STATUS_DEGRADED,
-                "chunk 检索异常，已降级为文档级证据",
+                self.CHUNK_STATUS_SEARCH_ERROR,
+                limitation_note,
             )
         if not chunk_results:
             return ([], self.CHUNK_STATUS_NO_HITS, None)
         return (list(chunk_results), self.CHUNK_STATUS_SUCCESS, None)
+
+    @staticmethod
+    def _build_chunk_degradation_note(reason: str, message: str) -> str:
+        """生成可观测的 chunk 降级信号（结构化原因码 + 可读描述）。"""
+        return f"chunk_degraded[{reason}] {message}"
 
     def _deduplicate_evidence_items(
         self, evidence_items: list[CollectedEvidenceItem]

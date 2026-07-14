@@ -134,7 +134,7 @@ cases:
       item_keys:
         - alpha_id
         - beta_id
-      inferred_time_field: event_time
+      inferred_time_field: mixed
       time_source_priority:
         - event_time
         - published_at

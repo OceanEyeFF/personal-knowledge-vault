@@ -5,12 +5,7 @@
 """
 
 import sqlite3
-import sys
 from pathlib import Path
-
-# Add project root to Python path
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 import numpy as np
 import pytest
@@ -27,10 +22,240 @@ from src.storage.sqlite_store import (
 from src.storage.vector_store import VectorStore
 from src.ai.embedder import Embedder
 from src.retrieval.bm25_retriever import BM25Retriever
-from src.retrieval.vector_retriever import VectorRetriever
-from src.retrieval.hybrid_retriever import HybridRetriever
 from src.retrieval.query_router import QueryRouter
 from src.retrieval.result import SearchResult
+from src.retrieval.vector_retriever import VectorRetriever
+
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+
+def _create_legacy_knowledge_fts_db(db_path: Path) -> None:
+    """构造真实旧版 knowledge_fts 合同数据库。"""
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (
+                version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version TEXT NOT NULL UNIQUE,
+                description TEXT,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                applied_by TEXT
+            );
+
+            CREATE TABLE knowledge_items (
+                knowledge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT,
+                summary_one_sentence TEXT,
+                summary_100_words TEXT,
+                keywords TEXT,
+                tags TEXT,
+                outline TEXT,
+                source_type TEXT NOT NULL,
+                source_url TEXT UNIQUE,
+                search_strategy TEXT,
+                file_path TEXT NOT NULL UNIQUE,
+                word_count INTEGER DEFAULT 0,
+                event_time TIMESTAMP,
+                published_at TIMESTAMP,
+                archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE content_chunks (
+                chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                knowledge_id INTEGER NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                chunk_text TEXT NOT NULL,
+                context_before TEXT,
+                context_after TEXT,
+                section_title TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (knowledge_id) REFERENCES knowledge_items(knowledge_id) ON DELETE CASCADE,
+                UNIQUE(knowledge_id, chunk_index)
+            );
+
+            CREATE TABLE tags (
+                tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                tag_group TEXT,
+                count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE knowledge_tags (
+                knowledge_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (knowledge_id, tag_id),
+                FOREIGN KEY (knowledge_id) REFERENCES knowledge_items(knowledge_id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id) REFERENCES tags(tag_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE video_timestamps (
+                timestamp_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                knowledge_id INTEGER NOT NULL,
+                timestamp_seconds INTEGER NOT NULL,
+                segment_text TEXT NOT NULL,
+                chapter_title TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (knowledge_id) REFERENCES knowledge_items(knowledge_id) ON DELETE CASCADE,
+                UNIQUE(knowledge_id, timestamp_seconds)
+            );
+
+            CREATE VIRTUAL TABLE knowledge_fts USING fts5(
+                knowledge_id UNINDEXED,
+                title,
+                content,
+                keywords,
+                tags,
+                tokenize = 'porter unicode61'
+            );
+
+            CREATE TRIGGER knowledge_fts_insert
+            AFTER INSERT ON knowledge_items
+            BEGIN
+                INSERT INTO knowledge_fts (knowledge_id, title, content, keywords, tags)
+                VALUES (new.knowledge_id, new.title, new.content, new.keywords, new.tags);
+            END;
+
+            CREATE TRIGGER knowledge_fts_update
+            AFTER UPDATE ON knowledge_items
+            BEGIN
+                DELETE FROM knowledge_fts WHERE knowledge_id = old.knowledge_id;
+                INSERT INTO knowledge_fts (knowledge_id, title, content, keywords, tags)
+                VALUES (new.knowledge_id, new.title, new.content, new.keywords, new.tags);
+            END;
+
+            CREATE TRIGGER knowledge_fts_delete
+            AFTER DELETE ON knowledge_items
+            BEGIN
+                DELETE FROM knowledge_fts WHERE knowledge_id = old.knowledge_id;
+            END;
+
+            CREATE INDEX idx_knowledge_source_type ON knowledge_items(source_type);
+            CREATE INDEX idx_knowledge_event_time ON knowledge_items(event_time);
+            CREATE INDEX idx_knowledge_published_at ON knowledge_items(published_at);
+            CREATE INDEX idx_knowledge_archived_at ON knowledge_items(archived_at);
+            CREATE INDEX idx_knowledge_search_strategy ON knowledge_items(search_strategy);
+            CREATE INDEX idx_chunks_knowledge_id ON content_chunks(knowledge_id);
+            CREATE INDEX idx_chunks_index ON content_chunks(knowledge_id, chunk_index);
+            CREATE INDEX idx_knowledge_tags_knowledge_id ON knowledge_tags(knowledge_id);
+            CREATE INDEX idx_knowledge_tags_tag_id ON knowledge_tags(tag_id);
+            CREATE INDEX idx_timestamps_knowledge_id ON video_timestamps(knowledge_id);
+            CREATE INDEX idx_timestamps_time ON video_timestamps(knowledge_id, timestamp_seconds);
+
+            INSERT INTO schema_version (version, description)
+            VALUES ('1.0.0', 'legacy knowledge_fts schema');
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO knowledge_items (
+                title,
+                content,
+                summary_one_sentence,
+                summary_100_words,
+                keywords,
+                tags,
+                source_type,
+                source_url,
+                file_path,
+                word_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Alpha Legacy",
+                "Alpha alpha body",
+                "Alpha 摘要",
+                "Alpha alpha summary",
+                "alpha",
+                "alpha",
+                "test",
+                "https://example.com/legacy-alpha",
+                "/tmp/legacy-alpha.md",
+                3,
+            ),
+        )
+        conn.commit()
+
+
+def _create_external_content_fts_db(db_path: Path) -> None:
+    """构造已在 1.2.2 的 external-content knowledge_items_fts 数据库。"""
+    sql = (PROJECT_ROOT / "scripts" / "migrations" / "001_initial_schema.sql").read_text(
+        encoding="utf-8"
+    )
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.executescript(sql)
+        conn.execute("DROP TRIGGER IF EXISTS knowledge_items_ad")
+        conn.execute("DROP TRIGGER IF EXISTS knowledge_items_au")
+        conn.execute("DROP TRIGGER IF EXISTS knowledge_items_ai")
+        conn.execute(f"DROP TABLE IF EXISTS {FTS_TABLE_NAME}")
+        conn.execute(
+            f"""
+            CREATE VIRTUAL TABLE {FTS_TABLE_NAME} USING fts5(
+                title,
+                summary_100_words,
+                keywords,
+                tags,
+                content=knowledge_items,
+                content_rowid=knowledge_id
+            )
+            """
+        )
+        conn.executescript(
+            f"""
+            CREATE TRIGGER knowledge_items_ai AFTER INSERT ON knowledge_items BEGIN
+                INSERT INTO {FTS_TABLE_NAME}(rowid, title, summary_100_words, keywords, tags)
+                VALUES (new.knowledge_id, new.title, new.summary_100_words, new.keywords, new.tags);
+            END;
+
+            CREATE TRIGGER knowledge_items_au AFTER UPDATE ON knowledge_items BEGIN
+                DELETE FROM {FTS_TABLE_NAME} WHERE rowid = old.knowledge_id;
+                INSERT INTO {FTS_TABLE_NAME}(rowid, title, summary_100_words, keywords, tags)
+                VALUES (new.knowledge_id, new.title, new.summary_100_words, new.keywords, new.tags);
+            END;
+
+            CREATE TRIGGER knowledge_items_ad AFTER DELETE ON knowledge_items BEGIN
+                DELETE FROM {FTS_TABLE_NAME} WHERE rowid = old.knowledge_id;
+            END;
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO knowledge_items (
+                title,
+                content,
+                summary_one_sentence,
+                summary_100_words,
+                keywords,
+                tags,
+                source_type,
+                source_url,
+                file_path,
+                word_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "External Alpha",
+                "Alpha alpha body",
+                "Alpha 摘要",
+                "Alpha alpha summary",
+                "alpha",
+                "alpha",
+                "test",
+                "https://example.com/external-alpha",
+                "/tmp/external-alpha.md",
+                3,
+            ),
+        )
+        conn.execute("DELETE FROM schema_version")
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (?, ?)",
+            ("1.2.2", "external-content knowledge_items_fts"),
+        )
+        conn.commit()
 
 
 class DeterministicEmbedder:
@@ -316,7 +541,7 @@ class TestDataPipelineIntegration:
 
         manager = MigrationManager(
             db_path,
-            project_root / "scripts" / "migrations",
+            PROJECT_ROOT / "scripts" / "migrations",
         )
         assert manager.apply_all_pending(auto_backup=False) > 0
 
@@ -353,12 +578,12 @@ class TestDataPipelineIntegration:
         assert results[0].knowledge_id == knowledge_id
 
     def test_migration_alignment_rebuilds_existing_chinese_fts_rows(self, tmp_path: Path):
-        """升级到 1.2.2 后，已有条目也应回到与运行时一致的中文分词召回。"""
+        """升级到最新 FTS 修复链后，已有条目也应回到与运行时一致的中文分词召回。"""
         db_path = tmp_path / "legacy-upgrade.db"
 
         manager = MigrationManager(
             db_path,
-            project_root / "scripts" / "migrations",
+            PROJECT_ROOT / "scripts" / "migrations",
         )
         for migration_name in (
             "001_initial_schema.sql",
@@ -369,7 +594,7 @@ class TestDataPipelineIntegration:
             "007_add_timeline_time_fields.sql",
         ):
             manager.apply_migration(
-                project_root / "scripts" / "migrations" / migration_name,
+                PROJECT_ROOT / "scripts" / "migrations" / migration_name,
                 auto_backup=False,
             )
 
@@ -402,11 +627,79 @@ class TestDataPipelineIntegration:
             )
             conn.commit()
 
-        assert manager.apply_all_pending(auto_backup=False) == 1
+        assert manager.apply_all_pending(auto_backup=False) == 2
 
         results = BM25Retriever(db_path).search("一致性", limit=5)
         assert results
         assert results[0].title == "分布式系统设计"
+
+    def test_real_legacy_knowledge_fts_database_upgrades_without_corruption(
+        self, tmp_path: Path
+    ):
+        """带真实 knowledge_fts 数据的旧库应能安全升级到最新合同。"""
+        db_path = tmp_path / "legacy-real.db"
+        _create_legacy_knowledge_fts_db(db_path)
+
+        manager = MigrationManager(
+            db_path,
+            PROJECT_ROOT / "scripts" / "migrations",
+        )
+
+        assert manager.apply_all_pending(auto_backup=False) == 7
+
+        with sqlite3.connect(str(db_path)) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            latest_version = conn.execute(
+                "SELECT version FROM schema_version ORDER BY version_id DESC LIMIT 1"
+            ).fetchone()[0]
+
+        assert LEGACY_FTS_TABLE_NAME not in tables
+        assert FTS_TABLE_NAME in tables
+        assert latest_version == "1.2.3"
+
+        results = BM25Retriever(db_path).search("alpha", limit=5)
+        assert results
+        assert results[0].title == "Alpha Legacy"
+
+    def test_pending_fts_repair_migration_replaces_external_content_contract(
+        self, tmp_path: Path
+    ):
+        """已有 1.2.2 external-content 合同的库应通过 1.2.3 修复为独立 FTS 存储。"""
+        db_path = tmp_path / "external-content.db"
+        _create_external_content_fts_db(db_path)
+
+        manager = MigrationManager(
+            db_path,
+            PROJECT_ROOT / "scripts" / "migrations",
+        )
+
+        assert manager.apply_all_pending(auto_backup=False) == 1
+
+        with sqlite3.connect(str(db_path)) as conn:
+            table_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                (FTS_TABLE_NAME,),
+            ).fetchone()[0]
+            conn.execute(
+                """
+                UPDATE knowledge_items
+                SET title = ?, summary_100_words = ?, keywords = ?, tags = ?
+                WHERE knowledge_id = 1
+                """,
+                ("External Beta", "Beta beta summary", "beta", "beta"),
+            )
+            conn.commit()
+
+        assert "content=knowledge_items" not in table_sql.lower()
+        assert BM25Retriever(db_path).search("alpha", limit=5) == []
+        beta_results = BM25Retriever(db_path).search("beta", limit=5)
+        assert beta_results
+        assert beta_results[0].title == "External Beta"
 
     def test_initialize_created_db_uses_single_fts_contract(self, tmp_path: Path):
         """运行时初始化的新库不应保留旧 FTS 表名。"""
@@ -425,6 +718,76 @@ class TestDataPipelineIntegration:
             ).fetchone()
             assert current is not None
             assert legacy is None
+
+    def test_bm25_update_removes_stale_terms(self, tmp_path: Path):
+        """条目更新后，旧关键词不应继续命中 BM25。"""
+        db_path = tmp_path / "update.db"
+        store = SQLiteStore(db_path)
+        store.initialize()
+
+        entry = Entry(
+            title="Alpha",
+            content="Alpha alpha body",
+            abstract="Alpha",
+            summary_one_sentence="Alpha",
+            summary_100_words="Alpha alpha body",
+            tags=["alpha"],
+            keywords="alpha",
+            source_type="test",
+            source_url="https://example.com/update-alpha",
+        )
+        store.insert_entry(entry, str(tmp_path / "alpha.md"))
+
+        with store.get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE knowledge_items
+                SET title = ?, summary_100_words = ?, keywords = ?, tags = ?
+                WHERE knowledge_id = 1
+                """,
+                ("Beta", "Beta beta body", "beta", "beta"),
+            )
+
+        assert BM25Retriever(db_path).search("alpha", limit=5) == []
+        results = BM25Retriever(db_path).search("beta", limit=5)
+        assert results
+        assert results[0].title == "Beta"
+
+    def test_initialize_after_migration_does_not_duplicate_schema_indexes(
+        self, tmp_path: Path
+    ):
+        """迁移建库后再次 initialize 不应产生运行时别名重复索引。"""
+        db_path = tmp_path / "indexes.db"
+        manager = MigrationManager(
+            db_path,
+            PROJECT_ROOT / "scripts" / "migrations",
+        )
+        assert manager.apply_all_pending(auto_backup=False) > 0
+
+        SQLiteStore(db_path).initialize()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            indexes = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='knowledge_items'"
+                )
+            }
+
+        assert "idx_source_type" not in indexes
+        assert "idx_event_time" not in indexes
+        assert "idx_published_at" not in indexes
+        assert "idx_archived_at" not in indexes
+        assert "idx_search_strategy" not in indexes
+        assert {
+            "idx_source_url",
+            "idx_file_path",
+            "idx_knowledge_source_type",
+            "idx_knowledge_event_time",
+            "idx_knowledge_published_at",
+            "idx_knowledge_archived_at",
+            "idx_knowledge_search_strategy",
+        }.issubset(indexes)
 
     @pytest.mark.skipif(
         not Path(".env").exists(), reason="需要 .env 文件配置 API Keys"
@@ -460,7 +823,7 @@ class TestDataPipelineIntegration:
 
         # 保存测试数据
         knowledge_ids = []
-        for data in test_dataset:
+        for idx, data in enumerate(test_dataset, start=1):
             entry = Entry(
                 title=data["title"],
                 content=f"# {data['title']}\n\n{data['content']}",
@@ -470,7 +833,7 @@ class TestDataPipelineIntegration:
                 tags=data["tags"],
                 keywords=",".join(data["tags"]),
                 source_type="test",
-                source_url="https://test.example.com",
+                source_url=f"https://test.example.com/{idx}",
             )
             file_path = stores["markdown"].save(entry)
             kid = stores["sqlite"].insert_entry(entry, str(file_path))

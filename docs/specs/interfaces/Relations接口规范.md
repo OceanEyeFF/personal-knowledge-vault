@@ -1,9 +1,9 @@
 # Relations 接口规范
 
-> **版本**: 1.0
+> **版本**: 1.1
 > **创建日期**: 2026-03-31
-> **最后更新**: 2026-03-31
-> **文件位置**: `src/relations/`、`src/storage/relation_store.py`
+> **最后更新**: 2026-04-03
+> **文件位置**: `src/relations/`、`src/storage/relation_store.py`、`src/mcp/tools.py`
 > **作用**: 固定关系层当前公开模型、抽取合同、回填合同与查询合同
 
 ---
@@ -255,6 +255,28 @@ backfill(
 - `grouped_items`
 - `grouped_edges`
 - `explain_relation()` 内部候选关系排序
+
+### 6.4 推理型 MCP 输出合同（closeout pending）
+
+当前 `collect_evidence` 与 `timeline_of` 的输出语义合同如下：
+
+`collect_evidence(question, top_k, relation_max_depth, include_chunks)`：
+
+- `include_chunks=False`：默认文档级兼容路径
+- `include_chunks=True`：启用 chunk-aware 证据聚合路径
+- `chunk_retrieval_status` 允许值固定为：
+  - `not_requested`
+  - `success`
+  - `no_hits`
+  - `path_unavailable`
+  - `search_error`
+- 当 `chunk_retrieval_status` 为 `path_unavailable` 或 `search_error` 时，`limitation_notes` 必须包含可观测降级信号（如 `chunk_degraded[reason] ...`）
+
+`timeline_of(topic, top_k, sort_order)`：
+
+- 时间来源优先级：`event_time > published_at > archived_at`
+- `inferred_time_field` 可返回单一来源字段，也可在多来源并列主导时返回 `mixed`
+- `sort_order=desc` 仅对可解析时间做真正倒序；不可解析时间值保持中性稳定排序
 
 ---
 
