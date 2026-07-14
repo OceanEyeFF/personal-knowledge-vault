@@ -7,7 +7,6 @@
 from typing import List
 from pathlib import Path
 from numbers import Integral
-import numpy as np
 
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.vector_store import VectorStore
