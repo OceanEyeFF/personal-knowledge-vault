@@ -3,17 +3,17 @@
 > **版本**: 1.0
 > **创建日期**: 2026-02-15
 > **文件位置**: `src/ai/`
-> **作用**: 封装 DeepSeek 和 OpenAI API 调用，提供摘要、标签提取和向量化功能
+> **作用**: 封装 OpenAI-compatible LLM 和 Embedding API 调用，提供摘要、标签提取和向量化功能
 
 ---
 
 ## 📋 核心组件
 
-### 1. DeepSeekClient (摘要和标签提取)
+### 1. DeepSeekClient (摘要和标签提取，历史类名)
 
 **文件**: `src/ai/deepseek_client.py`
 
-**作用**: 封装 DeepSeek API 调用，提供摘要生成和标签提取功能
+**作用**: 封装 OpenAI-compatible Chat Completions API 调用，提供摘要生成和标签提取功能。`DeepSeekClient` 为历史类名，实际端点和模型由 `PKV_LLM_*` 控制。
 
 #### 构造函数
 
@@ -31,7 +31,7 @@ def __init__(
 
     Args:
         api_key: API Key，默认从配置中读取
-        base_url: API Base URL，默认从配置中读取
+        base_url: OpenAI-compatible API Base URL，默认从配置中读取
         model: 使用的模型名称
         timeout: 请求超时时间（秒）
         max_retries: 最大重试次数
@@ -188,7 +188,7 @@ assert 3 <= len(tags) <= 5
 
 #### _call_api(messages, temperature, max_tokens) -> str
 
-**作用**: 调用 DeepSeek API（带重试和错误处理）
+**作用**: 调用 OpenAI-compatible LLM API（带重试和错误处理）
 
 **签名**:
 ```python
@@ -198,7 +198,7 @@ def _call_api(
     temperature: float = 0.7,
     max_tokens: int = 2000,
 ) -> str:
-    """调用 DeepSeek API"""
+    """调用 OpenAI-compatible LLM API"""
 ```
 
 **输入**:
@@ -224,7 +224,7 @@ def _call_api(
 ```python
 # 成功时记录 token 使用情况
 logger.info(
-    f"DeepSeek API 调用成功: "
+    f"LLM API 调用成功: "
     f"prompt_tokens={usage.get('prompt_tokens', 0)}, "
     f"completion_tokens={usage.get('completion_tokens', 0)}, "
     f"total_tokens={usage.get('total_tokens', 0)}"
@@ -237,7 +237,7 @@ logger.info(
 
 **文件**: `src/ai/embedder.py`
 
-**作用**: 提供文档级和分块级的向量化功能（封装 OpenAI Embedding API）
+**作用**: 提供文档级和分块级的向量化功能（封装 OpenAI-compatible Embedding API）
 
 ### 构造函数
 
@@ -252,7 +252,7 @@ def __init__(
     初始化 Embedder
 
     Args:
-        openai_client: OpenAI 客户端，默认创建新实例
+        openai_client: OpenAI-compatible Embedding 客户端，默认创建新实例
         chunk_size: 分块大小（字符数）
         chunk_overlap: 分块重叠大小（字符数）
     """
@@ -310,11 +310,11 @@ avg_vector = np.mean(chunk_vectors, axis=0)
 ```
 
 **注意**:
-- ⚠️ OpenAI Embedding API 限制：约 8191 tokens（约 8000 字符）
+- ⚠️ OpenAI-compatible Embedding API 通常存在输入长度限制；OpenAI 官方服务约 8191 tokens（约 8000 字符）
 - ⚠️ 长文档会被分块并平均，可能损失部分语义信息
 - ⚠️ `dim` 不再固定为 `1536`，而是取决于当前 Embedding 模型的真实输出维度
 - ⚠️ 当 `PKV_EMBD_DIM=auto` 时，客户端会在首次成功请求后锁定真实维度
-- ⚠️ Embedding 模型/维度是向量索引契约；更换后必须重建索引并重新生成文档级、分块级 Embedding
+- ⚠️ `PKV_EMBD_BASE_URL`、`PKV_EMBD_MODEL`、`PKV_EMBD_DIM` 是向量索引契约；更换后必须重建索引并重新生成文档级、分块级 Embedding
 
 ---
 
@@ -581,17 +581,18 @@ class DeepSeekClient:
 
 ---
 
-### 问题 6: OpenAI Embedding 模型版本未显式指定
+### 问题 6: Embedding 索引迁移仍需人工执行
 
 **问题描述**:
-- `OpenAIClient` 可能使用默认模型
-- 模型版本未在 `Embedder` 中显式配置
+- 当前模型、端点、维度已由 `PKV_EMBD_*` / `config.yaml` 显式配置
+- 新索引会记录非敏感契约指纹，加载时会拒绝复用不匹配索引
+- 但系统不会自动删除旧索引或自动重算已有 Embedding
 
-**影响范围**: 低 - 可能导致向量维度变化
+**影响范围**: 中 - 切换 Embedding 配置后需要维护者执行索引重建和回填
 
-**优先级**: 低
+**优先级**: 中
 
-**建议**: 显式指定模型版本（如 `text-embedding-3-small`）
+**建议**: 更换 `PKV_EMBD_BASE_URL`、`PKV_EMBD_MODEL` 或 `PKV_EMBD_DIM` 时，按索引迁移流程重建向量索引并重新生成 Embedding
 
 ---
 
@@ -599,7 +600,7 @@ class DeepSeekClient:
 
 ### 设计优点
 
-✅ 清晰的职责分离（DeepSeek 文本生成、OpenAI 向量化）
+✅ 清晰的职责分离（OpenAI-compatible LLM 文本生成、OpenAI-compatible Embedding 向量化）
 ✅ 完善的重试和错误处理机制
 ✅ 灵活的向量化方式（文档级、分块级、批量）
 ✅ 丰富的日志记录
@@ -612,7 +613,7 @@ class DeepSeekClient:
 ⚠️ 缺少批量分块向量化
 ⚠️ 重试策略硬编码
 ⚠️ 缺少 API 成本追踪
-⚠️ Embedding 模型版本未显式指定
+⚠️ Embedding 索引迁移仍需人工执行
 
 ---
 

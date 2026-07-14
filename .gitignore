@@ -57,6 +57,7 @@ logs/
 # Testing
 .pytest_cache/
 .coverage
+.coverage.*
 .coverage.module.json
 htmlcov/
 .tox/

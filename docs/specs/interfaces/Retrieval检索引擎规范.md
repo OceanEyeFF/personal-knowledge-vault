@@ -14,7 +14,7 @@
 | 策略 | 适用场景 | 实现类 | 算法 |
 |------|---------|--------|------|
 | **BM25** | 短查询（< 5 tokens） | `BM25Retriever` | SQLite FTS5 |
-| **向量检索** | 长查询（≥ 5 tokens）单独使用 | `VectorRetriever` | hnswlib + OpenAI Embedding |
+| **向量检索** | 长查询（≥ 5 tokens）单独使用 | `VectorRetriever` | hnswlib + OpenAI-compatible Embedding |
 | **混合检索** | 长查询（≥ 5 tokens）默认 | `HybridRetriever` | BM25 + 向量 + RRF 融合 |
 | **智能路由** | 自动选择策略 | `QueryRouter` | 基于分词数量 |
 
@@ -160,7 +160,8 @@ def search(self, query: str, limit: int = 10) -> List[SearchResult]:
 
 #### 关键特性
 
-- ✅ OpenAI Embedding（维度取决于当前模型，常见默认值为 1536）
+- ✅ OpenAI-compatible Embedding（维度取决于当前模型，常见默认值为 1536）
+- ✅ 向量索引绑定 `PKV_EMBD_BASE_URL` / `PKV_EMBD_MODEL` / `PKV_EMBD_DIM` 契约，配置漂移时拒绝静默复用旧索引
 - ✅ hnswlib 索引（HNSW 算法）
 - ✅ 余弦距离 → 相似度转换
 

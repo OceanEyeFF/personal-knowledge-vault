@@ -36,8 +36,8 @@ ai:
 
   # OpenAI-compatible Embedding 配置
   # API Key 请使用环境变量 PKV_EMBD_API_KEY，不写入本文件。
-  # 注意：Embedding 模型/维度是向量索引契约，不是普通偏好项。
-  # 更换模型或维度后，必须重建向量索引并重新生成文档/分块 Embedding。
+  # 注意：Embedding 端点/模型/维度是向量索引契约，不是普通偏好项。
+  # 更换端点、模型或维度后，必须重建向量索引并重新生成文档/分块 Embedding。
   embedding:
     base_url: "https://api.openai.com/v1"
     model: "text-embedding-3-small"

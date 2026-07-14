@@ -1,7 +1,9 @@
 """
-OpenAI API 客户端
+OpenAI-compatible Embedding API 客户端
 
-封装 OpenAI Embedding API 调用
+封装 OpenAI-compatible Embedding API 调用。
+
+注意：OpenAIClient 是历史类名，当前支持由 PKV_EMBD_* 配置的兼容端点。
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ logger = get_logger(__name__)
 
 
 class OpenAIClient:
-    """OpenAI API 客户端（专注于 Embedding 功能）"""
+    """OpenAI-compatible Embedding 客户端（历史类名保留兼容）"""
 
     _AUTO_DIM_PROBE_TEXT = "__pkv_embedding_dimension_probe__"
 

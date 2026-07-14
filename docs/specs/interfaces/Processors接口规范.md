@@ -388,7 +388,7 @@ def _get_title_text(self, soup: BeautifulSoup) -> str:
 **特性**:
 - 支持 HTML 和 Markdown 格式
 - 解析对话角色（user/assistant）
-- 调用 DeepSeek API 生成摘要
+- 调用 OpenAI-compatible LLM API 生成摘要
 
 **source_type**: `"ai_chat"`
 

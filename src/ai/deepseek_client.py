@@ -1,7 +1,9 @@
 """
-DeepSeek API 客户端
+OpenAI-compatible LLM API 客户端
 
-封装 DeepSeek API 调用，提供摘要生成和标签提取功能
+封装 OpenAI-compatible Chat Completions API 调用，提供摘要生成和标签提取功能。
+
+注意：DeepSeekClient 是历史类名，当前支持由 PKV_LLM_* 配置的兼容端点。
 """
 
 import json
@@ -17,7 +19,7 @@ logger = get_logger(__name__)
 
 
 class DeepSeekClient:
-    """DeepSeek API 客户端"""
+    """OpenAI-compatible LLM 客户端（历史类名保留兼容）"""
 
     def __init__(
         self,

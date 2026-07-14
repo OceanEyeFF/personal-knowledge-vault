@@ -194,7 +194,7 @@ class BaseStep(ABC):
 
 **类型**: `ai_analyze`
 
-**作用**: 集成 DeepSeek API，生成摘要和标签
+**作用**: 集成 OpenAI-compatible LLM API，生成摘要和标签
 
 **配置**:
 ```yaml
@@ -348,7 +348,7 @@ def _normalize_steps(self, steps):
     state.set("entry", entry)
     ↓
 【AnalyzeStep】
-    state.get("entry") → DeepSeek API
+    state.get("entry") → OpenAI-compatible LLM API
     - summarize() → summary
     - extract_tags() → tags
     entry.summary_100_words = summary

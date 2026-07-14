@@ -189,6 +189,14 @@ class Config:
             "embedding_model": self.embd_model,
         }
 
+    def embedding_index_fingerprint(self, dim: int) -> Dict[str, str]:
+        """当前 Embedding 索引契约指纹，不包含 API Key 等敏感信息。"""
+        return {
+            "base_url": self.embd_base_url,
+            "embedding_model": self.embd_model,
+            "embedding_dim": str(int(dim)),
+        }
+
     @property
     def llm_api_key(self) -> Optional[str]:
         """OpenAI-compatible LLM API Key。"""

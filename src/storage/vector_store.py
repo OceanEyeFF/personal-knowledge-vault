@@ -8,7 +8,7 @@ import json
 import hnswlib
 import numpy as np
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import Any, List, Tuple, Optional
 
 from src.utils.config import get_config
 from src.utils.logger import get_logger
@@ -33,6 +33,7 @@ class VectorStore:
         self.index_dir = Path(index_dir)
         self.index_dir.mkdir(parents=True, exist_ok=True)
         self.dim = self._resolve_index_dim(dim)
+        self.embedding_fingerprint = self._resolve_embedding_fingerprint(self.dim)
 
         # HNSW 参数
         self.M = 16  # 每个节点的连接数
@@ -101,6 +102,17 @@ class VectorStore:
             )
         return int(config_dim)
 
+    def _resolve_embedding_fingerprint(self, dim: int) -> dict[str, str]:
+        """解析当前向量索引应绑定的 Embedding 契约指纹。"""
+        config = get_config()
+        if hasattr(config, "embedding_index_fingerprint"):
+            return config.embedding_index_fingerprint(dim)
+        return {
+            "base_url": str(getattr(config, "embd_base_url", "")),
+            "embedding_model": str(getattr(config, "embd_model", "")),
+            "embedding_dim": str(int(dim)),
+        }
+
     def _init_index(self, name: str) -> hnswlib.Index:
         """
         初始化或加载 hnswlib 索引
@@ -137,6 +149,7 @@ class VectorStore:
                     "如果要继续使用现有索引，请切回原来的 Embedding 服务/模型/维度配置；"
                     "如果确认切换模型，请先重建向量索引。"
                 )
+            self._validate_embedding_fingerprint(name, metadata)
 
             index.load_index(
                 str(index_path),
@@ -167,6 +180,7 @@ class VectorStore:
                 "space": "cosine",
                 "M": self.M,
                 "ef_construction": self.ef_construction,
+                "embedding_fingerprint": self.embedding_fingerprint,
                 "id_mapping": {}
             }
             with open(metadata_path, 'w', encoding='utf-8') as f:
@@ -541,6 +555,32 @@ class VectorStore:
         with open(metadata_path, 'r', encoding='utf-8') as f:
             return json.load(f)
 
+    def _validate_embedding_fingerprint(self, name: str, metadata: dict[str, Any]) -> None:
+        """校验索引元数据中的 Embedding 契约指纹。"""
+        existing_fingerprint = metadata.get("embedding_fingerprint")
+        if existing_fingerprint is None:
+            logger.warning(
+                "%s 缺少 Embedding 契约指纹，按旧索引兼容加载；"
+                "如已切换 PKV_EMBD_BASE_URL/PKV_EMBD_MODEL/PKV_EMBD_DIM，"
+                "请重建向量索引并重新生成 Embedding",
+                name,
+            )
+            return
+
+        expected = self.embedding_fingerprint
+        normalized_existing = {
+            key: str(existing_fingerprint.get(key, ""))
+            for key in expected
+        }
+        if normalized_existing != expected:
+            raise RuntimeError(
+                "Embedding 索引契约不匹配: "
+                f"name={name}, 已有={normalized_existing}, 当前={expected}。"
+                "当前初始化不会自动重建索引。"
+                "如果要继续使用现有索引，请切回原来的 Embedding 服务/模型/维度配置；"
+                "如果确认切换模型或端点，请先重建向量索引并重新生成 Embedding。"
+            )
+
     def _update_metadata(self, name: str, hnswlib_id: int, mapping: Tuple[int, int]):
         """更新元数据映射"""
         metadata = self._load_metadata(name)
@@ -582,6 +622,7 @@ class VectorStore:
             "doc_count": self.doc_index.get_current_count(),
             "chunk_count": self.chunk_index.get_current_count(),
             "dim": self.dim,
+            "embedding_fingerprint": self.embedding_fingerprint,
             "M": self.M,
             "ef_search": self.ef_search,
         }
