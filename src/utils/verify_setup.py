@@ -4,6 +4,9 @@
 测试配置、存储层等基础组件是否工作正常
 """
 
+# ruff: noqa: E402
+
+import logging
 import sys
 import tempfile
 from pathlib import Path
@@ -199,21 +202,25 @@ def main():
     try:
         config = get_config()
         with tempfile.TemporaryDirectory(prefix="pkv-verify-") as temp_dir:
-            workspace = _build_verify_workspace(Path(temp_dir))
+            try:
+                workspace = _build_verify_workspace(Path(temp_dir))
 
-            test_config()
-            print(f"\n🧪 状态性验证将在隔离目录执行: {Path(temp_dir)}")
-            test_logger(
-                log_file=workspace["log_file"],
-                log_level=config.log_level,
-            )
-            test_text_processor()
-            test_markdown_store(vault_dir=workspace["vault_dir"])
-            test_sqlite_store(db_path=workspace["db_path"])
-            test_vector_store(
-                index_dir=workspace["vector_index_dir"],
-                dim=config.embedding_dim,
-            )
+                test_config()
+                print(f"\n🧪 状态性验证将在隔离目录执行: {Path(temp_dir)}")
+                test_logger(
+                    log_file=workspace["log_file"],
+                    log_level=config.log_level,
+                )
+                test_text_processor()
+                test_markdown_store(vault_dir=workspace["vault_dir"])
+                test_sqlite_store(db_path=workspace["db_path"])
+                test_vector_store(
+                    index_dir=workspace["vector_index_dir"],
+                    dim=config.embedding_dim,
+                )
+            finally:
+                # Windows 不允许删除仍被 logging handler 占用的临时日志文件。
+                logging.shutdown()
 
         print("\n" + "=" * 60)
         print("✅ 所有测试通过！系统安装正确！")

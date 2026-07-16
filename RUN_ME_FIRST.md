@@ -36,9 +36,9 @@
 ```
 
 **这个脚本会自动完成**:
-- ✅ 创建 Python 3.11 Conda 环境 (`pkv-py311`)
+- ✅ 创建 Python 3.11 Conda 环境 (`py311-private`)
 - ✅ 安装所有依赖包
-- ✅ 创建配置文件 (`.env`)
+- ✅ 创建本机配置文件 (`config/local.yaml`)
 - ✅ 创建数据目录 (`.data/`)
 
 **预计时间**: 3-5 分钟
@@ -46,15 +46,11 @@
 #### Step 2: 配置 API Keys
 
 ```powershell
-# 编辑 .env 文件
-notepad .env
+# 编辑本机私有配置
+notepad config\local.yaml
 ```
 
-填入你的 API Keys:
-```bash
-PKV_LLM_API_KEY=sk-你的-llm-api-key
-PKV_EMBD_API_KEY=sk-你的-embedding-api-key
-```
+在 `ai.llm.api_key` 和 `ai.embedding.api_key` 中填入你的 API Keys。
 
 > **如果你还没有 API Keys**:
 > - LLM: 使用 OpenAI-compatible Chat Completions 服务
@@ -67,8 +63,7 @@ PKV_EMBD_API_KEY=sk-你的-embedding-api-key
 .\scripts\test-conda.ps1
 
 # 或手动运行
-conda activate pkv-py311
-python src\utils\verify_setup.py
+.\scripts\run-windows.ps1 python src\utils\verify_setup.py
 ```
 
 如果看到 `✅ 所有测试通过！系统安装正确！`，就说明成功了！🎉
@@ -87,15 +82,11 @@ python src\utils\verify_setup.py
 ### Step 2: 配置 API Keys
 
 ```powershell
-# 编辑 .env 文件
-notepad .env
+# 编辑本机私有配置
+notepad config\local.yaml
 ```
 
-填入你的 API Keys:
-```bash
-PKV_LLM_API_KEY=sk-你的-llm-api-key
-PKV_EMBD_API_KEY=sk-你的-embedding-api-key
-```
+在 `ai.llm.api_key` 和 `ai.embedding.api_key` 中填入你的 API Keys。
 
 > **如果你还没有 API Keys**:
 > - LLM: 使用 OpenAI-compatible Chat Completions 服务

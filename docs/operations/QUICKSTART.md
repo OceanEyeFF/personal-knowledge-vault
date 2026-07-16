@@ -26,10 +26,10 @@
 - Python 3.11+
 - Git
 
-### 必需 API Keys
+### 必需 API 配置
 
-- `PKV_LLM_API_KEY`：用于摘要、标签、部分 AI 能力
-- `PKV_EMBD_API_KEY`：用于 Embedding
+- `ai.llm.api_key`：用于摘要、标签、部分 AI 能力
+- `ai.embedding.api_key`：用于 Embedding
 
 ---
 
@@ -47,17 +47,20 @@
 - 安装依赖
 - 初始化基础目录
 
-### Step 2：配置环境变量
+### Step 2：配置本机 YAML
 
 ```powershell
-notepad .env
+notepad config/local.yaml
 ```
 
-填入至少以下内容：
+`config/local.yaml` 已被 Git 忽略。填入至少以下内容：
 
-```bash
-PKV_LLM_API_KEY=sk-xxx
-PKV_EMBD_API_KEY=sk-xxx
+```yaml
+ai:
+  llm:
+    api_key: "your-llm-key"
+  embedding:
+    api_key: "your-embedding-key"
 ```
 
 ### Step 3：运行验证
@@ -84,9 +87,10 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-然后配置 `.env` 并运行：
+然后复制并编辑 `config/local.yaml`，再运行：
 
-```bash
+```powershell
+Copy-Item config/config.yaml config/local.yaml
 python src/utils/verify_setup.py
 ```
 
@@ -100,8 +104,8 @@ PKV 当前有三个主要入口。
 
 查看帮助：
 
-```bash
-python src/main.py --help
+```powershell
+.\scripts\run-windows.ps1 python -m src.cli.commands --help
 ```
 
 常用命令：
@@ -219,6 +223,6 @@ macOS / Linux 需要系统编译工具链。
 如果你只是想确认系统可用，最短路径是：
 
 1. 跑安装脚本
-2. 配 `.env`
+2. 配 `config/local.yaml`
 3. 启动 CLI 或 MCP
 4. 归档一条内容再搜索一次

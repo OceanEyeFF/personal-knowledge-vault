@@ -6,6 +6,9 @@
 # 数据存储配置
 # ===========================
 storage:
+  # 数据根目录
+  data_dir: ".data"
+
   # Markdown Vault 目录
   vault_dir: ".data/vault"
 
@@ -23,22 +26,24 @@ storage:
 
 # ===========================
 # AI 服务配置
-# 说明：这里是项目默认值；PKV_LLM_* / PKV_EMBD_* 环境变量会在运行时覆盖对应 API/模型配置。
+# 说明：这里是项目默认值；本机私有值放入 Git 忽略的 config/local.yaml。
 # ===========================
 ai:
   # OpenAI-compatible LLM 配置（摘要、标签、对话分析）
-  # API Key 请使用环境变量 PKV_LLM_API_KEY，不写入本文件。
+  # API Key 请写入 config/local.yaml，不要提交到版本库。
   llm:
+    api_key: ""
     base_url: "https://api.deepseek.com/v1"
     model: "deepseek-chat"
     max_tokens: 2000
     temperature: 0.7
 
   # OpenAI-compatible Embedding 配置
-  # API Key 请使用环境变量 PKV_EMBD_API_KEY，不写入本文件。
+  # API Key 请写入 config/local.yaml，不要提交到版本库。
   # 注意：Embedding 端点/模型/维度是向量索引契约，不是普通偏好项。
   # 更换端点、模型或维度后，必须重建向量索引并重新生成文档/分块 Embedding。
   embedding:
+    api_key: ""
     base_url: "https://api.openai.com/v1"
     model: "text-embedding-3-small"
     dim: 1536
@@ -85,6 +90,8 @@ processors:
   zhihu:
     timeout: 30
     user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    # 登录 Cookie 属于本机敏感配置，仅在 config/local.yaml 中填写。
+    cookie: ""
 
   # 通用网页
   generic:

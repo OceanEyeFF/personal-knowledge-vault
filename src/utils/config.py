@@ -1,31 +1,66 @@
 """
 配置加载器
 
-从 config.yaml 和环境变量加载配置
+从 config.yaml 和本机 local.yaml 加载配置
 """
 
-import os
 import json
+import copy
+import os
 import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional
-from dotenv import load_dotenv
+
+
+def set_yaml_config_value(config_path: Path, key: str, value: Any) -> None:
+    """将值写入 YAML 配置中的点号路径键。"""
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    data: Dict[str, Any] = {}
+    if config_path.exists():
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(loaded, dict):
+            raise ValueError(f"配置文件根节点必须是映射: {config_path}")
+        data = loaded
+
+    parts = key.split(".")
+    if any(not part for part in parts):
+        raise ValueError(f"无效配置键: {key}")
+
+    cursor = data
+    for part in parts[:-1]:
+        child = cursor.get(part)
+        if child is None:
+            child = {}
+            cursor[part] = child
+        if not isinstance(child, dict):
+            raise ValueError(f"配置路径不是映射: {part}")
+        cursor = child
+    cursor[parts[-1]] = value
+
+    config_path.write_text(
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
 
 
 class Config:
     """配置管理器"""
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(
+        self,
+        config_path: Optional[str] = None,
+        local_config_path: Optional[str] = None,
+    ):
         """
         初始化配置管理器
 
         Args:
-            config_path: 配置文件路径，默认为 config/config.yaml
+            config_path: 基础配置文件路径，默认为 config/config.yaml
+            local_config_path: 本机配置文件路径，默认使用 config/local.yaml；
+                显式指定 config_path 时默认不加载本机配置
         """
-        # 加载环境变量
-        load_dotenv()
-
         # 确定配置文件路径
+        use_default_config = config_path is None
         if config_path is None:
             # 获取项目根目录
             project_root = Path(__file__).parent.parent.parent
@@ -38,10 +73,39 @@ class Config:
             raise FileNotFoundError(f"配置文件不存在: {config_path}")
 
         with open(config_path, "r", encoding="utf-8") as f:
-            self._config: Dict[str, Any] = yaml.safe_load(f)
+            base_config = yaml.safe_load(f) or {}
+        if not isinstance(base_config, dict):
+            raise ValueError(f"配置文件根节点必须是映射: {config_path}")
+
+        self._config: Dict[str, Any] = copy.deepcopy(base_config)
+        if local_config_path is None and use_default_config:
+            local_config_path = str(config_path.parent / "local.yaml")
+        self._local_config_path = Path(local_config_path) if local_config_path else None
+
+        if self._local_config_path and self._local_config_path.exists():
+            with open(self._local_config_path, "r", encoding="utf-8") as f:
+                local_config = yaml.safe_load(f) or {}
+            if not isinstance(local_config, dict):
+                raise ValueError(
+                    f"本机配置文件根节点必须是映射: {self._local_config_path}"
+                )
+            self._deep_merge(self._config, local_config)
 
         self._project_root = Path(__file__).parent.parent.parent
         self._resolved_embedding_dim = self._load_persisted_embedding_dim()
+
+    @staticmethod
+    def _deep_merge(target: Dict[str, Any], overrides: Dict[str, Any]) -> None:
+        """将本机配置递归合并到基础配置。"""
+        for key, value in overrides.items():
+            if (
+                key in target
+                and isinstance(target[key], dict)
+                and isinstance(value, dict)
+            ):
+                Config._deep_merge(target[key], value)
+            else:
+                target[key] = copy.deepcopy(value)
 
     def get(self, key: str, default: Any = None) -> Any:
         """
@@ -126,16 +190,7 @@ class Config:
         return merged_config
 
     def get_env(self, key: str, default: Optional[str] = None) -> Optional[str]:
-        """
-        获取环境变量
-
-        Args:
-            key: 环境变量名
-            default: 默认值
-
-        Returns:
-            环境变量值
-        """
+        """读取仅用于运行隔离的进程环境变量，不加载 .env 文件。"""
         return os.getenv(key, default)
 
     @property
@@ -147,7 +202,7 @@ class Config:
     @property
     def data_dir(self) -> Path:
         """数据根目录。"""
-        data_dir_str = self.get_env("DATA_DIR")
+        data_dir_str = self.get_env("DATA_DIR") or self.get("storage.data_dir")
         if data_dir_str:
             return self._project_root / data_dir_str
         return self.db_path.parent.parent
@@ -155,13 +210,19 @@ class Config:
     @property
     def db_path(self) -> Path:
         """SQLite 数据库路径"""
-        db_path_str = self.get_env("DB_PATH") or self.get("storage.db_path", ".data/db/knowledge_vault.db")
+        db_path_str = self.get_env("DB_PATH") or self.get(
+            "storage.db_path", ".data/db/knowledge_vault.db"
+        )
         return self._project_root / db_path_str
 
     @property
     def vector_index_dir(self) -> Path:
         """向量索引目录"""
-        path = self.get_env("VECTOR_STORE_PATH") or self.get("storage.vector_index_dir", ".data/vectors")
+        path = (
+            self.get_env("VECTOR_STORE_PATH")
+            or self.get_env("VECTOR_DIR")
+            or self.get("storage.vector_index_dir", ".data/vectors")
+        )
         return self._project_root / path
 
     @property
@@ -200,25 +261,17 @@ class Config:
     @property
     def llm_api_key(self) -> Optional[str]:
         """OpenAI-compatible LLM API Key。"""
-        return self.get_env("PKV_LLM_API_KEY")
+        return self.get("ai.llm.api_key")
 
     @property
     def llm_base_url(self) -> str:
         """OpenAI-compatible LLM API Base URL。"""
-        return (
-            self.get_env("PKV_LLM_BASE_URL")
-            or self.get("ai.llm.base_url")
-            or "https://api.deepseek.com/v1"
-        )
+        return self.get("ai.llm.base_url") or "https://api.deepseek.com/v1"
 
     @property
     def llm_model(self) -> str:
         """OpenAI-compatible LLM 模型名称。"""
-        return (
-            self.get_env("PKV_LLM_MODEL")
-            or self.get("ai.llm.model")
-            or "deepseek-chat"
-        )
+        return self.get("ai.llm.model") or "deepseek-chat"
 
     @property
     def deepseek_api_key(self) -> Optional[str]:
@@ -238,25 +291,17 @@ class Config:
     @property
     def embd_api_key(self) -> Optional[str]:
         """OpenAI-compatible Embedding API Key。"""
-        return self.get_env("PKV_EMBD_API_KEY")
+        return self.get("ai.embedding.api_key")
 
     @property
     def embd_base_url(self) -> str:
         """OpenAI-compatible Embedding API Base URL。"""
-        return (
-            self.get_env("PKV_EMBD_BASE_URL")
-            or self.get("ai.embedding.base_url")
-            or "https://api.openai.com/v1"
-        )
+        return self.get("ai.embedding.base_url") or "https://api.openai.com/v1"
 
     @property
     def embd_model(self) -> str:
         """OpenAI-compatible Embedding 模型名称。"""
-        return (
-            self.get_env("PKV_EMBD_MODEL")
-            or self.get("ai.embedding.model")
-            or "text-embedding-3-small"
-        )
+        return self.get("ai.embedding.model") or "text-embedding-3-small"
 
     @property
     def openai_api_key(self) -> Optional[str]:
@@ -276,9 +321,6 @@ class Config:
     @property
     def embedding_dim_raw(self) -> Any:
         """Embedding 维度原始配置值。"""
-        env_val = self.get_env("PKV_EMBD_DIM")
-        if env_val is not None and env_val != "":
-            return env_val
         return self.get("ai.embedding.dim", 1536)
 
     @property
@@ -340,7 +382,7 @@ class Config:
     @property
     def zhihu_cookie(self) -> Optional[str]:
         """知乎 Cookie（可选，用于绕过登录墙获取完整内容）"""
-        return self.get_env("ZHIHU_COOKIE")
+        return self.get("processors.zhihu.cookie")
 
     @property
     def log_level(self) -> str:

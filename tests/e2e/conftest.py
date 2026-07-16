@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 """E2E pytest fixtures for MCP search tests."""
 
 from __future__ import annotations
@@ -10,12 +12,9 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List
 
 import pytest
-from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
-
-load_dotenv()
 
 from mcp import StdioServerParameters
 from mcp.client.session import ClientSession
@@ -346,9 +345,10 @@ def sample_knowledge_db(test_env: TestEnv) -> Dict[str, object]:
 
     vector_enabled = False
     vector_error = ""
-    if os.getenv("PKV_EMBD_API_KEY"):
+    from src.utils.config import get_config
+
+    if os.getenv("PKV_RUN_LIVE") == "1" and get_config().embd_api_key:
         try:
-            from src.utils.config import get_config
             from src.ai.embedder import Embedder
             from src.storage.vector_store import VectorStore
 

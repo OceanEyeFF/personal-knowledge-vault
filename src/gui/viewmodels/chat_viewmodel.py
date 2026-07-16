@@ -239,7 +239,7 @@ class ChatViewModel(QObject):
             return
 
         if not self.api_key:
-            self.error_occurred.emit("未配置 PKV_LLM_API_KEY，请检查 .env 文件")
+            self.error_occurred.emit("未配置 LLM API Key，请检查 config/local.yaml")
             return
 
         try:

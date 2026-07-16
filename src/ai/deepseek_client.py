@@ -3,7 +3,7 @@ OpenAI-compatible LLM API 客户端
 
 封装 OpenAI-compatible Chat Completions API 调用，提供摘要生成和标签提取功能。
 
-注意：DeepSeekClient 是历史类名，当前支持由 PKV_LLM_* 配置的兼容端点。
+注意：DeepSeekClient 是历史类名，当前支持由 YAML 配置的兼容端点。
 """
 
 import json
@@ -43,7 +43,7 @@ class DeepSeekClient:
 
         self.api_key = api_key or config.llm_api_key
         if not self.api_key:
-            raise ValueError("LLM API Key 未配置，请设置环境变量 PKV_LLM_API_KEY")
+            raise ValueError("LLM API Key 未配置，请检查 config/local.yaml")
 
         self.base_url = (base_url or config.llm_base_url).rstrip("/")
         self.model = model or config.llm_model

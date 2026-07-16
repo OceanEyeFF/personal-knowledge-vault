@@ -36,8 +36,8 @@ class WechatProcessor(BaseProcessor):
         """
         config = get_config()
         self.timeout = timeout
-        self.user_agent = user_agent or config.get_env(
-            "USER_AGENT",
+        self.user_agent = user_agent or config.get(
+            "processors.wechat.user_agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         )

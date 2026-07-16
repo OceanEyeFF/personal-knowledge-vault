@@ -561,7 +561,7 @@ class VectorStore:
         if existing_fingerprint is None:
             logger.warning(
                 "%s 缺少 Embedding 契约指纹，按旧索引兼容加载；"
-                "如已切换 PKV_EMBD_BASE_URL/PKV_EMBD_MODEL/PKV_EMBD_DIM，"
+                "如已切换 config/local.yaml 中的 Embedding 端点、模型或维度，"
                 "请重建向量索引并重新生成 Embedding",
                 name,
             )

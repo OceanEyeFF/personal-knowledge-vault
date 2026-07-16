@@ -9,11 +9,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
 
 import pytest
-from dotenv import load_dotenv
 
 from src.storage.sqlite_store import SQLiteStore
-
-load_dotenv()
+from src.utils.config import get_config
 
 
 def _parse_tool_content(result) -> Dict[str, Any]:
@@ -58,12 +56,15 @@ def _assert_search_payload(data: Dict[str, Any]) -> None:
 
 
 def _has_archive_api_keys() -> bool:
-    return bool(os.getenv("PKV_LLM_API_KEY")) and bool(os.getenv("PKV_EMBD_API_KEY"))
+    if os.getenv("PKV_RUN_LIVE") != "1":
+        return False
+    config = get_config()
+    return bool(config.llm_api_key) and bool(config.embd_api_key)
 
 
 @pytest.mark.skipif(
     not _has_archive_api_keys(),
-    reason="需要配置 PKV_LLM_API_KEY 和 PKV_EMBD_API_KEY",
+    reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",
 )
 @pytest.mark.asyncio
 async def test_archive_url_success(mcp_server, test_env):
@@ -137,7 +138,7 @@ async def test_archive_url_invalid_format(mcp_server, test_env):
 
 @pytest.mark.skipif(
     not _has_archive_api_keys(),
-    reason="需要配置 PKV_LLM_API_KEY 和 PKV_EMBD_API_KEY",
+    reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",
 )
 @pytest.mark.asyncio
 async def test_archive_text_success(mcp_server, test_env):
@@ -169,7 +170,7 @@ async def test_archive_text_success(mcp_server, test_env):
 
 @pytest.mark.skipif(
     not _has_archive_api_keys(),
-    reason="需要配置 PKV_LLM_API_KEY 和 PKV_EMBD_API_KEY",
+    reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",
 )
 @pytest.mark.asyncio
 async def test_archive_text_with_title(mcp_server):
@@ -204,7 +205,7 @@ async def test_archive_text_length_limit(mcp_server):
 
 @pytest.mark.skipif(
     not _has_archive_api_keys(),
-    reason="需要配置 PKV_LLM_API_KEY 和 PKV_EMBD_API_KEY",
+    reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",
 )
 @pytest.mark.asyncio
 async def test_archive_then_search(mcp_server):

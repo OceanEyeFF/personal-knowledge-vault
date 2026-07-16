@@ -11,11 +11,9 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 import pytest
-from dotenv import load_dotenv
 
 from src.storage.sqlite_store import SQLiteStore
-
-load_dotenv()
+from src.utils.config import get_config
 
 
 def _parse_tool_content(result) -> Dict[str, Any]:
@@ -48,7 +46,9 @@ def _parse_time(value: str) -> datetime:
 
 
 def _has_embedding_key() -> bool:
-    return bool(os.getenv("PKV_EMBD_API_KEY"))
+    if os.getenv("PKV_RUN_LIVE") != "1":
+        return False
+    return bool(get_config().embd_api_key)
 
 
 async def _call_search(session, payload: Dict[str, Any], timeout_s: float = 60.0):

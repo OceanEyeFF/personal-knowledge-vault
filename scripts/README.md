@@ -18,12 +18,12 @@
 
 **功能**:
 - ✅ 检查 Conda 是否安装
-- ✅ 创建 Python 3.11 Conda 环境 (pkv-py311)
-- ✅ 激活环境
+- ✅ 创建 Python 3.11 Conda 环境 (`py311-private`)
+- ✅ 通过 `conda run` 固定目标环境
 - ✅ 升级 pip
 - ✅ 安装所有依赖包
 - ✅ 验证关键依赖
-- ✅ 创建 .env 配置文件
+- ✅ 创建 Git 忽略的 `config/local.yaml`
 - ✅ 创建数据目录
 
 **优势**:
@@ -44,7 +44,7 @@
 
 **功能**:
 - ✅ 检查 Conda 环境是否存在
-- ✅ 激活 pkv-py311 环境
+- ✅ 通过 `run-windows.ps1` 使用 `py311-private`
 - ✅ 运行 `verify_setup.py`
 - ✅ 显示测试结果
 
@@ -63,10 +63,10 @@
    .\scripts\setup-conda.ps1
    ```
 
-3. **编辑 .env 文件**:
+3. **编辑本机配置**:
    ```powershell
-   notepad .env
-   # 填入你的 PKV_LLM_API_KEY 和 PKV_EMBD_API_KEY
+   notepad config\local.yaml
+   # 填入 ai.llm.api_key 和 ai.embedding.api_key
    ```
 
 4. **运行验证测试**:
@@ -74,9 +74,9 @@
    .\scripts\test-conda.ps1
    ```
 
-5. **每次使用前激活环境**:
+5. **使用统一 Windows 运行器**:
    ```powershell
-   conda activate pkv-py311
+   .\scripts\run-windows.ps1 python -m src.cli.commands --help
    ```
 
 ### Legacy 方案 (不推荐)
@@ -186,9 +186,10 @@ notepad .env.test
 # 数据库路径（使用测试专用目录）
 DB_PATH=.data-test/db/knowledge_vault.db
 
-# 测试用 API Keys（可选）
-PKV_LLM_API_KEY=sk-test-your-key
-PKV_EMBD_API_KEY=sk-test-your-key
+# 完整隔离数据、Vault 与向量目录
+DATA_DIR=.data-test
+VAULT_DIR=.data-test/vault
+VECTOR_DIR=.data-test/vectors
 
 # 日志级别（DEBUG 获取详细日志）
 LOG_LEVEL=DEBUG
@@ -272,8 +273,8 @@ python -m pip install --upgrade pip
 # 4. 安装依赖
 python -m pip install -r requirements.txt
 
-# 5. 复制配置文件
-copy .env.example .env
+# 5. 复制本机配置文件
+copy config\config.yaml config\local.yaml
 
 # 6. 创建数据目录
 mkdir .data\db, .data\vectors, .data\vault, .data\logs, .data\tmp
@@ -287,10 +288,10 @@ python src\utils\verify_setup.py
 ## 💡 提示
 
 - 🔧 首次安装可能需要 3-5 分钟
-- 📦 Conda 环境名称: `pkv-py311` (Python 3.11)
-- 🔑 记得编辑 `.env` 文件填入 API Keys
+- 📦 Conda 环境名称: `py311-private` (Python 3.11)
+- 🔑 记得编辑 `config/local.yaml` 填入 API Keys
 - 📝 运行测试确保一切正常
-- 🌟 每次使用前需要激活环境: `conda activate pkv-py311`
+- 🌟 推荐通过 `scripts/run-windows.ps1` 运行命令
 
 ---
 

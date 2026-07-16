@@ -58,7 +58,7 @@ class SettingsView(QWidget):
     """应用设置视图。
 
     包含 API 密钥配置、显示设置、检索设置和数据目录信息。
-    设置变更通过 SettingsViewModel 持久化到 .env 文件和配置系统。
+    设置变更通过 SettingsViewModel 持久化到 config/local.yaml。
     主题变更通过 theme_change_requested 信号通知 MainWindow 应用。
 
     Signals:

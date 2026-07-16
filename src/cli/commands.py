@@ -8,17 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import click
+import yaml
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from src.utils.config import Config
+from src.utils.config import Config, set_yaml_config_value
 from src.workflow.engine import WorkflowEngine
 from src.retrieval.query_router import QueryRouter
 from src.retrieval.bm25_retriever import BM25Retriever
@@ -39,6 +39,22 @@ CONFIG_KEY_ALIASES = {
     "vector_index_dir": lambda config: config.vector_index_dir,
     "log_dir": lambda config: config.log_dir,
     "tmp_dir": lambda config: config.tmp_dir,
+}
+
+CONFIG_FILE_KEY_ALIASES = {
+    "PKV_LLM_BASE_URL": "ai.llm.base_url",
+    "PKV_LLM_API_KEY": "ai.llm.api_key",
+    "PKV_LLM_MODEL": "ai.llm.model",
+    "PKV_EMBD_BASE_URL": "ai.embedding.base_url",
+    "PKV_EMBD_API_KEY": "ai.embedding.api_key",
+    "PKV_EMBD_MODEL": "ai.embedding.model",
+    "PKV_EMBD_DIM": "ai.embedding.dim",
+}
+
+SENSITIVE_CONFIG_KEYS = {
+    "ai.llm.api_key",
+    "ai.embedding.api_key",
+    "processors.zhihu.cookie",
 }
 
 
@@ -243,55 +259,18 @@ def _render_entry_panel(entry: Dict[str, Any], raw: bool = False) -> Panel:
     return Panel(text, title=f"知识条目 #{entry.get('knowledge_id', '-')}")
 
 
-def _normalize_env_value(value: str) -> str:
-    if value is None:
-        return ""
-    trimmed = value.strip()
-    if not trimmed:
-        return ""
-    if any(ch.isspace() for ch in trimmed) or "#" in trimmed:
-        if not (trimmed.startswith("\"") and trimmed.endswith("\"")):
-            return f"\"{trimmed}\""
-    return trimmed
-
-
-def _set_env_value(env_path: Path, key: str, value: str) -> None:
-    env_path.parent.mkdir(parents=True, exist_ok=True)
-    lines: List[str] = []
-    if env_path.exists():
-        lines = env_path.read_text(encoding="utf-8").splitlines()
-
-    key_pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
-    replaced = False
-    normalized_value = _normalize_env_value(value)
-
-    new_lines: List[str] = []
-    for line in lines:
-        if key_pattern.match(line):
-            new_lines.append(f"{key}={normalized_value}")
-            replaced = True
-        else:
-            new_lines.append(line)
-
-    if not replaced:
-        if new_lines and new_lines[-1].strip():
-            new_lines.append("")
-        new_lines.append(f"{key}={normalized_value}")
-
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+def _set_config_value(config_path: Path, key: str, value: str) -> None:
+    """写入本机 YAML 配置中的点号路径键。"""
+    parsed_value = yaml.safe_load(value) if value.strip() else ""
+    set_yaml_config_value(config_path, key, parsed_value)
 
 
 def _resolve_config_value(config: Config, key: str) -> Any:
     """兼容旧键名与点号键名的配置读取。"""
+    key = CONFIG_FILE_KEY_ALIASES.get(key, key)
     alias_getter = CONFIG_KEY_ALIASES.get(key)
     if alias_getter is not None:
         return alias_getter(config)
-    if "." in key:
-        return config.get(key)
-
-    env_value = config.get_env(key)
-    if env_value is not None:
-        return env_value
     return config.get(key)
 
 
@@ -300,9 +279,9 @@ def _friendly_hint(message: str) -> None:
     if "processor" in msg or "抓取" in msg or "url" in msg:
         console.print("[yellow]提示: 请检查 URL 是否正确，或稍后重试[/yellow]")
     if "openai" in msg or "embedding" in msg or "openai_api_key" in msg:
-        console.print("[yellow]提示: 请检查 PKV_EMBD_API_KEY 配置[/yellow]")
+        console.print("[yellow]提示: 请检查 config/local.yaml 中的 Embedding 配置[/yellow]")
     if "deepseek" in msg or "llm" in msg or "deepseek_api_key" in msg:
-        console.print("[yellow]提示: 请检查 PKV_LLM_API_KEY 配置[/yellow]")
+        console.print("[yellow]提示: 请检查 config/local.yaml 中的 LLM 配置[/yellow]")
 
 
 @click.group()
@@ -656,13 +635,17 @@ def config_get(key: str) -> None:
     """查询单个配置。"""
     try:
         config = _load_config()
-        value = _resolve_config_value(config, key)
+        resolved_key = CONFIG_FILE_KEY_ALIASES.get(key, key)
+        value = _resolve_config_value(config, resolved_key)
 
         if value is None:
             console.print(f"[yellow]警告: 未找到配置: {key}[/yellow]")
             sys.exit(1)
 
-        console.print(str(value))
+        if resolved_key in SENSITIVE_CONFIG_KEYS:
+            console.print("已设置" if value else "未设置")
+        else:
+            console.print(str(value))
 
     except Exception as exc:
         console.print(f"[red]错误: 配置查询失败: {exc}[/red]")
@@ -673,11 +656,14 @@ def config_get(key: str) -> None:
 @click.argument("key")
 @click.argument("value")
 def config_set(key: str, value: str) -> None:
-    """修改 .env 配置。"""
+    """修改本机私有 YAML 配置。"""
     try:
-        env_path = _project_root() / ".env"
-        _set_env_value(env_path, key, value)
-        console.print(f"[green]成功: 已更新 {key} 到 .env[/green]")
+        resolved_key = CONFIG_FILE_KEY_ALIASES.get(key, key)
+        local_config_path = _project_root() / "config" / "local.yaml"
+        _set_config_value(local_config_path, resolved_key, value)
+        console.print(
+            f"[green]成功: 已更新 {resolved_key} 到 config/local.yaml[/green]"
+        )
 
     except Exception as exc:
         console.print(f"[red]错误: 配置更新失败: {exc}[/red]")

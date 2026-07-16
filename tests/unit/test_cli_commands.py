@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import pytest
+import yaml
 from click.testing import CliRunner
 from rich.panel import Panel
 from rich.table import Table
@@ -528,15 +529,18 @@ def test_config_set(
     console_spy,
     tmp_path: Path,
 ) -> None:
-    """config set should update the .env file."""
+    """config set should update the machine-local YAML file."""
     mocker.patch.object(commands, "_project_root", return_value=tmp_path)
 
-    response = runner.invoke(commands.cli, ["config", "set", "TEST_KEY", "test-value"])
+    response = runner.invoke(
+        commands.cli, ["config", "set", "ai.llm.model", "test-model"]
+    )
 
     assert response.exit_code == 0
-    env_path = tmp_path / ".env"
-    assert env_path.exists()
-    assert "TEST_KEY=test-value" in env_path.read_text(encoding="utf-8")
+    local_path = tmp_path / "config" / "local.yaml"
+    assert local_path.exists()
+    data = yaml.safe_load(local_path.read_text(encoding="utf-8"))
+    assert data["ai"]["llm"]["model"] == "test-model"
 
 
 def test_stats_command(

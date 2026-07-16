@@ -6,7 +6,7 @@
 - 密码模式切换
 - 主题变更信号
 
-测试策略：Mock SettingsViewModel 的依赖（Config / .env），
+测试策略：Mock SettingsViewModel 的依赖（Config / config/local.yaml），
 验证 UI 组件结构和交互逻辑。
 """
 
@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+import yaml
 from PySide6.QtWidgets import QComboBox, QLineEdit, QPushButton
 
 # 确保项目根目录在 sys.path 中
@@ -209,17 +210,15 @@ class TestSettingsViewModel:
             assert "openai_api_key" in settings
             assert "search_strategy" in settings
 
-    def test_save_writes_env_file(self, tmp_path, mock_config):
-        """save_settings 写入 .env 文件。"""
-        env_file = tmp_path / ".env"
-        env_file.write_text("# test\nPKV_LLM_API_KEY=old-key\n", encoding="utf-8")
+    def test_save_writes_local_yaml(self, tmp_path, mock_config):
+        """save_settings 写入 config/local.yaml。"""
+        local_file = tmp_path / "local.yaml"
 
         with patch("src.gui.viewmodels.settings_viewmodel.get_config", return_value=mock_config):
             from src.gui.viewmodels.settings_viewmodel import SettingsViewModel
             vm = SettingsViewModel()
 
-            # Mock _find_env_file 返回临时 .env 路径
-            with patch.object(vm, "_find_env_file", return_value=env_file):
+            with patch.object(vm, "_find_local_config_file", return_value=local_file):
                 # Mock 重置 config 单例
                 with patch("src.gui.viewmodels.settings_viewmodel.config_module", create=True):
                     import src.utils.config as config_mod
@@ -232,22 +231,19 @@ class TestSettingsViewModel:
                     finally:
                         config_mod._config_instance = original
 
-            # 验证文件内容已更新
-            content = env_file.read_text(encoding="utf-8")
-            assert "PKV_LLM_API_KEY=sk-new-key" in content
-            assert "PKV_EMBD_API_KEY=sk-openai-new" in content
-            assert "sk-new-key" in content
+            data = yaml.safe_load(local_file.read_text(encoding="utf-8"))
+            assert data["ai"]["llm"]["api_key"] == "sk-new-key"
+            assert data["ai"]["embedding"]["api_key"] == "sk-openai-new"
 
     def test_save_emits_success_signal(self, tmp_path, mock_config, qtbot):
         """保存成功后发射 settings_saved 信号。"""
-        env_file = tmp_path / ".env"
-        env_file.write_text("", encoding="utf-8")
+        local_file = tmp_path / "local.yaml"
 
         with patch("src.gui.viewmodels.settings_viewmodel.get_config", return_value=mock_config):
             from src.gui.viewmodels.settings_viewmodel import SettingsViewModel
             vm = SettingsViewModel()
 
-            with patch.object(vm, "_find_env_file", return_value=env_file):
+            with patch.object(vm, "_find_local_config_file", return_value=local_file):
                 import src.utils.config as config_mod
                 original = getattr(config_mod, "_config_instance", None)
                 try:

@@ -31,7 +31,7 @@ _LOGIN_WALL_MARKERS = [
 class ZhihuProcessor(BaseProcessor):
     """Processor for Zhihu questions and posts.
 
-    支持可选的 Cookie 注入（通过环境变量 ZHIHU_COOKIE 配置），
+    支持可选的 Cookie 注入（通过 config/local.yaml 配置），
     用于绕过知乎登录墙获取完整内容。
     """
 
@@ -45,8 +45,8 @@ class ZhihuProcessor(BaseProcessor):
         """
         config = get_config()
         self.timeout = timeout
-        self.user_agent = user_agent or config.get_env(
-            "USER_AGENT",
+        self.user_agent = user_agent or config.get(
+            "processors.zhihu.user_agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         )
@@ -77,19 +77,19 @@ class ZhihuProcessor(BaseProcessor):
             if self._cookie_str:
                 logger.warning(
                     "⚠️ 知乎登录墙检测：已配置 Cookie 但仍被拦截，Cookie 可能已过期。"
-                    "请重新从浏览器复制 Cookie 到 .env 文件的 ZHIHU_COOKIE 配置项"
+                    "请重新从浏览器复制 Cookie 到 config/local.yaml 的 processors.zhihu.cookie"
                 )
             else:
                 logger.warning(
                     "⚠️ 知乎登录墙检测：该页面需要登录才能查看完整内容。\n"
                     "解决方法：\n"
-                    "  1. 在 .env 文件中配置 ZHIHU_COOKIE（从浏览器复制登录 Cookie）\n"
+                    "  1. 在 config/local.yaml 中配置 processors.zhihu.cookie\n"
                     "  2. 或者直接复制页面文本，使用「文本归档」功能\n"
-                    "详见 .env.example 中的 ZHIHU_COOKIE 说明"
+                    "可先复制 config/config.yaml 为 config/local.yaml"
                 )
             raise ValueError(
                 "知乎登录墙：该页面需要登录才能查看完整内容。"
-                "请配置 ZHIHU_COOKIE 环境变量或使用文本归档功能"
+                "请配置 processors.zhihu.cookie 或使用文本归档功能"
             )
 
         soup = BeautifulSoup(html, "lxml")

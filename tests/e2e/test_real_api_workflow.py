@@ -1,7 +1,7 @@
 """端到端测试 - 使用真实 API 进行完整工作流测试。
 
 ⚠️ 注意：
-1. 此测试需要有效的 PKV_LLM_API_KEY 和 PKV_EMBD_API_KEY
+1. 此测试需要 PKV_RUN_LIVE=1，并在 config/local.yaml 配置有效 API Key
 2. 会产生真实的 API 调用费用（预计 <$0.01）
 3. 需要网络连接
 
@@ -16,22 +16,24 @@ from __future__ import annotations
 
 import os
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
-from dotenv import load_dotenv
-
-# 加载 .env 文件
-load_dotenv()
+from src.utils.config import get_config
 
 
 def has_api_keys() -> bool:
     """检查是否配置了 API Keys。"""
-    return bool(os.getenv("PKV_LLM_API_KEY")) and bool(os.getenv("PKV_EMBD_API_KEY"))
+    if os.getenv("PKV_RUN_LIVE") != "1":
+        return False
+    config = get_config()
+    return bool(config.llm_api_key) and bool(config.embd_api_key)
 
 
-@pytest.mark.skipif(not has_api_keys(), reason="需要配置 PKV_LLM_API_KEY 和 PKV_EMBD_API_KEY")
+@pytest.mark.skipif(
+    not has_api_keys(),
+    reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",
+)
 class TestRealAPIWorkflow:
     """真实 API 端到端测试。"""
 

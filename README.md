@@ -118,7 +118,7 @@ personal-knowledge-vault/
 ├── README.md                          # 项目说明
 ├── CLAUDE.md                          # AI 协作上下文（根级索引）
 ├── RUN_ME_FIRST.md                    # 快速开始指南
-├── .env.example                       # 环境变量模板
+├── config/config.yaml                 # 默认配置，可复制为本机配置
 ├── requirements.txt                   # Python 依赖
 │
 ├── src/                               # 源代码 (40+ 个文件)
@@ -239,16 +239,14 @@ cd personal-knowledge-vault
 # 2️⃣ 运行自动安装脚本（创建 Python 3.11 环境 + 安装依赖）
 .\scripts\setup-conda.ps1
 
-# 3️⃣ 配置 API Keys
-cp .env.example .env
-notepad .env  # 填入你的 PKV_LLM_API_KEY 和 PKV_EMBD_API_KEY
+# 3️⃣ 配置 API Keys（安装脚本已创建且 Git 已忽略 local.yaml）
+notepad config/local.yaml
 
 # ✅ 验证安装
 .\scripts\test-conda.ps1
 
 # 🎉 开始使用
-conda activate pkv-py311
-python src/main.py --help
+.\scripts\run-windows.ps1 python -m src.cli.commands --help
 ```
 
 ### 📚 详细指南
@@ -505,18 +503,18 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 
 **快速测试**:
 
-```bash
-# 激活环境
-conda activate pkv-py311
+```powershell
+# 统一通过 Windows 运行器进入 py311-private
+.\scripts\run-windows.ps1 python -m src.cli.commands --help
 
 # 运行所有单元测试
-pytest tests/unit/ -v
+.\scripts\run-windows.ps1 pytest tests/unit/ -v
 
 # 运行特定模块测试
-pytest tests/unit/test_processors_*.py -v
+.\scripts\run-windows.ps1 pytest tests/unit/test_processors_*.py -v
 
 # 代码覆盖率
-pytest tests/unit/ --cov=src --cov-report=term-missing
+.\scripts\run-windows.ps1 pytest tests/unit/ --cov=src --cov-report=term-missing
 
 # 验证环境
 python src/utils/verify_setup.py

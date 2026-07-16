@@ -43,10 +43,15 @@ env/
 .env.*.local
 .env.test
 
+# Machine-local configuration (may contain API keys)
+config/local.yaml
+
 # Data Directory (Generated at Runtime)
 .data/
 .data-test/
+.data_test/
 .data-backup/
+.migration/
 pkv_index.db
 pkv_vectors/
 
