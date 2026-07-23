@@ -15,18 +15,34 @@ from typing import Any, Dict, Optional
 
 from PySide6.QtCore import QObject, Signal
 
-from src.utils.config import get_config, set_yaml_config_value
+from src.utils.config import (
+    get_config,
+    redact_url_credentials,
+    set_yaml_config_values,
+    url_contains_credentials,
+)
 
 logger = logging.getLogger("pkv.gui.viewmodels.settings")
 
-# GUI 字段名保留兼容，持久化目标统一为 YAML 点号键。
+# GUI 字段名与 YAML 配置按能力命名，避免绑定具体供应商。
 _CONFIG_KEY_MAP: Dict[str, str] = {
-    "deepseek_api_key": "ai.llm.api_key",
-    "deepseek_base_url": "ai.llm.base_url",
-    "openai_api_key": "ai.embedding.api_key",
-    "openai_base_url": "ai.embedding.base_url",
+    "llm_api_key": "ai.llm.api_key",
+    "llm_base_url": "ai.llm.base_url",
+    "embedding_api_key": "ai.embedding.api_key",
+    "embedding_base_url": "ai.embedding.base_url",
     "search_strategy": "retrieval.default_strategy",
 }
+_BASE_URL_SETTING_KEYS = {"llm_base_url", "embedding_base_url"}
+_HIDDEN_URL_MARKER = "已隐藏"
+_UNDISPLAYABLE_URL_PLACEHOLDER = "已设置（URL 格式不可显示）"
+_CREDENTIAL_URL_ERROR = (
+    "Base URL 含有认证信息，不能在普通设置界面中编辑；"
+    "请直接编辑 Git 已忽略的 config/local.yaml"
+)
+_REDACTED_URL_ERROR = (
+    "Base URL 包含脱敏占位符，未保存；"
+    "请输入不含认证信息的完整 URL，或直接编辑 Git 已忽略的 config/local.yaml"
+)
 
 
 class SettingsViewModel(QObject):
@@ -50,6 +66,7 @@ class SettingsViewModel(QObject):
             parent: Qt 父对象。
         """
         super().__init__(parent)
+        self._protected_base_url_displays: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # 公开接口
@@ -62,19 +79,25 @@ class SettingsViewModel(QObject):
 
         Returns:
             设置字典，包含以下键:
-            - deepseek_api_key: LLM API Key（旧 UI 字段名）
-            - deepseek_base_url: LLM API Base URL（旧 UI 字段名）
-            - openai_api_key: Embedding API Key（旧 UI 字段名）
-            - openai_base_url: Embedding API Base URL（旧 UI 字段名）
+            - llm_api_key: LLM API Key
+            - llm_base_url: LLM API Base URL
+            - embedding_api_key: Embedding API Key
+            - embedding_base_url: Embedding API Base URL
             - theme: 当前主题（从 QSettings 读取，此处返回空字符串占位）
             - search_strategy: 检索策略（auto / bm25 / vector / hybrid）
         """
         config = get_config()
+        llm_base_url = self._base_url_for_display(
+            "llm_base_url", config.llm_base_url or ""
+        )
+        embedding_base_url = self._base_url_for_display(
+            "embedding_base_url", config.embd_base_url or ""
+        )
         return {
-            "deepseek_api_key": config.llm_api_key or "",
-            "deepseek_base_url": config.llm_base_url or "",
-            "openai_api_key": config.embd_api_key or "",
-            "openai_base_url": config.embd_base_url or "",
+            "llm_api_key": config.llm_api_key or "",
+            "llm_base_url": llm_base_url,
+            "embedding_api_key": config.embd_api_key or "",
+            "embedding_base_url": embedding_base_url,
             "theme": "",  # 主题由 MainWindow.current_theme 管理
             "search_strategy": config.get("retrieval.default_strategy", "auto") or "auto",
         }
@@ -96,6 +119,19 @@ class SettingsViewModel(QObject):
             for setting_key, config_key in _CONFIG_KEY_MAP.items():
                 if setting_key in settings:
                     value = str(settings[setting_key]).strip()
+                    if setting_key in _BASE_URL_SETTING_KEYS:
+                        protected_display = self._protected_base_url_displays.get(
+                            setting_key
+                        )
+                        if protected_display is not None and value == protected_display:
+                            # 脱敏展示未被编辑，保留 local.yaml 中的原始 endpoint。
+                            continue
+                        if _HIDDEN_URL_MARKER in value or (
+                            value == _UNDISPLAYABLE_URL_PLACEHOLDER
+                        ):
+                            raise ValueError(_REDACTED_URL_ERROR)
+                        if url_contains_credentials(value):
+                            raise ValueError(_CREDENTIAL_URL_ERROR)
                     updates[config_key] = value
 
             if not updates:
@@ -121,6 +157,22 @@ class SettingsViewModel(QObject):
     # 内部方法
     # ------------------------------------------------------------------
 
+    def _base_url_for_display(self, setting_key: str, raw_value: str) -> str:
+        """返回可放入普通文本框的 endpoint，并记录受保护展示快照。"""
+        self._protected_base_url_displays.pop(setting_key, None)
+        if not raw_value:
+            return ""
+
+        redacted = redact_url_credentials(raw_value)
+        if redacted is None:
+            display_value = _UNDISPLAYABLE_URL_PLACEHOLDER
+        else:
+            display_value = redacted
+
+        if display_value != raw_value:
+            self._protected_base_url_displays[setting_key] = display_value
+        return display_value
+
     def _find_local_config_file(self) -> Path:
         """返回本机私有配置文件路径。
 
@@ -138,6 +190,5 @@ class SettingsViewModel(QObject):
             updates: YAML 点号键到值的映射。
         """
         config_path = self._find_local_config_file()
-        for key, value in updates.items():
-            set_yaml_config_value(config_path, key, value)
+        set_yaml_config_values(config_path, updates)
         logger.debug("本机配置文件已更新: %s", config_path)

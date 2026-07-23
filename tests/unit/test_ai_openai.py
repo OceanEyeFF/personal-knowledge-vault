@@ -2,10 +2,13 @@
 OpenAI API 客户端单元测试
 """
 
+import logging
 from unittest.mock import Mock, patch, call
 
+import httpx
 import numpy as np
 import pytest
+from openai import DefaultHttpxClient as SDKDefaultHttpxClient
 
 from src.ai.openai_client import OpenAIClient
 
@@ -73,6 +76,138 @@ class TestOpenAIClientInit:
             assert client.dimensions == 1024
             assert client.timeout == 60.0
             assert client.max_retries == 5
+
+    def test_init_log_redacts_endpoint_credentials(self, mock_config, caplog):
+        """初始化 INFO 日志不得写入 endpoint 凭据。"""
+        endpoint = (
+            "https://log-user:log-password@embd.example/v1;pass=log-matrix"
+            "?api_key=log-query&passwd=log-passwd&session=log-session"
+            "&jsessionidsso=log-jsession-sso&phpsessid=log-php-session"
+            "#code=log-fragment&pwd=log-pwd"
+        )
+
+        with patch('src.ai.openai_client.OpenAI'), caplog.at_level(
+            "INFO", logger="src.ai.openai_client"
+        ):
+            OpenAIClient(base_url=endpoint)
+
+        assert "embd.example" in caplog.text
+        assert "log-user" not in caplog.text
+        assert "log-password" not in caplog.text
+        assert "log-query" not in caplog.text
+        assert "log-fragment" not in caplog.text
+        assert "log-matrix" not in caplog.text
+        assert "log-passwd" not in caplog.text
+        assert "log-pwd" not in caplog.text
+        assert "log-session" not in caplog.text
+        assert "log-jsession-sso" not in caplog.text
+        assert "log-php-session" not in caplog.text
+
+    def test_init_splits_base_url_query_from_sdk_path_and_drops_fragment(
+        self, mock_config
+    ):
+        """真实 SDK 请求保留重复/空 query，资源 path 与 fragment 语义正确。"""
+        endpoint = (
+            "https://embd.example/v1?region_code=north&region_code=south"
+            "&flag=&routing_key=primary#client-only"
+        )
+        request_urls = []
+
+        def handle_request(request: httpx.Request) -> httpx.Response:
+            request_urls.append(str(request.url))
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"embedding": [0.1] * 1536, "index": 0, "object": "embedding"}
+                    ],
+                    "model": "text-embedding-3-small",
+                    "object": "list",
+                    "usage": {"prompt_tokens": 1, "total_tokens": 1},
+                },
+            )
+
+        def build_http_client(**kwargs):
+            return SDKDefaultHttpxClient(
+                **kwargs,
+                transport=httpx.MockTransport(handle_request),
+            )
+
+        with patch(
+            "src.ai.openai_client.DefaultHttpxClient",
+            side_effect=build_http_client,
+        ):
+            client = OpenAIClient(base_url=endpoint)
+            client.embed("transport semantics")
+
+        assert client.base_url == endpoint
+        assert request_urls == [
+            "https://embd.example/v1/embeddings"
+            "?region_code=north&region_code=south&flag=&routing_key=primary"
+        ]
+
+    def test_native_http_logs_do_not_echo_real_request_url_credentials(
+        self, mock_config, caplog
+    ):
+        """真实 SDK/httpx 请求在 DEBUG 下也不能通过第三方 logger 泄密。"""
+        sentinel = "native-transport-secret"
+        endpoint = (
+            f"https://native-user:{sentinel}@embd.example/v1"
+            f";JSESSIONID={sentinel}?subscription-key={sentinel}&jwt={sentinel}"
+        )
+        request_urls = []
+
+        def handle_request(request: httpx.Request) -> httpx.Response:
+            request_urls.append(str(request.url))
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"embedding": [0.1] * 1536, "index": 0, "object": "embedding"}
+                    ],
+                    "model": "text-embedding-3-small",
+                    "object": "list",
+                    "usage": {"prompt_tokens": 1, "total_tokens": 1},
+                },
+            )
+
+        def build_http_client(**kwargs):
+            return SDKDefaultHttpxClient(
+                **kwargs,
+                transport=httpx.MockTransport(handle_request),
+            )
+
+        native_loggers = (
+            "httpx",
+            "httpx._client",
+            "httpcore",
+            "httpcore.connection",
+            "httpcore.http11",
+            "httpcore.http2",
+            "httpcore.proxy",
+            "openai",
+            "openai._base_client",
+        )
+        previous_levels = {
+            name: logging.getLogger(name).level for name in native_loggers
+        }
+        for name in native_loggers:
+            logging.getLogger(name).setLevel(logging.NOTSET)
+
+        try:
+            with patch(
+                "src.ai.openai_client.DefaultHttpxClient",
+                side_effect=build_http_client,
+            ), caplog.at_level(logging.DEBUG):
+                client = OpenAIClient(base_url=endpoint)
+                client.embed("native log safety")
+        finally:
+            for name, level in previous_levels.items():
+                logging.getLogger(name).setLevel(level)
+
+        assert request_urls
+        assert sentinel in request_urls[0]
+        assert sentinel not in caplog.text
 
     def test_init_without_api_key(self):
         """测试没有 API Key 时抛出异常"""
@@ -174,6 +309,31 @@ class TestOpenAIEmbed:
         )
         mock_config.set_runtime_embedding_dim.assert_called_once_with(2560)
 
+    def test_auto_dimension_error_does_not_echo_provider_details(
+        self, mock_config, caplog
+    ):
+        """自动维度探测错误只暴露固定消息和异常类型。"""
+        from openai import OpenAIError
+
+        sentinel = "auto-dimension-provider-secret"
+        mock_config.embedding_dim = None
+        mock_config.embedding_dim_is_auto = True
+        with patch("src.ai.openai_client.OpenAI"):
+            client = OpenAIClient()
+        client.client.embeddings.create = Mock(
+            side_effect=OpenAIError(
+                f"response body at https://example/v1?jwt={sentinel}: {sentinel}"
+            )
+        )
+
+        with caplog.at_level("ERROR", logger="src.ai.openai_client"):
+            with pytest.raises(RuntimeError) as exc_info:
+                client.resolve_dimensions()
+
+        assert str(exc_info.value) == "Embedding 维度探测失败"
+        assert sentinel not in caplog.text
+        assert sentinel not in str(exc_info.value)
+
     def test_embed_uses_persisted_auto_dimension_after_restart(self, mock_config):
         """测试 auto 模式在已持久化维度后会直接复用该维度。"""
         mock_config.embedding_dim = 2560
@@ -242,6 +402,27 @@ class TestOpenAIEmbed:
 
         with pytest.raises(Exception, match="OpenAI API 调用失败"):
             client.embed("text")
+
+    def test_embed_error_does_not_echo_endpoint_credentials(
+        self, client, caplog
+    ):
+        """SDK 异常中的 endpoint/API 凭据不得进入日志或公开异常。"""
+        from openai import OpenAIError
+
+        sentinel = "runtime-endpoint-secret"
+        client.client.embeddings.create = Mock(
+            side_effect=OpenAIError(
+                f"request failed at https://user:{sentinel}@example/v1"
+                f"?pwd={sentinel}"
+            )
+        )
+
+        with caplog.at_level("ERROR", logger="src.ai.openai_client"):
+            with pytest.raises(Exception) as exc_info:
+                client.embed("text")
+
+        assert sentinel not in caplog.text
+        assert sentinel not in str(exc_info.value)
 
 
 class TestOpenAIEmbedBatch:

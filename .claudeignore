@@ -1,19 +1,18 @@
 # Claude Code 忽略文件
 # 防止 AI 意外操作生产数据
 
-# 生产数据目录（AI 不应直接读取或修改）
-.data/db/
-.data/vault/
-.data/vectors/
+# 生产数据目录（AI 不应直接读取或修改，包括运行时产物）
+.data/
 
 # 备份数据（AI 不应修改）
 .data-backup/
+backups/
 
 # 敏感配置文件（AI 不应读取 API Keys）
-.env
+config/local.yaml
+.env*
 
 # 允许 AI 访问的文件：
-# - .env.test（测试配置模板）
 # - .data-test/（测试环境数据）
 # - 所有源代码文件
 # - 文档文件

@@ -6,8 +6,11 @@ the CLI as a user would. Network-dependent workflows are intentionally skipped
 by default.
 """
 
+# ruff: noqa: E402 - 该集成测试需先将项目根目录加入 sys.path
+
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -16,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -66,11 +70,20 @@ def _collect_result_ids(payload: Dict[str, Any]) -> List[int]:
 def _configure_temp_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
     """Create a Config that points all storage paths to the temp directory."""
     db_path = tmp_path / "db" / "knowledge_vault.db"
-    monkeypatch.setenv("DB_PATH", str(db_path))
+    runtime_paths = {
+        "DATA_DIR": tmp_path,
+        "DB_PATH": db_path,
+        "VAULT_DIR": tmp_path / "vault",
+        "VECTOR_DIR": tmp_path / "vectors",
+        "LOG_DIR": tmp_path / "logs",
+        "TMP_DIR": tmp_path / "tmp",
+    }
+    for key, path in runtime_paths.items():
+        monkeypatch.setenv(key, str(path))
 
     # Reset the global config singleton to avoid cross-test reuse.
-    config_module._config_instance = None
-    config = Config()
+    monkeypatch.setattr(config_module, "_config_instance", None)
+    config = Config(str(PROJECT_ROOT / "config" / "config.yaml"))
 
     storage = config._config.setdefault("storage", {})
     storage["vault_dir"] = str(tmp_path / "vault")
@@ -87,6 +100,20 @@ def _patch_cli_config(monkeypatch: pytest.MonkeyPatch, config: Config) -> None:
     """Force CLI commands to use the provided Config instance."""
     monkeypatch.setattr(commands, "_load_config", lambda: config)
     monkeypatch.setattr(config_module, "get_config", lambda: config)
+
+
+def _load_live_provider_config(config: Config) -> Config:
+    """仅将本机 Provider 配置合并到已完成数据隔离的测试配置。"""
+    provider_source = Config(
+        str(PROJECT_ROOT / "config" / "config.yaml"),
+        str(PROJECT_ROOT / "config" / "local.yaml"),
+    )
+    ai_config = config._config.setdefault("ai", {})
+    for provider_name in ("llm", "embedding"):
+        provider_config = provider_source.get(f"ai.{provider_name}")
+        if isinstance(provider_config, dict):
+            ai_config[provider_name] = copy.deepcopy(provider_config)
+    return config
 
 
 def _seed_entry(
@@ -232,21 +259,23 @@ def test_config_e2e(
 
     set_result = runner.invoke(
         commands.cli,
-        ["config", "set", "TEST_KEY", "test-value"],
+        ["config", "set", "ai.llm.model", "test-model"],
     )
     assert set_result.exit_code == 0, set_result.output
 
-    env_path = tmp_path / ".env"
-    assert env_path.exists()
-    assert "TEST_KEY=test-value" in env_path.read_text(encoding="utf-8")
+    local_config_path = tmp_path / "config" / "local.yaml"
+    assert local_config_path.exists()
+    local_config = yaml.safe_load(local_config_path.read_text(encoding="utf-8"))
+    assert local_config["ai"]["llm"]["model"] == "test-model"
 
 
 ARCHIVE_TEST_URL = os.getenv("PKV_E2E_ARCHIVE_URL")
+RUN_LIVE = os.getenv("PKV_RUN_LIVE") == "1"
 
 
 @pytest.mark.skipif(
-    not ARCHIVE_TEST_URL,
-    reason="Set PKV_E2E_ARCHIVE_URL to run the live archive test",
+    not RUN_LIVE or not ARCHIVE_TEST_URL,
+    reason="需要 PKV_RUN_LIVE=1 和 PKV_E2E_ARCHIVE_URL 才运行真实归档测试",
 )
 def test_archive_url_e2e(
     runner: CliRunner,
@@ -255,6 +284,7 @@ def test_archive_url_e2e(
 ) -> None:
     """Optional: archive a real URL end-to-end (requires network/API keys)."""
     config, _, _, _ = temp_db
+    config = _load_live_provider_config(config)
     _patch_cli_config(monkeypatch, config)
 
     result = runner.invoke(

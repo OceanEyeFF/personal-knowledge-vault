@@ -8,14 +8,39 @@ OpenAI-compatible Embedding API 客户端
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
+import httpx
 import numpy as np
-from openai import OpenAI, OpenAIError, RateLimitError, APITimeoutError
+from openai import (
+    APITimeoutError,
+    DefaultHttpxClient,
+    OpenAI,
+    OpenAIError,
+    RateLimitError,
+)
 
-from src.utils.config import get_config
+from src.utils.config import (
+    get_config,
+    redact_url_credentials,
+    suppress_unsafe_http_transport_logs,
+)
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def split_openai_transport_url(base_url: str) -> tuple[str, httpx.QueryParams]:
+    """拆分纯 SDK base_url 与保序、可重复的 endpoint query。"""
+    parsed = urlsplit(base_url)
+    transport_base_url = urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, "", "")
+    )
+    return transport_base_url, httpx.QueryParams(parsed.query)
+
+
+# 保留本轮内部 helper 名称，避免已存在的调用点失效。
+_split_transport_base_url = split_openai_transport_url
 
 
 class OpenAIClient:
@@ -63,17 +88,24 @@ class OpenAIClient:
         self.timeout = timeout
         self.max_retries = max_retries
 
-        # 初始化 OpenAI 客户端
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            timeout=self.timeout,
-            max_retries=self.max_retries,
-        )
+        # SDK 将资源路径拼接到纯 base_url，之后再合并 endpoint query；
+        # fragment 按 HTTP 语义不发送。
+        suppress_unsafe_http_transport_logs()
+        transport_base_url, endpoint_query = split_openai_transport_url(self.base_url)
+        client_kwargs: Dict[str, Any] = {
+            "api_key": self.api_key,
+            "base_url": transport_base_url,
+            "timeout": self.timeout,
+            "max_retries": self.max_retries,
+        }
+        if endpoint_query:
+            client_kwargs["http_client"] = DefaultHttpxClient(params=endpoint_query)
+        self.client = OpenAI(**client_kwargs)
 
+        display_base_url = redact_url_credentials(self.base_url) or "已配置（URL 格式不可解析）"
         logger.info(
             "OpenAI 客户端初始化成功: "
-            f"model={self.model}, base_url={self.base_url}, dimensions={self.dimensions}"
+            f"model={self.model}, base_url={display_base_url}, dimensions={self.dimensions}"
         )
 
     def embed(self, text: str) -> List[float]:
@@ -117,20 +149,20 @@ class OpenAIClient:
 
             return embedding
 
-        except RateLimitError as e:
-            logger.error(f"OpenAI API 限流: {e}")
-            raise Exception(f"OpenAI API 限流，请稍后重试: {e}")
+        except RateLimitError:
+            logger.error("OpenAI API 限流")
+            raise Exception("OpenAI API 限流，请稍后重试") from None
 
-        except APITimeoutError as e:
-            logger.error(f"OpenAI API 超时: {e}")
-            raise Exception(f"OpenAI API 请求超时: {e}")
+        except APITimeoutError:
+            logger.error("OpenAI API 超时")
+            raise Exception("OpenAI API 请求超时") from None
 
-        except OpenAIError as e:
-            logger.error(f"OpenAI API 错误: {e}")
-            raise Exception(f"OpenAI API 调用失败: {e}")
+        except OpenAIError as exc:
+            logger.error("OpenAI API 错误: error_type=%s", type(exc).__name__)
+            raise Exception("OpenAI API 调用失败") from None
 
-        except Exception as e:
-            logger.error(f"Embedding 生成异常: {e}")
+        except Exception as exc:
+            logger.error("Embedding 生成异常: error_type=%s", type(exc).__name__)
             raise
 
     def embed_batch(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
@@ -189,20 +221,23 @@ class OpenAIClient:
                     f"total_tokens={usage.total_tokens}"
                 )
 
-            except RateLimitError as e:
-                logger.error(f"OpenAI API 限流: {e}")
-                raise Exception(f"OpenAI API 限流，请稍后重试: {e}")
+            except RateLimitError:
+                logger.error("OpenAI API 限流")
+                raise Exception("OpenAI API 限流，请稍后重试") from None
 
-            except APITimeoutError as e:
-                logger.error(f"OpenAI API 超时: {e}")
-                raise Exception(f"OpenAI API 请求超时: {e}")
+            except APITimeoutError:
+                logger.error("OpenAI API 超时")
+                raise Exception("OpenAI API 请求超时") from None
 
-            except OpenAIError as e:
-                logger.error(f"OpenAI API 错误: {e}")
-                raise Exception(f"OpenAI API 调用失败: {e}")
+            except OpenAIError as exc:
+                logger.error("OpenAI API 错误: error_type=%s", type(exc).__name__)
+                raise Exception("OpenAI API 调用失败") from None
 
-            except Exception as e:
-                logger.error(f"批量 Embedding 生成异常: {e}")
+            except Exception as exc:
+                logger.error(
+                    "批量 Embedding 生成异常: error_type=%s",
+                    type(exc).__name__,
+                )
                 raise
 
         logger.info(f"批量 Embedding 完成: total={len(all_embeddings)}")
@@ -218,12 +253,31 @@ class OpenAIClient:
         if self.dimensions is not None and not self._auto_dimensions_pending:
             return self.dimensions
 
-        response = self._create_embedding_response(self._AUTO_DIM_PROBE_TEXT)
-        embedding = response.data[0].embedding
-        self._validate_embedding_dimension(len(embedding))
-        if self.dimensions is None:
-            raise RuntimeError("Embedding 维度解析失败")
-        return self.dimensions
+        try:
+            response = self._create_embedding_response(self._AUTO_DIM_PROBE_TEXT)
+            embedding = response.data[0].embedding
+            self._validate_embedding_dimension(len(embedding))
+            if self.dimensions is None:
+                raise RuntimeError("Embedding 维度解析失败")
+            return self.dimensions
+        except RateLimitError:
+            logger.error("Embedding 维度探测遇到 API 限流")
+            raise RuntimeError("Embedding 维度探测失败：API 限流") from None
+        except APITimeoutError:
+            logger.error("Embedding 维度探测请求超时")
+            raise RuntimeError("Embedding 维度探测失败：请求超时") from None
+        except OpenAIError as exc:
+            logger.error(
+                "Embedding 维度探测 API 错误: error_type=%s",
+                type(exc).__name__,
+            )
+            raise RuntimeError("Embedding 维度探测失败") from None
+        except Exception as exc:
+            logger.error(
+                "Embedding 维度探测异常: error_type=%s",
+                type(exc).__name__,
+            )
+            raise RuntimeError("Embedding 维度探测失败") from None
 
     def embed_numpy(self, text: str) -> np.ndarray:
         """

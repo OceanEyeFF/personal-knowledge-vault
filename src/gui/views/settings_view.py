@@ -64,12 +64,14 @@ class SettingsView(QWidget):
     Signals:
         theme_change_requested: 主题变更请求，携带主题名称字符串
             ("light" 或 "dark")，由 MainWindow 调用 apply_theme 处理。
+        settings_saved: 本机配置保存成功，供已初始化的组件刷新配置。
 
     Attributes:
         _vm: 设置 ViewModel 实例。
     """
 
     theme_change_requested = Signal(str)
+    settings_saved = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """初始化设置视图。
@@ -79,6 +81,7 @@ class SettingsView(QWidget):
         """
         super().__init__(parent)
         self._vm = SettingsViewModel(self)
+        self._loaded_base_url_values: dict[str, str] = {}
 
         self._init_ui()
         self._connect_signals()
@@ -130,36 +133,36 @@ class SettingsView(QWidget):
         form.setSpacing(8)
 
         # LLM API Key
-        ds_key_row = QHBoxLayout()
-        self._deepseek_key_input = QLineEdit(self)
-        self._deepseek_key_input.setEchoMode(QLineEdit.Password)  # type: ignore[attr-defined]
-        self._deepseek_key_input.setPlaceholderText("sk-...")
-        ds_key_row.addWidget(self._deepseek_key_input, stretch=1)
-        self._deepseek_key_toggle = QPushButton("显示", self)
-        self._deepseek_key_toggle.setFixedWidth(50)
-        ds_key_row.addWidget(self._deepseek_key_toggle)
-        form.addRow("LLM API Key:", ds_key_row)
+        llm_key_row = QHBoxLayout()
+        self._llm_key_input = QLineEdit(self)
+        self._llm_key_input.setEchoMode(QLineEdit.Password)  # type: ignore[attr-defined]
+        self._llm_key_input.setPlaceholderText("sk-...")
+        llm_key_row.addWidget(self._llm_key_input, stretch=1)
+        self._llm_key_toggle = QPushButton("显示", self)
+        self._llm_key_toggle.setFixedWidth(50)
+        llm_key_row.addWidget(self._llm_key_toggle)
+        form.addRow("LLM API Key:", llm_key_row)
 
         # LLM Base URL
-        self._deepseek_url_input = QLineEdit(self)
-        self._deepseek_url_input.setPlaceholderText("https://api.deepseek.com/v1")
-        form.addRow("LLM Base URL:", self._deepseek_url_input)
+        self._llm_url_input = QLineEdit(self)
+        self._llm_url_input.setPlaceholderText("https://api.deepseek.com/v1")
+        form.addRow("LLM Base URL:", self._llm_url_input)
 
         # Embedding API Key
-        oai_key_row = QHBoxLayout()
-        self._openai_key_input = QLineEdit(self)
-        self._openai_key_input.setEchoMode(QLineEdit.Password)  # type: ignore[attr-defined]
-        self._openai_key_input.setPlaceholderText("sk-...")
-        oai_key_row.addWidget(self._openai_key_input, stretch=1)
-        self._openai_key_toggle = QPushButton("显示", self)
-        self._openai_key_toggle.setFixedWidth(50)
-        oai_key_row.addWidget(self._openai_key_toggle)
-        form.addRow("Embedding API Key:", oai_key_row)
+        embedding_key_row = QHBoxLayout()
+        self._embedding_key_input = QLineEdit(self)
+        self._embedding_key_input.setEchoMode(QLineEdit.Password)  # type: ignore[attr-defined]
+        self._embedding_key_input.setPlaceholderText("sk-...")
+        embedding_key_row.addWidget(self._embedding_key_input, stretch=1)
+        self._embedding_key_toggle = QPushButton("显示", self)
+        self._embedding_key_toggle.setFixedWidth(50)
+        embedding_key_row.addWidget(self._embedding_key_toggle)
+        form.addRow("Embedding API Key:", embedding_key_row)
 
         # Embedding Base URL
-        self._openai_url_input = QLineEdit(self)
-        self._openai_url_input.setPlaceholderText("https://api.openai.com/v1")
-        form.addRow("Embedding Base URL:", self._openai_url_input)
+        self._embedding_url_input = QLineEdit(self)
+        self._embedding_url_input.setPlaceholderText("https://api.openai.com/v1")
+        form.addRow("Embedding Base URL:", self._embedding_url_input)
 
         return group
 
@@ -276,11 +279,13 @@ class SettingsView(QWidget):
         self._reset_btn.clicked.connect(self._load_and_fill)
 
         # 密码显示/隐藏切换
-        self._deepseek_key_toggle.clicked.connect(
-            lambda: self._toggle_password(self._deepseek_key_input, self._deepseek_key_toggle)
+        self._llm_key_toggle.clicked.connect(
+            lambda: self._toggle_password(self._llm_key_input, self._llm_key_toggle)
         )
-        self._openai_key_toggle.clicked.connect(
-            lambda: self._toggle_password(self._openai_key_input, self._openai_key_toggle)
+        self._embedding_key_toggle.clicked.connect(
+            lambda: self._toggle_password(
+                self._embedding_key_input, self._embedding_key_toggle
+            )
         )
 
         # ViewModel 信号
@@ -296,10 +301,16 @@ class SettingsView(QWidget):
         settings = self._vm.load_settings()
 
         # API 密钥
-        self._deepseek_key_input.setText(settings.get("deepseek_api_key", ""))
-        self._deepseek_url_input.setText(settings.get("deepseek_base_url", ""))
-        self._openai_key_input.setText(settings.get("openai_api_key", ""))
-        self._openai_url_input.setText(settings.get("openai_base_url", ""))
+        self._llm_key_input.setText(settings.get("llm_api_key", ""))
+        llm_base_url = settings.get("llm_base_url", "")
+        self._llm_url_input.setText(llm_base_url)
+        self._embedding_key_input.setText(settings.get("embedding_api_key", ""))
+        embedding_base_url = settings.get("embedding_base_url", "")
+        self._embedding_url_input.setText(embedding_base_url)
+        self._loaded_base_url_values = {
+            "llm_base_url": llm_base_url,
+            "embedding_base_url": embedding_base_url,
+        }
 
         # 主题：从 MainWindow 的 current_theme 读取（ViewModel 返回空字符串占位）
         current_theme = self._get_current_theme()
@@ -324,12 +335,17 @@ class SettingsView(QWidget):
         """收集表单数据并保存设置。"""
         # 收集当前表单值
         settings = {
-            "deepseek_api_key": self._deepseek_key_input.text().strip(),
-            "deepseek_base_url": self._deepseek_url_input.text().strip(),
-            "openai_api_key": self._openai_key_input.text().strip(),
-            "openai_base_url": self._openai_url_input.text().strip(),
+            "llm_api_key": self._llm_key_input.text().strip(),
+            "embedding_api_key": self._embedding_key_input.text().strip(),
             "search_strategy": _STRATEGY_OPTIONS[self._strategy_combo.currentIndex()][1],
         }
+        current_base_urls = {
+            "llm_base_url": self._llm_url_input.text().strip(),
+            "embedding_base_url": self._embedding_url_input.text().strip(),
+        }
+        for key, value in current_base_urls.items():
+            if value != self._loaded_base_url_values.get(key):
+                settings[key] = value
 
         # 检查主题是否变更
         new_theme = _THEME_OPTIONS[self._theme_combo.currentIndex()][1]
@@ -342,10 +358,15 @@ class SettingsView(QWidget):
 
     def _on_save_success(self) -> None:
         """保存成功后更新状态消息。"""
+        self._loaded_base_url_values = {
+            "llm_base_url": self._llm_url_input.text().strip(),
+            "embedding_base_url": self._embedding_url_input.text().strip(),
+        }
         self._status_label.setText("设置已保存")
         self._status_label.setProperty("status", "success")
         self._status_label.style().unpolish(self._status_label)
         self._status_label.style().polish(self._status_label)
+        self.settings_saved.emit()
         logger.info("设置保存成功")
 
     def _on_save_error(self, message: str) -> None:

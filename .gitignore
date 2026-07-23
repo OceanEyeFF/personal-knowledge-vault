@@ -37,11 +37,8 @@ env/
 *~
 .DS_Store
 
-# Environment Variables
-.env
-.env.local
-.env.*.local
-.env.test
+# Environment Variables (all variants may contain secrets)
+.env*
 
 # Machine-local configuration (may contain API keys)
 config/local.yaml
@@ -51,6 +48,7 @@ config/local.yaml
 .data-test/
 .data_test/
 .data-backup/
+backups/
 .migration/
 pkv_index.db
 pkv_vectors/

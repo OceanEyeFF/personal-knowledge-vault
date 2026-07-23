@@ -42,7 +42,7 @@ steps:
       vector:
         top_k: 10            # 返回 Top K 结果
         ef_search: 50        # HNSW 搜索深度
-        # 展示值；实际运行配置以 PKV_EMBD_MODEL / config.yaml 为准。
+        # 展示值；实际运行配置以 config/local.yaml 的 ai.embedding.model 为准。
         # 更换 Embedding 模型属于索引迁移，需要重建向量索引并重算 Embedding。
         embedding_model: text-embedding-3-small
 

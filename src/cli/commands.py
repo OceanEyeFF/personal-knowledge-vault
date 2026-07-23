@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,7 +19,12 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from src.utils.config import Config, set_yaml_config_value
+from src.utils.config import (
+    Config,
+    redact_url_credentials as _redact_url_credentials,
+    set_yaml_config_value,
+    url_contains_credentials as _url_contains_credentials,
+)
 from src.workflow.engine import WorkflowEngine
 from src.retrieval.query_router import QueryRouter
 from src.retrieval.bm25_retriever import BM25Retriever
@@ -35,13 +41,19 @@ CONFIG_KEY_ALIASES = {
     "data_dir": lambda config: config.data_dir,
     "vault_dir": lambda config: config.vault_dir,
     "db_path": lambda config: config.db_path,
-    "vector_store_path": lambda config: config.vector_index_dir,
     "vector_index_dir": lambda config: config.vector_index_dir,
     "log_dir": lambda config: config.log_dir,
     "tmp_dir": lambda config: config.tmp_dir,
 }
 
-CONFIG_FILE_KEY_ALIASES = {
+LEGACY_CONFIG_KEYS = {
+    "DEEPSEEK_API_KEY": "ai.llm.api_key",
+    "DEEPSEEK_BASE_URL": "ai.llm.base_url",
+    "DEEPSEEK_MODEL": "ai.llm.model",
+    "OPENAI_API_KEY": "ai.embedding.api_key",
+    "OPENAI_BASE_URL": "ai.embedding.base_url",
+    "OPENAI_EMBEDDING_DIM": "ai.embedding.dim",
+    "OPENAI_EMBEDDING_MODEL": "ai.embedding.model",
     "PKV_LLM_BASE_URL": "ai.llm.base_url",
     "PKV_LLM_API_KEY": "ai.llm.api_key",
     "PKV_LLM_MODEL": "ai.llm.model",
@@ -55,6 +67,40 @@ SENSITIVE_CONFIG_KEYS = {
     "ai.llm.api_key",
     "ai.embedding.api_key",
     "processors.zhihu.cookie",
+}
+SENSITIVE_CONFIG_KEY_PARTS = {
+    "access_token",
+    "api_key",
+    "apikey",
+    "auth",
+    "auth_token",
+    "authorization",
+    "basic_auth",
+    "bearer",
+    "bearer_token",
+    "client_secret",
+    "cookie",
+    "credential",
+    "credentials",
+    "jsession_id",
+    "jsessionid",
+    "jwt",
+    "pass",
+    "passcode",
+    "passphrase",
+    "passwd",
+    "password",
+    "private_key",
+    "pwd",
+    "refresh_token",
+    "secret",
+    "session_id",
+    "sessionid",
+    "sid",
+    "sig",
+    "signature",
+    "subscription_key",
+    "token",
 }
 
 
@@ -261,26 +307,105 @@ def _render_entry_panel(entry: Dict[str, Any], raw: bool = False) -> Panel:
 
 def _set_config_value(config_path: Path, key: str, value: str) -> None:
     """写入本机 YAML 配置中的点号路径键。"""
-    parsed_value = yaml.safe_load(value) if value.strip() else ""
+    try:
+        parsed_value = yaml.safe_load(value) if value.strip() else ""
+    except yaml.YAMLError:
+        raise ValueError("配置值不是有效的 YAML") from None
+    if not isinstance(parsed_value, (str, int, float, bool, type(None))):
+        raise ValueError(
+            "config set 仅支持标量值；请使用 YAML 点号路径逐项设置"
+        )
+    if (
+        isinstance(parsed_value, str)
+        and _config_key_is_base_url(key)
+        and _url_contains_credentials(parsed_value)
+    ):
+        raise ValueError(
+            "Base URL 不得通过命令行传入认证信息；"
+            "请直接编辑 config/local.yaml"
+        )
     set_yaml_config_value(config_path, key, parsed_value)
 
 
 def _resolve_config_value(config: Config, key: str) -> Any:
-    """兼容旧键名与点号键名的配置读取。"""
-    key = CONFIG_FILE_KEY_ALIASES.get(key, key)
+    """读取 YAML 点号键或只读路径快捷键。"""
     alias_getter = CONFIG_KEY_ALIASES.get(key)
     if alias_getter is not None:
         return alias_getter(config)
     return config.get(key)
 
 
+def _reject_legacy_config_key(key: str) -> None:
+    """拒绝已经退役的 Provider 环境变量式配置键。"""
+    replacement = LEGACY_CONFIG_KEYS.get(key)
+    if replacement:
+        raise ValueError(f"旧配置键 {key} 已移除，请使用 {replacement}")
+
+
+def _normalize_config_key_part(part: str) -> str:
+    """将 snake/kebab/camel/Pascal 配置键统一为小写 snake_case。"""
+    normalized = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", part)
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized)
+    return re.sub(r"[^A-Za-z0-9]+", "_", normalized).strip("_").lower()
+
+
+def _config_key_touches_sensitive_value(key: str) -> bool:
+    """判断键是否等于、包含或位于敏感配置路径之下。"""
+    normalized_parts = [_normalize_config_key_part(part) for part in key.split(".")]
+    has_sensitive_part = any(
+        part == marker
+        or part.startswith(f"{marker}_")
+        or part.endswith(f"_{marker}")
+        or f"_{marker}_" in part
+        for part in normalized_parts
+        for marker in SENSITIVE_CONFIG_KEY_PARTS
+    )
+    return has_sensitive_part or any(
+        key == sensitive_key
+        or sensitive_key.startswith(f"{key}.")
+        or key.startswith(f"{sensitive_key}.")
+        for sensitive_key in SENSITIVE_CONFIG_KEYS
+    )
+
+
+def _config_key_is_base_url(key: str) -> bool:
+    """判断配置路径是否表示 Provider Base URL。"""
+    return any(
+        _normalize_config_key_part(part) == "base_url" for part in key.split(".")
+    )
+
+
+def _redact_config_value(key: str, value: Any) -> Any:
+    """递归遮罩配置树中的密钥、Cookie 等敏感叶节点。"""
+    if isinstance(value, dict):
+        return {
+            child_key: _redact_config_value(
+                f"{key}.{child_key}" if key else str(child_key),
+                child_value,
+            )
+            for child_key, child_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_config_value(key, item) for item in value]
+    if _config_key_touches_sensitive_value(key):
+        return "已设置" if value else "未设置"
+    if isinstance(value, str):
+        redacted_url = _redact_url_credentials(value)
+        if redacted_url is not None:
+            return redacted_url
+        if _config_key_is_base_url(key):
+            # 无法可靠解析的 endpoint 不直接回显，以免泄露异常形式的凭据。
+            return "已设置" if value else "未设置"
+    return value
+
+
 def _friendly_hint(message: str) -> None:
     msg = (message or "").lower()
     if "processor" in msg or "抓取" in msg or "url" in msg:
         console.print("[yellow]提示: 请检查 URL 是否正确，或稍后重试[/yellow]")
-    if "openai" in msg or "embedding" in msg or "openai_api_key" in msg:
+    if "openai" in msg or "embedding" in msg:
         console.print("[yellow]提示: 请检查 config/local.yaml 中的 Embedding 配置[/yellow]")
-    if "deepseek" in msg or "llm" in msg or "deepseek_api_key" in msg:
+    if "deepseek" in msg or "llm" in msg:
         console.print("[yellow]提示: 请检查 config/local.yaml 中的 LLM 配置[/yellow]")
 
 
@@ -603,7 +728,6 @@ def config_show() -> None:
             ("data_dir", str(config.data_dir)),
             ("vault_dir", str(config.vault_dir)),
             ("db_path", str(config.db_path)),
-            ("vector_store_path", str(config.vector_index_dir)),
             ("storage.vault_dir", str(config.vault_dir)),
             ("storage.db_path", str(config.db_path)),
             ("storage.vector_index_dir", str(config.vector_index_dir)),
@@ -615,12 +739,13 @@ def config_show() -> None:
             ("ai.embedding.model", config.embd_model),
             ("ai.embedding.dim", embedding_dim),
             ("logging.level", config.log_level),
-            ("ai.llm.api_key", "已设置" if config.llm_api_key else "未设置"),
-            ("ai.embedding.api_key", "已设置" if config.embd_api_key else "未设置"),
+            ("ai.llm.api_key", config.llm_api_key),
+            ("ai.embedding.api_key", config.embd_api_key),
         ]
 
         for key, value in rows:
-            table.add_row(key, str(value) if value is not None else "-")
+            redacted_value = _redact_config_value(key, value)
+            table.add_row(key, str(redacted_value) if redacted_value is not None else "-")
 
         console.print(table)
 
@@ -635,17 +760,14 @@ def config_get(key: str) -> None:
     """查询单个配置。"""
     try:
         config = _load_config()
-        resolved_key = CONFIG_FILE_KEY_ALIASES.get(key, key)
-        value = _resolve_config_value(config, resolved_key)
+        _reject_legacy_config_key(key)
+        value = _resolve_config_value(config, key)
 
         if value is None:
             console.print(f"[yellow]警告: 未找到配置: {key}[/yellow]")
             sys.exit(1)
 
-        if resolved_key in SENSITIVE_CONFIG_KEYS:
-            console.print("已设置" if value else "未设置")
-        else:
-            console.print(str(value))
+        console.print(str(_redact_config_value(key, value)))
 
     except Exception as exc:
         console.print(f"[red]错误: 配置查询失败: {exc}[/red]")
@@ -658,11 +780,18 @@ def config_get(key: str) -> None:
 def config_set(key: str, value: str) -> None:
     """修改本机私有 YAML 配置。"""
     try:
-        resolved_key = CONFIG_FILE_KEY_ALIASES.get(key, key)
+        _reject_legacy_config_key(key)
+        if _config_key_touches_sensitive_value(key):
+            raise ValueError(
+                "该配置路径包含敏感值，不得作为命令行参数传入；"
+                "请直接编辑 config/local.yaml"
+            )
+        if "." not in key:
+            raise ValueError("配置键必须使用 YAML 点号路径，例如 ai.llm.model")
         local_config_path = _project_root() / "config" / "local.yaml"
-        _set_config_value(local_config_path, resolved_key, value)
+        _set_config_value(local_config_path, key, value)
         console.print(
-            f"[green]成功: 已更新 {resolved_key} 到 config/local.yaml[/green]"
+            f"[green]成功: 已更新 {key} 到 config/local.yaml[/green]"
         )
 
     except Exception as exc:

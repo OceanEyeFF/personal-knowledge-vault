@@ -4,43 +4,415 @@
 从 config.yaml 和本机 local.yaml 加载配置
 """
 
-import json
 import copy
+import hashlib
+import json
+import logging
 import os
-import yaml
+import re
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
+
+import yaml
+
+
+_DISPLAY_CREDENTIAL_PARAMETER_MARKERS = {
+    "access_token",
+    "api_key",
+    "apikey",
+    "auth",
+    "auth_token",
+    "authorization",
+    "basic_auth",
+    "bearer",
+    "bearer_token",
+    "client_secret",
+    "code",
+    "cookie",
+    "credential",
+    "credentials",
+    "jsession_id",
+    "jsessionid",
+    "jsessionidsso",
+    "jwt",
+    "key",
+    "pass",
+    "passcode",
+    "passphrase",
+    "passwd",
+    "password",
+    "phpsessid",
+    "private_key",
+    "pwd",
+    "refresh_token",
+    "secret",
+    "session",
+    "session_id",
+    "sessionid",
+    "sid",
+    "sig",
+    "signature",
+    "subscription_key",
+    "token",
+}
+
+# Endpoint contract fingerprints intentionally use exact normalized parameter
+# names.  Display/log redaction is deliberately broader, but using that broad
+# rule here would hide contract-bearing values such as ``region_code`` and
+# ``routing_key`` and incorrectly reuse an embedding cache/index.
+_ENDPOINT_CONTRACT_CREDENTIAL_PARAMETER_NAMES = {
+    "access_token",
+    "api_key",
+    "apikey",
+    "auth",
+    "auth_token",
+    "authorization",
+    "basic_auth",
+    "bearer",
+    "bearer_token",
+    "client_credentials",
+    "client_secret",
+    "code",
+    "cookie",
+    "credential",
+    "credentials",
+    "id_token",
+    "jsession_id",
+    "jsessionid",
+    "jsessionidsso",
+    "jwt",
+    "jwt_token",
+    "key",
+    "oauth_token",
+    "pass",
+    "passcode",
+    "passphrase",
+    "passwd",
+    "password",
+    "private_key",
+    "pwd",
+    "refresh_token",
+    "secret",
+    "session",
+    "session_id",
+    "session_key",
+    "sessionid",
+    "session_token",
+    "sid",
+    "sig",
+    "signature",
+    "subscription_key",
+    "token",
+    "asp_net_session_id",
+    "connect_sid",
+    "ocp_apim_subscription_key",
+    "phpsessid",
+    "x_amz_credential",
+    "x_amz_security_token",
+    "x_amz_signature",
+    "x_api_key",
+    "x_auth_token",
+    "x_goog_credential",
+    "x_goog_signature",
+}
+
+_HTTP_TRANSPORT_LOGGER_NAMES = (
+    "httpx",
+    "httpx._client",
+    "httpcore",
+    "httpcore.connection",
+    "httpcore.http11",
+    "httpcore.http2",
+    "httpcore.proxy",
+    "openai",
+    "openai._base_client",
+)
+
+
+def suppress_unsafe_http_transport_logs() -> None:
+    """禁止第三方 HTTP 客户端在 INFO/DEBUG 日志中打印完整请求 URL。"""
+    for logger_name in _HTTP_TRANSPORT_LOGGER_NAMES:
+        transport_logger = logging.getLogger(logger_name)
+        transport_logger.setLevel(
+            max(logging.WARNING, transport_logger.getEffectiveLevel())
+        )
+
+
+def _normalize_security_identifier(value: str) -> str:
+    """将 URL 参数名统一为小写 snake_case，便于边界匹配。"""
+    normalized = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", value)
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized)
+    return re.sub(r"[^A-Za-z0-9]+", "_", normalized).strip("_").lower()
+
+
+def _is_display_credential_parameter(parameter_name: str) -> bool:
+    """宽松识别日志、CLI 与普通界面中需要隐藏的凭据参数。"""
+    normalized = _normalize_security_identifier(unquote_plus(parameter_name))
+    return any(
+        normalized == marker
+        or normalized.startswith(f"{marker}_")
+        or normalized.endswith(f"_{marker}")
+        or f"_{marker}_" in normalized
+        for marker in _DISPLAY_CREDENTIAL_PARAMETER_MARKERS
+    )
+
+
+def _is_endpoint_contract_credential_parameter(parameter_name: str) -> bool:
+    """精确识别可从 endpoint 契约指纹中忽略的认证参数名。"""
+    normalized = _normalize_security_identifier(unquote_plus(parameter_name))
+    return normalized in _ENDPOINT_CONTRACT_CREDENTIAL_PARAMETER_NAMES
+
+
+def _is_endpoint_decision_credential_parameter(parameter_name: str) -> bool:
+    """精确识别 CLI/GUI 禁止通过普通输入渠道传递的 endpoint 凭据。"""
+    normalized = _normalize_security_identifier(unquote_plus(parameter_name))
+    return normalized in _ENDPOINT_CONTRACT_CREDENTIAL_PARAMETER_NAMES
+
+
+def _parameter_component_has_credentials(
+    component: str,
+    predicate: Callable[[str], bool],
+) -> bool:
+    return any(
+        predicate(match.group(1))
+        for match in re.finditer(r"(?:^|[?&;])([^?&;=#]+)=", component)
+    )
+
+
+def _replace_url_parameters(
+    component: str,
+    replacement: str,
+    *,
+    predicate: Callable[[str], bool],
+) -> str:
+    def replace(match: re.Match[str]) -> str:
+        if not predicate(match.group("key")):
+            return match.group(0)
+        return f"{match.group('prefix')}{match.group('key')}={replacement}"
+
+    return re.sub(
+        r"(?P<prefix>^|[?&;])(?P<key>[^?&;=#]+)=(?P<value>[^&;]*)",
+        replace,
+        component,
+    )
+
+
+def _path_matrix_has_credentials(
+    path: str,
+    predicate: Callable[[str], bool],
+) -> bool:
+    """检测 URL path segment 的 ``;name=value`` matrix 凭据参数。"""
+    return any(
+        predicate(match.group(1))
+        for match in re.finditer(r";([^/;=?#]+)=", path)
+    )
+
+
+def _replace_path_matrix_parameters(
+    path: str,
+    replacement: str,
+    *,
+    predicate: Callable[[str], bool],
+) -> str:
+    """替换 path matrix 参数值，同时保留普通 path 与非敏感参数。"""
+
+    def replace(match: re.Match[str]) -> str:
+        if not predicate(match.group("key")):
+            return match.group(0)
+        return f";{match.group('key')}={replacement}"
+
+    return re.sub(
+        r";(?P<key>[^/;=?#]+)=(?P<value>[^/;]*)",
+        replace,
+        path,
+    )
+
+
+def _split_display_url(value: str):
+    """仅识别带 host 的 URL，避免把普通文本当成 endpoint。"""
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if not parsed.netloc or not (parsed.scheme or value.startswith("//")):
+        return None
+    return parsed
+
+
+def url_contains_credentials(value: str) -> bool:
+    """精确检测 URL userinfo 或 path/query/fragment 中的认证参数。"""
+    parsed = _split_display_url(value)
+    if parsed is not None:
+        return (
+            "@" in parsed.netloc
+            or _path_matrix_has_credentials(
+                parsed.path, _is_endpoint_decision_credential_parameter
+            )
+            or _parameter_component_has_credentials(
+                parsed.query, _is_endpoint_decision_credential_parameter
+            )
+            or _parameter_component_has_credentials(
+                parsed.fragment, _is_endpoint_decision_credential_parameter
+            )
+        )
+
+    # 对无法解析的 endpoint 仍保守检测，避免绕过 CLI 禁令。
+    authority = re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://([^/?#]*)", value)
+    return bool(
+        (authority and "@" in authority.group(1))
+        or _parameter_component_has_credentials(
+            value, _is_endpoint_decision_credential_parameter
+        )
+    )
+
+
+def redact_url_credentials(value: str) -> Optional[str]:
+    """遮罩 URL 中的 userinfo 与敏感 query/fragment 参数值。"""
+    parsed = _split_display_url(value)
+    if parsed is None:
+        return None
+
+    netloc = parsed.netloc
+    if "@" in netloc:
+        _, _, host = netloc.rpartition("@")
+        netloc = f"已隐藏@{host}"
+
+    return urlunsplit(
+        (
+            parsed.scheme,
+            netloc,
+            _replace_path_matrix_parameters(
+                parsed.path,
+                "已隐藏",
+                predicate=_is_display_credential_parameter,
+            ),
+            _replace_url_parameters(
+                parsed.query,
+                "已隐藏",
+                predicate=_is_display_credential_parameter,
+            ),
+            _replace_url_parameters(
+                parsed.fragment,
+                "已隐藏",
+                predicate=_is_display_credential_parameter,
+            ),
+        )
+    )
+
+
+def endpoint_contract_sha256(value: str) -> str:
+    """对去除凭据变化的 endpoint 契约生成稳定 SHA-256 指纹。"""
+    parsed = _split_display_url(value)
+    if parsed is None:
+        contract = value
+    else:
+        netloc = parsed.netloc.rpartition("@")[2]
+        contract = urlunsplit(
+            (
+                parsed.scheme,
+                netloc,
+                _replace_path_matrix_parameters(
+                    parsed.path,
+                    "<credential>",
+                    predicate=_is_endpoint_contract_credential_parameter,
+                ),
+                _replace_url_parameters(
+                    parsed.query,
+                    "<credential>",
+                    predicate=_is_endpoint_contract_credential_parameter,
+                ),
+                _replace_url_parameters(
+                    parsed.fragment,
+                    "<credential>",
+                    predicate=_is_endpoint_contract_credential_parameter,
+                ),
+            )
+        )
+    return hashlib.sha256(contract.encode("utf-8")).hexdigest()
+
+
+def _load_yaml_mapping(config_path: Path, label: str) -> Dict[str, Any]:
+    """加载 YAML 映射，并避免把含密钥的源文本带入异常消息。"""
+    try:
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        location = ""
+        if mark is not None:
+            location = f"（第 {mark.line + 1} 行，第 {mark.column + 1} 列）"
+        raise ValueError(f"{label} YAML 格式错误{location}: {config_path}") from None
+
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{label}根节点必须是映射: {config_path}")
+    return loaded
 
 
 def set_yaml_config_value(config_path: Path, key: str, value: Any) -> None:
-    """将值写入 YAML 配置中的点号路径键。"""
+    """单键兼容入口；底层仍使用一次原子 YAML 更新。"""
+    set_yaml_config_values(config_path, {key: value})
+
+
+def set_yaml_config_values(
+    config_path: Path,
+    updates: Mapping[str, Any],
+) -> None:
+    """一次加载、合并并原子写入多个 YAML 点号路径。"""
     config_path.parent.mkdir(parents=True, exist_ok=True)
     data: Dict[str, Any] = {}
     if config_path.exists():
-        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        if not isinstance(loaded, dict):
-            raise ValueError(f"配置文件根节点必须是映射: {config_path}")
-        data = loaded
+        data = _load_yaml_mapping(config_path, "配置文件")
 
-    parts = key.split(".")
-    if any(not part for part in parts):
-        raise ValueError(f"无效配置键: {key}")
+    for key, value in updates.items():
+        parts = key.split(".")
+        if any(not part for part in parts):
+            raise ValueError(f"无效配置键: {key}")
 
-    cursor = data
-    for part in parts[:-1]:
-        child = cursor.get(part)
-        if child is None:
-            child = {}
-            cursor[part] = child
-        if not isinstance(child, dict):
-            raise ValueError(f"配置路径不是映射: {part}")
-        cursor = child
-    cursor[parts[-1]] = value
+        cursor = data
+        for part in parts[:-1]:
+            child = cursor.get(part)
+            if child is None:
+                child = {}
+                cursor[part] = child
+            if not isinstance(child, dict):
+                raise ValueError(f"配置路径不是映射: {part}")
+            cursor = child
+        cursor[parts[-1]] = value
 
-    config_path.write_text(
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
+    if not updates:
+        return
+
+    serialized = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    file_descriptor, temp_name = tempfile.mkstemp(
+        prefix=f".{config_path.name}.",
+        suffix=".tmp",
+        dir=config_path.parent,
     )
+    temp_path = Path(temp_name)
+    descriptor_open = True
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as handle:
+            descriptor_open = False
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        if os.name == "posix":
+            os.chmod(temp_path, 0o600)
+        os.replace(temp_path, config_path)
+    finally:
+        if descriptor_open:
+            try:
+                os.close(file_descriptor)
+            except OSError:
+                pass
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 class Config:
@@ -72,24 +444,18 @@ class Config:
         if not config_path.exists():
             raise FileNotFoundError(f"配置文件不存在: {config_path}")
 
-        with open(config_path, "r", encoding="utf-8") as f:
-            base_config = yaml.safe_load(f) or {}
-        if not isinstance(base_config, dict):
-            raise ValueError(f"配置文件根节点必须是映射: {config_path}")
+        base_config = _load_yaml_mapping(config_path, "配置文件")
 
         self._config: Dict[str, Any] = copy.deepcopy(base_config)
+        local_config: Dict[str, Any] = {}
         if local_config_path is None and use_default_config:
             local_config_path = str(config_path.parent / "local.yaml")
         self._local_config_path = Path(local_config_path) if local_config_path else None
 
         if self._local_config_path and self._local_config_path.exists():
-            with open(self._local_config_path, "r", encoding="utf-8") as f:
-                local_config = yaml.safe_load(f) or {}
-            if not isinstance(local_config, dict):
-                raise ValueError(
-                    f"本机配置文件根节点必须是映射: {self._local_config_path}"
-                )
+            local_config = _load_yaml_mapping(self._local_config_path, "本机配置文件")
             self._deep_merge(self._config, local_config)
+            self._rebase_inherited_storage_paths(base_config, local_config)
 
         self._project_root = Path(__file__).parent.parent.parent
         self._resolved_embedding_dim = self._load_persisted_embedding_dim()
@@ -106,6 +472,55 @@ class Config:
                 Config._deep_merge(target[key], value)
             else:
                 target[key] = copy.deepcopy(value)
+
+    def _rebase_inherited_storage_paths(
+        self,
+        base_config: Dict[str, Any],
+        local_config: Dict[str, Any],
+    ) -> None:
+        """当本机数据根变化时，将未修改的存储子路径迁移到新根目录。"""
+        base_storage = base_config.get("storage")
+        local_storage = local_config.get("storage")
+        merged_storage = self._config.get("storage")
+        if not all(
+            isinstance(storage, dict)
+            for storage in (base_storage, local_storage, merged_storage)
+        ):
+            return
+
+        if "data_dir" not in local_storage:
+            return
+
+        base_data_dir = base_storage.get("data_dir", ".data")
+        local_data_dir = local_storage.get("data_dir")
+        if not local_data_dir or local_data_dir == base_data_dir:
+            return
+
+        child_suffixes = {
+            "vault_dir": Path("vault"),
+            "db_path": Path("db") / "knowledge_vault.db",
+            "vector_index_dir": Path("vectors"),
+            "log_dir": Path("logs"),
+            "tmp_dir": Path("tmp"),
+        }
+        missing = object()
+        base_root = Path(str(base_data_dir))
+        local_root = Path(str(local_data_dir))
+
+        for key, default_suffix in child_suffixes.items():
+            base_value = base_storage.get(key, base_root / default_suffix)
+            local_value = local_storage.get(key, missing)
+
+            # local.yaml 中与基础配置不同的值是显式覆盖，必须原样保留。
+            if local_value is not missing and local_value != base_value:
+                continue
+
+            try:
+                suffix = Path(str(base_value)).relative_to(base_root)
+            except ValueError:
+                # 基础子路径本就位于 data_dir 之外，不应擅自迁移。
+                continue
+            merged_storage[key] = str(local_root / suffix)
 
     def get(self, key: str, default: Any = None) -> Any:
         """
@@ -161,8 +576,7 @@ class Config:
         for name in dict.fromkeys(name_variants):
             workflow_path = workflow_dir / f"{name}.yaml"
             if workflow_path.exists():
-                with open(workflow_path, "r", encoding="utf-8") as f:
-                    return yaml.safe_load(f) or {}
+                return _load_yaml_mapping(workflow_path, "工作流配置文件")
 
         # 兼容 config.yaml 中的 workflows 配置
         workflow_key = workflow_name.replace("-", "_")
@@ -189,20 +603,37 @@ class Config:
             merged_config["steps"] = steps
         return merged_config
 
-    def get_env(self, key: str, default: Optional[str] = None) -> Optional[str]:
-        """读取仅用于运行隔离的进程环境变量，不加载 .env 文件。"""
+    def _get_runtime_override(
+        self, key: str, default: Optional[str] = None
+    ) -> Optional[str]:
+        """读取进程级运行覆盖，不把环境变量作为应用配置源。"""
         return os.getenv(key, default)
+
+    def _runtime_data_subpath(self, name: str) -> Optional[Path]:
+        """当 DATA_DIR 被覆盖时，将其作为其余运行目录的隔离根。"""
+        data_dir = self._get_runtime_override("DATA_DIR")
+        if not data_dir:
+            return None
+        return self._project_root / data_dir / name
 
     @property
     def vault_dir(self) -> Path:
         """Markdown Vault 目录"""
-        path = self.get_env("VAULT_DIR") or self.get("storage.vault_dir", ".data/vault")
+        path = self._get_runtime_override("VAULT_DIR")
+        if path:
+            return self._project_root / path
+        runtime_path = self._runtime_data_subpath("vault")
+        if runtime_path is not None:
+            return runtime_path
+        path = self.get("storage.vault_dir", ".data/vault")
         return self._project_root / path
 
     @property
     def data_dir(self) -> Path:
         """数据根目录。"""
-        data_dir_str = self.get_env("DATA_DIR") or self.get("storage.data_dir")
+        data_dir_str = self._get_runtime_override("DATA_DIR") or self.get(
+            "storage.data_dir"
+        )
         if data_dir_str:
             return self._project_root / data_dir_str
         return self.db_path.parent.parent
@@ -210,30 +641,48 @@ class Config:
     @property
     def db_path(self) -> Path:
         """SQLite 数据库路径"""
-        db_path_str = self.get_env("DB_PATH") or self.get(
-            "storage.db_path", ".data/db/knowledge_vault.db"
-        )
+        db_path_str = self._get_runtime_override("DB_PATH")
+        if db_path_str:
+            return self._project_root / db_path_str
+        runtime_db_dir = self._runtime_data_subpath("db")
+        if runtime_db_dir is not None:
+            return runtime_db_dir / "knowledge_vault.db"
+        db_path_str = self.get("storage.db_path", ".data/db/knowledge_vault.db")
         return self._project_root / db_path_str
 
     @property
     def vector_index_dir(self) -> Path:
         """向量索引目录"""
-        path = (
-            self.get_env("VECTOR_STORE_PATH")
-            or self.get_env("VECTOR_DIR")
-            or self.get("storage.vector_index_dir", ".data/vectors")
-        )
+        path = self._get_runtime_override("VECTOR_DIR")
+        if path:
+            return self._project_root / path
+        runtime_path = self._runtime_data_subpath("vectors")
+        if runtime_path is not None:
+            return runtime_path
+        path = self.get("storage.vector_index_dir", ".data/vectors")
         return self._project_root / path
 
     @property
     def log_dir(self) -> Path:
         """日志目录"""
+        path = self._get_runtime_override("LOG_DIR")
+        if path:
+            return self._project_root / path
+        runtime_path = self._runtime_data_subpath("logs")
+        if runtime_path is not None:
+            return runtime_path
         path = self.get("storage.log_dir", ".data/logs")
         return self._project_root / path
 
     @property
     def tmp_dir(self) -> Path:
         """临时文件目录"""
+        path = self._get_runtime_override("TMP_DIR")
+        if path:
+            return self._project_root / path
+        runtime_path = self._runtime_data_subpath("tmp")
+        if runtime_path is not None:
+            return runtime_path
         path = self.get("storage.tmp_dir", ".data/tmp")
         return self._project_root / path
 
@@ -246,17 +695,22 @@ class Config:
     def embedding_runtime_fingerprint(self) -> Dict[str, str]:
         """当前 Embedding 配置指纹，用于校验运行期维度缓存是否仍然有效。"""
         return {
-            "base_url": self.embd_base_url,
+            "base_url_sha256": self._embedding_base_url_sha256,
             "embedding_model": self.embd_model,
         }
 
     def embedding_index_fingerprint(self, dim: int) -> Dict[str, str]:
         """当前 Embedding 索引契约指纹，不包含 API Key 等敏感信息。"""
         return {
-            "base_url": self.embd_base_url,
+            "base_url_sha256": self._embedding_base_url_sha256,
             "embedding_model": self.embd_model,
             "embedding_dim": str(int(dim)),
         }
+
+    @property
+    def _embedding_base_url_sha256(self) -> str:
+        """对可能携带凭据的 endpoint 生成稳定、不可逆指纹。"""
+        return endpoint_contract_sha256(self.embd_base_url)
 
     @property
     def llm_api_key(self) -> Optional[str]:
@@ -274,21 +728,6 @@ class Config:
         return self.get("ai.llm.model") or "deepseek-chat"
 
     @property
-    def deepseek_api_key(self) -> Optional[str]:
-        """兼容旧代码属性名：OpenAI-compatible LLM API Key。"""
-        return self.llm_api_key
-
-    @property
-    def deepseek_base_url(self) -> str:
-        """兼容旧代码属性名：OpenAI-compatible LLM API Base URL。"""
-        return self.llm_base_url
-
-    @property
-    def deepseek_model(self) -> str:
-        """兼容旧代码属性名：OpenAI-compatible LLM 模型名称。"""
-        return self.llm_model
-
-    @property
     def embd_api_key(self) -> Optional[str]:
         """OpenAI-compatible Embedding API Key。"""
         return self.get("ai.embedding.api_key")
@@ -302,21 +741,6 @@ class Config:
     def embd_model(self) -> str:
         """OpenAI-compatible Embedding 模型名称。"""
         return self.get("ai.embedding.model") or "text-embedding-3-small"
-
-    @property
-    def openai_api_key(self) -> Optional[str]:
-        """兼容旧代码属性名：OpenAI-compatible Embedding API Key。"""
-        return self.embd_api_key
-
-    @property
-    def openai_base_url(self) -> str:
-        """兼容旧代码属性名：OpenAI-compatible Embedding API Base URL。"""
-        return self.embd_base_url
-
-    @property
-    def openai_embedding_model(self) -> str:
-        """兼容旧代码属性名：OpenAI-compatible Embedding 模型名称。"""
-        return self.embd_model
 
     @property
     def embedding_dim_raw(self) -> Any:
@@ -365,6 +789,19 @@ class Config:
             return None
 
         fingerprint = payload.get("fingerprint")
+        if isinstance(fingerprint, dict) and "base_url" in fingerprint:
+            # 旧缓存可能将 userinfo/query 凭据与 endpoint 一起明文持久化。
+            # 按旧格式失效处理，同时必须从磁盘清除该原文。
+            try:
+                target_path.unlink()
+            except OSError:
+                try:
+                    target_path.write_text("{}\n", encoding="utf-8")
+                except OSError:
+                    raise RuntimeError(
+                        f"无法清理旧 Embedding 维度缓存: {target_path}"
+                    ) from None
+            return None
         if not self._runtime_embedding_fingerprint_matches(fingerprint):
             return None
 
@@ -387,7 +824,9 @@ class Config:
     @property
     def log_level(self) -> str:
         """日志级别"""
-        return self.get_env("LOG_LEVEL") or self.get("logging.level", "INFO")
+        return self._get_runtime_override("LOG_LEVEL") or self.get(
+            "logging.level", "INFO"
+        )
 
     def ensure_dirs(self):
         """确保所有必要的目录存在"""

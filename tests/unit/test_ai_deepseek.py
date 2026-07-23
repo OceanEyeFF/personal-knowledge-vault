@@ -2,6 +2,7 @@
 DeepSeek API 客户端单元测试
 """
 
+import logging
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 
@@ -65,6 +66,30 @@ class TestDeepSeekClientInit:
         assert client.model == "custom-model"
         assert client.timeout == 60.0
         assert client.max_retries == 5
+
+    def test_init_log_redacts_endpoint_credentials(self, mock_config, caplog):
+        """初始化 INFO 日志不得写入 endpoint 凭据。"""
+        endpoint = (
+            "https://log-user:log-password@llm.example/v1;pass=log-matrix"
+            "?auth=log-query&passwd=log-passwd&session=log-session"
+            "&jsessionidsso=log-jsession-sso&phpsessid=log-php-session"
+            "#code=log-fragment&pwd=log-pwd"
+        )
+
+        with caplog.at_level("INFO", logger="src.ai.deepseek_client"):
+            DeepSeekClient(base_url=endpoint)
+
+        assert "llm.example" in caplog.text
+        assert "log-user" not in caplog.text
+        assert "log-password" not in caplog.text
+        assert "log-query" not in caplog.text
+        assert "log-fragment" not in caplog.text
+        assert "log-matrix" not in caplog.text
+        assert "log-passwd" not in caplog.text
+        assert "log-pwd" not in caplog.text
+        assert "log-session" not in caplog.text
+        assert "log-jsession-sso" not in caplog.text
+        assert "log-php-session" not in caplog.text
 
     def test_init_without_api_key(self):
         """测试没有 API Key 时抛出异常"""
@@ -253,6 +278,99 @@ class TestDeepSeekAPICall:
             assert result == "API 响应内容"
             mock_client.post.assert_called_once()
 
+    def test_api_call_appends_resource_to_path_and_drops_fragment(
+        self, mock_config
+    ):
+        """资源路径追加在 path 后，query 保留而 fragment 不进入 HTTP。"""
+        endpoint = (
+            "https://llm.example/root/v1?region_code=north&routing_key=primary"
+            "#client-only"
+        )
+        client = DeepSeekClient(base_url=endpoint)
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {},
+        }
+
+        with patch("httpx.Client") as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__enter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+            mock_client_class.return_value = mock_client
+
+            assert client._call_api([{"role": "user", "content": "test"}]) == "ok"
+
+        request_url = mock_client.post.call_args.args[0]
+        assert request_url == (
+            "https://llm.example/root/v1/chat/completions"
+            "?region_code=north&routing_key=primary"
+        )
+        assert "#client-only" not in request_url
+
+    def test_native_http_logs_do_not_echo_real_request_url_credentials(
+        self, mock_config, caplog
+    ):
+        """真实 httpx 请求在 DEBUG 下也不能通过第三方 logger 泄密。"""
+        sentinel = "deepseek-native-secret"
+        endpoint = (
+            f"https://native-user:{sentinel}@llm.example/v1"
+            f";JSESSIONID={sentinel}?jwt={sentinel}#client-only"
+        )
+        request_urls = []
+
+        def handle_request(request: httpx.Request) -> httpx.Response:
+            request_urls.append(str(request.url))
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {},
+                },
+            )
+
+        real_client = httpx.Client
+
+        def build_http_client(*args, **kwargs):
+            return real_client(
+                *args,
+                **kwargs,
+                transport=httpx.MockTransport(handle_request),
+            )
+
+        native_loggers = (
+            "httpx",
+            "httpx._client",
+            "httpcore",
+            "httpcore.connection",
+            "httpcore.http11",
+            "httpcore.http2",
+            "httpcore.proxy",
+        )
+        previous_levels = {
+            name: logging.getLogger(name).level for name in native_loggers
+        }
+        for name in native_loggers:
+            logging.getLogger(name).setLevel(logging.NOTSET)
+
+        try:
+            with patch(
+                "src.ai.deepseek_client.httpx.Client",
+                side_effect=build_http_client,
+            ), caplog.at_level(logging.DEBUG):
+                client = DeepSeekClient(base_url=endpoint)
+                assert client._call_api(
+                    [{"role": "user", "content": "test"}]
+                ) == "ok"
+        finally:
+            for name, level in previous_levels.items():
+                logging.getLogger(name).setLevel(level)
+
+        assert request_urls
+        assert sentinel in request_urls[0]
+        assert sentinel not in caplog.text
+
     def test_api_call_rate_limit_retry(self, client):
         """测试 API 限流重试"""
         # 第一次返回 429，第二次成功
@@ -315,6 +433,50 @@ class TestDeepSeekAPICall:
 
             with pytest.raises(Exception, match="DeepSeek API 调用失败"):
                 client._call_api([{"role": "user", "content": "test"}])
+
+    def test_api_error_does_not_echo_response_or_network_credentials(
+        self, client, caplog
+    ):
+        """响应正文或网络异常中的 endpoint 凭据不得进入日志/异常。"""
+        sentinel = "runtime-endpoint-secret"
+        mock_response = Mock()
+        mock_response.status_code = 400
+        mock_response.text = (
+            f"failed https://user:{sentinel}@example/v1?passwd={sentinel}"
+        )
+
+        with patch("httpx.Client") as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__enter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+            mock_client_class.return_value = mock_client
+
+            with caplog.at_level("ERROR", logger="src.ai.deepseek_client"):
+                with pytest.raises(Exception) as exc_info:
+                    client._call_api([{"role": "user", "content": "test"}])
+
+        assert sentinel not in caplog.text
+        assert sentinel not in str(exc_info.value)
+
+    def test_generic_provider_exception_is_replaced_with_safe_message(
+        self, client, caplog
+    ):
+        sentinel = "generic-provider-response-secret"
+
+        with patch("httpx.Client") as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__enter__.return_value = mock_client
+            mock_client.post.side_effect = ValueError(
+                f"bad response https://example/v1?session_id={sentinel}: {sentinel}"
+            )
+            mock_client_class.return_value = mock_client
+
+            with caplog.at_level("ERROR", logger="src.ai.deepseek_client"):
+                with pytest.raises(Exception) as exc_info:
+                    client._call_api([{"role": "user", "content": "test"}])
+
+        assert str(exc_info.value) == "DeepSeek API 调用失败"
+        assert sentinel not in caplog.text
 
     def test_api_call_max_retries_exceeded(self, client):
         """测试超过最大重试次数"""

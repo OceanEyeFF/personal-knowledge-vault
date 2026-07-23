@@ -10,12 +10,38 @@ import json
 import time
 from pathlib import Path
 from typing import List, Optional, Dict
+from urllib.parse import urlsplit, urlunsplit
 import httpx
 
-from src.utils.config import get_config
+from src.utils.config import (
+    get_config,
+    redact_url_credentials,
+    suppress_unsafe_http_transport_logs,
+)
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _strip_trailing_url_path_slashes(base_url: str) -> str:
+    """仅规范化 endpoint path，不能误改 query 或 fragment 的值。"""
+    parsed = urlsplit(base_url)
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path.rstrip("/"),
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
+def _append_transport_resource(base_url: str, resource: str) -> str:
+    """在 URL path 后追加资源，保留 query，并明确移除 HTTP fragment。"""
+    parsed = urlsplit(base_url)
+    path = f"{parsed.path.rstrip('/')}/{resource.lstrip('/')}"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ""))
 
 
 class DeepSeekClient:
@@ -45,17 +71,24 @@ class DeepSeekClient:
         if not self.api_key:
             raise ValueError("LLM API Key 未配置，请检查 config/local.yaml")
 
-        self.base_url = (base_url or config.llm_base_url).rstrip("/")
+        self.base_url = _strip_trailing_url_path_slashes(
+            base_url or config.llm_base_url
+        )
         self.model = model or config.llm_model
         self.timeout = timeout
         self.max_retries = max_retries
+        suppress_unsafe_http_transport_logs()
 
         # 加载 Prompt 模板
         self._prompts_dir = Path(__file__).parent / "prompts"
         self._summarize_prompt = self._load_prompt("summarize.txt")
         self._extract_tags_prompt = self._load_prompt("extract_tags.txt")
 
-        logger.info(f"DeepSeek 客户端初始化成功: model={self.model}, base_url={self.base_url}")
+        display_base_url = redact_url_credentials(self.base_url) or "已配置（URL 格式不可解析）"
+        logger.info(
+            f"DeepSeek 客户端初始化成功: "
+            f"model={self.model}, base_url={display_base_url}"
+        )
 
     def _load_prompt(self, filename: str) -> str:
         """
@@ -109,7 +142,7 @@ class DeepSeekClient:
             "max_tokens": max_tokens,
         }
 
-        url = f"{self.base_url}/chat/completions"
+        url = _append_transport_resource(self.base_url, "chat/completions")
 
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -150,7 +183,9 @@ class DeepSeekClient:
 
                 else:
                     # 其他错误，直接抛出
-                    error_msg = f"DeepSeek API 调用失败: status={response.status_code}, body={response.text}"
+                    error_msg = (
+                        f"DeepSeek API 调用失败: status={response.status_code}"
+                    )
                     logger.error(error_msg)
                     raise Exception(error_msg)
 
@@ -160,15 +195,23 @@ class DeepSeekClient:
                     raise Exception(f"DeepSeek API 请求超时 (已重试 {self.max_retries} 次)")
                 time.sleep(1)
 
-            except httpx.NetworkError as e:
-                logger.warning(f"DeepSeek API 网络错误: {e}，重试中 (第 {attempt}/{self.max_retries} 次)")
+            except httpx.NetworkError as exc:
+                logger.warning(
+                    "DeepSeek API 网络错误: error_type=%s，重试中 (第 %s/%s 次)",
+                    type(exc).__name__,
+                    attempt,
+                    self.max_retries,
+                )
                 if attempt == self.max_retries:
-                    raise Exception(f"DeepSeek API 网络错误: {e}")
+                    raise Exception("DeepSeek API 网络错误") from None
                 time.sleep(1)
 
-            except Exception as e:
-                logger.error(f"DeepSeek API 调用异常: {e}")
-                raise
+            except Exception as exc:
+                logger.error(
+                    "DeepSeek API 调用异常: error_type=%s",
+                    type(exc).__name__,
+                )
+                raise Exception("DeepSeek API 调用失败") from None
 
         # 所有重试都失败
         raise Exception(f"DeepSeek API 调用失败 (已重试 {self.max_retries} 次)")
@@ -287,11 +330,11 @@ class DeepSeekClient:
                 logger.warning("提取的标签数量超过 5 个，截取前 5 个")
                 tags = tags[:5]
 
-            logger.info(f"标签提取完成: tags={tags}")
+            logger.info("标签提取完成: tag_count=%s", len(tags))
             return tags
 
-        except json.JSONDecodeError as e:
-            logger.warning(f"直接 JSON 解析失败: {e}, response={response}")
+        except json.JSONDecodeError:
+            logger.warning("直接 JSON 解析失败: response_length=%s", len(response))
 
             # 策略 2: 查找 JSON 数组模式（可能包含说明文字）
             import re
@@ -308,18 +351,27 @@ class DeepSeekClient:
 
                         if len(tags) >= 3:
                             tags = tags[:5]
-                            logger.info(f"使用 JSON 数组模式提取标签: tags={tags}")
+                            logger.info(
+                                "使用 JSON 数组模式提取标签: tag_count=%s",
+                                len(tags),
+                            )
                             return tags
 
                 except json.JSONDecodeError:
-                    logger.warning(f"JSON 数组模式解析失败: {json_str}")
+                    logger.warning(
+                        "JSON 数组模式解析失败: candidate_length=%s",
+                        len(json_str),
+                    )
 
             # 策略 3: 提取引号中的内容（最后的降级方案）
             matches = re.findall(r'["\']([^"\']+)["\']', response)
             if matches and len(matches) >= 3:
                 tags = matches[:5]
-                logger.info(f"使用正则提取标签（降级方案）: tags={tags}")
+                logger.info(
+                    "使用正则提取标签（降级方案）: tag_count=%s",
+                    len(tags),
+                )
                 return tags
 
             # 完全失败
-            raise Exception(f"无法从 API 响应中提取标签: {response}")
+            raise Exception("无法从 API 响应中提取标签")

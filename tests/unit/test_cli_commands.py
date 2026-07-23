@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 import pytest
 import yaml
@@ -30,8 +30,6 @@ class DummyConfig:
         self.vector_index_dir = base_path / "vectors"
         self.log_dir = base_path / "logs"
         self.tmp_dir = base_path / "tmp"
-        self.deepseek_api_key: Optional[str] = None
-        self.openai_api_key: Optional[str] = None
         self.llm_api_key: Optional[str] = None
         self.embd_api_key: Optional[str] = None
         self.log_level = "INFO"
@@ -44,16 +42,10 @@ class DummyConfig:
         self._values = {
             "storage.vault_dir": str(self.vault_dir),
         }
-        self._env: Dict[str, str] = {}
 
     def get(self, key: str, default: Any = None) -> Any:
         """Return a configuration value."""
         return self._values.get(key, default)
-
-    def get_env(self, key: str, default: Optional[str] = None) -> Optional[str]:
-        """Return a mocked environment value."""
-        return self._env.get(key, default)
-
 
 class DummyStatus:
     """Minimal context manager for console.status."""
@@ -495,6 +487,58 @@ def test_config_show(
     )
 
 
+def test_config_show_reports_unset_api_keys(
+    runner: CliRunner,
+    load_config_stub,
+    mock_config: DummyConfig,
+    console_spy,
+) -> None:
+    """config show should not turn an unset key into an "already set" marker."""
+    mock_config.llm_api_key = ""
+    mock_config.embd_api_key = None
+
+    response = runner.invoke(commands.cli, ["config", "show"])
+
+    assert response.exit_code == 0
+    table = next(
+        call.args[0]
+        for call in console_spy.call_args_list
+        if call.args and isinstance(call.args[0], Table)
+    )
+    displayed = dict(zip(table.columns[0].cells, table.columns[1].cells))
+    assert displayed["ai.llm.api_key"] == "未设置"
+    assert displayed["ai.embedding.api_key"] == "未设置"
+
+
+def test_config_show_redacts_endpoint_credentials(
+    runner: CliRunner,
+    load_config_stub,
+    mock_config: DummyConfig,
+    console_spy,
+) -> None:
+    """config show 不得显示 endpoint 中的 userinfo 或认证参数。"""
+    mock_config.llm_base_url = (
+        "https://display-user:display-password@llm.example/v1"
+        "?access_token=display-query#callback?auth=display-fragment"
+    )
+
+    response = runner.invoke(commands.cli, ["config", "show"])
+
+    assert response.exit_code == 0
+    table = next(
+        call.args[0]
+        for call in console_spy.call_args_list
+        if call.args and isinstance(call.args[0], Table)
+    )
+    displayed_values = "\n".join(str(value) for value in table.columns[1].cells)
+    assert "llm.example" in displayed_values
+    assert "已隐藏" in displayed_values
+    assert "display-user" not in displayed_values
+    assert "display-password" not in displayed_values
+    assert "display-query" not in displayed_values
+    assert "display-fragment" not in displayed_values
+
+
 def test_config_get(
     runner: CliRunner,
     load_config_stub,
@@ -508,6 +552,164 @@ def test_config_get(
 
     assert response.exit_code == 0
     assert any("/tmp/vault" in text for text in _printed_strings(console_spy))
+
+
+def test_config_get_redacts_credentials_from_arbitrary_url_value(
+    runner: CliRunner,
+    load_config_stub,
+    mock_config: DummyConfig,
+    console_spy,
+) -> None:
+    """任意配置叶子中的 URL 凭据都应遮罩，普通参数应保留。"""
+    mock_config._values["service.endpoint"] = (
+        "https://get-user:get-password@example.com/v1"
+        "?region=cn&basicAuth=get-query"
+        "#callback?code=get-fragment&signal=visible-signal&design=visible-design"
+    )
+
+    response = runner.invoke(commands.cli, ["config", "get", "service.endpoint"])
+
+    assert response.exit_code == 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "example.com" in printed
+    assert "visible-signal" in printed
+    assert "visible-design" in printed
+    assert "get-user" not in printed
+    assert "get-password" not in printed
+    assert "get-query" not in printed
+    assert "get-fragment" not in printed
+
+
+def test_config_get_redacts_sensitive_values_in_parent_mapping(
+    runner: CliRunner,
+    load_config_stub,
+    mock_config: DummyConfig,
+    console_spy,
+) -> None:
+    """查询父级配置树时也不得打印嵌套密钥。"""
+    mock_config._values["ai"] = {
+        "llm": {"api_key": "test-secret", "model": "test-model"},
+        "embedding": {"api_key": "", "dim": "auto"},
+    }
+
+    response = runner.invoke(commands.cli, ["config", "get", "ai"])
+
+    assert response.exit_code == 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "test-secret" not in printed
+    assert "'api_key': '已设置'" in printed
+    assert "'api_key': '未设置'" in printed
+    assert "test-model" in printed
+
+
+def test_config_get_redacts_descendants_of_sensitive_path(
+    runner: CliRunner,
+    load_config_stub,
+    mock_config: DummyConfig,
+    console_spy,
+) -> None:
+    """异常嵌套在敏感路径下的值也不得被直接打印。"""
+    mock_config._values["ai.llm.api_key.value"] = "nested-secret"
+
+    response = runner.invoke(
+        commands.cli, ["config", "get", "ai.llm.api_key.value"]
+    )
+
+    assert response.exit_code == 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "nested-secret" not in printed
+    assert "已设置" in printed
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "service.openai_api_key",
+        "service.clientSecret",
+        "service.accessToken",
+        "service.refreshToken",
+        "service.APIKey",
+        "service.clientCredentials",
+        "service.JSESSIONID",
+        "service.jwt",
+        "service.pass",
+        "service.passcode",
+        "service.passphrase",
+        "service.passwd",
+        "service.pwd",
+        "service.sessionId",
+        "service.signature",
+        "service.subscriptionKey",
+        "service.requestSig",
+    ],
+)
+def test_config_get_redacts_generic_secret_leaf(
+    key: str,
+    runner: CliRunner,
+    load_config_stub,
+    mock_config: DummyConfig,
+    console_spy,
+) -> None:
+    """未来新增的常见敏感叶名默认按敏感值处理。"""
+    mock_config._values[key] = "future-secret"
+
+    response = runner.invoke(commands.cli, ["config", "get", key])
+
+    assert response.exit_code == 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "future-secret" not in printed
+    assert "已设置" in printed
+
+
+def test_sensitive_short_sig_marker_requires_identifier_boundary() -> None:
+    """短标记 sig 只匹配独立键片段，不误伤 signal/design 等普通字段。"""
+    assert commands._config_key_touches_sensitive_value("service.requestSig")
+    assert commands._config_key_touches_sensitive_value("service.sigV4")
+    assert not commands._config_key_touches_sensitive_value("service.signal")
+    assert not commands._config_key_touches_sensitive_value("service.design")
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "service.pass",
+        "service.dbPass",
+        "service.passcode",
+        "service.passwd",
+        "service.userPwd",
+    ],
+)
+def test_password_aliases_are_sensitive_identifier_parts(key: str) -> None:
+    assert commands._config_key_touches_sensitive_value(key)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["service.compass", "service.bypass", "service.compassMode", "service.bypassMode"],
+)
+def test_password_aliases_require_identifier_boundaries(key: str) -> None:
+    assert not commands._config_key_touches_sensitive_value(key)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "service.auth",
+        "service.proxyAuthHeader",
+        "service.basicAuth",
+        "service.httpBasicAuthMode",
+        "service.bearer",
+        "service.bearerHeader",
+    ],
+)
+def test_auth_markers_are_sensitive_identifier_parts(key: str) -> None:
+    """auth/basicAuth/bearer 按标识符边界识别为敏感键。"""
+    assert commands._config_key_touches_sensitive_value(key)
+
+
+@pytest.mark.parametrize("key", ["service.signal", "service.design"])
+def test_sensitive_markers_do_not_match_unrelated_words(key: str) -> None:
+    assert not commands._config_key_touches_sensitive_value(key)
 
 
 def test_config_get_alias_key(
@@ -541,6 +743,237 @@ def test_config_set(
     assert local_path.exists()
     data = yaml.safe_load(local_path.read_text(encoding="utf-8"))
     assert data["ai"]["llm"]["model"] == "test-model"
+
+
+@pytest.mark.parametrize("subcommand", ["get", "set"])
+@pytest.mark.parametrize(
+    ("legacy_key", "replacement"),
+    [
+        ("PKV_LLM_MODEL", "ai.llm.model"),
+        ("DEEPSEEK_API_KEY", "ai.llm.api_key"),
+        ("OPENAI_API_KEY", "ai.embedding.api_key"),
+    ],
+)
+def test_config_commands_reject_legacy_provider_keys(
+    subcommand: str,
+    legacy_key: str,
+    replacement: str,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+    tmp_path: Path,
+) -> None:
+    """旧 Provider 环境变量式键应失败并提示 YAML 点号键。"""
+    mocker.patch.object(commands, "_project_root", return_value=tmp_path)
+    args = ["config", subcommand, legacy_key]
+    if subcommand == "set":
+        args.append("legacy-model")
+
+    response = runner.invoke(commands.cli, args)
+
+    assert response.exit_code != 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert f"旧配置键 {legacy_key} 已移除" in printed
+    assert replacement in printed
+    assert not (tmp_path / "config" / "local.yaml").exists()
+
+
+def test_config_set_rejects_non_dotted_key(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    console_spy,
+    tmp_path: Path,
+) -> None:
+    """YAML 配置写入必须使用点号路径，避免制造无效顶层键。"""
+    mocker.patch.object(commands, "_project_root", return_value=tmp_path)
+
+    response = runner.invoke(commands.cli, ["config", "set", "TEST_KEY", "value"])
+
+    assert response.exit_code != 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "配置键必须使用 YAML 点号路径" in printed
+    assert not (tmp_path / "config" / "local.yaml").exists()
+
+
+def test_config_set_invalid_yaml_does_not_echo_value(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    console_spy,
+    tmp_path: Path,
+) -> None:
+    """YAML 解析错误不得把命令行原值带入错误输出。"""
+    mocker.patch.object(commands, "_project_root", return_value=tmp_path)
+    sentinel = "do-not-echo-this-value"
+
+    response = runner.invoke(
+        commands.cli,
+        ["config", "set", "service.endpoint", f"[{sentinel}"],
+    )
+
+    assert response.exit_code != 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "配置值不是有效的 YAML" in printed
+    assert sentinel not in printed
+    assert not (tmp_path / "config" / "local.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "structured_value",
+    [
+        "{api_key: do-not-persist-this-secret}",
+        "{nested: {password: do-not-persist-this-secret}}",
+        "[safe-value, do-not-persist-this-secret]",
+    ],
+)
+def test_config_set_rejects_structured_yaml_values(
+    structured_value: str,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    console_spy,
+    tmp_path: Path,
+) -> None:
+    """结构化 YAML 不得绕过路径检查，把嵌套敏感值写入本机配置。"""
+    mocker.patch.object(commands, "_project_root", return_value=tmp_path)
+
+    response = runner.invoke(
+        commands.cli,
+        ["config", "set", "service.settings", structured_value],
+    )
+
+    assert response.exit_code != 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "config set 仅支持标量值" in printed
+    assert "do-not-persist-this-secret" not in printed
+    assert not (tmp_path / "config" / "local.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "ai",
+        "ai.llm",
+        "ai.llm.api_key",
+        "ai.embedding",
+        "ai.embedding.api_key",
+        "processors",
+        "processors.zhihu",
+        "processors.zhihu.cookie",
+        "service.client_secret",
+        "service.auth_token",
+        "service.openai_api_key",
+        "service.password",
+        "service.clientSecret",
+        "service.accessToken",
+        "service.refreshToken",
+        "service.APIKey",
+        "service.clientCredentials",
+        "service.JSESSIONID",
+        "service.jwt",
+        "service.pass",
+        "service.passcode",
+        "service.passphrase",
+        "service.passwd",
+        "service.pwd",
+        "service.sessionId",
+        "service.signature",
+        "service.subscriptionKey",
+        "service.requestSig",
+    ],
+)
+def test_config_set_rejects_sensitive_values_on_command_line(
+    key: str,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    console_spy,
+    tmp_path: Path,
+) -> None:
+    """敏感值只能直接编辑 local.yaml，避免进入终端历史和进程参数。"""
+    mocker.patch.object(commands, "_project_root", return_value=tmp_path)
+
+    response = runner.invoke(commands.cli, ["config", "set", key, "test-secret"])
+
+    assert response.exit_code != 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "配置路径包含敏感值" in printed
+    assert "test-secret" not in printed
+    assert not (tmp_path / "config" / "local.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    ("key", "endpoint"),
+    [
+        ("ai.llm.base_url", "https://set-user:set-password@example.com/v1"),
+        ("ai.embedding.base_url", "https://example.com/v1?api_key=set-query"),
+        ("service.baseUrl", "https://example.com/v1#callback?auth=set-fragment"),
+        ("service.base_url", "https://example.com/callback#code=set-fragment"),
+        ("service.base_url", "https://example.com/v1;pass=set-matrix"),
+        ("service.base_url", "https://example.com/v1?passwd=set-passwd"),
+        ("service.base_url", "https://example.com/v1#pwd=set-pwd"),
+        ("service.base_url", "https://example.com/v1;JSESSIONID=set-session"),
+        ("service.base_url", "https://example.com/v1?jwt=set-jwt"),
+        ("service.base_url", "https://example.com/v1#session-id=set-session-id"),
+        (
+            "service.base_url",
+            "https://example.com/v1?subscription-key=set-subscription",
+        ),
+    ],
+)
+def test_config_set_rejects_credentials_embedded_in_base_url(
+    key: str,
+    endpoint: str,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    console_spy,
+    tmp_path: Path,
+) -> None:
+    """Base URL 内嵌凭据时必须改为直接编辑私有 YAML。"""
+    mocker.patch.object(commands, "_project_root", return_value=tmp_path)
+
+    response = runner.invoke(commands.cli, ["config", "set", key, endpoint])
+
+    assert response.exit_code != 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "Base URL 不得通过命令行传入认证信息" in printed
+    for sentinel in (
+        "set-user",
+        "set-password",
+        "set-query",
+        "set-fragment",
+        "set-matrix",
+        "set-passwd",
+        "set-pwd",
+        "set-session",
+        "set-jwt",
+        "set-session-id",
+        "set-subscription",
+    ):
+        assert sentinel not in printed
+    assert not (tmp_path / "config" / "local.yaml").exists()
+
+
+def test_config_set_allows_non_sensitive_base_url_parameters(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    tmp_path: Path,
+) -> None:
+    """signal/design 等普通 query 参数不应误报为凭据。"""
+    mocker.patch.object(commands, "_project_root", return_value=tmp_path)
+    endpoint = (
+        "https://example.com/v1;compass=north"
+        "?signal=enabled&design=compact&bypass=fast"
+        "&region_code=north&routing_key=primary"
+    )
+
+    response = runner.invoke(
+        commands.cli, ["config", "set", "service.base_url", endpoint]
+    )
+
+    assert response.exit_code == 0
+    data = yaml.safe_load(
+        (tmp_path / "config" / "local.yaml").read_text(encoding="utf-8")
+    )
+    assert data["service"]["base_url"] == endpoint
 
 
 def test_stats_command(
