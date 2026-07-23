@@ -56,15 +56,16 @@ python -m src.main archive "https://example.com"
 **内容**:
 ```
 # 生产数据目录（AI 不应直接读取或修改）
-.data/db/
-.data/vault/
-.data/vectors/
+.data/
 
 # 备份数据（AI 不应修改）
 .data-backup/
 
-# 敏感配置文件（AI 不应读取 API Keys）
-.env
+# 本机敏感配置（AI 不应读取或打印）
+config/local.yaml
+
+# 兼容性防泄漏兜底；应用配置不再使用 .env
+.env*
 ```
 
 **作用**: 防止 AI 意外访问敏感数据
@@ -82,7 +83,8 @@ python -m src.main archive "https://example.com"
 
 **使用方式**:
 ```powershell
-.\scripts\check-environment.ps1
+# AI/自动化直接查看测试配置，不裸跑会读取默认数据库统计的检测脚本
+.\scripts\run-test.ps1 config show
 ```
 
 **输出示例**:
@@ -115,22 +117,30 @@ python -m src.main archive "https://example.com"
 
 1. **检测环境**
    ```powershell
-   .\scripts\check-environment.ps1
+   .\scripts\run-test.ps1 config show
    ```
 
 2. **如果需要测试，切换到测试环境**
    ```powershell
-   # 创建测试配置（如果没有）
-   if (!(Test-Path .env.test)) { copy .env.test.example .env.test }
+   # run-test.ps1 自动把数据库、Vault、向量、日志和临时目录
+   # 全部指向 .data-test/，无需创建或加载 .env.test。
+   .\scripts\run-test.ps1 <CLI-subcommand>
 
-   # 使用测试环境执行命令
-   .\scripts\run-test.ps1 <command>
+   # pytest、Python 脚本等非 CLI 命令必须显式使用 -Direct 和 -Command 字符串数组
+   .\scripts\run-test.ps1 -Direct -Command @("<executable>", "<arg1>", "<arg2>")
    ```
 
-3. **验证生产数据未受影响**
+3. **确认命令仍指向测试环境**
    ```powershell
-   python -m src.main stats  # 应显示原有数据量
+   .\scripts\run-test.ps1 config show
+   git status --short
    ```
+
+   AI 不读取生产 `.data/` 作前后对比；如需额外确认，由用户自行检查备份或文件时间戳。
+
+应用服务配置统一写入 Git 忽略的 `config/local.yaml`，使用
+`ai.llm.*` 与 `ai.embedding.*` 键。真实服务测试可临时设置
+`PKV_RUN_LIVE=1`；它只是运行开关，不承载服务地址、模型或密钥。
 
 ---
 
@@ -163,7 +173,7 @@ from pathlib import Path
 
 # 初始化
 manager = MigrationManager(
-    db_path=Path(".data/db/knowledge_vault.db"),
+    db_path=Path(".data-test/migration/db/knowledge_vault.db"),
     migrations_dir=Path("scripts/migrations")
 )
 
@@ -173,8 +183,8 @@ version = manager.get_current_version()  # "1.0.0"
 # 检查待迁移脚本
 pending = manager.get_pending_migrations()  # [(version, path), ...]
 
-# 执行所有待迁移脚本
-manager.apply_all_pending(auto_backup=True)
+# 隔离测试库禁止触发固定读取生产 .data/ 的自动备份
+manager.apply_all_pending(auto_backup=False)
 ```
 
 ---
@@ -225,64 +235,21 @@ VALUES ('1.1.0', '新增 CLI 使用统计表（M6）');
 
 **用法**:
 ```powershell
-# 交互式升级（推荐）
-python scripts/migrate.py
-
-# 自动升级（无需确认）
-python scripts/migrate.py --auto
-
-# 仅检查待迁移脚本（不执行）
-python scripts/migrate.py --dry-run
-
-# 查看当前版本
-python scripts/migrate.py --version
-
-# 跳过自动备份（不推荐）
-python scripts/migrate.py --auto --no-backup
+# AI/自动化默认只在隔离测试路径运行；migrate.py 是非 CLI 命令，必须使用 -Direct 和显式 -Command 数组
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--version")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--dry-run")
+# 当前自动备份脚本固定读取生产 .data/；可丢弃测试数据必须禁用自动备份
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
 ```
 
-**输出示例**:
-```
-======================================================================
- PKV 数据库迁移工具
-======================================================================
+未设置测试路径覆盖的裸命令会读取或修改生产 `.data/`。只有用户明确授权生产维护时，才由用户执行；AI 不执行，也不建议跳过备份。
 
-数据库路径: E:\gitee\personal-knowledge-vault\.data\db\knowledge_vault.db
-迁移脚本目录: E:\gitee\personal-knowledge-vault\scripts\migrations
+**结果判定**:
 
-当前版本: 1.0.0
-
-待执行的迁移: 1
-
-  • 002_add_cli_tables.sql
-    版本: v1.1.0
-    说明: 新增 CLI 使用统计表（M6 CLI 入口与交互界面）
-
-======================================================================
- ⚠️  警告：数据库迁移操作
-======================================================================
-
-  即将执行数据库 Schema 变更！
-  每个迁移前会自动备份到 .data-backup/
-
-是否继续执行迁移？(输入 YES 继续，其他任意键取消): YES
-
-======================================================================
- 开始迁移
-======================================================================
-
-✓ 迁移成功: 002_add_cli_tables.sql
-
-======================================================================
- 迁移完成 ✓
-======================================================================
-
-成功执行 1 个迁移脚本
-
-建议: 运行以下命令验证数据完整性
-  python -m src.main stats
-  python -m src.main list --limit 10
-```
+- `--dry-run` 应返回退出码 `0`，并只报告当前版本与待执行迁移，不写数据库。
+- `--auto --no-backup` 应返回退出码 `0`；该组合不会等待交互确认，也不会调用生产 `.data/` 备份脚本。
+- 待执行迁移的数量和文件名取决于旧版测试夹具与当前迁移目录，不固定为某一个脚本。
+- 完成后继续使用同一 `.data-test\migration` 根目录运行 `stats` 与 `list`。
 
 ---
 
@@ -316,45 +283,60 @@ SELECT * FROM schema_version;
 
 #### 完整升级流程
 
+先明确验证目标：全新的 `.data-test\migration` 空目录只验证 **fresh install**（从零建库到最新版本），不能证明旧库升级兼容。要验证升级兼容性，应先把已脱敏的旧版本数据库夹具复制到 `.data-test\migration\db\knowledge_vault.db`；场景依赖 Vault 或向量数据时，也应把对应测试夹具复制到同一数据根目录。不要让测试命令直接指向生产 `.data/`。
+
 1. **检查当前版本**
    ```powershell
-   python scripts/migrate.py --version
+   .\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--version")
    # 输出: 当前数据库版本: 1.0.0
    ```
 
 2. **查看待迁移脚本（Dry-run）**
    ```powershell
-   python scripts/migrate.py --dry-run
+   .\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--dry-run")
    ```
 
 3. **在测试环境验证迁移**
-   ```powershell
-   # 设置测试环境
-   $env:DB_PATH = ".data-test/db/knowledge_vault.db"
 
-   # 执行迁移
-   python scripts/migrate.py --auto
+   使用同一个测试数据根目录执行：
+
+   ```powershell
+   # migrate.py 不是常规 CLI 子命令，需用显式 -Command 数组；测试时还必须避免固定读取生产 .data/ 的自动备份
+   .\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
 
    # 验证结果
-   .\scripts\run-test.ps1 stats
-   .\scripts\run-test.ps1 list
+   .\scripts\run-test.ps1 -DataRoot .data-test\migration stats
+   .\scripts\run-test.ps1 -DataRoot .data-test\migration list
    ```
 
-4. **备份生产数据**
+   验证完成后关闭这个测试窗口，不能在其中继续执行生产迁移。
+
+4. **用户明确授权后，在新开的 PowerShell 窗口备份生产数据**
+
+   以下步骤开始操作生产 `.data/`，只由用户执行；AI 到此停止。用户首先确认六项测试路径变量均不存在：
+
    ```powershell
+   $pathVariables = "DATA_DIR", "DB_PATH", "VAULT_DIR", "VECTOR_DIR", "LOG_DIR", "TMP_DIR"
+   $remaining = $pathVariables | Where-Object { Test-Path "Env:$_" }
+   if ($remaining) {
+       throw "检测到路径环境变量，请关闭此窗口并新开 PowerShell：$($remaining -join ', ')"
+   }
+
    .\scripts\backup-data.ps1 -Message "v1.1.0 升级前备份"
    ```
 
-5. **执行生产环境迁移**
+5. **用户明确授权后，在刚刚校验通过的新窗口执行生产环境迁移**
    ```powershell
-   python scripts/migrate.py
+   # 以下命令只由用户执行；AI 不执行
+   .\scripts\run-windows.ps1 python scripts/migrate.py
    # 输入 YES 确认
    ```
 
-6. **验证升级结果**
+6. **由用户验证升级结果**
    ```powershell
-   python -m src.main stats
-   python -m src.main list --limit 10
+   # 以下命令读取生产 .data/，AI 不执行
+   .\scripts\run-windows.ps1 python -m src.cli.commands stats
+   .\scripts\run-windows.ps1 python -m src.cli.commands list --limit 10
    ```
 
 ---
@@ -365,7 +347,9 @@ SELECT * FROM schema_version;
 personal-knowledge-vault/
 ├── .ai-safety-rules.md               # AI 安全规则
 ├── .claudeignore                      # Claude 忽略文件
-├── .env.test.example                  # 测试环境配置模板
+├── config/
+│   ├── config.yaml                    # 可提交的默认配置
+│   └── local.yaml                     # Git 忽略的本机应用配置
 │
 ├── scripts/
 │   ├── check-environment.ps1          # 环境检测脚本
@@ -398,7 +382,7 @@ personal-knowledge-vault/
 
 | 特性 | 实现方式 | 效果 |
 |------|---------|------|
-| **环境隔离** | `.env.test` + `DB_PATH` 覆盖 | 测试数据写入 `.data-test/` |
+| **环境隔离** | `run-test.ps1` 自动设置完整测试路径 | 测试数据写入 `.data-test/` |
 | **自动提示** | `.ai-safety-rules.md` 指导 AI | AI 默认推荐测试环境 |
 | **数据保护** | `.claudeignore` 限制访问 | AI 无法读取生产数据 |
 | **环境检测** | `check-environment.ps1` | 快速验证当前环境 |
@@ -409,7 +393,7 @@ personal-knowledge-vault/
 |------|---------|------|
 | **版本管理** | `schema_version` 表 | 记录每次升级历史 |
 | **增量升级** | 按序执行待迁移脚本 | 支持跨版本升级（如 1.0.0 → 1.5.0） |
-| **自动备份** | 每次迁移前调用 `backup-data.ps1` | 数据安全有保障 |
+| **自动备份** | 生产迁移时调用 `backup-data.ps1` | 仅由用户授权的生产 runbook 使用；测试迁移加 `--no-backup` |
 | **幂等性** | `IF NOT EXISTS` / `IF EXISTS` | 重复执行安全 |
 | **测试验证** | 测试环境先验证 | 降低生产风险 |
 
@@ -420,14 +404,15 @@ personal-knowledge-vault/
 ### 场景 1：AI 协作开发新功能
 
 ```powershell
-# 1. AI 建议检测环境
-.\scripts\check-environment.ps1
+# 1. AI 确认测试路径
+.\scripts\run-test.ps1 config show
 
 # 2. AI 推荐在测试环境测试
 .\scripts\run-test.ps1 archive "https://example.com"
 
-# 3. AI 验证生产数据未受影响
-python -m src.main stats
+# 3. AI 再次确认测试路径；不读取生产 .data/
+.\scripts\run-test.ps1 config show
+git status --short
 ```
 
 **关键点**:
@@ -439,19 +424,30 @@ python -m src.main stats
 
 ### 场景 2：版本升级（如 M6 上线）
 
+在隔离测试数据根目录中验证升级：
+
 ```powershell
-# 1. 在测试环境验证升级
-$env:DB_PATH = ".data-test/db/knowledge_vault.db"
-python scripts/migrate.py --auto
+# 1. migrate.py 为非 CLI 命令，需用显式 -Command 数组；测试迁移禁用会读取生产 .data/ 的自动备份
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
+```
+
+测试通过后，如需操作生产数据，必须取得用户明确授权。以下步骤只由用户执行，AI 不执行：
+
+```powershell
+$pathVariables = "DATA_DIR", "DB_PATH", "VAULT_DIR", "VECTOR_DIR", "LOG_DIR", "TMP_DIR"
+$remaining = $pathVariables | Where-Object { Test-Path "Env:$_" }
+if ($remaining) {
+    throw "检测到路径环境变量，请关闭此窗口并新开 PowerShell：$($remaining -join ', ')"
+}
 
 # 2. 备份生产数据
 .\scripts\backup-data.ps1 -Message "M6 升级前备份"
 
-# 3. 执行生产环境升级
-python scripts/migrate.py
+# 3. 以下生产升级与验证只由用户执行；AI 不执行、不读取 .data/
+.\scripts\run-windows.ps1 python scripts/migrate.py
 
 # 4. 验证
-python -m src.main stats
+.\scripts\run-windows.ps1 python -m src.main stats
 ```
 
 **关键点**:
@@ -463,19 +459,30 @@ python -m src.main stats
 
 ### 场景 3：开发新功能需要新表
 
+先创建迁移脚本，再在隔离测试数据根目录中验证：
+
 ```powershell
 # 1. 创建迁移脚本
 # scripts/migrations/003_add_feature_table.sql
 
-# 2. 在测试环境验证
-$env:DB_PATH = ".data-test/db/knowledge_vault.db"
-python scripts/migrate.py --auto
+# 2. 在测试环境验证；使用 -Direct 和显式 -Command 数组，并禁用会读取生产 .data/ 的自动备份
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\feature-migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
 
 # 3. 测试新功能
-.\scripts\run-test.ps1 <new-feature-command>
+.\scripts\run-test.ps1 -DataRoot .data-test\feature-migration <CLI-subcommand>
+```
 
-# 4. 应用到生产环境
-python scripts/migrate.py
+验证完成后，如需应用到生产环境，必须取得用户明确授权。以下步骤只由用户执行，AI 不执行：
+
+```powershell
+$pathVariables = "DATA_DIR", "DB_PATH", "VAULT_DIR", "VECTOR_DIR", "LOG_DIR", "TMP_DIR"
+$remaining = $pathVariables | Where-Object { Test-Path "Env:$_" }
+if ($remaining) {
+    throw "检测到路径环境变量，请关闭此窗口并新开 PowerShell：$($remaining -join ', ')"
+}
+
+# 4. 以下生产升级只由用户执行；AI 不执行
+.\scripts\run-windows.ps1 python scripts/migrate.py
 ```
 
 **关键点**:
@@ -490,8 +497,8 @@ python scripts/migrate.py
 ### ✅ 推荐做法
 
 1. **AI 协作时**
-   - 始终通过 `check-environment.ps1` 检测环境
-   - 默认使用 `run-test.ps1` 执行命令
+   - 使用 `run-test.ps1 config show` 检查测试路径，不裸跑会读取默认数据库的检测命令
+   - 默认使用 `run-test.ps1` 执行 CLI；pytest/Python 等非 CLI 命令使用 `-Direct -Command @("executable", "arg", ...)`
    - 重要变更前提示用户备份
 
 2. **数据库升级时**
@@ -507,7 +514,8 @@ python scripts/migrate.py
 ### ⚠️ 注意事项
 
 1. **AI 协作**
-   - AI 不应读取 `.env`（包含 API Keys）
+   - AI 不应读取或打印 `config/local.yaml`（可能包含 API 密钥）
+   - 服务地址、模型和密钥不得通过旧环境变量配置
    - AI 不应直接修改 `.data/` 目录
    - AI 不应跳过安全检查
 
@@ -517,7 +525,8 @@ python scripts/migrate.py
    - 大数据量迁移时使用批量处理
 
 3. **版本控制**
-   - `.env.test` 不应提交到 Git（已忽略）
+   - `config/local.yaml` 不应提交到 Git（已忽略）
+   - `.env*` 保持在忽略规则中，仅作为防泄漏兜底
    - `.data-test/` 不应提交到 Git（已忽略）
    - `.data-backup/` 不应提交到 Git（已忽略）
 
@@ -538,7 +547,8 @@ python scripts/migrate.py
 - [ ] `migration_manager.py` 可正常导入
 - [ ] `migrate.py` 可正确识别待迁移脚本
 - [ ] 测试环境可成功执行迁移
-- [ ] 迁移前自动备份生效
+- [ ] 测试迁移使用 `--no-backup`，未触发生产 `.data/` 备份
+- [ ] 生产备份仅由用户在授权 runbook 中单独验证
 - [ ] 迁移后数据完整性验证通过
 
 ---
@@ -549,14 +559,12 @@ python scripts/migrate.py
 
 **检查**:
 ```powershell
-.\scripts\check-environment.ps1
+.\scripts\run-test.ps1 config show
 ```
 
 **解决**:
-```powershell
-# 从备份恢复
-.\scripts\restore-data.ps1
-```
+
+停止所有可写命令并保留现场。恢复会替换生产 `.data/`，必须取得用户明确授权并由用户按生产恢复 runbook 执行；AI 不运行 `restore-data.ps1`。
 
 ---
 
@@ -564,22 +572,21 @@ python scripts/migrate.py
 
 **检查**:
 ```powershell
-# 查看日志
-cat .data/logs/pkv.log | Select-String "migration"
+# 只查看隔离测试日志
+Get-Content .data-test\migration\logs\pkv.log | Select-String "migration"
 ```
 
 **解决**:
+
+生产恢复必须由用户明确授权并执行；AI 只在隔离测试路径重新验证迁移：
+
 ```powershell
-# 1. 从备份恢复
-.\scripts\restore-data.ps1
-
-# 2. 修复迁移脚本
-# 3. 在测试环境重新验证
-$env:DB_PATH = ".data-test/db/knowledge_vault.db"
-python scripts/migrate.py --auto
-
-# 4. 重新执行生产环境迁移
+# 1. 修复迁移脚本
+# 2. 在测试环境重新验证；使用 -Direct 和显式 -Command 数组，并禁用会读取生产 .data/ 的自动备份
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
 ```
+
+需要恢复备份或重新执行生产迁移时，必须取得用户明确授权，并由用户重新执行备份、恢复与路径检查；AI 不执行。
 
 ---
 
@@ -587,7 +594,7 @@ python scripts/migrate.py --auto
 
 **检查**:
 ```sql
-sqlite3 .data/db/knowledge_vault.db
+sqlite3 .data-test/migration/db/knowledge_vault.db
 SELECT * FROM schema_version ORDER BY version_id DESC;
 .quit
 ```

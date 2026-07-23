@@ -264,7 +264,7 @@ Warning: AI summary generation failed
 ```
 
 **解决方案**：
-- 检查 `.env` 文件中的 `PKV_LLM_API_KEY` 是否正确
+- 检查 `config/local.yaml` 中的 LLM 配置是否正确
 - 检查网络连接
 - 此错误不会导致测试失败，会使用降级策略
 

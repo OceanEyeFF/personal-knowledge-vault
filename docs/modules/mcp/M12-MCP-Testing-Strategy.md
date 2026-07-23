@@ -2,7 +2,7 @@
 
 > 三层递进式测试框架：Inspector 快速验证 → Python 脚本全流程 → pytest E2E 套件长期维护
 
-**核心理念**：充分利用已有的测试环境隔离方案（`.data-test/` + `.env.test`），循序渐进地验证 MCP 层的可用性。
+**核心理念**：使用 `.data-test/` 与进程级路径覆盖隔离测试数据，应用服务配置仍来自 `config/local.yaml`，循序渐进地验证 MCP 层的可用性。
 
 当前状态补注（2026-03-11）：
 
@@ -22,15 +22,12 @@
 
 **步骤**：
 
-```bash
-# 1. 启动 MCP Server (stdio 模式)
-cd E:/gitee/personal-knowledge-vault
-python -m src.mcp.server
+```powershell
+# 在仓库根目录启动 Inspector；其 stdio Server 强制使用隔离数据目录。
+Set-Location E:\repos\personal\personal-knowledge-vault
+npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Command "& '.\scripts\run-test.ps1' -DataRoot '.data-test\mcp-inspector' -Direct -Command @('python','-m','src.mcp.server')"
 
-# 2. 另开终端，启动 Inspector (需要 Node.js)
-npx @modelcontextprotocol/inspector python -m src.mcp.server
-
-# 3. 浏览器打开 http://localhost:5173，交互式测试：
+# 浏览器打开 Inspector 提示的本机地址，交互式测试：
 #    - 列出所有 Tool/Resource/Prompt
 #    - 逐一调用 Tool，查看返回值
 #    - 验证参数验证 (Schema)
@@ -50,7 +47,7 @@ npx @modelcontextprotocol/inspector python -m src.mcp.server
 - [ ] `find_bridges {seed_id}` → 返回 `implementation_level=partial`，且 `evidence_sources` 中包含 `graph_bridge_signal`
 - [ ] `timeline_of {topic}` → 当存在真实时间字段时返回 `inferred_time_field=event_time` 或 `published_at`，并包含 `structured_time_fields`
 - [ ] `contrast {topic_a, topic_b}` → 返回 `shared_tags / only_a_tags / only_b_tags`，且 `comparison_dimensions` 中包含 `relation_graph_signal`
-- [ ] `archive_url "https://example.com"` → 成功/失败响应
+- [ ] `archive_url "https://example.com"` → 成功/失败响应，且只写入 `.data-test\mcp-inspector`
 - [ ] 无效参数测试 → 返回合理的错误信息
 - [ ] 大数据量返回 → 不超时不崩溃
 
@@ -164,19 +161,20 @@ async def test_scenario_1_search():
     assert "标题" in results[0]
     ...
 
-# 使用 pytest 运行
-# pytest tests/blackbox/test_mcp_client_simulation.py -v
+# 使用隔离包装器运行，避免测试脚本回落到默认 `.data`
+# .\scripts\run-test.ps1 -DataRoot .data-test\mcp-simulation -Direct -Command @("pytest", "tests/blackbox/test_mcp_client_simulation.py", "-v")
 ```
 
 **执行方式**：
 
-```bash
+```powershell
 # 自动化模式（不需要启动服务）
-pytest tests/blackbox/test_mcp_client_simulation.py -v
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-simulation -Direct -Command @("pytest", "tests/blackbox/test_mcp_client_simulation.py", "-v")
 
 # 或手动模式（debug 用）
-python -m src.mcp.server &
-python tests/blackbox/test_mcp_client_simulation.py
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-manual -Direct -Command @("python", "-m", "src.mcp.server")
+# 另开终端；客户端必须使用同一 DataRoot，不要改为裸命令访问默认 `.data`。
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-manual -Direct -Command @("python", "tests/blackbox/test_mcp_client_simulation.py")
 ```
 
 **输出示例**：
@@ -219,9 +217,7 @@ from pathlib import Path
 @pytest.fixture(scope="session")
 def test_env():
     """设置测试环境 (使用 .data-test/)"""
-    os.environ["DB_PATH"] = ".data-test/db/knowledge_vault.db"
-    os.environ["DATA_DIR"] = ".data-test/vault"
-    os.environ["VECTOR_DIR"] = ".data-test/vectors"
+    os.environ["DATA_DIR"] = ".data-test/mcp-e2e"
     yield
     # 清理 (可选)
 
@@ -298,15 +294,15 @@ class TestMCPSearchE2E:
 
 **执行与报告**：
 
-```bash
+```powershell
 # 运行所有 E2E 测试
-pytest tests/e2e/test_mcp_e2e_*.py -v --tb=short
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("pytest", "tests/e2e", "-v", "--tb=short")
 
 # 仅运行搜索相关
-pytest tests/e2e/test_mcp_e2e_search.py -v
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("pytest", "tests/e2e/test_mcp_e2e_search.py", "-v")
 
 # 生成覆盖率报告
-pytest tests/e2e/ --cov=src.mcp --cov-report=html
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("pytest", "tests/e2e", "--cov=src.mcp", "--cov-report=html")
 ```
 
 ---
@@ -358,7 +354,15 @@ def populate_test_db():
 ```bash
 # 生成包含 20 条样本条目的测试数据库
 python scripts/setup-test-db.py --seed 42 --count 20 --output .data-test/db/knowledge_vault.db
+
+# 如需离线生成随机向量索引，显式给出测试维度
+python scripts/setup-test-db.py --seed 42 --count 20 --embedding-dim 2560
 ```
+
+未传 `--embedding-dim` 时，脚本只生成 SQLite/Vault 测试数据并跳过随机向量
+索引；它不会读取本机 Provider 配置、生产 `.data`，也不会调用真实 Embedding 服务。
+外部临时输出还必须显式传入 `--allow-outside-test-root`；仓库内始终只允许
+写入 `.data-test`。
 
 ---
 
@@ -403,18 +407,15 @@ jobs:
 
 ### 第一天：Inspector 快速验证（10 分钟）
 
-```bash
+```powershell
 # 安装 Node.js 依赖
 npm install -g @modelcontextprotocol/inspector
 
-# 启动 MCP Server
-cd E:/gitee/personal-knowledge-vault
-python -m src.mcp.server
+# 在仓库根目录启动隔离的 stdio Server + Inspector
+Set-Location E:\repos\personal\personal-knowledge-vault
+npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Command "& '.\scripts\run-test.ps1' -DataRoot '.data-test\mcp-inspector' -Direct -Command @('python','-m','src.mcp.server')"
 
-# 另开终端
-npx @modelcontextprotocol/inspector python -m src.mcp.server
-
-# 浏览器打开 http://localhost:5173
+# 浏览器打开 Inspector 提示的本机地址
 # 交互式测试每个 Tool
 ```
 
@@ -424,12 +425,12 @@ npx @modelcontextprotocol/inspector python -m src.mcp.server
 
 ### 第二天：Python 脚本全流程（30 分钟）
 
-```bash
+```powershell
 # 1. 创建测试数据库
-python scripts/setup-test-db.py --count 20
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-simulation -Direct -Command @("python", "scripts/setup-test-db.py", "--output", ".data-test/mcp-simulation/db/knowledge_vault.db", "--count", "20")
 
 # 2. 运行模拟客户端测试
-pytest tests/blackbox/test_mcp_client_simulation.py -v -s
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-simulation -Direct -Command @("pytest", "tests/blackbox/test_mcp_client_simulation.py", "-v", "-s")
 
 # 3. 查看完整日志
 ```
@@ -440,14 +441,14 @@ pytest tests/blackbox/test_mcp_client_simulation.py -v -s
 
 ### 第三天：建立 E2E 套件（60 分钟）
 
-```bash
+```powershell
 # 1. 编写 E2E 测试用例（参考上述代码）
 # 2. 运行 E2E 测试
-pytest tests/e2e/test_mcp_e2e_*.py -v
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("pytest", "tests/e2e", "-v")
 
 # 3. 查看覆盖率报告
-pytest tests/e2e/ --cov=src.mcp --cov-report=html
-open htmlcov/index.html
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("pytest", "tests/e2e", "--cov=src.mcp", "--cov-report=html")
+Start-Process htmlcov/index.html
 ```
 
 **预期结果**：MCP 层覆盖率 >90% ✅

@@ -71,12 +71,12 @@ pkv stats
 
 AI Agent（Claude Code、Cursor 等）通过 MCP 协议直接操作知识库：
 
-```bash
+```powershell
 # 启动 MCP Server（stdio 模式，供 Claude Code/Cursor 集成）
-python -m src.mcp
+.\scripts\run-windows.ps1 python -m src.mcp
 
-# 启动 HTTP 模式（远程访问）
-python -m src.mcp.server --transport streamable-http --port 3000
+# 启动 HTTP 模式（远程访问；先按 MCP 文档无回显注入认证令牌）
+.\scripts\run-windows.ps1 python -m src.mcp.server --transport streamable-http --port 3000
 ```
 
 **14 个 Tool**:
@@ -223,17 +223,17 @@ personal-knowledge-vault/
 为 AI 协作者准备的隔离环境（推荐）：
 
 ```bash
-conda create -y -n pkv-py311-codex python=3.11
-conda install -y -n pkv-py311-codex -c conda-forge hnswlib=0.8.0
-conda run -n pkv-py311-codex python -m pip install -r requirements.txt
-conda activate pkv-py311-codex
+conda create -y -n py311-private python=3.11
+conda install -y -n py311-private -c conda-forge hnswlib=0.8.0
+conda run -n py311-private python -m pip install -r requirements.txt
+conda activate py311-private
 ```
 
 ### ⚡ 3 步安装 (推荐：Conda 方式)
 
 ```powershell
 # 1️⃣ 克隆仓库
-git clone https://github.com/yourusername/personal-knowledge-vault.git
+git clone https://github.com/OceanEyeFF/personal-knowledge-vault.git
 cd personal-knowledge-vault
 
 # 2️⃣ 运行自动安装脚本（创建 Python 3.11 环境 + 安装依赖）
@@ -248,6 +248,8 @@ notepad config/local.yaml
 # 🎉 开始使用
 .\scripts\run-windows.ps1 python -m src.cli.commands --help
 ```
+
+> **Breaking configuration migration:** Provider 环境变量、`.env` 加载、`Config.get_env()`，以及 `deepseek_*` / `openai_*` 兼容属性已移除。外部插件和集成必须迁移到 `config/local.yaml` 的 `ai.llm.*` / `ai.embedding.*` 键，并改用 `Config.llm_api_key`、`llm_base_url`、`llm_model`、`embd_api_key`、`embd_base_url`、`embd_model` 与 `embedding_dim` 等现行属性。请不要恢复旧环境变量或兼容接口；这会重新引入双配置源和不可预测的优先级。
 
 ### 📚 详细指南
 
@@ -395,6 +397,8 @@ steps:
 
 **版本化 Schema 管理**:
 
+以下裸命令面向用户维护，未设置路径覆盖时会读取或修改生产 `.data/`；AI 不执行。AI/自动化应使用 `run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("<executable>", "<arg1>", "<arg2>")`，测试迁移追加 `--no-backup`，避免当前备份脚本读取生产目录。
+
 ```bash
 # 迁移工具
 python scripts/migrate.py                # 交互式升级
@@ -504,20 +508,20 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 **快速测试**:
 
 ```powershell
-# 统一通过 Windows 运行器进入 py311-private
+# 无数据访问的帮助命令可直接通过 Windows 运行器进入 py311-private
 .\scripts\run-windows.ps1 python -m src.cli.commands --help
 
-# 运行所有单元测试
-.\scripts\run-windows.ps1 pytest tests/unit/ -v
+# 运行所有单元测试；pytest 为非 CLI 命令，使用 -Direct 与显式 -Command 数组
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-v")
 
 # 运行特定模块测试
-.\scripts\run-windows.ps1 pytest tests/unit/test_processors_*.py -v
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-k", "processors", "-v")
 
 # 代码覆盖率
-.\scripts\run-windows.ps1 pytest tests/unit/ --cov=src --cov-report=term-missing
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "--cov=src", "--cov-report=term-missing")
 
-# 验证环境
-python src/utils/verify_setup.py
+# 验证环境；Python 脚本同样使用 -Direct 与显式 -Command 数组
+.\scripts\run-test.ps1 -Direct -Command @("python", "src/utils/verify_setup.py")
 ```
 
 详细说明：[tests/CLAUDE.md](tests/CLAUDE.md)
@@ -543,7 +547,7 @@ python src/utils/verify_setup.py
 - 📖 完善文档或修正错误
 - 🌟 Star 项目支持开发
 
-如有问题或建议，请在 [GitHub Issues](https://github.com/yourusername/personal-knowledge-vault/issues) 中提出。
+如有问题或建议，请在 [GitHub Issues](https://github.com/OceanEyeFF/personal-knowledge-vault/issues) 中提出。
 
 ## 📄 开源协议
 
@@ -578,6 +582,6 @@ python src/utils/verify_setup.py
 
 **✨ 工作流驱动的 AI-First 知识管理系统 ✨**
 
-[📖 开始使用](RUN_ME_FIRST.md) · [📚 查看文档](docs/) · [🐛 反馈问题](https://github.com/yourusername/personal-knowledge-vault/issues) · [⭐ Star 支持](https://github.com/yourusername/personal-knowledge-vault)
+[📖 开始使用](RUN_ME_FIRST.md) · [📚 查看文档](docs/) · [🐛 反馈问题](https://github.com/OceanEyeFF/personal-knowledge-vault/issues) · [⭐ Star 支持](https://github.com/OceanEyeFF/personal-knowledge-vault)
 
 </div>

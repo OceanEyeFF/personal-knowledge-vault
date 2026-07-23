@@ -22,18 +22,18 @@
 
 ### 启动 MCP Server
 
-```bash
-# stdio 模式（Claude Code / Cursor 本地集成）
-python -m src.mcp.server
+```powershell
+# stdio 模式（Claude Code / Cursor 本地集成；默认连接用户知识库）
+.\scripts\run-windows.ps1 python -m src.mcp.server
 
-# HTTP 模式（远程访问）
-python -m src.mcp.server --transport streamable-http --port 3000
+# HTTP 模式（远程访问；先按 Q4 无回显配置认证令牌）
+.\scripts\run-windows.ps1 python -m src.mcp.server --transport streamable-http --port 3000
 
-# MCP Inspector 可视化调试
-npx @modelcontextprotocol/inspector python -m src.mcp.server
+# MCP Inspector 可视化调试（强制隔离到 .data-test）
+npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Command "& '.\scripts\run-test.ps1' -DataRoot '.data-test\mcp-inspector' -Direct -Command @('python','-m','src.mcp.server')"
 
 # 自定义日志级别
-python -m src.mcp.server --log-level DEBUG
+.\scripts\run-windows.ps1 python -m src.mcp.server --log-level DEBUG
 ```
 
 ### Claude Code 集成配置
@@ -42,13 +42,23 @@ python -m src.mcp.server --log-level DEBUG
 {
   "mcpServers": {
     "pkv": {
-      "command": "python",
-      "args": ["-m", "src.mcp.server"],
-      "cwd": "/path/to/personal-knowledge-vault"
+      "command": "powershell.exe",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "E:\\repos\\personal\\personal-knowledge-vault\\scripts\\run-windows.ps1",
+        "python",
+        "-m",
+        "src.mcp.server"
+      ],
+      "cwd": "E:\\repos\\personal\\personal-knowledge-vault"
     }
   }
 }
 ```
+
+Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；Provider 配置继续由工作目录下 Git 忽略的 `config/local.yaml` 提供。
 
 ---
 
@@ -113,18 +123,22 @@ python -m src.mcp.server --log-level DEBUG
 
 ### 配置项
 
-MCP Server 共享主配置 `config/config.yaml` 和环境变量:
+MCP Server 共享 `config/config.yaml` 与 Git 忽略的 `config/local.yaml`。LLM 与 Embedding 配置只从 YAML 读取：
 
-```bash
-# 必需
-PKV_LLM_API_KEY=sk-...      # AI 摘要/标签
-PKV_EMBD_API_KEY=sk-...     # Embedding 向量
-
-# 可选
-DB_PATH=.data/db/knowledge_vault.db  # 数据库路径
-LOG_LEVEL=INFO                       # 日志级别
-PKV_MCP_AUTH_TOKEN=my-secret-token   # HTTP Bearer Token (仅 HTTP 模式需要)
+```yaml
+ai:
+  llm:
+    api_key: ""
+    base_url: "https://api.deepseek.com/v1"
+    model: "deepseek-chat"
+  embedding:
+    api_key: ""
+    base_url: "https://api.openai.com/v1"
+    model: "text-embedding-3-small"
+    dim: auto
 ```
+
+`DATA_DIR` / `DB_PATH` / `LOG_LEVEL` 仅用于进程级运行隔离；`PKV_MCP_AUTH_TOKEN` 是 HTTP 传输的部署认证令牌，不是 Provider 配置。
 
 ### 工作流配置
 
@@ -246,10 +260,10 @@ stdio 模式下 stdout 被 MCP JSON-RPC 协议占用,日志必须走 stderr。Se
 ### Q2: 如何调试 MCP Tool 返回值?
 
 推荐使用 MCP Inspector:
-```bash
-npx @modelcontextprotocol/inspector python -m src.mcp.server
+```powershell
+npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Command "& '.\scripts\run-test.ps1' -DataRoot '.data-test\mcp-inspector' -Direct -Command @('python','-m','src.mcp.server')"
 ```
-在浏览器中可视化调用每个 Tool/Resource/Prompt。
+在浏览器中可视化调用每个 Tool/Resource/Prompt。该命令把读写操作限制在 `.data-test\mcp-inspector`。
 
 ### Q3: archive_url 支持哪些 URL?
 
@@ -259,23 +273,25 @@ npx @modelcontextprotocol/inspector python -m src.mcp.server
 
 ### Q4: HTTP 模式如何配置认证?
 
-```bash
-# 1. 设置环境变量
-export PKV_MCP_AUTH_TOKEN="my-secret-token-here"
+```powershell
+# 1. 无回显读取环境变量；实际令牌不会进入命令历史
+$secureToken = Read-Host "PKV_MCP_AUTH_TOKEN" -AsSecureString
+$env:PKV_MCP_AUTH_TOKEN = [Net.NetworkCredential]::new("", $secureToken).Password
+Remove-Variable secureToken
 
 # 2. 启动 HTTP 模式
-python -m src.mcp.server --transport streamable-http --port 3000
+.\scripts\run-windows.ps1 python -m src.mcp.server --transport streamable-http --port 3000
 
-# 3. 客户端请求时携带 Bearer Token
-Authorization: Bearer my-secret-token-here
+# 3. 客户端从秘密存储或未提交的本机配置注入 Header
+Authorization: Bearer <由秘密存储注入>
 ```
 
-未配置 `PKV_MCP_AUTH_TOKEN` 时,所有 HTTP 请求将被拒绝(安全默认原则)。
+未配置 `PKV_MCP_AUTH_TOKEN` 时,所有 HTTP 请求将被拒绝(安全默认原则)。不要把实际令牌写入命令、截图或可提交的客户端配置。
 
 ### Q5: get_related 返回空结果怎么办?
 
 可能原因:
-1. 该条目归档时未生成向量索引(需要 PKV_EMBD_API_KEY)
+1. 该条目归档时未生成向量索引（检查 `config/local.yaml` 的 `ai.embedding.api_key`）
 2. 知识库条目太少,无足够相似内容
 3. hnswlib 索引文件不存在或损坏
 

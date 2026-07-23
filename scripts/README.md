@@ -91,7 +91,7 @@
 
 #### `run-test.ps1` - 测试环境运行脚本
 
-**用途**: 使用隔离的测试数据库运行 PKV 命令（不影响生产数据）
+**用途**: 使用隔离的测试数据路径运行 PKV CLI，或通过 `-Direct -Command @(...)` 运行 pytest、Python 等直接命令（不影响生产数据）
 
 **运行方式**:
 ```powershell
@@ -103,13 +103,24 @@
 
 # 查看测试环境统计
 .\scripts\run-test.ps1 stats
+
+# 直接运行 pytest；仍隔离数据库、Vault、向量、日志和临时目录
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests\unit\test_text_utils.py", "-q")
 ```
 
 **功能**:
-- ✅ 自动加载 `.env.test` 测试配置
+- ✅ 由脚本直接设置进程级测试路径，不读取额外配置文件
+- ✅ `-Direct` 模式通过显式 `-Command` 数组安全运行 pytest、Python 诊断等非 CLI 命令
 - ✅ 隔离测试数据到 `.data-test/` 目录
 - ✅ 自动创建测试目录结构
+- ✅ 拒绝将测试数据目录指向生产 `.data/`
+- ✅ 通过 `run-windows.ps1` 固定 Conda 环境与 UTF-8 编码
 - ✅ 显示测试环境状态
+
+**命令分派**:
+- 默认模式会执行 `python -m src.cli.commands <参数>`，只用于 `archive`、`search`、`stats` 等 PKV CLI 子命令。
+- `-Direct` 模式原样执行显式 `-Command @(...)` 数组中的元素，例如 pytest 或 Python 脚本及其参数。
+- 两种模式都会先设置 `DATA_DIR`、`DB_PATH`、`VAULT_DIR`、`VECTOR_DIR`、`LOG_DIR`、`TMP_DIR`，并拒绝 `.data/`、junction 与符号链接目标。
 
 **使用场景**:
 - 测试新功能而不影响生产数据
@@ -166,34 +177,13 @@
 - ⚠️ 恢复操作会**完全替换**当前 `.data/` 目录
 - ⚠️ 建议先备份当前数据再恢复
 
----
+如需并行隔离多个测试场景，可显式指定数据根目录：
 
-#### `.env.test.example` - 测试环境配置模板
-
-**用途**: 测试环境配置示例文件
-
-**使用方式**:
 ```powershell
-# 复制模板文件
-copy .env.test.example .env.test
-
-# 编辑配置
-notepad .env.test
+.\scripts\run-test.ps1 -DataRoot .data-test\feature-a stats
 ```
 
-**配置项**:
-```env
-# 数据库路径（使用测试专用目录）
-DB_PATH=.data-test/db/knowledge_vault.db
-
-# 完整隔离数据、Vault 与向量目录
-DATA_DIR=.data-test
-VAULT_DIR=.data-test/vault
-VECTOR_DIR=.data-test/vectors
-
-# 日志级别（DEBUG 获取详细日志）
-LOG_LEVEL=DEBUG
-```
+应用服务、模型和密钥仍统一从 Git 忽略的 `config/local.yaml` 读取；测试路径只作为当前进程的运行隔离覆盖。
 
 ---
 
@@ -212,7 +202,7 @@ LOG_LEVEL=DEBUG
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 # 或使用 CMD 运行 .bat 脚本
-.\scripts\setup.bat
+.\scripts\legacy\setup.bat
 ```
 
 ---
@@ -242,7 +232,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 **或手动降级 Python**:
 1. 卸载 Python 3.13
 2. 安装 Python 3.11
-3. 重新运行 `.\scripts\setup.ps1`
+3. 重新运行 `.\scripts\legacy\setup.ps1`
 
 ---
 
@@ -292,6 +282,7 @@ python src\utils\verify_setup.py
 - 🔑 记得编辑 `config/local.yaml` 填入 API Keys
 - 📝 运行测试确保一切正常
 - 🌟 推荐通过 `scripts/run-windows.ps1` 运行命令
+- 🔤 PowerShell 脚本使用 UTF-8 BOM 以兼容 Windows PowerShell 5.1；编辑时不要移除 BOM
 
 ---
 

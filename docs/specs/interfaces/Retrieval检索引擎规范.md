@@ -161,7 +161,7 @@ def search(self, query: str, limit: int = 10) -> List[SearchResult]:
 #### 关键特性
 
 - ✅ OpenAI-compatible Embedding（维度取决于当前模型，常见默认值为 1536）
-- ✅ 向量索引绑定 `PKV_EMBD_BASE_URL` / `PKV_EMBD_MODEL` / `PKV_EMBD_DIM` 契约，配置漂移时拒绝静默复用旧索引
+- ✅ 向量索引绑定 `ai.embedding.base_url` / `ai.embedding.model` / `ai.embedding.dim` 契约，配置漂移时拒绝静默复用旧索引
 - ✅ hnswlib 索引（HNSW 算法）
 - ✅ 余弦距离 → 相似度转换
 

@@ -412,7 +412,7 @@ vector_store.add(entry.id, embedding)
 
 说明：
 
-- 如果配置 `PKV_EMBD_DIM=auto`，`dim` 会在首次成功的 Embedding 请求后锁定
+- 如果配置 `ai.embedding.dim: auto`，维度会在首次成功的 Embedding 请求后锁定
 - 新建索引前必须确保 `VectorStore` 使用的维度与 Embedding 服务实际返回维度一致
 - Embedding 模型同样属于索引契约；更换模型后，即使维度相同，也应重建向量索引并重新生成 Embedding
 
@@ -687,9 +687,11 @@ for version, migration_file in pending:
 
 **示例**:
 
+以下示例只用于隔离测试库。测试迁移一律设置 `auto_backup=False`；生产备份与迁移只由用户明确授权后执行。
+
 ```python
 migration_file = Path("scripts/migrations/002_add_cli_tables.sql")
-manager.apply_migration(migration_file, auto_backup=True)
+manager.apply_migration(migration_file, auto_backup=False)
 ```
 
 ---
@@ -710,7 +712,8 @@ manager.apply_migration(migration_file, auto_backup=True)
 **示例**:
 
 ```python
-success_count = manager.apply_all_pending(auto_backup=True)
+# 仅用于隔离测试库；测试迁移一律禁用自动备份
+success_count = manager.apply_all_pending(auto_backup=False)
 print(f"成功执行 {success_count} 个迁移脚本")
 ```
 
@@ -723,6 +726,8 @@ print(f"成功执行 {success_count} 个迁移脚本")
 **位置**: [scripts/migrate.py](../scripts/migrate.py)
 
 **用法**:
+
+未设置路径覆盖时，下面的裸命令会读取或修改生产 `.data/`，仅作为用户明确授权后的生产运维接口参考；AI 不执行。AI/自动化验证必须使用 `run-test.ps1 -Direct -Command @("executable", "arg", ...)` 的显式命令数组。
 
 ```bash
 # 交互式升级
@@ -743,26 +748,31 @@ python scripts/migrate.py --auto --no-backup
 
 **完整升级流程示例**:
 
-```bash
-# 1. 检查当前版本
-python scripts/migrate.py --version
+先确定测试目标：空的 `.data-test\migration` 只适合验证 **fresh install**，不能证明旧库升级兼容。升级兼容门禁必须先把经审核、已脱敏的旧版 DB 夹具复制（或把旧版 Schema fixture 导入）到 `.data-test\migration\db\knowledge_vault.db`；若场景依赖 Markdown Vault 或向量索引，还必须把对应夹具复制到同一数据根目录下的 `vault\`、`vectors\`。不得直接从生产 `.data\` 取样。
 
-# 2. 查看待迁移脚本
-python scripts/migrate.py --dry-run
+复制前应记录夹具的源版本、关键表行数、关系边与 FTS/索引基线。下面所有测试期 `migrate.py` 调用都显式携带 `--no-backup`，包括只读检查，以免示例被改写后意外启用备份：
 
-# 3. 在测试环境验证
-export DB_PATH=".data-test/db/knowledge_vault.db"
-python scripts/migrate.py --auto
+```powershell
+# 1. 先完成上述夹具准备；只有 fresh-install 冒烟测试才允许使用空目录
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--version", "--no-backup")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--dry-run", "--no-backup")
 
-# 4. 备份生产数据
-./scripts/backup-data.ps1 -Message "v1.1.0 升级前备份"
+# 2. 在同一旧版夹具副本上执行迁移
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--version", "--no-backup")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--dry-run", "--no-backup")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--health-check", "--no-backup")
+.\scripts\run-test.ps1 -DataRoot .data-test\migration stats
 
-# 5. 执行生产环境迁移
-python scripts/migrate.py  # 输入 YES 确认
+# 3. 以下步骤操作生产 .data/：必须取得用户明确授权，只由用户执行，AI 不执行
+.\scripts\backup-data.ps1 -Message "v1.1.0 升级前备份"
 
-# 6. 验证结果
-python -m src.main stats
+# 4. 用户执行生产迁移并验证结果
+.\scripts\run-windows.ps1 python scripts/migrate.py  # 输入 YES 确认
+.\scripts\run-windows.ps1 python -m src.cli.commands stats
 ```
+
+升级兼容门禁不能只看 `stats` 是否成功。迁移后必须对照迁移前基线验证：目标 Schema 版本已生效且无待迁移脚本；关键业务表行数符合预期；标签、分块和 `knowledge_relations` 等关系没有丢失或悬空；FTS 行数、同步触发器及代表性 `MATCH` 查询正常；预期 SQLite 索引存在且完整性检查通过。若复制了向量夹具，还必须验证同根 `vectors\` 索引可加载、维度/模型契约匹配并能完成代表性检索；若复制了 Vault，也要验证数据库记录与 Markdown 文件对应。任何一项失败都不得进入生产升级。
 
 ---
 
@@ -948,6 +958,8 @@ python -m src.main show 42 --raw
 
 列出知识库中的所有条目。
 
+裸命令读取当前数据目录；AI 默认使用 `.\scripts\run-test.ps1 list ...`，不读取生产 `.data/`。生产查询仅由明确授权的用户执行。
+
 **基本用法**:
 ```bash
 python -m src.main list [options]
@@ -1002,28 +1014,37 @@ python -m src.main config get db_path
 ```
 
 #### config set - 设置配置
+
+`config set` 会修改真实的 `config/local.yaml`，测试包装器会拒绝该命令。只有用户明确授权时才由用户执行；AI 不执行，也不得通过命令行传入密钥。
+
 ```bash
 python -m src.main config set <key> <value>
 ```
 
 **示例**:
 ```bash
-# 设置 LLM API Key
-python -m src.main config set PKV_LLM_API_KEY sk-xxxxx
+# 设置 LLM 模型
+python -m src.main config set ai.llm.model local-model
 
 # 设置日志级别
-python -m src.main config set LOG_LEVEL DEBUG
+python -m src.main config set logging.level DEBUG
 ```
+
+LLM、Embedding 和处理器配置统一写入 Git 忽略的 `config/local.yaml`，使用 `ai.llm.*`、`ai.embedding.*` 等点号路径键。不要再使用 `.env` 或旧的 `PKV_LLM_*` / `PKV_EMBD_*` 键。凭据建议直接在本机编辑 `config/local.yaml`，不要作为命令行参数传入，以免进入终端历史。
+
+测试隔离由 `scripts/run-test.ps1` 自动设置 `.data-test/` 路径，不创建或加载 `.env.test`。只有真实服务测试才使用进程级开关 `PKV_RUN_LIVE=1`。
 
 **集成接口**:
 - 读取 `Config` 对象属性
-- 修改 `.env` 文件（set 命令）
+- 修改 `config/local.yaml`（set 命令）
 
 ---
 
 ### pkv stats - 统计信息
 
 显示知识库统计信息。
+
+裸命令读取当前数据目录；AI 默认使用 `.\scripts\run-test.ps1 stats`，不读取生产 `.data/`。生产统计仅由明确授权的用户执行。
 
 **基本用法**:
 ```bash

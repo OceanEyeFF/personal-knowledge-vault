@@ -24,7 +24,7 @@
 ```python
 from src.ai.deepseek_client import DeepSeekClient
 
-# 初始化客户端（自动从 .env 读取 API Key）
+# 初始化客户端（从 config/local.yaml 合并配置读取）
 deepseek = DeepSeekClient()
 
 # 生成摘要
@@ -220,44 +220,33 @@ class Embedder:
 - `httpx`: 异步 HTTP 客户端
 - `openai`: OpenAI 官方 SDK（可选）
 
-### 环境变量
-
-在 `.env` 文件中配置:
-
-```bash
-# OpenAI-compatible LLM
-PKV_LLM_API_KEY=sk-xxx
-PKV_LLM_BASE_URL=https://api.deepseek.com/v1
-PKV_LLM_MODEL=deepseek-chat
-
-# OpenAI-compatible Embedding
-PKV_EMBD_API_KEY=sk-xxx
-PKV_EMBD_BASE_URL=https://api.openai.com/v1
-PKV_EMBD_MODEL=text-embedding-3-small
-PKV_EMBD_DIM=1536
-```
-
 ### 配置文件
 
-在 `config/config.yaml` 中:
+默认值位于 `config/config.yaml`，本机服务地址、模型和密钥写入 Git 忽略的 `config/local.yaml`：
 
 ```yaml
 ai:
-  # DeepSeek 配置
-  deepseek:
+  # OpenAI-compatible LLM
+  llm:
+    api_key: ""
+    base_url: "https://api.deepseek.com/v1"
     model: "deepseek-chat"
     max_tokens: 2000
     temperature: 0.7
 
-  # OpenAI Embedding 配置
-  openai:
-    embedding_model: "text-embedding-3-small"
-    embedding_dim: 1536
+  # OpenAI-compatible Embedding
+  embedding:
+    api_key: ""
+    base_url: "https://api.openai.com/v1"
+    model: "text-embedding-3-small"
+    dim: auto
 
   # Whisper 配置 (Phase 2)
   whisper:
     model: "whisper-1"
 ```
+
+项目不加载 `.env`，旧的 Provider 环境变量不会覆盖这些 YAML 值。
 
 ---
 

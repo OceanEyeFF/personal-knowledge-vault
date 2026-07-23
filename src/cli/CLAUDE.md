@@ -32,30 +32,33 @@ if __name__ == "__main__":
 
 **使用方式**:
 
-```bash
+以下示例默认使用隔离测试路径。生产 `.data/` 查询仅由明确授权的用户执行，AI 不执行。
+
+```powershell
 # 查看帮助
-python -m src.main --help
+.\scripts\run-windows.ps1 python -m src.main --help
 
 # 归档内容
-python -m src.main archive "https://mp.weixin.qq.com/xxx"
+.\scripts\run-test.ps1 archive "https://mp.weixin.qq.com/xxx"
 
 # 搜索知识库
-python -m src.main search "AI 工作流"
+.\scripts\run-test.ps1 search "AI 工作流"
 
 # 列出条目
-python -m src.main list --limit 10
+.\scripts\run-test.ps1 list --limit 10
 
 # 显示统计
-python -m src.main stats
+.\scripts\run-test.ps1 stats
 
 # 显示条目详情
-python -m src.main show 123
+.\scripts\run-test.ps1 show 123
 
 # 配置管理
-python -m src.main config show
-python -m src.main config get storage.vault_dir
-python -m src.main config set ai.temperature 0.8
+.\scripts\run-test.ps1 config show
+.\scripts\run-test.ps1 config get storage.vault_dir
 ```
+
+`config set` 会修改真实的 `config/local.yaml`，测试包装器会拒绝该命令；只有用户明确授权时才由用户直接编辑本机配置，AI 不执行。
 
 ### 全局选项
 
@@ -258,7 +261,7 @@ python -m src.main config show
 python -m src.main config get storage.vault_dir
 
 # 设置配置项
-python -m src.main config set ai.temperature 0.8
+python -m src.cli.commands config set ai.llm.temperature 0.8
 ```
 
 **配置键路径**:
@@ -376,11 +379,11 @@ class OutputFormatter:
 
 - `click>=8.0.0`: 命令行框架
 - `rich>=13.0.0`: 终端 UI 库
-- `python-dotenv`: 环境变量加载
+- `PyYAML`: `config.yaml` / `config/local.yaml` 配置读写
 
 ### 配置项
 
-无特殊配置,使用全局 `config.yaml`。
+读取 `config/config.yaml`，并合并 Git 忽略的 `config/local.yaml`；`config set` 只接受 YAML 点号键。
 
 ### CLI 版本
 

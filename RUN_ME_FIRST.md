@@ -63,7 +63,7 @@ notepad config\local.yaml
 .\scripts\test-conda.ps1
 
 # 或手动运行
-.\scripts\run-windows.ps1 python src\utils\verify_setup.py
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\verify-setup -Command @("python", "src\utils\verify_setup.py")
 ```
 
 如果看到 `✅ 所有测试通过！系统安装正确！`，就说明成功了！🎉
@@ -79,36 +79,6 @@ notepad config\local.yaml
 
 ---
 
-### Step 2: 配置 API Keys
-
-```powershell
-# 编辑本机私有配置
-notepad config\local.yaml
-```
-
-在 `ai.llm.api_key` 和 `ai.embedding.api_key` 中填入你的 API Keys。
-
-> **如果你还没有 API Keys**:
-> - LLM: 使用 OpenAI-compatible Chat Completions 服务
-> - Embedding: 使用 OpenAI-compatible Embeddings 服务
-
----
-
-### Step 3: 运行验证测试
-
-```powershell
-# 运行测试脚本
-.\scripts\test.ps1
-
-# 或手动运行
-.\.venv\Scripts\Activate.ps1
-python src\utils\verify_setup.py
-```
-
-如果看到 `✅ 所有测试通过！系统安装正确！`，就说明成功了！🎉
-
----
-
 ## ❓ 遇到问题了？
 
 ### 问题 1: PowerShell 提示"无法加载脚本"
@@ -119,12 +89,12 @@ python src\utils\verify_setup.py
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 # 然后重新运行
-.\scripts\setup.ps1
+.\scripts\legacy\setup.ps1
 ```
 
 **或者使用 CMD 脚本**:
 ```cmd
-.\scripts\setup.bat
+.\scripts\legacy\setup.bat
 ```
 
 ---
@@ -146,7 +116,7 @@ fatal error C1189: #error: "this header requires Py_BUILD_CORE define"
 **或手动降级 Python**:
 1. 卸载 Python 3.13
 2. 安装 Python 3.11
-3. 重新运行 `.\scripts\setup.ps1`
+3. 重新运行 `.\scripts\legacy\setup.ps1`
 
 ---
 
@@ -176,7 +146,7 @@ fatal error C1189: #error: "this header requires Py_BUILD_CORE define"
 
 ### 已经实现的功能：
 
-1. ✅ **配置系统** - YAML + 环境变量
+1. ✅ **配置系统** - 业务与 Provider 配置仅使用 YAML；环境变量仅用于运行路径隔离和进程开关
 2. ✅ **Markdown 存储** - YAML Front Matter 支持
 3. ✅ **SQLite 存储** - 完整 Schema + FTS5 全文搜索
 4. ✅ **向量存储** - hnswlib HNSW 算法

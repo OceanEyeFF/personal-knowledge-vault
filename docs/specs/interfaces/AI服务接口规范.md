@@ -13,7 +13,7 @@
 
 **文件**: `src/ai/deepseek_client.py`
 
-**作用**: 封装 OpenAI-compatible Chat Completions API 调用，提供摘要生成和标签提取功能。`DeepSeekClient` 为历史类名，实际端点和模型由 `PKV_LLM_*` 控制。
+**作用**: 封装 OpenAI-compatible Chat Completions API 调用，提供摘要生成和标签提取功能。`DeepSeekClient` 为历史类名，实际端点和模型由机器本地配置 `config/local.yaml` 中的 `ai.llm.*` 控制。
 
 #### 构造函数
 
@@ -40,13 +40,13 @@ def __init__(
 
 #### 配置来源
 
-| 参数 | 环境变量 | 配置文件键 | 默认值 |
-|------|---------|-----------|--------|
-| `api_key` | `PKV_LLM_API_KEY` | - | 无（必填） |
-| `base_url` | `PKV_LLM_BASE_URL` | `ai.llm.base_url` | `https://api.deepseek.com/v1` |
-| `model` | `PKV_LLM_MODEL` | `ai.llm.model` | `"deepseek-chat"` |
-| `timeout` | - | - | `30.0` |
-| `max_retries` | - | - | `3` |
+| 参数 | YAML 配置键 | 默认值 |
+|------|-------------|--------|
+| `api_key` | `ai.llm.api_key` | 无（必填） |
+| `base_url` | `ai.llm.base_url` | `https://api.deepseek.com/v1` |
+| `model` | `ai.llm.model` | `"deepseek-chat"` |
+| `timeout` | - | `30.0` |
+| `max_retries` | - | `3` |
 
 #### Prompt 模板加载
 
@@ -313,8 +313,8 @@ avg_vector = np.mean(chunk_vectors, axis=0)
 - ⚠️ OpenAI-compatible Embedding API 通常存在输入长度限制；OpenAI 官方服务约 8191 tokens（约 8000 字符）
 - ⚠️ 长文档会被分块并平均，可能损失部分语义信息
 - ⚠️ `dim` 不再固定为 `1536`，而是取决于当前 Embedding 模型的真实输出维度
-- ⚠️ 当 `PKV_EMBD_DIM=auto` 时，客户端会在首次成功请求后锁定真实维度
-- ⚠️ `PKV_EMBD_BASE_URL`、`PKV_EMBD_MODEL`、`PKV_EMBD_DIM` 是向量索引契约；更换后必须重建索引并重新生成文档级、分块级 Embedding
+- ⚠️ 当 `ai.embedding.dim: auto` 时，客户端会在首次成功请求后锁定真实维度
+- ⚠️ `ai.embedding.base_url`、`ai.embedding.model`、`ai.embedding.dim` 是向量索引契约；更换后必须重建索引并重新生成文档级、分块级 Embedding
 
 ---
 
@@ -584,7 +584,7 @@ class DeepSeekClient:
 ### 问题 6: Embedding 索引迁移仍需人工执行
 
 **问题描述**:
-- 当前模型、端点、维度已由 `PKV_EMBD_*` / `config.yaml` 显式配置
+- 当前模型、端点、维度由 `config/config.yaml` 与本机 `config/local.yaml` 显式配置
 - 新索引会记录非敏感契约指纹，加载时会拒绝复用不匹配索引
 - 但系统不会自动删除旧索引或自动重算已有 Embedding
 
@@ -592,7 +592,7 @@ class DeepSeekClient:
 
 **优先级**: 中
 
-**建议**: 更换 `PKV_EMBD_BASE_URL`、`PKV_EMBD_MODEL` 或 `PKV_EMBD_DIM` 时，按索引迁移流程重建向量索引并重新生成 Embedding
+**建议**: 更换 `ai.embedding.base_url`、`ai.embedding.model` 或 `ai.embedding.dim` 时，按索引迁移流程重建向量索引并重新生成 Embedding
 
 ---
 

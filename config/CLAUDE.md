@@ -35,17 +35,20 @@ storage:
   log_dir: ".data/logs"                # 日志目录
   tmp_dir: ".data/tmp"                 # 临时文件目录
 
-# AI 服务配置
+# AI 服务默认配置；本机私有覆盖只写入被 Git 忽略的 config/local.yaml
 ai:
-  deepseek:
-    model: "deepseek-chat"             # DeepSeek 模型
-    api_base: "https://api.deepseek.com/v1"
-    temperature: 0.7                   # 生成温度
-    max_tokens: 2000                   # 最大 token 数
+  llm:
+    api_key: ""                       # 默认必须为空，私钥不得提交
+    base_url: "https://api.deepseek.com/v1"
+    model: "deepseek-chat"
+    temperature: 0.7
+    max_tokens: 2000
 
-  openai:
-    embedding_model: "text-embedding-3-small"  # Embedding 模型
-    embedding_dimensions: 1536         # 向量维度
+  embedding:
+    api_key: ""                       # 默认必须为空，私钥不得提交
+    base_url: "https://api.openai.com/v1"
+    model: "text-embedding-3-small"
+    dim: 1536                           # 也可在 local.yaml 中设为 auto
 
 # 检索配置
 retrieval:
@@ -202,86 +205,64 @@ jieba.load_userdict("config/custom_dict.txt")
 
 ---
 
-## 环境变量配置
+## 本机配置与运行隔离
 
-### .env (生产环境)
+### `config/local.yaml`（本机私有配置）
 
-**用途**: 生产环境敏感配置
+应用服务、模型、密钥和处理器凭据只写入 Git 忽略的 `config/local.yaml`：
 
-**配置项**:
-```env
-# OpenAI-compatible LLM
-PKV_LLM_API_KEY=sk-your-llm-key
-
-# OpenAI-compatible Embedding
-PKV_EMBD_API_KEY=sk-your-embedding-key
-
-# 数据库路径 (可选,默认使用 config.yaml)
-DB_PATH=.data/db/knowledge_vault.db
-
-# 日志级别 (可选)
-LOG_LEVEL=INFO
-
-# MCP HTTP Bearer Token (仅 HTTP 传输模式需要)
-PKV_MCP_AUTH_TOKEN=your-secret-token
-```
-
-**创建方式**:
 ```powershell
-copy .env.example .env
-notepad .env
+Copy-Item config\config.yaml config\local.yaml
+notepad config\local.yaml
 ```
 
----
+主要键路径：
 
-### .env.test (测试环境)
-
-**用途**: 测试环境配置
-
-**配置项**:
-```env
-# 数据库路径 (使用测试专用目录)
-DB_PATH=.data-test/db/knowledge_vault.db
-
-# 测试用 API Keys (可选)
-PKV_LLM_API_KEY=sk-test-your-key
-PKV_EMBD_API_KEY=sk-test-your-key
-
-# 日志级别 (DEBUG 获取详细日志)
-LOG_LEVEL=DEBUG
+```yaml
+ai:
+  llm:
+    api_key: ""
+    base_url: "https://api.deepseek.com/v1"
+    model: "deepseek-chat"
+  embedding:
+    api_key: ""
+    base_url: "https://api.openai.com/v1"
+    model: "text-embedding-3-small"
+    dim: auto
 ```
 
-**创建方式**:
+项目不加载 `.env`，旧的 `PKV_LLM_*` / `PKV_EMBD_*` 变量不会覆盖 YAML。
+
+### 进程级运行覆盖
+
+环境变量仅用于一次性运行隔离：`DATA_DIR`、`DB_PATH`、`VAULT_DIR`、`VECTOR_DIR`、`LOG_DIR`、`TMP_DIR`、`LOG_LEVEL`。设置 `DATA_DIR` 时，未显式覆盖的其余数据路径会从该目录派生。
+
+日常测试直接使用：
+
 ```powershell
-copy .env.test.example .env.test
-notepad .env.test
+.\scripts\run-test.ps1 <CLI-subcommand>
+
+# pytest、Python 脚本等非 CLI 命令必须使用 -Direct 与显式 -Command 数组
+.\scripts\run-test.ps1 -Direct -Command @("<executable>", "<arg1>", "<arg2>")
 ```
 
-**使用方式**:
-```powershell
-# 自动加载 (通过 run-test.ps1)
-.\scripts\run-test.ps1 <command>
-```
+脚本会设置完整隔离路径，不读取 `.env.test`。
 
 ---
 
 ## 配置优先级
 
-**优先级从高到低**:
-1. 环境变量 (`$env:DB_PATH`)
-2. `.env` 文件
-3. `config.yaml` 文件
-4. 代码默认值
+**业务配置优先级从高到低**:
+1. `config/local.yaml`
+2. `config/config.yaml`
+3. 代码默认值
+
+存储路径可由上述进程级运行覆盖临时替换，但它们不是业务配置来源。
 
 **示例**:
 
 ```python
 from src.utils.config import Config
-
-# 1. 优先读取环境变量 DB_PATH
-# 2. 如果不存在,读取 .env 文件
-# 3. 如果不存在,读取 config.yaml
-# 4. 如果都不存在,使用默认值
 
 config = Config()
 db_path = config.db_path
@@ -311,25 +292,25 @@ verify_config()
 
 ### Q1: 如何修改配置?
 
-**方法 1: 编辑 config.yaml**
+**方法 1: 编辑本机 `config/local.yaml`（推荐）**
 
 ```yaml
-# 修改 DeepSeek 模型
+# 修改 OpenAI-compatible LLM 模型
 ai:
-  deepseek:
-    model: "deepseek-coder"  # 改为 Coder 模型
+  llm:
+    model: "deepseek-coder"
 ```
 
 **方法 2: 使用 CLI**
 
 ```bash
-python -m src.main config set ai.temperature 0.8
+.\scripts\run-windows.ps1 python -m src.cli.commands config set ai.llm.temperature 0.8
 ```
 
-**方法 3: 环境变量**
+**方法 3: 临时隔离数据路径**
 
 ```powershell
-$env:DB_PATH = ".data-custom/db/knowledge_vault.db"
+$env:DATA_DIR = ".data-custom"
 ```
 
 ---
@@ -350,12 +331,11 @@ $env:DB_PATH = ".data-custom/db/knowledge_vault.db"
 ### Q3: 如何切换到测试环境?
 
 ```powershell
-# 方法 1: 使用测试脚本
-.\scripts\run-test.ps1 <command>
+# 方法 1: 运行 PKV CLI 子命令
+.\scripts\run-test.ps1 <CLI-subcommand>
 
-# 方法 2: 手动设置环境变量
-$env:DB_PATH = ".data-test/db/knowledge_vault.db"
-python -m src.main <command>
+# 方法 2: 运行 pytest 等非 CLI 命令
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\manual -Command @("pytest", "tests/integration/", "-v")
 ```
 
 ---
@@ -365,12 +345,11 @@ python -m src.main <command>
 | 文件 | 说明 |
 |------|------|
 | `config.yaml` | 主配置文件 |
+| `local.yaml` | Git 忽略的本机私有覆盖配置 |
 | `workflows/archive-url.yaml` | 归档网页工作流配置 |
 | `workflows/archive-text.yaml` | 归档文本工作流配置 (M9 新增) |
 | `workflows/search.yaml` | 搜索工作流配置 |
 | `custom_dict.txt` | jieba 自定义词典 |
-| `../.env.example` | 环境变量模板 (生产) |
-| `../.env.test.example` | 环境变量模板 (测试) |
 
 ---
 

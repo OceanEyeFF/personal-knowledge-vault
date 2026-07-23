@@ -693,23 +693,29 @@ def idea_sharpen(content: str, entry_id: str = "") -> str:
 {
   "mcpServers": {
     "personal-knowledge-vault": {
-      "command": "python",
-      "args": ["-m", "src.mcp.server"],
-      "cwd": "/path/to/personal-knowledge-vault",
-      "env": {
-        "PKV_LLM_API_KEY": "sk-xxx",
-        "PKV_EMBD_API_KEY": "sk-xxx"
-      }
+      "command": "powershell.exe",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "E:\\repos\\personal\\personal-knowledge-vault\\scripts\\run-windows.ps1",
+        "python",
+        "-m",
+        "src.mcp.server"
+      ],
+      "cwd": "E:\\repos\\personal\\personal-knowledge-vault"
     }
   }
 }
 ```
 
+Windows 客户端通过 `run-windows.ps1` 固定使用 `py311-private`。Provider 配置由该工作目录下 Git 忽略的 `config/local.yaml` 提供，不放入 MCP 客户端 JSON。
+
 ### 5.2 HTTP 方式（远程访问）
 
-```bash
-# 启动 HTTP 服务
-python -m src.mcp.server --transport streamable-http --port 3000
+```powershell
+# 先按“HTTP 认证”一节无回显注入令牌，再启动服务
+.\scripts\run-windows.ps1 python -m src.mcp.server --transport streamable-http --port 3000
 ```
 
 客户端配置：
@@ -805,12 +811,14 @@ def validate_http_auth(request_headers: dict) -> bool:
 
 **配置方式**：
 
-```bash
-# .env 中添加（HTTP 模式必需，stdio 模式不需要）
-PKV_MCP_AUTH_TOKEN=your-secret-token-here
+```powershell
+# HTTP 模式必需；无回显读取，令牌不会写入命令历史。
+$secureToken = Read-Host "PKV_MCP_AUTH_TOKEN" -AsSecureString
+$env:PKV_MCP_AUTH_TOKEN = [Net.NetworkCredential]::new("", $secureToken).Password
+Remove-Variable secureToken
 
 # 启动 HTTP 服务
-python -m src.mcp.server --transport streamable-http --port 3000
+.\scripts\run-windows.ps1 python -m src.mcp.server --transport streamable-http --port 3000
 ```
 
 **客户端配置**：
@@ -821,12 +829,14 @@ python -m src.mcp.server --transport streamable-http --port 3000
     "personal-knowledge-vault": {
       "url": "http://localhost:3000/mcp",
       "headers": {
-        "Authorization": "Bearer your-secret-token-here"
+        "Authorization": "Bearer <由客户端秘密存储注入>"
       }
     }
   }
 }
 ```
+
+令牌应由客户端的秘密存储或未纳入版本控制的本机配置注入；不要把实际值写入命令、截图或可提交的 JSON。
 
 **安全默认原则**：
 - 未设置 `PKV_MCP_AUTH_TOKEN` 时，HTTP 模式**拒绝所有请求**
@@ -856,12 +866,12 @@ tests/integration/
 
 使用 MCP Inspector 或 `mcp-client` CLI 工具进行交互测试：
 
-```bash
+```powershell
 # 使用 MCP Inspector
-npx @modelcontextprotocol/inspector python -m src.mcp.server
+npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Command "& '.\scripts\run-test.ps1' -DataRoot '.data-test\mcp-inspector' -Direct -Command @('python','-m','src.mcp.server')"
 
 # 或使用 Python client
-python -m tests.manual_test_mcp
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-manual -Direct -Command @("python", "-m", "tests.manual_test_mcp")
 ```
 
 ---
@@ -970,8 +980,8 @@ nohup python -m src.mcp.server --transport streamable-http --port 3000 &
 | 现象 | 原因 | 解决方式 |
 |------|------|---------|
 | Claude Code 无法发现 Tool | MCP Server 未启动或配置错误 | 检查 `claude_desktop_config.json` 中的 `cwd` 和 `command` |
-| Tool 调用返回空结果 | 数据库为空或路径错误 | 检查 `.env` 中的 `DB_PATH` 是否指向有数据的 `.data/` |
-| 归档超时 | 网络不通或 AI API 超时 | 检查 `PKV_LLM_API_KEY` / `PKV_EMBD_API_KEY` 是否有效 |
+| Tool 调用返回空结果 | 数据库为空或路径错误 | 检查 YAML 的 `storage.db_path` 或进程级 `DB_PATH` 覆盖 |
+| 归档超时 | 网络不通或 AI API 超时 | 检查 `config/local.yaml` 的 `ai.llm.*` / `ai.embedding.*` |
 | HTTP 模式 401 | Token 未配置或不匹配 | 检查 `PKV_MCP_AUTH_TOKEN` 环境变量 |
 | "冻结"无响应 | 同步阻塞了事件循环 | 检查所有 handler 是否使用了 `async def` + `anyio.to_thread.run_sync()` |
 
@@ -1012,8 +1022,8 @@ async def my_new_tool(param1: str, param2: int = 10) -> dict:
 # 2. 添加对应测试
 # tests/unit/test_mcp_tools.py 中添加测试用例
 
-# 3. 在 MCP Inspector 中验证
-# npx @modelcontextprotocol/inspector python -m src.mcp.server
+# 3. 在隔离数据目录中使用 MCP Inspector 验证
+# npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Command "& '.\scripts\run-test.ps1' -DataRoot '.data-test\mcp-inspector' -Direct -Command @('python','-m','src.mcp.server')"
 ```
 
 **命名约定**：

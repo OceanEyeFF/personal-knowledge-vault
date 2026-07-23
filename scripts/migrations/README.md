@@ -77,37 +77,37 @@ VALUES ('{版本号}', '{变更描述}');
 
 ## 使用方法
 
+未设置路径覆盖时，以下裸命令会读取或修改生产 `.data/`，仅供用户明确授权后的生产维护；AI 不执行。
+
 ### 1. 检查待迁移脚本
 
 ```powershell
 # 查看当前数据库版本和待迁移脚本
-python scripts/migrate.py --dry-run
+.\scripts\run-windows.ps1 python scripts/migrate.py --dry-run
 ```
 
 ### 2. 执行迁移
 
 ```powershell
 # 交互式迁移（推荐）
-python scripts/migrate.py
+.\scripts\run-windows.ps1 python scripts/migrate.py
 
-# 自动迁移（用于 CI/CD）
-python scripts/migrate.py --auto
+# 无交互生产迁移（仅限用户授权并受控的维护流程；普通 CI 禁止指向生产数据）
+.\scripts\run-windows.ps1 python scripts/migrate.py --auto
 
 # 健康检查（只读）
-python scripts/migrate.py --health-check
+.\scripts\run-windows.ps1 python scripts/migrate.py --health-check
 ```
 
 ### 3. 在测试环境验证
 
 ```powershell
-# 设置测试环境
-$env:DB_PATH = ".data-test/db/knowledge_vault.db"
-
-# 执行迁移
-python scripts/migrate.py --auto
+# migrate.py 为非 CLI 命令，使用 -Direct 与显式 -Command 数组隔离全部路径。
+# 当前自动备份固定读取生产 .data/，可丢弃测试数据必须使用 --no-backup。
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
 
 # 验证结果
-.\scripts\run-test.ps1 stats
+.\scripts\run-test.ps1 -DataRoot .data-test\migration stats
 ```
 
 ---
@@ -155,30 +155,41 @@ python scripts/migrate.py --auto
 
 ## 测试要求
 
-每个迁移脚本提交前必须：
+每个迁移脚本提交前必须使用一次性 `.data-test` 根目录。升级兼容验证必须先复制
+脱敏的旧版本 DB/Schema fixture；空目录只能证明 fresh install，不能证明历史库升级。
 
-1. **在测试环境验证**
+1. **在旧版本 fixture 上验证升级**
+
    ```powershell
-   $env:DB_PATH = ".data-test/db/knowledge_vault.db"
-   python scripts/migrate.py --auto
+   # 先将脱敏旧版 fixture 放到 .data-test\migration\db\knowledge_vault.db
+   .\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
    ```
 
-2. **测试幂等性**（重复执行应成功）
+2. **验证迁移管理器重复启动安全**
+
+   第二次启动只验证“已登记版本不会再次执行”，不能作为 SQL 幂等性证据：
+
    ```powershell
-   python scripts/migrate.py --auto  # 第一次
-   python scripts/migrate.py --auto  # 第二次（应该跳过已应用的迁移）
+   .\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
    ```
+
+   如果迁移声明 SQL 本身可重复执行，必须另写专门测试，在一次性临时数据库上
+   直接执行目标迁移 SQL 两次，并断言第二次成功及 Schema/数据未重复；不能用
+   `MigrationManager` 的 pending-version 短路替代。
 
 3. **验证数据完整性**
+
+   对比升级前后行数、关系、FTS、索引与 schema version，而不只是命令退出码：
+
    ```powershell
-   .\scripts\run-test.ps1 stats
-   .\scripts\run-test.ps1 list
+   .\scripts\run-test.ps1 -DataRoot .data-test\migration stats
+   .\scripts\run-test.ps1 -DataRoot .data-test\migration list
    ```
 
 4. **测试应用功能**
    ```powershell
-   .\scripts\run-test.ps1 archive "https://example.com"
-   .\scripts\run-test.ps1 search "测试"
+   .\scripts\run-test.ps1 -DataRoot .data-test\migration archive "https://example.com"
+   .\scripts\run-test.ps1 -DataRoot .data-test\migration search "测试"
    ```
 
 ---

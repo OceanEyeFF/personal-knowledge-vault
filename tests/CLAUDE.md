@@ -56,7 +56,7 @@
 |------|----------|
 | `test_real_api_workflow.py` | 真实 API 环境工作流 |
 
-**注意**: 需要真实 API Keys (`PKV_LLM_API_KEY`, `PKV_EMBD_API_KEY`)
+**注意**: 需要显式设置 `PKV_RUN_LIVE=1`，并在 `config/local.yaml` 配置真实 API Key。
 
 ---
 
@@ -126,72 +126,70 @@ Layer 3: stdio 黑盒 (最慢, 子进程)
 
 ### 单元测试
 
-```bash
+```powershell
 # 运行所有单元测试
-python -m pytest tests/unit/ -v
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-v")
 
 # 运行特定模块测试
-python -m pytest tests/unit/test_processors_*.py -v
-python -m pytest tests/unit/test_cli_*.py -v
-python -m pytest tests/unit/test_mcp_*.py -v
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-k", "processors", "-v")
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-k", "cli", "-v")
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-k", "mcp", "-v")
 
 # 代码覆盖率
-python -m pytest tests/unit/ --cov=src --cov-report=term-missing
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "--cov=src", "--cov-report=term-missing")
 ```
 
 ---
 
 ### 集成测试
 
-```bash
+```powershell
 # 运行所有集成测试(需要 API Keys)
-python -m pytest tests/integration/ -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\integration -Command @("pytest", "tests/integration/", "-v")
 
 # 仅 MCP 集成测试
-python -m pytest tests/integration/test_mcp_*.py -v
-
-# 在测试环境运行
-$env:DB_PATH = ".data-test/db/knowledge_vault.db"
-python -m pytest tests/integration/ -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\integration -Command @("pytest", "tests/integration/", "-k", "mcp", "-v")
 ```
 
 ---
 
 ### E2E 测试
 
-```bash
+```powershell
 # 运行 E2E 测试(需要真实 API Keys)
-python -m pytest tests/e2e/ -v --tb=short
+$env:PKV_RUN_LIVE = "1"
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\e2e -Command @("pytest", "tests/e2e/", "-v", "--tb=short")
+Remove-Item Env:PKV_RUN_LIVE
 ```
 
 ---
 
 ### 黑盒测试
 
-```bash
+```powershell
 # 运行 CLI 黑盒测试
-python -m pytest tests/blackbox/test_cli_*.py -v
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/blackbox/", "-k", "cli", "-v")
 
 # 运行 MCP 黑盒测试 (启动子进程)
-python -m pytest tests/blackbox/test_mcp_blackbox.py -v
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/blackbox/test_mcp_blackbox.py", "-v")
 
 # 全部黑盒测试
-python -m pytest tests/blackbox/ -v
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/blackbox/", "-v")
 ```
 
 ---
 
 ### 手动测试
 
-```bash
+```powershell
 # 安全的纯文本归档测试(推荐)
-python tests/manual_test_text_archive_safe.py
+.\scripts\run-test.ps1 -Direct -Command @("python", "tests/manual_test_text_archive_safe.py")
 
 # AI 服务测试
-python tests/manual_test_ai_services.py
+.\scripts\run-test.ps1 -Direct -Command @("python", "tests/manual_test_ai_services.py")
 
 # 完整工作流测试
-python tests/manual_test_real_workflow.py
+.\scripts\run-test.ps1 -Direct -Command @("python", "tests/manual_test_real_workflow.py")
 ```
 
 ---
@@ -224,12 +222,11 @@ python tests/manual_test_real_workflow.py
 **重要**: 所有测试应使用测试环境,不影响生产数据。
 
 ```powershell
-# 方法 1: 使用测试脚本
-.\scripts\run-test.ps1 <command>
+# pytest 是非 CLI 命令，必须使用 -Direct 与显式 -Command 数组；包装脚本会隔离全部运行时路径
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/", "-q")
 
-# 方法 2: 手动设置环境变量
-$env:DB_PATH = ".data-test/db/knowledge_vault.db"
-python -m pytest tests/
+# 运行特定场景时可指定独立数据根目录
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\integration -Command @("pytest", "tests/integration/", "-v")
 ```
 
 MCP 黑盒测试自动使用临时数据库(`tmp_path`),无需手动隔离。
@@ -271,7 +268,7 @@ addopts = -v --tb=short
 
 ```bash
 # 生成 HTML 报告
-python -m pytest tests/unit/ --cov=src --cov-report=html
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "--cov=src", "--cov-report=html")
 
 # 查看报告
 open htmlcov/index.html
@@ -295,8 +292,8 @@ def test_my_function():
 ```
 
 2. 运行测试:
-```bash
-python -m pytest tests/unit/test_my_module.py -v
+```powershell
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/test_my_module.py", "-v")
 ```
 
 ---
@@ -319,10 +316,11 @@ def test_with_mock(mock_client):
 ```python
 import pytest
 import os
+from src.utils.config import get_config
 
 @pytest.mark.skipif(
-    not os.getenv("PKV_LLM_API_KEY"),
-    reason="需要 PKV_LLM_API_KEY"
+    os.getenv("PKV_RUN_LIVE") != "1" or not get_config().llm_api_key,
+    reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 LLM API Key"
 )
 def test_with_api():
     # 测试逻辑
@@ -336,8 +334,8 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 - 开发时优先运行 Layer 1/2 测试
 - CI/CD 或提交前运行完整三层测试
 - 使用 `-k` 过滤特定测试类:
-```bash
-python -m pytest tests/blackbox/test_mcp_blackbox.py -k "TestReadonlyTools" -v
+```powershell
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/blackbox/test_mcp_blackbox.py", "-k", "TestReadonlyTools", "-v")
 ```
 
 ---

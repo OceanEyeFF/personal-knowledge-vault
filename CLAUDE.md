@@ -211,26 +211,26 @@ graph TD
 ```powershell
 # 1. 安装 Conda 环境(推荐)
 .\scripts\setup-conda.ps1
-conda activate pkv-py311
 
-# 2. 配置 API Keys
-notepad .env
-# 填入: PKV_LLM_API_KEY, PKV_EMBD_API_KEY
+# 2. 配置本机私有 YAML（文件已被 Git 忽略）
+notepad config\local.yaml
+# 填入 ai.llm.* 与 ai.embedding.*
 
 # 3. 验证安装
 .\scripts\test-conda.ps1
 
-# 4. 启动 GUI 桌面应用 (推荐)
-python -m src.gui
+# 以下 AI/自动化示例统一使用隔离数据根目录；生产 .data/ 仅由用户明确授权后操作
 
-# 5. 使用 CLI
-python -m src.main --help
-python -m src.main archive "https://example.com"
-python -m src.main search "关键词"
+# 4. 启动 GUI 桌面应用 (推荐，隔离测试数据)
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\quickstart -Command @("python", "-m", "src.gui")
 
-# 6. 启动 MCP Server (Claude Code / Cursor 集成)
-python -m src.mcp.server                                    # stdio 模式
-python -m src.mcp.server --transport streamable-http --port 3000  # HTTP 模式
+# 5. 使用 CLI（隔离测试数据）
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\quickstart -Command @("python", "-m", "src.cli.commands", "--help")
+.\scripts\run-test.ps1 -DataRoot .data-test\quickstart archive "https://example.com"
+.\scripts\run-test.ps1 -DataRoot .data-test\quickstart search "关键词"
+
+# 6. 启动 MCP Server (Claude Code / Cursor 集成，隔离测试数据)
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\quickstart -Command @("python", "-m", "src.mcp.server")
 ```
 
 ### Codex/Claude 运行环境
@@ -238,39 +238,41 @@ python -m src.mcp.server --transport streamable-http --port 3000  # HTTP 模式
 为 AI 协作者准备的专用环境：
 
 ```bash
-conda create -y -n pkv-py311-codex python=3.11
-conda install -y -n pkv-py311-codex -c conda-forge hnswlib=0.8.0
-conda run -n pkv-py311-codex python -m pip install -r requirements.txt
-conda activate pkv-py311-codex
+conda create -y -n py311-private python=3.11
+conda install -y -n py311-private -c conda-forge hnswlib=0.8.0
+conda run -n py311-private python -m pip install -r requirements.txt
+conda activate py311-private
 ```
 
 ### 常用命令
 
-```bash
-# GUI 桌面应用
-python -m src.gui                         # 启动 (Ctrl+B浏览, Ctrl+K搜索, Ctrl+N归档)
+以下示例面向 AI/自动化协作，数据相关命令默认使用隔离测试路径。生产 `.data/` 的查询或迁移必须由用户明确授权并执行，AI 不执行。
 
-# CLI 命令
-python -m src.main archive "https://..."  # 归档网页
-python -m src.main search "AI 工作流"     # 搜索
-python -m src.main list --limit 10        # 列出条目
-python -m src.main stats                  # 统计
+```powershell
+# GUI 桌面应用（隔离测试数据）
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\dev -Command @("python", "-m", "src.gui")
 
-# MCP Server
-python -m src.mcp.server                  # stdio 模式
+# CLI 命令（测试数据）
+.\scripts\run-test.ps1 archive "https://..."
+.\scripts\run-test.ps1 search "AI 工作流"
+.\scripts\run-test.ps1 list --limit 10
+.\scripts\run-test.ps1 stats
 
-# 数据库管理
-python scripts/migrate.py --version       # 查看版本
-python scripts/migrate.py                 # 交互式升级
+# MCP Server（隔离测试数据，stdio 模式）
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\dev -Command @("python", "-m", "src.mcp.server")
+
+# 数据库管理（migrate.py 为非 CLI 命令，必须使用 -Direct 与显式 -Command 数组）
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--version")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--dry-run")
 
 # 测试环境
 .\scripts\run-test.ps1 archive "https://example.com"
-python scripts/setup-test-db.py --count 20
+.\scripts\run-test.ps1 -Direct -Command @("python", "scripts/setup-test-db.py", "--count", "20")
 
 # 运行测试
-python -m pytest tests/unit/ -v
-python -m pytest tests/e2e/ -v
-python -m pytest tests/ --cov=src --cov-report=term-missing
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-v")
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/e2e/", "-v")
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/", "--cov=src", "--cov-report=term-missing")
 ```
 
 ---
