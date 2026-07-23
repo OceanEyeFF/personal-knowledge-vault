@@ -11,12 +11,9 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -24,6 +21,32 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# 子进程只加载版本化基础配置，避免读取开发机的 config/local.yaml 和 API Key。
+ISOLATED_CLI_BOOTSTRAP = """
+import sys
+from pathlib import Path
+
+import src.utils.config as config_module
+
+base_config_path = Path(sys.argv.pop(1))
+
+
+def load_base_config():
+    return config_module.Config(str(base_config_path))
+
+
+config_module._config_instance = load_base_config()
+
+import src.cli.commands as commands_module
+
+commands_module.Config = load_base_config
+
+from src.main import main
+
+main()
+"""
 
 
 class CLIBlackboxTester:
@@ -42,13 +65,20 @@ class CLIBlackboxTester:
         self.data_dir = test_dir / ".data"
         self.db_path = self.data_dir / "db" / "knowledge_vault.db"
         self.vault_dir = self.data_dir / "vault"
+        self.vector_dir = self.data_dir / "vectors"
+        self.log_dir = self.data_dir / "logs"
+        self.tmp_dir = self.data_dir / "tmp"
 
         # 创建必要的目录
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "db").mkdir(exist_ok=True)
-        (self.data_dir / "logs").mkdir(exist_ok=True)
-        self.vault_dir.mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "vectors").mkdir(exist_ok=True)
+        for path in (
+            self.db_path.parent,
+            self.vault_dir,
+            self.vector_dir,
+            self.log_dir,
+            self.tmp_dir,
+        ):
+            path.mkdir(parents=True, exist_ok=True)
 
     def run_cli(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
         """执行 CLI 命令。
@@ -60,12 +90,24 @@ class CLIBlackboxTester:
         Returns:
             subprocess.CompletedProcess: 命令执行结果
         """
-        cmd = [self.python_exe, "-m", "src.main"] + list(args)
+        cmd = [
+            self.python_exe,
+            "-c",
+            ISOLATED_CLI_BOOTSTRAP,
+            str(self.project_root / "config" / "config.yaml"),
+            *args,
+        ]
         env = os.environ.copy()
-        env["DATA_DIR"] = str(self.data_dir)
-        env["DB_PATH"] = str(self.db_path)
-        env["VAULT_DIR"] = str(self.vault_dir)
-        env["VECTOR_STORE_PATH"] = str(self.data_dir / "vectors")
+        env.update(
+            {
+                "DATA_DIR": str(self.data_dir),
+                "DB_PATH": str(self.db_path),
+                "VAULT_DIR": str(self.vault_dir),
+                "VECTOR_DIR": str(self.vector_dir),
+                "LOG_DIR": str(self.log_dir),
+                "TMP_DIR": str(self.tmp_dir),
+            }
+        )
 
         result = subprocess.run(
             cmd,
@@ -88,14 +130,7 @@ class CLIBlackboxTester:
 
     def seed_test_data(self) -> None:
         """预置测试数据。"""
-        import os
         from src.storage.sqlite_store import SQLiteStore
-
-        # 设置环境变量（供 CLI 命令使用）
-        os.environ["DATA_DIR"] = str(self.data_dir)
-        os.environ["DB_PATH"] = str(self.db_path)
-        os.environ["VAULT_DIR"] = str(self.vault_dir)
-        os.environ["VECTOR_STORE_PATH"] = str(self.data_dir / "vectors")
 
         # 初始化数据库（直接传递 db_path）
         sqlite_store = SQLiteStore(self.db_path)
@@ -188,7 +223,16 @@ def test_search_command_with_results(cli_tester: CLIBlackboxTester):
 
 def test_search_command_with_json_output(cli_tester: CLIBlackboxTester):
     """测试 search 命令（JSON 输出）。"""
-    result = cli_tester.run_cli("search", "Docker", "--format", "json", "--limit", "5")
+    result = cli_tester.run_cli(
+        "search",
+        "Docker",
+        "--strategy",
+        "bm25",
+        "--format",
+        "json",
+        "--limit",
+        "5",
+    )
     assert result.returncode == 0
 
     # 验证 JSON 格式
@@ -202,7 +246,12 @@ def test_search_command_with_json_output(cli_tester: CLIBlackboxTester):
 
 def test_search_command_no_results(cli_tester: CLIBlackboxTester):
     """测试 search 命令（无结果）。"""
-    result = cli_tester.run_cli("search", "不存在的关键词xyz123")
+    result = cli_tester.run_cli(
+        "search",
+        "unfindabletoken9f8e7d6c",
+        "--strategy",
+        "bm25",
+    )
     assert result.returncode == 0
     # 应该有友好的提示而不是报错
 
@@ -225,7 +274,7 @@ def test_list_command_with_tag_filter(cli_tester: CLIBlackboxTester):
 def test_show_command_by_id(cli_tester: CLIBlackboxTester):
     """测试 show 命令（通过 ID）。"""
     # 先获取一个条目的 ID
-    list_result = cli_tester.run_cli("list", "--limit", "1")
+    cli_tester.run_cli("list", "--limit", "1")
     # 假设第一条是 ID=1
     result = cli_tester.run_cli("show", "1")
     assert result.returncode == 0
@@ -275,24 +324,41 @@ def test_invalid_command(cli_tester: CLIBlackboxTester):
     # 应该有错误提示
 
 
-def test_search_different_strategies(cli_tester: CLIBlackboxTester):
-    """测试不同的搜索策略。"""
-    strategies = ["auto", "bm25", "vector", "hybrid"]
-    for strategy in strategies:
-        result = cli_tester.run_cli("search", "Python", "--strategy", strategy, "--limit", "5")
-        assert result.returncode == 0, f"策略 {strategy} 失败"
+def test_search_bm25_strategy(cli_tester: CLIBlackboxTester):
+    """测试不依赖外部向量服务的 BM25 搜索策略。"""
+    result = cli_tester.run_cli(
+        "search",
+        "Python",
+        "--strategy",
+        "bm25",
+        "--limit",
+        "5",
+    )
+    assert result.returncode == 0
 
 
 def test_verbose_mode(cli_tester: CLIBlackboxTester):
     """测试 --verbose 模式。"""
-    result = cli_tester.run_cli("--verbose", "search", "Docker")
+    result = cli_tester.run_cli(
+        "--verbose",
+        "search",
+        "Docker",
+        "--strategy",
+        "bm25",
+    )
     assert result.returncode == 0
     # verbose 模式可能在 stderr 输出日志
 
 
 def test_debug_mode(cli_tester: CLIBlackboxTester):
     """测试 --debug 模式。"""
-    result = cli_tester.run_cli("--debug", "search", "React")
+    result = cli_tester.run_cli(
+        "--debug",
+        "search",
+        "React",
+        "--strategy",
+        "bm25",
+    )
     assert result.returncode == 0
     # debug 模式可能在 stderr 输出详细日志
 
@@ -303,7 +369,14 @@ def test_debug_mode(cli_tester: CLIBlackboxTester):
 def test_full_workflow_search_show(cli_tester: CLIBlackboxTester):
     """测试完整工作流：搜索 -> 显示详情。"""
     # 1. 搜索
-    search_result = cli_tester.run_cli("search", "Python", "--limit", "1")
+    search_result = cli_tester.run_cli(
+        "search",
+        "Python",
+        "--strategy",
+        "bm25",
+        "--limit",
+        "1",
+    )
     assert search_result.returncode == 0
 
     # 2. 显示详情（假设第一条是 ID=1）

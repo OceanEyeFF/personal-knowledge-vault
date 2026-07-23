@@ -4,6 +4,8 @@
 不依赖外部包，验证代码的基本逻辑和语法是否正确
 """
 
+# ruff: noqa: F401
+
 import sys
 from pathlib import Path
 
@@ -16,33 +18,27 @@ def test_imports():
     """测试模块导入"""
     print("📦 测试模块导入...")
 
-    try:
-        # 测试配置模块
-        from src.utils import config
-        print("  ✓ src.utils.config")
+    # 测试配置模块；导入失败必须直接让 pytest 失败。
+    from src.utils import config
+    print("  ✓ src.utils.config")
 
-        from src.utils import logger
-        print("  ✓ src.utils.logger")
+    from src.utils import logger
+    print("  ✓ src.utils.logger")
 
-        from src.utils import text_utils
-        print("  ✓ src.utils.text_utils")
+    from src.utils import text_utils
+    print("  ✓ src.utils.text_utils")
 
-        # 测试存储模块
-        from src.storage import markdown_store
-        print("  ✓ src.storage.markdown_store")
+    # 测试存储模块
+    from src.storage import markdown_store
+    print("  ✓ src.storage.markdown_store")
 
-        from src.storage import sqlite_store
-        print("  ✓ src.storage.sqlite_store")
+    from src.storage import sqlite_store
+    print("  ✓ src.storage.sqlite_store")
 
-        from src.storage import vector_store
-        print("  ✓ src.storage.vector_store")
+    from src.storage import vector_store
+    print("  ✓ src.storage.vector_store")
 
-        print("✅ 所有模块导入成功！")
-        return True
-
-    except ImportError as e:
-        print(f"❌ 导入失败: {e}")
-        return False
+    print("✅ 所有模块导入成功！")
 
 
 def test_data_class():
@@ -50,29 +46,21 @@ def test_data_class():
     print("\n📝 测试 Entry 数据类...")
 
     # 这里我们只测试类的定义，不实际实例化（因为需要依赖包）
-    try:
-        from src.storage.markdown_store import Entry
-        print("  ✓ Entry 类定义正确")
+    from src.storage.markdown_store import Entry
+    print("  ✓ Entry 类定义正确")
 
-        # 检查必需字段
-        import inspect
-        sig = inspect.signature(Entry.__init__)
-        params = list(sig.parameters.keys())
+    # 检查必需字段
+    import inspect
+    sig = inspect.signature(Entry.__init__)
+    params = list(sig.parameters.keys())
 
-        required_fields = ['title', 'source_type']
-        for field in required_fields:
-            if field in params:
-                print(f"  ✓ 必需字段存在: {field}")
-            else:
-                print(f"  ❌ 缺少必需字段: {field}")
-                return False
+    required_fields = ["title", "source_type"]
+    missing_fields = [field for field in required_fields if field not in params]
+    assert not missing_fields, f"Entry 缺少必需字段: {missing_fields}"
+    for field in required_fields:
+        print(f"  ✓ 必需字段存在: {field}")
 
-        print("✅ Entry 数据类定义正确！")
-        return True
-
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-        return False
+    print("✅ Entry 数据类定义正确！")
 
 
 def test_file_structure():
@@ -91,55 +79,38 @@ def test_file_structure():
         "src/storage/vector_store.py",
         "config/config.yaml",
         "config/custom_dict.txt",
-        ".env.example",
         "requirements.txt",
     ]
 
-    all_exist = True
+    missing_files = [
+        file_path
+        for file_path in required_files
+        if not (project_root / file_path).exists()
+    ]
+    assert not missing_files, f"缺少必需文件: {missing_files}"
     for file_path in required_files:
-        full_path = project_root / file_path
-        if full_path.exists():
-            print(f"  ✓ {file_path}")
-        else:
-            print(f"  ❌ 缺少文件: {file_path}")
-            all_exist = False
-
-    if all_exist:
-        print("✅ 所有必需文件都存在！")
-
-    return all_exist
+        print(f"  ✓ {file_path}")
+    print("✅ 所有必需文件都存在！")
 
 
 def test_config_yaml():
     """测试配置文件格式"""
     print("\n⚙️  测试配置文件...")
 
-    try:
-        config_path = project_root / "config" / "config.yaml"
+    config_path = project_root / "config" / "config.yaml"
+    assert config_path.exists(), "config.yaml 不存在"
 
-        if not config_path.exists():
-            print("  ❌ config.yaml 不存在")
-            return False
+    # 简单读取文件，检查是否为有效的文本
+    content = config_path.read_text(encoding="utf-8")
 
-        # 简单读取文件，检查是否为有效的文本
-        with open(config_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+    # 检查关键配置项是否存在
+    required_keys = ["storage:", "ai:", "retrieval:", "logging:"]
+    missing_keys = [key for key in required_keys if key not in content]
+    assert not missing_keys, f"config.yaml 缺少配置项: {missing_keys}"
+    for key in required_keys:
+        print(f"  ✓ 配置项存在: {key}")
 
-        # 检查关键配置项是否存在
-        required_keys = ['storage:', 'ai:', 'retrieval:', 'logging:']
-        for key in required_keys:
-            if key in content:
-                print(f"  ✓ 配置项存在: {key}")
-            else:
-                print(f"  ❌ 缺少配置项: {key}")
-                return False
-
-        print("✅ 配置文件格式正确！")
-        return True
-
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
-        return False
+    print("✅ 配置文件格式正确！")
 
 
 def main():
@@ -159,8 +130,8 @@ def main():
     results = []
     for test in tests:
         try:
-            result = test()
-            results.append(result)
+            test()
+            results.append(True)
         except Exception as e:
             print(f"❌ 测试异常: {e}")
             import traceback

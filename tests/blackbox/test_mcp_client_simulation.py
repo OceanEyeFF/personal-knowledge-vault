@@ -7,11 +7,12 @@ Layer 2 MCP 客户端模拟器 + 6 场景测试
 - 集成样本数据 (WECHAT_SAMPLES, ZHIHU_SAMPLES, TEXT_SAMPLES)
 """
 
+# ruff: noqa: E402 - 黑盒测试需先将项目根目录加入 sys.path
+
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 import shutil
 import sys
 import uuid
@@ -40,6 +41,7 @@ import src.utils.config as config_module
 # ============================================================
 
 FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures"
+TEST_EMBEDDING_DIM = 4
 
 
 def _read_fixture(name: str) -> str:
@@ -282,19 +284,36 @@ def test_env(monkeypatch) -> Dict[str, Path]:
     vault_dir.mkdir(parents=True, exist_ok=True)
     vector_dir.mkdir(parents=True, exist_ok=True)
 
-    monkeypatch.setenv("DB_PATH", str(db_path))
-    monkeypatch.setenv("PKV_EMBD_DIM", "4")
+    runtime_paths = {
+        "DATA_DIR": base_dir,
+        "DB_PATH": db_path,
+        "VAULT_DIR": vault_dir,
+        "VECTOR_DIR": vector_dir,
+        "LOG_DIR": base_dir / "logs",
+        "TMP_DIR": base_dir / "tmp",
+    }
+    for key, path in runtime_paths.items():
+        monkeypatch.setenv(key, str(path))
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
 
     # 重置配置与 MCP 单例缓存
-    config = config_module.Config()
+    config = config_module.Config(str(PROJECT_ROOT / "config" / "config.yaml"))
     config._config.setdefault("storage", {})
     config._config["storage"]["vector_index_dir"] = str(vector_dir)
     config._config["storage"]["vault_dir"] = str(vault_dir)
-    config_module._config_instance = config
-    mcp_server._sqlite_store = None
-    mcp_server._markdown_store = None
-    mcp_server._query_router = None
+    config._config.setdefault("ai", {}).setdefault("embedding", {})["dim"] = (
+        TEST_EMBEDDING_DIM
+    )
+    monkeypatch.setattr(config_module, "_config_instance", config)
+    for cache_name in (
+        "_sqlite_store",
+        "_markdown_store",
+        "_query_router",
+        "_relation_query_service",
+        "_evidence_collection_service",
+        "_exploration_service",
+    ):
+        monkeypatch.setattr(mcp_server, cache_name, None)
 
     yield {
         "base_dir": base_dir,
@@ -320,8 +339,7 @@ def populated_env(test_env) -> Dict[str, Any]:
         entry_ids.append(entry_id)
 
     # 构造向量索引，保证 get_related 可用
-    dim = int(os.environ.get("PKV_EMBD_DIM", "4"))
-    vector_store = VectorStore(test_env["vector_dir"], dim=dim)
+    vector_store = VectorStore(test_env["vector_dir"], dim=TEST_EMBEDDING_DIM)
 
     vectors = [
         np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
@@ -559,7 +577,9 @@ async def test_search_no_results_returns_empty(mcp_patches):
     """错误路径: 搜索无结果时应返回空列表。"""
     simulator = MCPClientSimulator(mcp)
 
-    result = await simulator.search_and_display("不存在的关键词xyz", strategy="bm25")
+    result = await simulator.search_and_display(
+        "zzzz_no_such_term_9f4b", strategy="bm25"
+    )
     assert result["total"] == 0
     assert result["results"] == []
 

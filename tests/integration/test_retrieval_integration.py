@@ -20,7 +20,6 @@ from src.storage.sqlite_store import (
     SQLiteStore,
 )
 from src.storage.vector_store import VectorStore
-from src.ai.embedder import Embedder
 from src.retrieval.bm25_retriever import BM25Retriever
 from src.retrieval.query_router import QueryRouter
 from src.retrieval.result import SearchResult
@@ -344,14 +343,9 @@ class TestDataPipelineIntegration:
         # 初始化存储
         markdown_store = MarkdownStore(test_paths["vault_dir"])
         sqlite_store = SQLiteStore(test_paths["db_path"])
-        # 动态获取 Embedder 实际维度，避免硬编码与模型不符导致崩溃
-        try:
-            _embedder = Embedder()
-            _sample = _embedder.embed_document("test")
-            _dim = len(_sample) if _sample is not None else 1536
-        except Exception:
-            _dim = 1536
-        vector_store = VectorStore(test_paths["vector_dir"], dim=_dim)
+        vector_store = VectorStore(
+            test_paths["vector_dir"], dim=DeterministicEmbedder.dim
+        )
 
         # 初始化数据库 Schema
         sqlite_store.initialize()
@@ -364,13 +358,8 @@ class TestDataPipelineIntegration:
 
     @pytest.fixture
     def embedder(self):
-        """创建 Embedder 实例"""
-        # 注意：这里需要真实的 Embedding API Key
-        # 如果没有，可以 mock
-        try:
-            return Embedder()
-        except Exception:
-            pytest.skip("Embedder 初始化失败，可能缺少 API Key")
+        """创建不依赖外部服务的确定性 Embedder。"""
+        return DeterministicEmbedder()
 
     def test_entry_to_sqlite_pipeline(self, stores, test_paths):
         """
@@ -789,9 +778,6 @@ class TestDataPipelineIntegration:
             "idx_knowledge_search_strategy",
         }.issubset(indexes)
 
-    @pytest.mark.skipif(
-        not Path(".env").exists(), reason="需要 .env 文件配置 API Keys"
-    )
     def test_end_to_end_search_accuracy(self, stores, embedder, test_paths):
         """
         端到端检索准确率测试
@@ -1019,12 +1005,9 @@ class TestDataPipelineIntegration:
 class TestIndexHealth:
     """测试索引健康状态"""
 
-    def test_fts5_index_exists(self):
-        """验证 FTS5 索引是否存在"""
-        db_path = Path(".data/db/knowledge_vault.db")
-        if not db_path.exists():
-            pytest.skip("主数据库不存在，跳过测试")
-
+    def test_fts5_index_exists(self, tmp_path: Path):
+        """在临时数据库验证 FTS5 索引。"""
+        db_path = tmp_path / "knowledge_vault.db"
         store = SQLiteStore(db_path)
         store.initialize()
         with store.get_connection() as conn:
@@ -1042,13 +1025,10 @@ class TestIndexHealth:
             legacy_result = cursor.fetchone()
             assert legacy_result is None, "旧 FTS 表名不应继续存在"
 
-    def test_vector_index_exists(self):
-        """验证向量索引是否存在"""
-        vector_dir = Path(".data/vectors")
-        if not vector_dir.exists():
-            pytest.skip("向量索引目录不存在，跳过测试")
-
-        vector_store = VectorStore(vector_dir)
+    def test_vector_index_exists(self, tmp_path: Path):
+        """在临时目录验证向量索引可用。"""
+        vector_dir = tmp_path / "vectors"
+        vector_store = VectorStore(vector_dir, dim=DeterministicEmbedder.dim)
         stats = vector_store.get_index_stats()
 
         assert stats["doc_count"] >= 0, "向量索引应该可用"

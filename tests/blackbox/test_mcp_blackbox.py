@@ -16,7 +16,7 @@ MCP 协议级 stdio 黑盒测试 (Layer 3)
 6. Resource 端到端读取
 
 测试隔离：
-- DB_PATH 环境变量指向临时数据库
+- 全部运行路径环境变量指向临时目录
 - 子进程 cwd 设置为项目根目录
 - 每个测试 session 使用独立的临时目录
 
@@ -29,21 +29,15 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import pytest
+from mcp import StdioServerParameters
+from mcp.client.session import ClientSession
+from mcp.client.stdio import stdio_client
 
 # 确保项目根目录在 Python path 中
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-
-# ============================================================
-# MCP Client SDK 导入
-# ============================================================
-
-from mcp import StdioServerParameters
-from mcp.client.stdio import stdio_client
-from mcp.client.session import ClientSession
-
 
 # ============================================================
 # 辅助函数
@@ -65,15 +59,23 @@ def get_server_params(
         StdioServerParameters 实例
     """
     env = os.environ.copy()
-    # 核心隔离: 数据库指向临时路径
-    env["DB_PATH"] = db_path
-    # 降低日志级别减少 stderr 噪音
-    env["LOG_LEVEL"] = log_level
-    # 禁用 .env 文件加载的影响 (如有)
-    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-
     if extra_env:
         env.update(extra_env)
+
+    data_dir = Path(db_path).resolve().parent.parent
+    env.update(
+        {
+            "DATA_DIR": str(data_dir),
+            "DB_PATH": str(Path(db_path).resolve()),
+            "VAULT_DIR": str(data_dir / "vault"),
+            "VECTOR_DIR": str(data_dir / "vectors"),
+            "LOG_DIR": str(data_dir / "logs"),
+            "TMP_DIR": str(data_dir / "tmp"),
+            "LOG_LEVEL": log_level,
+        }
+    )
+    # 避免子进程写入字节码缓存
+    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
     return StdioServerParameters(
         command=sys.executable,

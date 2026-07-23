@@ -11,6 +11,8 @@
 执行时间: 约 15 分钟（包括 API 调用）
 """
 
+# ruff: noqa: E402, F541
+
 import sys
 import asyncio
 import json
@@ -289,14 +291,14 @@ async def main():
     embd_key = config.embd_api_key
 
     if not llm_key:
-        print("[WARN] 未设置 PKV_LLM_API_KEY，AI 分析可能失败")
+        print("[WARN] config/local.yaml 未配置 LLM API Key，AI 分析可能失败")
     else:
-        print(f"[OK] PKV_LLM_API_KEY: {llm_key[:10]}...")
+        print("[OK] LLM API Key 已配置")
 
     if not embd_key:
-        print("[WARN] 未设置 PKV_EMBD_API_KEY，向量存储可能失败")
+        print("[WARN] config/local.yaml 未配置 Embedding API Key，向量存储可能失败")
     else:
-        print(f"[OK] PKV_EMBD_API_KEY: {embd_key[:10]}...")
+        print("[OK] Embedding API Key 已配置")
     print()
 
     # 执行测试

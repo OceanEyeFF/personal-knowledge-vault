@@ -18,8 +18,12 @@ M12 手动测试：qasync 集成验证（技术决策 D003 最终方案）
 环境要求：
     - PySide6 已安装（pip install PySide6）
     - qasync 已安装（pip install qasync>=0.28.0）
-    - 可选：PKV_LLM_API_KEY（用于真实 API 测试）
+    - 可选：在 config/local.yaml 配置 LLM 服务（用于真实 API 测试）
 """
+
+# ruff: noqa: E402
+
+__test__ = False  # 手动 GUI/联网脚本，不参与默认 pytest 收集
 
 import asyncio
 import sys
@@ -29,16 +33,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-# 加载环境变量
-try:
-    from dotenv import load_dotenv
-    env_file = project_root / ".env"
-    if env_file.exists():
-        load_dotenv(env_file)
-except ImportError:
-    pass
-
-import os
+from src.utils.config import get_config
 
 # 检查依赖
 try:
@@ -127,9 +122,12 @@ class ChatViewModel(QObject):
     @asyncSlot()
     async def test_openai_sdk_integration(self):
         """测试 5: OpenAI SDK 集成（真实 DeepSeek API 调用）"""
-        api_key = os.getenv("PKV_LLM_API_KEY")
+        config = get_config()
+        api_key = config.llm_api_key
         if not api_key:
-            self.error_occurred.emit("未配置 PKV_LLM_API_KEY，跳过此测试")
+            self.error_occurred.emit(
+                "config/local.yaml 未配置 LLM API Key，跳过此测试"
+            )
             self.finished.emit()
             return
 
@@ -143,7 +141,7 @@ class ChatViewModel(QObject):
             http_client = httpx.AsyncClient(timeout=30.0)
             client = AsyncOpenAI(
                 api_key=api_key,
-                base_url=os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1"),
+                base_url=config.llm_base_url,
                 http_client=http_client,
             )
 
@@ -153,7 +151,7 @@ class ChatViewModel(QObject):
 
             # 流式调用（与 M12 真实架构一致）
             stream = await client.chat.completions.create(
-                model=os.getenv("PKV_LLM_MODEL", "deepseek-chat"),
+                model=config.llm_model,
                 messages=messages,
                 stream=True,
                 stream_options={"include_usage": True},
@@ -315,7 +313,7 @@ class TestWindow(QWidget):
     def on_finished(self):
         """测试完成"""
         self.text_edit.append("\n" + "=" * 60)
-        self.text_edit.append(f"[PASS] 测试完成！")
+        self.text_edit.append("[PASS] 测试完成！")
         self.text_edit.append(f"[STAT] 总共接收 {self.token_count} 个 token")
         self.text_edit.append("=" * 60 + "\n")
         self.stats_label.setText(f"[PASS] 测试完成 | 总计 {self.token_count} tokens")

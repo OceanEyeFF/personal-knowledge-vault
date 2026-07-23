@@ -10,12 +10,15 @@ M12 手动测试：DeepSeek API 流式调用验证
     python tests/manual_test_m12/test_deepseek_stream.py
 
 环境要求：
-    - PKV_LLM_API_KEY 环境变量已配置
+    - config/local.yaml 已配置 LLM 服务
     - httpx 已安装（pip install httpx）
 """
 
+# ruff: noqa: E402
+
+__test__ = False  # 手动联网脚本，不参与默认 pytest 收集
+
 import asyncio
-import os
 import sys
 from pathlib import Path
 
@@ -23,17 +26,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-# 加载 .env 文件
-try:
-    from dotenv import load_dotenv
-    env_file = project_root / ".env"
-    if env_file.exists():
-        load_dotenv(env_file)
-        print(f"[配置] 已加载环境变量from {env_file}")
-    else:
-        print(f"[警告] .env 文件不存在: {env_file}")
-except ImportError:
-    print("[警告] python-dotenv 未安装，将直接读取系统环境变量")
+from src.utils.config import get_config
 
 try:
     import httpx
@@ -42,19 +35,23 @@ except ImportError:
     sys.exit(1)
 
 
+def _llm_settings():
+    """从本机 YAML 配置读取 LLM 连接信息。"""
+    config = get_config()
+    return config.llm_api_key, config.llm_base_url.rstrip("/"), config.llm_model
+
+
 async def test_basic_stream():
     """测试 1: 最基本的流式请求"""
     print("=" * 60)
     print("测试 1: 基本流式请求")
     print("=" * 60)
 
-    api_key = os.getenv("PKV_LLM_API_KEY")
+    api_key, base_url, model = _llm_settings()
     if not api_key:
-        print("[错误] 环境变量 PKV_LLM_API_KEY 未设置")
+        print("[错误] config/local.yaml 未配置 LLM API Key")
         return
 
-    base_url = os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
-    model = os.getenv("PKV_LLM_MODEL", "deepseek-chat")
     url = f"{base_url}/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -111,14 +108,14 @@ async def test_error_handling():
     print("测试 2: 错误处理（无效 API Key）")
     print("=" * 60)
 
-    base_url = os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
+    _, base_url, model = _llm_settings()
     url = f"{base_url}/chat/completions"
     headers = {
         "Authorization": "Bearer sk-invalid-key",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": os.getenv("PKV_LLM_MODEL", "deepseek-chat"),
+        "model": model,
         "messages": [{"role": "user", "content": "Hello"}],
         "stream": True,
     }
@@ -146,19 +143,18 @@ async def test_long_response():
     print("测试 3: 长回复流式传输")
     print("=" * 60)
 
-    api_key = os.getenv("PKV_LLM_API_KEY")
+    api_key, base_url, model = _llm_settings()
     if not api_key:
-        print("[错误] PKV_LLM_API_KEY 未设置，跳过此测试")
+        print("[错误] config/local.yaml 未配置 LLM API Key，跳过此测试")
         return
 
-    base_url = os.getenv("PKV_LLM_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
     url = f"{base_url}/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": os.getenv("PKV_LLM_MODEL", "deepseek-chat"),
+        "model": model,
         "messages": [
             {"role": "user", "content": "请用 200 字介绍 Python asyncio 的核心概念"}
         ],

@@ -19,38 +19,70 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import src.utils.config as config_module
 from src.utils.config import get_config
 
 
-def has_api_keys() -> bool:
-    """检查是否配置了 API Keys。"""
-    if os.getenv("PKV_RUN_LIVE") != "1":
-        return False
-    config = get_config()
-    return bool(config.llm_api_key) and bool(config.embd_api_key)
+def _require_live_api_config(config: object) -> None:
+    """显式 live 模式下，缺少凭据必须失败，且错误中不得包含凭据值。"""
+    required_fields = {
+        "ai.llm.api_key": getattr(config, "llm_api_key", None),
+        "ai.embedding.api_key": getattr(config, "embd_api_key", None),
+    }
+    missing = [name for name, value in required_fields.items() if not value]
+    if missing:
+        pytest.fail(
+            "PKV_RUN_LIVE=1 需要在 config/local.yaml 配置: " + ", ".join(missing),
+            pytrace=False,
+        )
+
+
+def _assert_cli_success(
+    result: subprocess.CompletedProcess[str], operation: str
+) -> None:
+    """断言 CLI 成功；失败摘要不回显可能含敏感信息的命令输出。"""
+    assert result.returncode == 0, (
+        f"{operation}失败: exit_code={result.returncode}, "
+        f"stdout_length={len(result.stdout)}, stderr_length={len(result.stderr)}"
+    )
 
 
 @pytest.mark.skipif(
-    not has_api_keys(),
-    reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",
+    os.getenv("PKV_RUN_LIVE") != "1",
+    reason="需要 PKV_RUN_LIVE=1 才运行真实 API 测试",
 )
 class TestRealAPIWorkflow:
     """真实 API 端到端测试。"""
 
     @pytest.fixture
-    def temp_env(self, tmp_path: Path):
-        """创建临时环境。"""
+    def temp_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """创建临时环境，并在隔离路径生效后检查真实 API 配置。"""
         # 设置临时数据目录
         data_dir = tmp_path / ".data"
         data_dir.mkdir(exist_ok=True)
 
         env = os.environ.copy()
-        env["DATA_DIR"] = str(data_dir)
-        env["DB_PATH"] = str(data_dir / "db" / "knowledge_vault.db")
-        env["VAULT_DIR"] = str(data_dir / "vault")
-        env["VECTOR_STORE_PATH"] = str(data_dir / "vectors")
+        runtime_paths = {
+            "DATA_DIR": data_dir,
+            "DB_PATH": data_dir / "db" / "knowledge_vault.db",
+            "VAULT_DIR": data_dir / "vault",
+            "VECTOR_DIR": data_dir / "vectors",
+            "LOG_DIR": data_dir / "logs",
+            "TMP_DIR": data_dir / "tmp",
+        }
+        for key, path in runtime_paths.items():
+            value = str(path)
+            env[key] = value
+            monkeypatch.setenv(key, value)
 
-        return env
+        previous_config = config_module._config_instance
+        config_module._config_instance = None
+        try:
+            config = get_config()
+            _require_live_api_config(config)
+            yield env
+        finally:
+            config_module._config_instance = previous_config
 
     def run_cli(self, *args: str, env: dict = None) -> subprocess.CompletedProcess:
         """执行 CLI 命令。"""
@@ -106,13 +138,8 @@ class TestRealAPIWorkflow:
         if result.returncode != 0:
             self.safe_print(f"Command failed with exit code {result.returncode}")
 
-        # 归档可能成功或失败（取决于网络和 API）
-        # 但不应该崩溃
-        assert result.returncode in (0, 1), f"命令异常退出: {result.returncode}"
-
-        # 如果成功，应该包含成功提示
-        if result.returncode == 0:
-            assert "成功" in result.stdout or "knowledge_id" in result.stdout.lower()
+        _assert_cli_success(result, "归档真实网页")
+        assert "成功" in result.stdout or "knowledge_id" in result.stdout.lower()
 
     def test_config_commands(self, temp_env):
         """测试配置命令（不需要 API）。"""
@@ -124,9 +151,7 @@ class TestRealAPIWorkflow:
     def test_stats_empty_database(self, temp_env):
         """测试统计命令（空数据库）。"""
         result = self.run_cli("stats", env=temp_env)
-        # 空数据库可能返回警告或显示 0 条目
-        # 不应该崩溃
-        assert result.returncode in (0, 1)
+        _assert_cli_success(result, "空数据库统计")
 
     @pytest.mark.slow
     def test_full_workflow(self, temp_env):
@@ -154,9 +179,7 @@ class TestRealAPIWorkflow:
         self.safe_print(f"Archive stdout length: {len(archive_result.stdout)} chars")
         self.safe_print(f"Archive stderr length: {len(archive_result.stderr)} chars")
 
-        # 如果归档失败（网络或 API 问题），跳过后续测试
-        if archive_result.returncode != 0:
-            pytest.skip(f"归档失败，跳过后续测试（错误码: {archive_result.returncode}）")
+        _assert_cli_success(archive_result, "完整流程归档")
 
         # 2. 搜索刚刚归档的内容
         search_result = self.run_cli(
@@ -166,8 +189,10 @@ class TestRealAPIWorkflow:
         self.safe_print(f"Search result: {search_result.returncode}")
         self.safe_print(f"Search found: {'deepseek' in search_result.stdout.lower()}")
 
-        # 搜索应该成功（即使没有结果）
-        assert search_result.returncode == 0
+        _assert_cli_success(search_result, "检索完整流程归档条目")
+        assert "deepseek" in search_result.stdout.lower(), (
+            "搜索未命中刚归档的 DeepSeek 条目"
+        )
 
         # 3. 列出所有条目
         list_result = self.run_cli("list", "--limit", "10", env=temp_env)
@@ -175,8 +200,8 @@ class TestRealAPIWorkflow:
         self.safe_print(f"List result: {list_result.returncode}")
         self.safe_print(f"List has output: {len(list_result.stdout) > 0}")
 
-        assert list_result.returncode == 0
-        assert "deepseek" in list_result.stdout.lower() or len(list_result.stdout) > 0
+        _assert_cli_success(list_result, "列出完整流程归档条目")
+        assert "deepseek" in list_result.stdout.lower(), "列表未包含刚归档的 DeepSeek 条目"
 
         # 4. 显示第一个条目（假设 ID=1）
         show_result = self.run_cli("show", "1", env=temp_env)
@@ -184,8 +209,8 @@ class TestRealAPIWorkflow:
         self.safe_print(f"Show result: {show_result.returncode}")
         self.safe_print(f"Show has output: {len(show_result.stdout) > 0}")
 
-        # show 命令应该成功或返回未找到
-        assert show_result.returncode in (0, 1)
+        _assert_cli_success(show_result, "显示完整流程归档条目")
+        assert "deepseek" in show_result.stdout.lower(), "详情未命中刚归档的 DeepSeek 条目"
 
 
 if __name__ == "__main__":

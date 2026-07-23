@@ -9,6 +9,8 @@
 4. 验证上游数据路径
 """
 
+# ruff: noqa: E402, F541
+
 import sys
 from pathlib import Path
 import asyncio
@@ -28,8 +30,8 @@ async def test_archive_url_workflow():
     注意: 这是一个演示测试，使用 Mock 数据
     真实场景需要:
     - 有效的 URL
-    - PKV_LLM_API_KEY
-    - PKV_EMBD_API_KEY
+    - 在 config/local.yaml 配置 LLM 服务
+    - 在 config/local.yaml 配置 Embedding 服务
     """
     print("=" * 70)
     print("端到端测试: Archive URL 工作流")
