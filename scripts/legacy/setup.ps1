@@ -1,4 +1,4 @@
-# Personal Knowledge Vault - 自动安装脚本 (PowerShell)
+﻿# Personal Knowledge Vault - 自动安装脚本 (PowerShell)
 # 作者: 幽浮酱
 # 用途: 创建虚拟环境、安装依赖、初始化数据库
 
@@ -98,7 +98,6 @@ Write-Host "🔍 验证关键依赖..." -ForegroundColor Yellow
 $dependencies = @(
     "frontmatter",
     "yaml",
-    "dotenv",
     "hnswlib",
     "jieba"
 )
@@ -122,15 +121,15 @@ if (-not $allInstalled) {
 
 Write-Host ""
 
-# 6. 创建 .env 文件
-Write-Host "⚙️  配置环境变量..." -ForegroundColor Yellow
+# 6. 创建本机 YAML 配置
+Write-Host "⚙️  创建本机配置..." -ForegroundColor Yellow
 
-if (Test-Path ".env") {
-    Write-Host "  ℹ️  .env 文件已存在，跳过创建" -ForegroundColor Cyan
+if (Test-Path "config\local.yaml") {
+    Write-Host "  ℹ️  config\local.yaml 已存在，跳过创建" -ForegroundColor Cyan
 } else {
-    Copy-Item ".env.example" ".env"
-    Write-Host "  ✓ 已创建 .env 文件（从 .env.example 复制）" -ForegroundColor Green
-    Write-Host "  ⚠️  请编辑 .env 文件，填入你的 API Keys" -ForegroundColor Yellow
+    Copy-Item "config\config.yaml" "config\local.yaml"
+    Write-Host "  ✓ 已创建 config\local.yaml" -ForegroundColor Green
+    Write-Host "  ⚠️  请编辑 config\local.yaml，填入你的 API Keys" -ForegroundColor Yellow
 }
 
 Write-Host ""
@@ -167,8 +166,8 @@ Write-Host ""
 
 Write-Host "📝 下一步操作:" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "  1. 编辑 .env 文件，填入 API Keys:" -ForegroundColor White
-Write-Host "     notepad .env" -ForegroundColor Cyan
+Write-Host "  1. 编辑本机 YAML 配置，填入 API Keys:" -ForegroundColor White
+Write-Host "     notepad config\local.yaml" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  2. 运行验证脚本:" -ForegroundColor White
 Write-Host "     python src\utils\verify_setup.py" -ForegroundColor Cyan

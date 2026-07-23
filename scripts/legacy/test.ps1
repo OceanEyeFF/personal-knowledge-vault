@@ -1,4 +1,4 @@
-# Personal Knowledge Vault - 测试脚本 (PowerShell)
+﻿# Personal Knowledge Vault - 测试脚本 (PowerShell)
 # 作者: 幽浮酱
 # 用途: 运行所有验证测试
 
@@ -47,6 +47,6 @@ if ($LASTEXITCODE -eq 0) {
 
 Write-Host ""
 Write-Host "📝 下一步:" -ForegroundColor Yellow
-Write-Host "  - 查看 .data\logs\verify.log 获取详细日志" -ForegroundColor White
+Write-Host "  - verify_setup 使用一次性隔离目录；详细结果请查看本次终端输出" -ForegroundColor White
 Write-Host "  - 阅读 QUICKSTART.md 了解更多用法" -ForegroundColor White
 Write-Host ""

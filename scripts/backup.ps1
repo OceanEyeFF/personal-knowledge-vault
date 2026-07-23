@@ -1,4 +1,4 @@
-# Backup .data to a timestamped zip and keep recent archives.
+﻿# Backup .data to a timestamped zip and keep recent archives.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 

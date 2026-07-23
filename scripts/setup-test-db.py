@@ -4,16 +4,19 @@ Generate a reproducible test SQLite database for MCP tests.
 
 Usage examples:
   python scripts/setup-test-db.py --count 20
-  python scripts/setup-test-db.py --seed 42 --count 50 --output /tmp/test.db
+  python scripts/setup-test-db.py --seed 42 --count 50 --output /tmp/test.db --allow-outside-test-root
   python scripts/setup-test-db.py --count 30 --wechat-count 5 --zhihu-count 10
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import random
 import re
 import shutil
+import stat
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -29,7 +32,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
 from src.storage.sqlite_store import SQLiteStore  # noqa: E402
-from src.utils.config import get_config  # noqa: E402
 
 
 try:
@@ -90,14 +92,77 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--wechat-count", type=int, default=3, help="Wechat entries count.")
     parser.add_argument("--zhihu-count", type=int, default=3, help="Zhihu entries count.")
+    parser.add_argument(
+        "--embedding-dim",
+        type=int,
+        default=None,
+        help=(
+            "Dimension for the optional random vector index. "
+            "When omitted, no vector index is created and no Provider/config "
+            "is accessed."
+        ),
+    )
+    parser.add_argument(
+        "--allow-outside-test-root",
+        action="store_true",
+        help=(
+            "Allow an output outside the repository .data-test directory. "
+            "Repository paths outside .data-test remain forbidden."
+        ),
+    )
     return parser.parse_args()
 
 
-def _resolve_path(path_str: str) -> Path:
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _resolve_output_path(
+    path_str: str,
+    *,
+    allow_outside_test_root: bool,
+) -> tuple[Path, bool]:
+    """Resolve output and enforce the non-production test-data boundary."""
     path = Path(path_str).expanduser()
     if not path.is_absolute():
         path = PROJECT_ROOT / path
-    return path
+    lexical_path = Path(os.path.abspath(path))
+    project_root = PROJECT_ROOT.resolve()
+    lexical_test_root = PROJECT_ROOT / ".data-test"
+
+    if _is_relative_to(lexical_path, lexical_test_root):
+        current = lexical_test_root
+        relative_parent = lexical_path.parent.relative_to(lexical_test_root)
+        for part in (Path(), *relative_parent.parts):
+            if part != Path():
+                current = current / part
+            if _is_unsafe_link(current):
+                raise ValueError(f"测试数据路径不得经过符号链接或 junction: {current}")
+        if _is_unsafe_link(lexical_path):
+            raise ValueError(f"测试数据库不得为符号链接或硬链接: {lexical_path}")
+
+        resolved = lexical_path.resolve(strict=False)
+        test_root = lexical_test_root.resolve(strict=False)
+        if not _is_relative_to(resolved, test_root):
+            raise ValueError("测试数据路径解析后越过仓库 .data-test 边界")
+        return resolved, True
+    if _is_relative_to(lexical_path, project_root):
+        raise ValueError(
+            "仓库内测试数据库只能写入 .data-test；禁止覆盖 .data 或其他项目文件"
+        )
+    resolved = lexical_path.resolve(strict=False)
+    if _is_relative_to(resolved, project_root):
+        raise ValueError("外部输出路径不得通过链接指向仓库内部")
+    if not allow_outside_test_root:
+        raise ValueError(
+            "输出路径必须位于仓库 .data-test；外部临时目录需显式传入 "
+            "--allow-outside-test-root"
+        )
+    return resolved, False
 
 
 def _derive_base_dir(db_path: Path) -> Path:
@@ -106,21 +171,50 @@ def _derive_base_dir(db_path: Path) -> Path:
     return db_path.parent
 
 
-def _safe_prepare_dirs(db_path: Path, vault_dir: Path, vector_dir: Path) -> None:
+def _is_unsafe_link(path: Path) -> bool:
+    """Detect symlinks/junctions and hard-linked files before destructive work."""
+    try:
+        path_stat = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    file_attributes = getattr(path_stat, "st_file_attributes", 0)
+    is_reparse_point = bool(file_attributes & 0x400)
+    is_hard_linked_file = stat.S_ISREG(path_stat.st_mode) and path_stat.st_nlink > 1
+    return stat.S_ISLNK(path_stat.st_mode) or is_reparse_point or is_hard_linked_file
+
+
+def _safe_prepare_dirs(
+    db_path: Path,
+    vault_dir: Path,
+    vector_dir: Path,
+    *,
+    managed_test_root: bool,
+) -> None:
+    for target in (vault_dir, vector_dir):
+        if target.exists():
+            if _is_unsafe_link(target):
+                raise ValueError(f"拒绝清理链接形式的测试目录: {target}")
+            for child in target.rglob("*"):
+                if _is_unsafe_link(child):
+                    raise ValueError(f"拒绝清理包含链接的测试目录: {child}")
+            if managed_test_root:
+                continue
+            elif any(target.iterdir()):
+                raise ValueError(
+                    "外部测试目录已存在且非空，拒绝递归清理；"
+                    "请改用新的空目录或仓库 .data-test"
+                )
+
     if db_path.exists():
+        if _is_unsafe_link(db_path):
+            raise ValueError(f"拒绝覆盖链接形式的测试数据库: {db_path}")
         db_path.unlink()
 
-    base_dir_str = str(vault_dir.parent)
-    should_clean = "data-test" in base_dir_str.replace("\\", "/")
-
-    if should_clean:
-        for target in (vault_dir, vector_dir):
-            if target.exists():
-                shutil.rmtree(target)
+    for target in (vault_dir, vector_dir):
+        if target.exists() and managed_test_root:
+            shutil.rmtree(target)
+        if not target.exists():
             target.mkdir(parents=True, exist_ok=True)
-    else:
-        vault_dir.mkdir(parents=True, exist_ok=True)
-        vector_dir.mkdir(parents=True, exist_ok=True)
 
 
 def _extract_text(tag) -> str:
@@ -305,25 +399,50 @@ def _update_related_docs(file_path: Path, related_ids: List[int]) -> None:
     file_path.write_text(frontmatter.dumps(post), encoding="utf-8")
 
 
-def _populate_vectors(vector_dir: Path, entry_ids: List[int], seed: int | None) -> None:
-    try:
-        import numpy as np
-        from src.ai.openai_client import OpenAIClient
-        from src.storage.vector_store import VectorStore
-    except Exception:
+def _populate_vectors(
+    vector_dir: Path,
+    entry_ids: List[int],
+    seed: int | None,
+    embedding_dim: int | None,
+) -> None:
+    if embedding_dim is None:
+        print(
+            "[info] Random vector index skipped; use --embedding-dim for an "
+            "offline test index."
+        )
         return
 
-    config = get_config()
-    resolved_dim = config.embedding_dim
-    if resolved_dim is None:
-        resolved_dim = OpenAIClient().resolve_dimensions()
+    import hnswlib
+    import numpy as np
 
-    vector_store = VectorStore(index_dir=vector_dir, dim=resolved_dim)
     np_rng = np.random.default_rng(seed if seed is not None else 0)
+    max_elements = max(10_000, len(entry_ids) + 1)
 
-    for knowledge_id in entry_ids:
-        vector = np_rng.random(resolved_dim).astype("float32")
-        vector_store.add_doc_vector(knowledge_id, vector)
+    for name in ("doc_vectors", "chunk_vectors"):
+        index = hnswlib.Index(space="cosine", dim=embedding_dim)
+        index.init_index(
+            max_elements=max_elements,
+            ef_construction=200,
+            M=16,
+        )
+        index.set_ef(50)
+        if name == "doc_vectors" and entry_ids:
+            vectors = np_rng.random((len(entry_ids), embedding_dim)).astype("float32")
+            index.add_items(vectors, ids=entry_ids)
+
+        index.save_index(str(vector_dir / f"{name}.idx"))
+        metadata = {
+            "schema_version": 2,
+            "dim": embedding_dim,
+            "space": "cosine",
+            "M": 16,
+            "ef_construction": 200,
+            "id_mapping": {},
+        }
+        (vector_dir / f"{name}_metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
 
 def build_database(
@@ -332,6 +451,8 @@ def build_database(
     output: Path,
     wechat_count: int,
     zhihu_count: int,
+    embedding_dim: int | None = None,
+    allow_outside_test_root: bool = False,
 ) -> Path:
     if count <= 0:
         raise ValueError("count 必须大于 0")
@@ -339,15 +460,25 @@ def build_database(
         raise ValueError("wechat_count/zhihu_count 不能为负数")
     if count < wechat_count + zhihu_count:
         raise ValueError("count 必须 >= wechat_count + zhihu_count")
+    if embedding_dim is not None and embedding_dim <= 0:
+        raise ValueError("embedding_dim 必须大于 0")
 
     rng = random.Random(seed)
 
-    db_path = _resolve_path(str(output))
+    db_path, managed_test_root = _resolve_output_path(
+        str(output),
+        allow_outside_test_root=allow_outside_test_root,
+    )
     base_dir = _derive_base_dir(db_path)
     vault_dir = base_dir / "vault"
     vector_dir = base_dir / "vectors"
 
-    _safe_prepare_dirs(db_path, vault_dir, vector_dir)
+    _safe_prepare_dirs(
+        db_path,
+        vault_dir,
+        vector_dir,
+        managed_test_root=managed_test_root,
+    )
 
     store = SQLiteStore(db_path)
     store.initialize()
@@ -392,7 +523,7 @@ def build_database(
             related_ids = rng.sample(candidates, k=related_count)
             _update_related_docs(file_path, related_ids)
 
-    _populate_vectors(vector_dir, entry_ids, seed)
+    _populate_vectors(vector_dir, entry_ids, seed, embedding_dim)
 
     return db_path
 
@@ -406,6 +537,8 @@ def main() -> int:
             output=Path(args.output),
             wechat_count=args.wechat_count,
             zhihu_count=args.zhihu_count,
+            embedding_dim=args.embedding_dim,
+            allow_outside_test_root=args.allow_outside_test_root,
         )
     except Exception as exc:
         print(f"[error] {exc}")

@@ -1,4 +1,5 @@
 @echo off
+@chcp 65001 >nul
 REM Personal Knowledge Vault - 自动安装脚本 (CMD/Batch)
 REM 作者: 幽浮酱
 REM 用途: 创建虚拟环境、安装依赖、初始化数据库
@@ -62,19 +63,18 @@ REM 验证依赖
 echo 🔍 验证关键依赖...
 python -c "import frontmatter" 2>nul && echo   ✓ frontmatter || echo   ❌ frontmatter
 python -c "import yaml" 2>nul && echo   ✓ yaml || echo   ❌ yaml
-python -c "import dotenv" 2>nul && echo   ✓ dotenv || echo   ❌ dotenv
 python -c "import hnswlib" 2>nul && echo   ✓ hnswlib || echo   ❌ hnswlib
 python -c "import jieba" 2>nul && echo   ✓ jieba || echo   ❌ jieba
 echo.
 
-REM 创建 .env
+REM 创建本机 YAML 配置
 echo ⚙️  配置环境变量...
-if exist .env (
-    echo   ℹ️  .env 文件已存在，跳过创建
+if exist config\local.yaml (
+    echo   ℹ️  config\local.yaml 已存在，跳过创建
 ) else (
-    copy .env.example .env >nul
-    echo   ✓ 已创建 .env 文件（从 .env.example 复制）
-    echo   ⚠️  请编辑 .env 文件，填入你的 API Keys
+    copy config\config.yaml config\local.yaml >nul
+    echo   ✓ 已创建 config\local.yaml
+    echo   ⚠️  请编辑 config\local.yaml，填入你的 API Keys
 )
 echo.
 
@@ -94,8 +94,8 @@ echo ============================================================
 echo.
 echo 📝 下一步操作:
 echo.
-echo   1. 编辑 .env 文件，填入 API Keys:
-echo      notepad .env
+echo   1. 编辑本机 YAML 配置，填入 API Keys:
+echo      notepad config\local.yaml
 echo.
 echo   2. 运行验证脚本:
 echo      python src\utils\verify_setup.py

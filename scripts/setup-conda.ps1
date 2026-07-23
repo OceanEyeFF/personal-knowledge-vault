@@ -1,4 +1,4 @@
-# Personal Knowledge Vault - Conda 自动安装脚本 (PowerShell)
+﻿# Personal Knowledge Vault - Conda 自动安装脚本 (PowerShell)
 # 作者: 幽浮酱
 # 用途: 使用 Conda 创建 Python 3.11 环境、安装依赖
 

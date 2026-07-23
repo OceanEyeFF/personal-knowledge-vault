@@ -1,4 +1,4 @@
-# Personal Knowledge Vault - Conda 测试脚本 (PowerShell)
+﻿# Personal Knowledge Vault - Conda 测试脚本 (PowerShell)
 # 作者: 幽浮酱
 # 用途: 在 Conda 环境中运行验证测试
 
@@ -35,13 +35,17 @@ if (-not $envExists) {
 Write-Host "  ✓ 环境存在" -ForegroundColor Green
 Write-Host ""
 
-# 运行验证脚本
+# 通过测试包装器固定六个运行路径，避免安装验证触碰生产 .data
 Write-Host "🚀 运行验证脚本..." -ForegroundColor Yellow
 Write-Host ""
 
-& "$PSScriptRoot\run-windows.ps1" python src\utils\verify_setup.py
+& "$PSScriptRoot\run-test.ps1" `
+    -Direct `
+    -DataRoot ".data-test\verify-setup" `
+    -Command @("python", "src\utils\verify_setup.py")
+$verificationExitCode = $LASTEXITCODE
 
-if ($LASTEXITCODE -eq 0) {
+if ($verificationExitCode -eq 0) {
     Write-Host ""
     Write-Host "=" -NoNewline -ForegroundColor Cyan
     Write-Host ("=" * 58) -ForegroundColor Cyan
@@ -55,7 +59,7 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "❌ 测试失败，请检查错误信息" -ForegroundColor Red
     Write-Host "=" -NoNewline -ForegroundColor Red
     Write-Host ("=" * 58) -ForegroundColor Red
-    exit 1
+    exit $verificationExitCode
 }
 
 Write-Host ""

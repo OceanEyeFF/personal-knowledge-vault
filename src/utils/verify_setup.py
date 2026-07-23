@@ -7,6 +7,7 @@
 # ruff: noqa: E402
 
 import logging
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+import src.utils.config as config_module
 from src.utils.config import get_config
 from src.utils.logger import LoggerSetup, get_logger
 from src.utils.text_utils import TextProcessor
@@ -22,6 +24,16 @@ from src.storage.markdown_store import MarkdownStore, Entry
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.vector_store import VectorStore
 import numpy as np
+
+
+_RUNTIME_PATH_ENV_KEYS = (
+    "DATA_DIR",
+    "DB_PATH",
+    "VAULT_DIR",
+    "VECTOR_DIR",
+    "LOG_DIR",
+    "TMP_DIR",
+)
 
 
 def test_config():
@@ -181,16 +193,35 @@ def test_vector_store(index_dir: Path | None = None, dim: int | None = None):
 def _build_verify_workspace(root: Path) -> dict[str, Path]:
     """构建验证脚本使用的隔离工作区路径。"""
     workspace = {
+        "data_dir": root,
         "vault_dir": root / "vault",
-        "db_path": root / "data" / "verify.db",
+        "db_path": root / "db" / "verify.db",
         "vector_index_dir": root / "vectors",
-        "log_file": root / "logs" / "verify.log",
+        "log_dir": root / "logs",
+        "tmp_dir": root / "tmp",
     }
-    workspace["vault_dir"].mkdir(parents=True, exist_ok=True)
-    workspace["db_path"].parent.mkdir(parents=True, exist_ok=True)
-    workspace["vector_index_dir"].mkdir(parents=True, exist_ok=True)
-    workspace["log_file"].parent.mkdir(parents=True, exist_ok=True)
     return workspace
+
+
+def _runtime_path_overrides(workspace: dict[str, Path]) -> dict[str, str]:
+    """生成验证期间的六个运行期路径覆盖。"""
+    return {
+        "DATA_DIR": str(workspace["data_dir"]),
+        "DB_PATH": str(workspace["db_path"]),
+        "VAULT_DIR": str(workspace["vault_dir"]),
+        "VECTOR_DIR": str(workspace["vector_index_dir"]),
+        "LOG_DIR": str(workspace["log_dir"]),
+        "TMP_DIR": str(workspace["tmp_dir"]),
+    }
+
+
+def _restore_runtime_paths(previous_env: dict[str, str | None]) -> None:
+    """精确恢复验证前的运行期路径环境变量。"""
+    for key, previous_value in previous_env.items():
+        if previous_value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous_value
 
 
 def main():
@@ -199,28 +230,42 @@ def main():
     print("🚀 Personal Knowledge Vault - 验证安装")
     print("=" * 60)
 
+    previous_env = {key: os.environ.get(key) for key in _RUNTIME_PATH_ENV_KEYS}
+    previous_config = config_module._config_instance
+
     try:
-        config = get_config()
         with tempfile.TemporaryDirectory(prefix="pkv-verify-") as temp_dir:
+            workspace = _build_verify_workspace(Path(temp_dir).resolve())
             try:
-                workspace = _build_verify_workspace(Path(temp_dir))
+                for key, value in _runtime_path_overrides(workspace).items():
+                    os.environ[key] = value
+
+                # 必须在运行期路径完成隔离后再构造 Config；auto 维度缓存因此
+                # 只会读取/写入 TemporaryDirectory 下的 runtime 目录。
+                config_module._config_instance = None
+                config = get_config()
 
                 test_config()
                 print(f"\n🧪 状态性验证将在隔离目录执行: {Path(temp_dir)}")
                 test_logger(
-                    log_file=workspace["log_file"],
+                    log_file=config.log_dir / "verify.log",
                     log_level=config.log_level,
                 )
                 test_text_processor()
-                test_markdown_store(vault_dir=workspace["vault_dir"])
-                test_sqlite_store(db_path=workspace["db_path"])
+                test_markdown_store(vault_dir=config.vault_dir)
+                test_sqlite_store(db_path=config.db_path)
                 test_vector_store(
-                    index_dir=workspace["vector_index_dir"],
+                    index_dir=config.vector_index_dir,
                     dim=config.embedding_dim,
                 )
             finally:
                 # Windows 不允许删除仍被 logging handler 占用的临时日志文件。
-                logging.shutdown()
+                try:
+                    logging.shutdown()
+                finally:
+                    LoggerSetup._initialized = False
+                    config_module._config_instance = previous_config
+                    _restore_runtime_paths(previous_env)
 
         print("\n" + "=" * 60)
         print("✅ 所有测试通过！系统安装正确！")

@@ -1,79 +1,56 @@
-# 环境检测脚本
-# 检测当前运行环境（生产 vs 测试）
+﻿# 环境检测脚本
+# 仅在固定的隔离数据目录中验证配置解析和数据库访问。
+
+$utf8 = [System.Text.UTF8Encoding]::new()
+[Console]::InputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+
+$runner = Join-Path $PSScriptRoot "run-test.ps1"
+$testDataRoot = ".data-test/check-environment"
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " PKV 环境检测" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
+Write-Host "[隔离测试模式]" -ForegroundColor Magenta
+Write-Host "  数据目录: $testDataRoot" -ForegroundColor White
+Write-Host "  说明: 不读写生产 .data" -ForegroundColor Gray
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
 
-# 检查 DB_PATH 环境变量
-if ($env:DB_PATH) {
-    Write-Host "[环境变量模式]" -ForegroundColor Magenta
-    Write-Host "  DB_PATH = $env:DB_PATH" -ForegroundColor White
+# run-test.ps1 会同时覆盖六个运行期路径，并校验 canonical root
+# 与 reparse point，避免受当前终端残留环境变量影响。
+Write-Host "配置解析:" -ForegroundColor Yellow
+Write-Host ""
 
-    if ($env:DB_PATH -match "\.data-test") {
-        Write-Host "  状态: ✓ 测试环境" -ForegroundColor Green
-        $is_test = $true
-    } else {
-        Write-Host "  状态: ⚠️  生产环境" -ForegroundColor Yellow
-        $is_test = $false
-    }
-} else {
-    Write-Host "[配置文件模式]" -ForegroundColor Magenta
-    Write-Host "  未设置 DB_PATH 环境变量，使用默认配置" -ForegroundColor Gray
+& $runner -DataRoot $testDataRoot -Command @("config", "show")
+$configExitCode = if ($null -eq $LASTEXITCODE) { 1 } else { [int]$LASTEXITCODE }
 
-    # 通过 Python 读取实际配置
-    $db_path = python -c "from src.utils.config import Config; print(Config().db_path)" 2>$null
-
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "  实际路径: $db_path" -ForegroundColor White
-
-        if ($db_path -match "\.data-test") {
-            Write-Host "  状态: ✓ 测试环境" -ForegroundColor Green
-            $is_test = $true
-        } else {
-            Write-Host "  状态: ⚠️  生产环境" -ForegroundColor Yellow
-            $is_test = $false
-        }
-    } else {
-        Write-Host "  错误: 无法读取配置（Python 环境未就绪？）" -ForegroundColor Red
-        exit 1
-    }
+if ($configExitCode -ne 0) {
+    Write-Host ""
+    Write-Host "错误: 隔离配置验证失败（退出码: $configExitCode）" -ForegroundColor Red
+    exit $configExitCode
 }
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-
-# 查询数据库统计
 Write-Host "数据库统计:" -ForegroundColor Yellow
 Write-Host ""
 
-$stats = python -m src.main stats 2>&1
+& $runner -DataRoot $testDataRoot -Command @("stats")
+$statsExitCode = if ($null -eq $LASTEXITCODE) { 1 } else { [int]$LASTEXITCODE }
 
-if ($LASTEXITCODE -eq 0) {
-    $stats | Select-String "总条目数|数据库大小|最近更新" | ForEach-Object {
-        Write-Host "  $_" -ForegroundColor White
-    }
-} else {
-    Write-Host "  错误: 无法读取数据库统计" -ForegroundColor Red
-    Write-Host "  可能原因: 数据库未初始化或环境配置错误" -ForegroundColor Gray
+if ($statsExitCode -ne 0) {
+    Write-Host ""
+    Write-Host "错误: 隔离数据库统计失败（退出码: $statsExitCode）" -ForegroundColor Red
+    exit $statsExitCode
 }
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-
-# 安全建议
-if ($is_test) {
-    Write-Host "✓ 当前为测试环境，可以安全测试" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "提示: 使用 .\scripts\run-test.ps1 运行命令" -ForegroundColor Cyan
-} else {
-    Write-Host "⚠️  当前为生产环境，请谨慎操作" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "建议: 如需测试，请使用测试环境" -ForegroundColor Cyan
-    Write-Host "  1. 创建测试配置: copy .env.test.example .env.test" -ForegroundColor Gray
-    Write-Host "  2. 运行测试命令: .\scripts\run-test.ps1 <command>" -ForegroundColor Gray
-    Write-Host "  3. 重要变更前备份: .\scripts\backup-data.ps1" -ForegroundColor Gray
-}
-
+Write-Host "✓ 隔离环境验证通过" -ForegroundColor Green
+Write-Host "提示: 其他测试命令继续使用 .\scripts\run-test.ps1" -ForegroundColor Cyan
 Write-Host ""
+
+exit 0
