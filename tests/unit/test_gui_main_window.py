@@ -42,10 +42,6 @@ def mock_stores():
     }
 
     mock_config = MagicMock()
-    mock_config.deepseek_api_key = ""
-    mock_config.deepseek_base_url = ""
-    mock_config.openai_api_key = ""
-    mock_config.openai_base_url = ""
     mock_config.llm_api_key = ""
     mock_config.llm_base_url = ""
     mock_config.llm_model = "deepseek-chat"
@@ -84,6 +80,45 @@ def main_window(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
     return window
+
+
+def test_database_initialization_uses_runtime_db_path(tmp_path):
+    """GUI 启动迁移应使用支持 DATA_DIR/DB_PATH 覆盖的 Config.db_path。"""
+    from src.gui import app as gui_app
+
+    runtime_db_path = tmp_path / "runtime" / "db" / "knowledge.db"
+    mock_config = MagicMock()
+    mock_config.db_path = runtime_db_path
+    mock_config.get.return_value = tmp_path / "wrong.db"
+
+    mock_manager = MagicMock()
+    mock_manager.get_current_version.return_value = "1.0.0"
+    mock_manager.get_pending_migrations.return_value = []
+
+    with patch("src.gui.app.Config", return_value=mock_config), patch(
+        "src.gui.app.MigrationManager", return_value=mock_manager
+    ) as manager_cls:
+        assert gui_app.ensure_database_initialized() is True
+
+    manager_cls.assert_called_once_with(
+        runtime_db_path,
+        gui_app._PROJECT_ROOT / "scripts" / "migrations",
+    )
+    mock_config.get.assert_not_called()
+
+
+def test_settings_saved_refreshes_chat_provider_config(qtbot):
+    """设置保存成功后，主窗口应刷新已初始化的 ChatViewModel 配置。"""
+    with patch(
+        "src.gui.viewmodels.chat_viewmodel.ChatViewModel.reload_provider_config"
+    ) as reload_provider_config:
+        from src.gui.main_window import MainWindow
+
+        window = MainWindow()
+        qtbot.addWidget(window)
+        window._settings_view.settings_saved.emit()
+
+    reload_provider_config.assert_called_once_with()
 
 
 # ============================================================
@@ -166,19 +201,24 @@ class TestNavigation:
         main_window.switch_to_archive()
         assert main_window._stacked.currentIndex() == 2
 
+    def test_switch_to_chat(self, main_window):
+        """切换到 AI 对话视图。"""
+        main_window.switch_to_chat()
+        assert main_window._stacked.currentIndex() == 3
+
     def test_switch_to_stats(self, main_window):
         """切换到统计视图。"""
         main_window.switch_to_stats()
-        assert main_window._stacked.currentIndex() == 3
+        assert main_window._stacked.currentIndex() == 4
 
     def test_switch_to_settings(self, main_window):
         """切换到设置视图。"""
         main_window.switch_to_settings()
-        assert main_window._stacked.currentIndex() == 4
+        assert main_window._stacked.currentIndex() == 5
 
-    def test_nav_list_has_five_items(self, main_window):
-        """导航列表包含 5 个项目（浏览/搜索/归档/统计/设置）。"""
-        assert main_window._nav_list.count() == 5
+    def test_nav_list_has_six_items(self, main_window):
+        """导航列表包含浏览、搜索、归档、AI 对话、统计和设置。"""
+        assert main_window._nav_list.count() == 6
 
     def test_nav_list_click_archive(self, main_window):
         """点击导航列表切换到归档视图。"""
@@ -187,13 +227,13 @@ class TestNavigation:
 
     def test_nav_list_click_stats(self, main_window):
         """点击导航列表切换到统计视图。"""
-        main_window._nav_list.setCurrentRow(3)
-        assert main_window._stacked.currentIndex() == 3
+        main_window._nav_list.setCurrentRow(4)
+        assert main_window._stacked.currentIndex() == 4
 
     def test_nav_list_click_settings(self, main_window):
         """点击导航列表切换到设置视图。"""
-        main_window._nav_list.setCurrentRow(4)
-        assert main_window._stacked.currentIndex() == 4
+        main_window._nav_list.setCurrentRow(5)
+        assert main_window._stacked.currentIndex() == 5
 
 
 # ============================================================

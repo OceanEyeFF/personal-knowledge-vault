@@ -21,11 +21,11 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
-from src.gui.main_window import MainWindow
-from src.storage.migration_manager import MigrationManager
-from src.utils.config import Config
+from src.gui.main_window import MainWindow  # noqa: E402
+from src.storage.migration_manager import MigrationManager  # noqa: E402
+from src.utils.config import Config  # noqa: E402
 
 logger = logging.getLogger("pkv.gui.app")
 
@@ -41,7 +41,7 @@ def ensure_database_initialized() -> bool:
     try:
         # 加载配置
         config = Config()
-        db_path = Path(config.get("storage.db_path"))
+        db_path = config.db_path
         migrations_dir = _PROJECT_ROOT / "scripts" / "migrations"
 
         # 创建迁移管理器

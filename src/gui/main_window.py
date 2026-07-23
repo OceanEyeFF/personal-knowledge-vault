@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -126,6 +126,9 @@ class MainWindow(QMainWindow):
         # 连接新视图信号
         self._archive_view.navigate_to_browser.connect(self.switch_to_browser)
         self._settings_view.theme_change_requested.connect(self.apply_theme)
+        self._settings_view.settings_saved.connect(
+            self._chat_view.viewmodel.reload_provider_config
+        )
         # M12: 从浏览器发送知识条目到 AI 对话
         self._browser_view.send_to_chat_requested.connect(
             self._on_send_to_chat

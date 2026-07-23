@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
@@ -19,8 +20,9 @@ from typing import Any, Dict, List, Optional
 from PySide6.QtCore import QObject, Signal
 from qasync import asyncSlot
 
+from src.ai.openai_client import split_openai_transport_url
 from src.storage.sqlite_store import SQLiteStore
-from src.utils.config import Config
+from src.utils.config import Config, suppress_unsafe_http_transport_logs
 
 logger = logging.getLogger("pkv.gui.viewmodels.chat")
 
@@ -69,7 +71,7 @@ class ChatViewModel(QObject):
 
         # 配置
         self.config = Config()
-        self.db_path = self.config.get("storage.db_path")
+        self.db_path = self.config.db_path
         self.store = SQLiteStore(self.db_path)
 
         # 当前会话状态
@@ -88,6 +90,14 @@ class ChatViewModel(QObject):
         self._stop_flag = False
 
         logger.info("ChatViewModel 初始化完成")
+
+    def reload_provider_config(self) -> None:
+        """重新加载 LLM Provider 配置，供设置保存后热更新下一次请求。"""
+        self.config = Config()
+        self.api_key = self.config.llm_api_key
+        self.base_url = self.config.llm_base_url
+        self.model = self.config.llm_model
+        logger.info("ChatViewModel Provider 配置已重新加载")
 
     def create_new_session(self, title: Optional[str] = None) -> str:
         """创建新会话
@@ -242,6 +252,7 @@ class ChatViewModel(QObject):
             self.error_occurred.emit("未配置 LLM API Key，请检查 config/local.yaml")
             return
 
+        client = None
         try:
             # 1. 添加 user message
             self.current_messages.append({
@@ -252,15 +263,24 @@ class ChatViewModel(QObject):
 
             # 2. 初始化 OpenAI 客户端
             try:
-                from openai import AsyncOpenAI
+                from openai import AsyncOpenAI, DefaultAsyncHttpxClient
             except ImportError:
                 self.error_occurred.emit("未安装 openai 库，请运行 pip install openai")
                 return
 
-            client = AsyncOpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url
+            suppress_unsafe_http_transport_logs()
+            transport_base_url, endpoint_query = split_openai_transport_url(
+                self.base_url
             )
+            client_kwargs: Dict[str, Any] = {
+                "api_key": self.api_key,
+                "base_url": transport_base_url,
+            }
+            if endpoint_query:
+                client_kwargs["http_client"] = DefaultAsyncHttpxClient(
+                    params=endpoint_query
+                )
+            client = AsyncOpenAI(**client_kwargs)
 
             # 3. 调用流式 API
             self._stop_flag = False
@@ -325,10 +345,25 @@ class ChatViewModel(QObject):
                 await self._save_session()
                 self.stream_finished.emit()
 
-        except Exception as e:
-            error_msg = f"发送消息失败: {e}"
-            logger.error(error_msg, exc_info=True)
+        except Exception as exc:
+            error_msg = "发送消息失败，请检查 LLM Provider 配置或网络连接"
+            logger.error(
+                "发送消息失败: error_type=%s",
+                type(exc).__name__,
+            )
             self.error_occurred.emit(error_msg)
+        finally:
+            close_client = getattr(client, "close", None)
+            if close_client is not None:
+                try:
+                    close_result = close_client()
+                    if inspect.isawaitable(close_result):
+                        await close_result
+                except Exception as exc:
+                    logger.warning(
+                        "关闭 LLM Provider 客户端失败: error_type=%s",
+                        type(exc).__name__,
+                    )
 
     async def _save_session(self) -> None:
         """保存当前会话到数据库（内部方法）"""

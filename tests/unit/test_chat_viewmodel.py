@@ -15,9 +15,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+from openai import DefaultAsyncHttpxClient as SDKDefaultAsyncHttpxClient
 
 
 # Mock 所有外部依赖，避免真实初始化
@@ -25,8 +28,11 @@ import pytest
 def mock_dependencies(monkeypatch):
     """Mock Config 和 SQLiteStore，避免真实 DB 初始化"""
     mock_config = MagicMock()
+    mock_config.db_path = ".data-test/db/runtime.db"
     mock_config.get.return_value = ":memory:"
-    mock_config.get_env.return_value = "fake-api-key"
+    mock_config.llm_api_key = "fake-api-key"
+    mock_config.llm_base_url = "https://llm.example/v1"
+    mock_config.llm_model = "configured-model"
 
     mock_store = MagicMock()
     mock_store.create_session.return_value = None
@@ -51,6 +57,28 @@ def viewmodel(mock_dependencies):
 
     vm = ChatViewModel()
     return vm
+
+
+def test_initialization_uses_runtime_db_path(viewmodel, mock_dependencies) -> None:
+    """数据库连接应使用支持 DATA_DIR/DB_PATH 覆盖的 Config.db_path。"""
+    assert viewmodel.db_path == ".data-test/db/runtime.db"
+    mock_dependencies["config"].get.assert_not_called()
+
+
+def test_reload_provider_config_updates_cached_values(
+    viewmodel, mock_dependencies
+) -> None:
+    """设置保存后应刷新下一次对话请求使用的 Provider 配置。"""
+    config = mock_dependencies["config"]
+    config.llm_api_key = "updated-key"
+    config.llm_base_url = "https://updated.example.com/v1"
+    config.llm_model = "updated-model"
+
+    viewmodel.reload_provider_config()
+
+    assert viewmodel.api_key == "updated-key"
+    assert viewmodel.base_url == "https://updated.example.com/v1"
+    assert viewmodel.model == "updated-model"
 
 
 # ===================================================================
@@ -420,25 +448,32 @@ class TestSendMessage:
         mock_chunk3.usage.prompt_tokens = 10
         mock_chunk3.usage.completion_tokens = 5
 
-        async def mock_stream_iter():
-            for chunk in [mock_chunk1, mock_chunk2, mock_chunk3]:
-                yield chunk
+        class MockStream:
+            def __init__(self, chunks):
+                self._chunks = chunks
+                self.close = AsyncMock()
 
-        mock_stream = MagicMock()
-        mock_stream.__aenter__ = AsyncMock(return_value=mock_stream_iter())
-        mock_stream.__aexit__ = AsyncMock(return_value=False)
+            def __aiter__(self):
+                return self._iterate()
 
-        # 因为 mock_stream_iter() 返回的是 async generator，
-        # 需要让 async with 返回的对象支持 async for
+            async def _iterate(self):
+                for chunk in self._chunks:
+                    yield chunk
+
+        mock_stream = MockStream([mock_chunk1, mock_chunk2, mock_chunk3])
         mock_client = MagicMock()
-        mock_client.chat.completions.create = MagicMock(return_value=mock_stream)
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_stream)
 
         received_tokens = []
+        errors = []
+        finished = []
 
         def on_token(t):
             received_tokens.append(t)
 
         viewmodel.token_received.connect(on_token)
+        viewmodel.error_occurred.connect(errors.append)
+        viewmodel.stream_finished.connect(lambda: finished.append(True))
 
         loop = asyncio.new_event_loop()
         try:
@@ -457,14 +492,87 @@ class TestSendMessage:
             m["role"] == "user" and m["content"] == "test message"
             for m in viewmodel.current_messages
         )
+        assert received_tokens == ["Hello", " World"]
+        assert viewmodel.current_messages[-1] == {
+            "role": "assistant",
+            "content": "Hello World",
+        }
+        assert viewmodel.current_total_tokens == 15
+        assert finished == [True]
+        assert errors == []
+        mock_stream.close.assert_awaited_once()
+        mock_dependencies["store"].update_session.assert_called_once()
 
-    def test_send_message_exception(self, viewmodel, qtbot) -> None:
-        """发送消息异常时发射 error_occurred"""
+    def test_send_message_real_transport_preserves_endpoint_query_semantics(
+        self, viewmodel
+    ) -> None:
+        """AsyncOpenAI 最终请求正确追加 path，并保留重复/空 query。"""
         viewmodel.current_session_id = "test-id"
         viewmodel.api_key = "fake-key"
+        viewmodel.model = "configured-model"
+        viewmodel.base_url = (
+            "https://chat.example/v1?region_code=north&region_code=south"
+            "&flag=&routing_key=primary#client-only"
+        )
+        request_urls = []
+        event_stream = (
+            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk",'
+            '"created":1,"model":"configured-model","choices":['
+            '{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+            'data: {"id":"chatcmpl-1","object":"chat.completion.chunk",'
+            '"created":1,"model":"configured-model","choices":[],"usage":'
+            '{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}\n\n'
+            "data: [DONE]\n\n"
+        )
+
+        def handle_request(request: httpx.Request) -> httpx.Response:
+            request_urls.append(str(request.url))
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=event_stream.encode("utf-8"),
+            )
+
+        def build_http_client(**kwargs):
+            return SDKDefaultAsyncHttpxClient(
+                **kwargs,
+                transport=httpx.MockTransport(handle_request),
+            )
+
+        loop = asyncio.new_event_loop()
+        try:
+            with patch(
+                "openai.DefaultAsyncHttpxClient",
+                side_effect=build_http_client,
+            ):
+                loop.run_until_complete(
+                    viewmodel.send_message.__wrapped__(viewmodel, "transport test")
+                )
+        finally:
+            loop.close()
+
+        assert request_urls == [
+            "https://chat.example/v1/chat/completions"
+            "?region_code=north&region_code=south&flag=&routing_key=primary"
+        ]
+        assert viewmodel.current_messages[-1] == {
+            "role": "assistant",
+            "content": "ok",
+        }
+        assert viewmodel.current_total_tokens == 3
+
+    def test_send_message_exception(self, viewmodel, qtbot, caplog) -> None:
+        """Provider 异常只向日志和 GUI 暴露固定安全消息。"""
+        viewmodel.current_session_id = "test-id"
+        viewmodel.api_key = "fake-key"
+        sentinel = "chat-provider-response-secret"
 
         mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = RuntimeError("API error")
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=RuntimeError(
+                f"bad response https://example/v1?jwt={sentinel}: {sentinel}"
+            )
+        )
 
         loop = asyncio.new_event_loop()
         try:
@@ -472,12 +580,24 @@ class TestSendMessage:
                 "openai.AsyncOpenAI",
                 return_value=mock_client,
             ):
-                with qtbot.waitSignal(viewmodel.error_occurred, timeout=1000):
-                    loop.run_until_complete(
-                        viewmodel.send_message.__wrapped__(viewmodel, "test")
-                    )
+                with caplog.at_level(
+                    logging.ERROR,
+                    logger="pkv.gui.viewmodels.chat",
+                ):
+                    with qtbot.waitSignal(
+                        viewmodel.error_occurred, timeout=1000
+                    ) as blocker:
+                        loop.run_until_complete(
+                            viewmodel.send_message.__wrapped__(viewmodel, "test")
+                        )
         finally:
             loop.close()
+
+        assert blocker.args == [
+            "发送消息失败，请检查 LLM Provider 配置或网络连接"
+        ]
+        assert sentinel not in caplog.text
+        assert sentinel not in blocker.args[0]
 
 
 # ===================================================================
