@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import sqlite3
 import json
+import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -80,27 +81,28 @@ def test_setup_test_db_creates_database_and_records(tmp_path: Path) -> None:
     assert Path(file_path).read_text(encoding="utf-8").strip()
 
 
-def test_setup_test_db_rejects_external_output_without_explicit_opt_in(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "forbidden" / "knowledge_vault.db"
+def test_setup_test_db_rejects_external_output_without_explicit_opt_in() -> None:
+    # pytest's basetemp is intentionally inside .data-test in the P0 contract,
+    # so use an OS-owned temporary directory to exercise the external-path guard.
+    with tempfile.TemporaryDirectory(prefix="pkv-external-reject-") as temp_dir:
+        db_path = Path(temp_dir) / "forbidden" / "knowledge_vault.db"
 
-    result = _run_script(
-        [
-            "--count",
-            "1",
-            "--wechat-count",
-            "0",
-            "--zhihu-count",
-            "0",
-            "--output",
-            str(db_path),
-        ]
-    )
+        result = _run_script(
+            [
+                "--count",
+                "1",
+                "--wechat-count",
+                "0",
+                "--zhihu-count",
+                "0",
+                "--output",
+                str(db_path),
+            ]
+        )
 
-    assert result.returncode == 1
-    assert not db_path.exists()
-    assert "--allow-outside-test-root" in result.stdout
+        assert result.returncode == 1
+        assert not db_path.exists()
+        assert "--allow-outside-test-root" in result.stdout
 
 
 def test_setup_test_db_explicit_embedding_dim_creates_vector_artifacts(

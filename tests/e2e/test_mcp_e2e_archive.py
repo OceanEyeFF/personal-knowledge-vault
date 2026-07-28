@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from pathlib import Path
@@ -24,10 +23,7 @@ def _parse_tool_content(result) -> Dict[str, Any]:
 
 
 async def _call_tool(session, tool_name: str, payload: Dict[str, Any], timeout_s: float = 120.0):
-    return await asyncio.wait_for(
-        session.call_tool(tool_name, payload),
-        timeout=timeout_s,
-    )
+    return await session.call_tool(tool_name, payload, timeout_s=timeout_s)
 
 
 def _assert_error_payload(payload: Dict[str, Any], expected_substr: str | None = None) -> None:
@@ -62,6 +58,7 @@ def _has_archive_api_keys() -> bool:
     return bool(config.llm_api_key) and bool(config.embd_api_key)
 
 
+@pytest.mark.network
 @pytest.mark.skipif(
     not _has_archive_api_keys(),
     reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",
@@ -136,6 +133,7 @@ async def test_archive_url_invalid_format(mcp_server, test_env):
     assert after_count == before_count
 
 
+@pytest.mark.network
 @pytest.mark.skipif(
     not _has_archive_api_keys(),
     reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",
@@ -168,6 +166,7 @@ async def test_archive_text_success(mcp_server, test_env):
     assert file_path.exists(), f"归档文件不存在: {file_path}"
 
 
+@pytest.mark.network
 @pytest.mark.skipif(
     not _has_archive_api_keys(),
     reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",
@@ -203,6 +202,7 @@ async def test_archive_text_length_limit(mcp_server):
     _assert_error_payload(data, expected_substr="超过限制")
 
 
+@pytest.mark.network
 @pytest.mark.skipif(
     not _has_archive_api_keys(),
     reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",

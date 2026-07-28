@@ -14,7 +14,13 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.relations.evidence_service import EvidenceCollectionService  # noqa: E402
-from src.relations.models import CollectedEvidenceItem, RelationExplanationResult, RelationRecord, RelationSourceType, RelationType  # noqa: E402
+from src.relations.models import (  # noqa: E402
+    CollectedEvidenceItem,
+    RelationExplanationResult,
+    RelationRecord,
+    RelationSourceType,
+    RelationType,
+)
 from src.retrieval.result import SearchResult  # noqa: E402
 from src.storage.markdown_store import Entry  # noqa: E402
 
@@ -37,13 +43,15 @@ class StubSQLiteStore:
 
 class StubMarkdownStore:
     def __init__(self, content_map):
-        self.content_map = content_map
+        self.content_map = {
+            Path(file_path): content for file_path, content in content_map.items()
+        }
 
     def load(self, file_path: Path):
         return Entry(
             title=f"Loaded-{file_path.stem}",
             source_type="generic",
-            content=self.content_map[str(file_path)],
+            content=self.content_map[file_path],
         )
 
 

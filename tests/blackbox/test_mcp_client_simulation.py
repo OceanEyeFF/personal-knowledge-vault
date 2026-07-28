@@ -3,7 +3,7 @@ Layer 2 MCP 客户端模拟器 + 6 场景测试
 
 目标:
 - 进程内调用 FastMCP (asyncio)
-- 使用 .data-test/ 隔离环境
+- 使用 pytest tmp_path 隔离环境
 - 集成样本数据 (WECHAT_SAMPLES, ZHIHU_SAMPLES, TEXT_SAMPLES)
 """
 
@@ -13,9 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import sys
-import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from unittest.mock import patch
@@ -27,13 +25,13 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.mcp.server import mcp
-from src.storage.markdown_store import Entry, MarkdownStore
-from src.storage.sqlite_store import SQLiteStore
-from src.storage.vector_store import VectorStore
-from src.workflow.models import WorkflowResult
-import src.mcp.server as mcp_server
-import src.utils.config as config_module
+from src.mcp.server import mcp  # noqa: E402
+from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
+from src.storage.sqlite_store import SQLiteStore  # noqa: E402
+from src.storage.vector_store import VectorStore  # noqa: E402
+from src.workflow.models import WorkflowResult  # noqa: E402
+import src.mcp.server as mcp_server  # noqa: E402
+import src.utils.config as config_module  # noqa: E402
 
 
 # ============================================================
@@ -198,7 +196,7 @@ class MCPClientSimulator:
 
 
 # ============================================================
-# Fixtures: .data-test 环境 + 样本数据
+# Fixtures: pytest 临时环境 + 样本数据
 # ============================================================
 
 def _build_sample_entries() -> List[Entry]:
@@ -273,9 +271,8 @@ def _build_sample_entries() -> List[Entry]:
 
 
 @pytest.fixture
-def test_env(monkeypatch) -> Dict[str, Path]:
-    run_id = f"mcp_client_sim_{uuid.uuid4().hex[:8]}"
-    base_dir = PROJECT_ROOT / ".data-test" / "mcp_client_sim" / run_id
+def test_env(monkeypatch, tmp_path: Path) -> Dict[str, Path]:
+    base_dir = tmp_path / "mcp_client_sim"
     db_path = base_dir / "db" / "knowledge_vault.db"
     vault_dir = base_dir / "vault"
     vector_dir = base_dir / "vectors"
@@ -321,8 +318,6 @@ def test_env(monkeypatch) -> Dict[str, Path]:
         "vault_dir": vault_dir,
         "vector_dir": vector_dir,
     }
-
-    shutil.rmtree(base_dir, ignore_errors=True)
 
 
 @pytest.fixture

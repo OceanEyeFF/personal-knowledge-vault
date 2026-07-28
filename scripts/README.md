@@ -6,6 +6,29 @@
 
 ### Conda 自动化安装 🌟
 
+#### `setup-test-conda.ps1` - Windows Py311 测试环境
+
+**用途**: 新建一个只用于离线测试的 Python 3.11 Conda 环境。创建环境和安装依赖
+需要访问已配置的 Conda/Python 包源；脚本不会安装 Playwright 浏览器、创建
+`config/local.yaml`，也不会创建或读取生产 `.data/`。
+
+```powershell
+.\scripts\setup-test-conda.ps1
+.\scripts\test-conda.ps1 -EnvironmentName pkv-test-py311 -Suite P0
+```
+
+环境基础包由根目录的 `environment.test.yml` 声明；项目依赖安装完成后必须通过
+`python -m pip check`。如果目标环境名已存在，脚本会拒绝覆盖或删除，需改用新的
+`-EnvironmentName`。
+
+Windows `P0` 预检依次验证默认收集和完整离线套件。MCP 95% 覆盖率仍由
+Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可以使用
+`-Suite Smoke`、`-Suite Contract` 或 `-Suite Offline` 缩小范围。所有 pytest
+命令都排除 `manual` 与 `network`；项目运行路径和 pytest 临时目录位于每次新建的
+`.data-test/conda-*` 目录。
+
+---
+
 #### `setup-conda.ps1` - Conda 自动安装脚本 ⭐⭐推荐
 
 **用途**: 使用 Conda 创建 Python 3.11 环境并安装依赖
@@ -35,17 +58,20 @@
 
 #### `test-conda.ps1` - Conda 测试脚本
 
-**用途**: 在 Conda 环境中运行验证测试
+**用途**: 在指定 Conda 环境中运行 smoke、收集契约、离线全套或 Windows P0 预检
 
 **运行方式**:
 ```powershell
 .\scripts\test-conda.ps1
+.\scripts\test-conda.ps1 -EnvironmentName pkv-test-py311 -Suite P0
 ```
 
 **功能**:
 - ✅ 检查 Conda 环境是否存在
-- ✅ 通过 `run-windows.ps1` 使用 `py311-private`
-- ✅ 运行 `verify_setup.py`
+- ✅ 强制 Python 3.11 并执行 `pip check`
+- ✅ 通过 `run-test.ps1` 使用显式目标环境和隔离路径
+- ✅ 默认运行纯离线基础语法 smoke；可选择 Windows P0 预检
+- ✅ 排除 manual/network，测试数据只写入 `.data-test/`
 - ✅ 显示测试结果
 
 ---

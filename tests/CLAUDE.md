@@ -10,11 +10,20 @@
 
 ### 测试层次
 
-- **单元测试** (`unit/`): 模块级测试,Mock 外部依赖
-- **集成测试** (`integration/`): 模块间协作测试
-- **E2E 测试** (`e2e/`): 端到端真实环境测试
-- **黑盒测试** (`blackbox/`): CLI/MCP 黑盒测试
-- **手动测试** (`manual_test_*.py`): 真实环境验证
+- **单元测试** (`unit/`): 模块级测试，Mock 外部依赖
+- **集成测试** (`integration/`): 模块间协作测试，默认离线
+- **E2E 测试** (`e2e/`): 端到端测试；默认离线，真实服务用例标记为 `network`
+- **黑盒测试** (`blackbox/`): CLI/MCP 黑盒测试，默认离线
+- **手动测试** (`manual_test_*.py`, `manual_test_m12/`): 真实环境或人工验证，不进入默认 pytest 收集
+
+### 默认安全契约
+
+- `python -m pytest` 只运行离线自动化测试。
+- `network` 表示会访问外部网络、真实 API 或可能产生费用；默认排除。
+- `manual` 表示需要人工、GUI、凭据或主观判断；默认排除。
+- `slow` 只表示耗时，不授予联网权限。
+- 测试模块在收集/import 阶段不得联网。
+- CI 显式设置 `PKV_RUN_LIVE=0`，并把所有运行时路径放在 runner 临时目录。
 
 ---
 
@@ -56,7 +65,7 @@
 |------|----------|
 | `test_real_api_workflow.py` | 真实 API 环境工作流 |
 
-**注意**: 需要显式设置 `PKV_RUN_LIVE=1`，并在 `config/local.yaml` 配置真实 API Key。
+**注意**: E2E 默认运行离线用例。真实 API 用例带 `network` marker，必须同时显式选择 `-m network`、设置 `PKV_RUN_LIVE=1`，并在 `config/local.yaml` 配置真实 API Key。
 
 ---
 
@@ -95,6 +104,8 @@
 - 需要真实 API Keys
 - AI 安全测试 (不影响生产数据)
 
+这些脚本不由默认 pytest 或 CI 收集，只能通过隔离包装器显式执行。
+
 ---
 
 ## MCP 三层测试体系 (M8+M9)
@@ -124,72 +135,47 @@ Layer 3: stdio 黑盒 (最慢, 子进程)
 
 ## 运行测试
 
-### 单元测试
+### 默认离线测试
 
 ```powershell
-# 运行所有单元测试
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-v")
+# 默认命令遵循 pytest.ini：排除 manual 与 network
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\default -Command @("python", "-m", "pytest", "-q")
 
-# 运行特定模块测试
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-k", "processors", "-v")
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-k", "cli", "-v")
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-k", "mcp", "-v")
-
-# 代码覆盖率
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "--cov=src", "--cov-report=term-missing")
+# 仅验证收集契约，不执行测试
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\collect -Command @("python", "-m", "pytest", "--collect-only", "-q")
 ```
 
----
-
-### 集成测试
+### 按测试层运行
 
 ```powershell
-# 运行所有集成测试(需要 API Keys)
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\integration -Command @("pytest", "tests/integration/", "-v")
+# 单元与基础语法
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\unit -Command @("python", "-m", "pytest", "tests/test_basic_syntax.py", "tests/unit", "-v")
 
-# 仅 MCP 集成测试
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\integration -Command @("pytest", "tests/integration/", "-k", "mcp", "-v")
+# 集成测试（默认离线，不需要 API Key）
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\integration -Command @("python", "-m", "pytest", "tests/integration", "-v")
+
+# 黑盒测试
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\blackbox -Command @("python", "-m", "pytest", "tests/blackbox", "-v")
+
+# 离线 E2E
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\e2e-offline -Command @("python", "-m", "pytest", "tests/e2e", "-m", "not network and not manual", "-v")
 ```
 
----
+### 显式真实联网测试
 
-### E2E 测试
+真实联网测试可能访问第三方站点、消耗 API 配额或产生费用，绝不进入默认 CI。运行前必须确认 `DataRoot` 位于 `.data-test` 下：
 
 ```powershell
-# 运行 E2E 测试(需要真实 API Keys)
 $env:PKV_RUN_LIVE = "1"
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\e2e -Command @("pytest", "tests/e2e/", "-v", "--tb=short")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\live -Command @("python", "-m", "pytest", "tests/e2e", "tests/integration/test_cli_e2e.py", "-m", "network", "-v")
 Remove-Item Env:PKV_RUN_LIVE
 ```
 
----
-
-### 黑盒测试
+### 手动测试脚本
 
 ```powershell
-# 运行 CLI 黑盒测试
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/blackbox/", "-k", "cli", "-v")
-
-# 运行 MCP 黑盒测试 (启动子进程)
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/blackbox/test_mcp_blackbox.py", "-v")
-
-# 全部黑盒测试
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/blackbox/", "-v")
-```
-
----
-
-### 手动测试
-
-```powershell
-# 安全的纯文本归档测试(推荐)
-.\scripts\run-test.ps1 -Direct -Command @("python", "tests/manual_test_text_archive_safe.py")
-
-# AI 服务测试
-.\scripts\run-test.ps1 -Direct -Command @("python", "tests/manual_test_ai_services.py")
-
-# 完整工作流测试
-.\scripts\run-test.ps1 -Direct -Command @("python", "tests/manual_test_real_workflow.py")
+# 手动脚本必须逐个显式运行；以下命令不会由 pytest/CI 自动触发
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\manual-text -Command @("python", "tests/manual_test_text_archive_safe.py")
 ```
 
 ---
@@ -219,19 +205,18 @@ Remove-Item Env:PKV_RUN_LIVE
 
 ## 测试环境隔离
 
-**重要**: 所有测试应使用测试环境,不影响生产数据。
+**重要**: 所有测试必须使用隔离路径，不得读取或写入生产 `.data`。
 
 ```powershell
-# pytest 是非 CLI 命令，必须使用 -Direct 与显式 -Command 数组；包装脚本会隔离全部运行时路径
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/", "-q")
-
-# 运行特定场景时可指定独立数据根目录
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\integration -Command @("pytest", "tests/integration/", "-v")
+# pytest 必须经测试包装器运行；DataRoot 只能位于仓库 .data-test 下
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\default -Command @("python", "-m", "pytest", "-q")
 ```
 
-MCP 黑盒测试自动使用临时数据库(`tmp_path`),无需手动隔离。
+- 本地包装器会隔离 `DATA_DIR`、`DB_PATH`、`VAULT_DIR`、`VECTOR_DIR`、`LOG_DIR` 和 `TMP_DIR`。
+- CI 将这些路径以及 pytest `--basetemp` 指向 `$RUNNER_TEMP`。
+- CLI/MCP 黑盒测试与 E2E fixture 使用 `tmp_path`/`tmp_path_factory`，不再硬编码或继承生产数据目录。
 
-详见: [docs/测试环境隔离指南.md](../docs/测试环境隔离指南.md)
+详见: [测试环境隔离指南](../docs/operations/testing/测试环境隔离指南.md)
 
 ---
 
@@ -243,14 +228,19 @@ MCP 黑盒测试自动使用临时数据库(`tmp_path`),无需手动隔离。
 [pytest]
 testpaths = tests
 python_files = test_*.py
-python_classes = Test*
-python_functions = test_*
-addopts = -v --tb=short
+norecursedirs = manual_test* *.egg .* _darcs build CVS dist node_modules venv {arch}
+addopts = --strict-markers -ra -m "not manual and not network"
+markers =
+    network: performs or enables outbound network or paid API calls; opt-in only
+    manual: requires an operator, GUI interaction, credentials, or subjective validation
+    slow: runtime classification only; does not grant network access
 ```
 
-### conftest.py
+### E2E conftest.py
 
-测试 fixtures 和配置(如果存在)
+`e2e/conftest.py` 中的公共 fixture 永远离线，并且只通过
+`TestEnv.env` 配置 MCP 子进程，不修改 pytest 父进程环境。真实 embedding
+仅存在于显式选择的 live fixture；其进程内配置覆盖会在构建结束后立即恢复。
 
 ---
 
@@ -311,19 +301,21 @@ def test_with_mock(mock_client):
 
 ---
 
-### Q3: 如何跳过需要 API Keys 的测试?
+### Q3: 如何声明需要 API Key 或真实网络的测试?
+
+必须同时使用 `network` marker 和运行时门禁；只有 `skipif` 不足以保护默认 CI：
 
 ```python
-import pytest
 import os
-from src.utils.config import get_config
+import pytest
 
+@pytest.mark.network
 @pytest.mark.skipif(
-    os.getenv("PKV_RUN_LIVE") != "1" or not get_config().llm_api_key,
-    reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 LLM API Key"
+    os.getenv("PKV_RUN_LIVE") != "1",
+    reason="需要 PKV_RUN_LIVE=1 才运行真实 API 测试",
 )
 def test_with_api():
-    # 测试逻辑
+    # 真实联网逻辑
 ```
 
 ---
@@ -335,7 +327,7 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 - CI/CD 或提交前运行完整三层测试
 - 使用 `-k` 过滤特定测试类:
 ```powershell
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/blackbox/test_mcp_blackbox.py", "-k", "TestReadonlyTools", "-v")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\blackbox-debug -Command @("python", "-m", "pytest", "tests/blackbox/test_mcp_blackbox.py", "-k", "TestReadonlyTools", "-v")
 ```
 
 ---
@@ -345,12 +337,19 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 | 文件 | 说明 |
 |------|------|
 | [fixtures/README.md](./fixtures/README.md) | 测试数据说明 |
-| [conftest.py](./conftest.py) | pytest 配置 (如果存在) |
-| [docs/测试环境隔离指南.md](../docs/测试环境隔离指南.md) | 测试环境文档 |
+| [pytest.ini](../pytest.ini) | 默认收集、marker 与排除契约 |
+| [e2e/conftest.py](./e2e/conftest.py) | 离线及显式 live E2E fixtures |
+| [测试环境隔离指南](../docs/operations/testing/测试环境隔离指南.md) | 测试环境文档 |
 
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-07-28 (P0 CI 与测试契约)
+- 默认 pytest 排除人工与真实联网测试，并启用严格 marker。
+- E2E 公共 fixture 改为纯离线，真实向量构建独立 opt-in。
+- CI 改为 master 项目级离线测试与显式 MCP 覆盖率门槛。
+- 测试数据统一写入 pytest/runner 临时目录。
 
 ### 2026-02-19 00:58 (M8+M9)
 - 新增 MCP 单元测试: `test_mcp_tools.py`, `test_mcp_resources.py`, `test_mcp_prompts.py`, `test_mcp_security.py`
@@ -376,6 +375,6 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-02-19 00:58:06
+**最后更新**: 2026-07-28
 
 *本文档由 Claude Code 自动生成*

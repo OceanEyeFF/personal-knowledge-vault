@@ -11,21 +11,26 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+from src.storage.sqlite_store import SQLiteStore
 
 
 class CLITester:
     """CLI 黑盒测试工具类。"""
 
-    def __init__(self, python_exe: str = "python"):
+    def __init__(self, env: dict[str, str], python_exe: str = sys.executable):
         """初始化测试器。
 
         Args:
+            env: 传递给 CLI 子进程的隔离环境
             python_exe: Python 解释器路径
         """
         self.python_exe = python_exe
+        self.env = env
         self.project_root = Path(__file__).resolve().parent.parent.parent
 
     def run_cli(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -43,6 +48,7 @@ class CLITester:
         result = subprocess.run(
             cmd,
             cwd=self.project_root,
+            env=self.env,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -60,9 +66,37 @@ class CLITester:
 
 
 @pytest.fixture
-def cli() -> CLITester:
-    """创建 CLI 测试器。"""
-    return CLITester()
+def cli(tmp_path: Path) -> CLITester:
+    """创建带空白数据库与显式隔离环境的离线 CLI 测试器。"""
+    data_dir = tmp_path / "data"
+    db_path = data_dir / "db" / "knowledge_vault.db"
+    runtime_paths = {
+        "DATA_DIR": data_dir,
+        "DB_PATH": db_path,
+        "VAULT_DIR": data_dir / "vault",
+        "VECTOR_DIR": data_dir / "vectors",
+        "LOG_DIR": data_dir / "logs",
+        "TMP_DIR": data_dir / "tmp",
+    }
+    for key, path in runtime_paths.items():
+        if key == "DB_PATH":
+            path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            path.mkdir(parents=True, exist_ok=True)
+
+    SQLiteStore(db_path).initialize()
+    env = os.environ.copy()
+    env.update({key: str(path) for key, path in runtime_paths.items()})
+    env.update(
+        {
+            "PKV_RUN_LIVE": "0",
+            "PKV_E2E_ARCHIVE_URL": "",
+            "DEEPSEEK_API_KEY": "",
+            "OPENAI_API_KEY": "",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+    )
+    return CLITester(env=env)
 
 
 # ========== 基础命令测试 ==========
@@ -205,7 +239,15 @@ def test_help_for_all_commands(cli: CLITester):
 
 def test_search_json_format_no_results(cli: CLITester):
     """测试 search 命令的 JSON 输出格式（无结果也应该返回有效 JSON）。"""
-    result = cli.run_cli("search", "不存在的关键词xyz123abc", "--format", "json", check=False)
+    result = cli.run_cli(
+        "search",
+        "不存在的关键词xyz123abc",
+        "--strategy",
+        "bm25",
+        "--format",
+        "json",
+        check=False,
+    )
 
     # 检查输出中是否包含数据库错误（即使 returncode=0）
     if "no such table" in result.stdout or "no such table" in result.stderr:

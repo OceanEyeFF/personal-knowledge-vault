@@ -1,24 +1,46 @@
-name: MCP Test Workflow
+name: CI
 
 on:
   push:
     branches:
-      - main
+      - master
       - milestone12-ai-chat
   pull_request:
     branches:
-      - main
+      - master
       - milestone12-ai-chat
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  PKV_RUN_LIVE: "0"
+  PKV_E2E_ARCHIVE_URL: ""
+  DEEPSEEK_API_KEY: ""
+  OPENAI_API_KEY: ""
+  QT_QPA_PLATFORM: offscreen
 
 jobs:
-  mcp-test:
+  test-contract:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -28,51 +50,208 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install pytest pytest-cov pytest-json-report
+          python -m pip check
 
-      - name: Prepare report directories
+      - name: Prepare isolated runtime
         run: |
-          mkdir -p reports/unit reports/blackbox reports/e2e reports/coverage
+          data_dir="$RUNNER_TEMP/pkv-tests/contract"
+          report_dir="$RUNNER_TEMP/pkv-reports/contract"
+          {
+            echo "DATA_DIR=$data_dir"
+            echo "DB_PATH=$data_dir/db/knowledge_vault.db"
+            echo "VAULT_DIR=$data_dir/vault"
+            echo "VECTOR_DIR=$data_dir/vectors"
+            echo "LOG_DIR=$data_dir/logs"
+            echo "TMP_DIR=$data_dir/tmp"
+            echo "TMPDIR=$data_dir/tmp"
+            echo "PKV_REPORT_DIR=$report_dir"
+          } >> "$GITHUB_ENV"
+          mkdir -p \
+            "$data_dir/db" \
+            "$data_dir/vault" \
+            "$data_dir/vectors" \
+            "$data_dir/logs" \
+            "$data_dir/tmp" \
+            "$report_dir"
 
-      - name: Unit tests
+      - name: Verify default collection contract
         run: |
-          pytest tests/unit/test_mcp_*.py -v \
-            --junitxml=reports/unit/junit.xml \
-            --json-report --json-report-file=reports/unit/report.json
+          set -o pipefail
+          python -m pytest --collect-only -q \
+            --basetemp="$TMP_DIR/pytest" \
+            | tee "$PKV_REPORT_DIR/collection.txt"
+          if grep -q "manual_test" "$PKV_REPORT_DIR/collection.txt"; then
+            echo "::error::manual tests entered default pytest collection"
+            exit 1
+          fi
 
-      - name: Blackbox tests
-        run: |
-          pytest tests/blackbox/test_mcp_client_simulation.py -v \
-            --junitxml=reports/blackbox/junit.xml \
-            --json-report --json-report-file=reports/blackbox/report.json
-
-      - name: E2E tests
-        run: |
-          pytest tests/e2e/test_mcp_e2e_*.py -v \
-            --junitxml=reports/e2e/junit.xml \
-            --json-report --json-report-file=reports/e2e/report.json
-
-      - name: Coverage report
-        run: |
-          pytest --cov=src.mcp --cov-report=xml --cov-report=term-missing \
-            --junitxml=reports/coverage/junit.xml \
-            --json-report --json-report-file=reports/coverage/report.json
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
-        with:
-          files: coverage.xml
-          fail_ci_if_error: true
-          verbose: true
-
-      - name: Coverage check (>=95%)
-        run: |
-          python -m coverage report --fail-under=95
-
-      - name: Upload test reports
+      - name: Upload collection report
+        if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports
-          path: |
-            reports
-            coverage.xml
+          name: test-contract-reports
+          path: ${{ runner.temp }}/pkv-reports/contract
+          if-no-files-found: warn
+
+  tests:
+    name: test-${{ matrix.suite }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: unit
+            paths: tests/test_*.py tests/unit
+          - suite: integration-blackbox
+            paths: tests/integration tests/blackbox
+          - suite: e2e-offline
+            paths: tests/e2e
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: Prepare isolated runtime
+        run: |
+          data_dir="$RUNNER_TEMP/pkv-tests/${{ matrix.suite }}"
+          report_dir="$RUNNER_TEMP/pkv-reports/${{ matrix.suite }}"
+          {
+            echo "DATA_DIR=$data_dir"
+            echo "DB_PATH=$data_dir/db/knowledge_vault.db"
+            echo "VAULT_DIR=$data_dir/vault"
+            echo "VECTOR_DIR=$data_dir/vectors"
+            echo "LOG_DIR=$data_dir/logs"
+            echo "TMP_DIR=$data_dir/tmp"
+            echo "TMPDIR=$data_dir/tmp"
+            echo "PKV_REPORT_DIR=$report_dir"
+          } >> "$GITHUB_ENV"
+          mkdir -p \
+            "$data_dir/db" \
+            "$data_dir/vault" \
+            "$data_dir/vectors" \
+            "$data_dir/logs" \
+            "$data_dir/tmp" \
+            "$report_dir"
+
+      - name: Run ${{ matrix.suite }} tests
+        run: |
+          python -m pytest ${{ matrix.paths }} \
+            -m "not network and not manual" \
+            --basetemp="$TMP_DIR/pytest" \
+            --junitxml="$PKV_REPORT_DIR/junit.xml"
+
+      - name: Upload ${{ matrix.suite }} reports
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-${{ matrix.suite }}-reports
+          path: ${{ runner.temp }}/pkv-reports/${{ matrix.suite }}
+          if-no-files-found: warn
+
+  mcp-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: Prepare isolated runtime
+        run: |
+          data_dir="$RUNNER_TEMP/pkv-tests/mcp-coverage"
+          report_dir="$RUNNER_TEMP/pkv-reports/mcp-coverage"
+          {
+            echo "DATA_DIR=$data_dir"
+            echo "DB_PATH=$data_dir/db/knowledge_vault.db"
+            echo "VAULT_DIR=$data_dir/vault"
+            echo "VECTOR_DIR=$data_dir/vectors"
+            echo "LOG_DIR=$data_dir/logs"
+            echo "TMP_DIR=$data_dir/tmp"
+            echo "TMPDIR=$data_dir/tmp"
+            echo "PKV_REPORT_DIR=$report_dir"
+          } >> "$GITHUB_ENV"
+          mkdir -p \
+            "$data_dir/db" \
+            "$data_dir/vault" \
+            "$data_dir/vectors" \
+            "$data_dir/logs" \
+            "$data_dir/tmp" \
+            "$report_dir"
+
+      - name: Run MCP coverage gate
+        run: |
+          python -m pytest \
+            tests/unit/test_mcp_*.py \
+            tests/integration/test_mcp_*.py \
+            tests/blackbox/test_mcp_*.py \
+            tests/e2e/test_mcp_e2e_*.py \
+            -m "not network and not manual" \
+            --basetemp="$TMP_DIR/pytest" \
+            --cov=src.mcp \
+            --cov-report=term-missing \
+            --cov-report="xml:$PKV_REPORT_DIR/coverage.xml" \
+            --cov-fail-under=95 \
+            --junitxml="$PKV_REPORT_DIR/junit.xml"
+
+      - name: Upload MCP coverage reports
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-coverage-reports
+          path: ${{ runner.temp }}/pkv-reports/mcp-coverage
+          if-no-files-found: warn
+
+  ci-required:
+    name: ci-required
+    if: ${{ always() }}
+    needs:
+      - test-contract
+      - tests
+      - mcp-coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all mandatory jobs
+        env:
+          CONTRACT_RESULT: ${{ needs.test-contract.result }}
+          TESTS_RESULT: ${{ needs.tests.result }}
+          MCP_COVERAGE_RESULT: ${{ needs.mcp-coverage.result }}
+        run: |
+          if [[ "$CONTRACT_RESULT" == "success" &&
+                "$TESTS_RESULT" == "success" &&
+                "$MCP_COVERAGE_RESULT" == "success" ]]; then
+            exit 0
+          fi
+          echo "::error::required jobs did not all succeed"
+          echo "test-contract=$CONTRACT_RESULT"
+          echo "tests=$TESTS_RESULT"
+          echo "mcp-coverage=$MCP_COVERAGE_RESULT"
+          exit 1

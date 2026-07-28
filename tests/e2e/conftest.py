@@ -4,8 +4,7 @@
 
 from __future__ import annotations
 
-import os
-import shutil
+import asyncio
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,45 +15,63 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from mcp import StdioServerParameters
-from mcp.client.session import ClientSession
-from mcp.client.stdio import stdio_client
+from mcp import StdioServerParameters  # noqa: E402
+from mcp.client.session import ClientSession  # noqa: E402
+from mcp.client.stdio import stdio_client  # noqa: E402
 
-from src.storage.markdown_store import Entry
-from src.storage.sqlite_store import SQLiteStore
+from src.storage.markdown_store import Entry  # noqa: E402
+from src.storage.sqlite_store import SQLiteStore  # noqa: E402
+from tests.e2e.fixture_utils import (  # noqa: E402
+    TestEnv,
+    build_test_env,
+    temporary_test_config,
+)
 
 
-@dataclass(frozen=True)
-class TestEnv:
-    data_dir: Path
-    db_path: Path
-    vault_dir: Path
-    vector_dir: Path
-    env: Dict[str, str]
+DEFAULT_MCP_TIMEOUT_S = 60.0
 
 
 @dataclass(frozen=True)
 class MCPTestClient:
     params: StdioServerParameters
 
-    async def _with_session(self, operation: Callable[[ClientSession], Awaitable[Any]]) -> Any:
-        async with stdio_client(self.params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                return await operation(session)
+    async def _with_session(
+        self,
+        operation: Callable[[ClientSession], Awaitable[Any]],
+        *,
+        timeout_s: float,
+    ) -> Any:
+        async def _run() -> Any:
+            async with stdio_client(self.params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    return await operation(session)
 
-    async def call_tool(self, name: str, arguments: Dict[str, Any]):
-        return await self._with_session(lambda session: session.call_tool(name, arguments))
+        return await asyncio.wait_for(_run(), timeout=timeout_s)
 
-    async def get_prompt(self, name: str, arguments: Dict[str, str] | None = None):
-        return await self._with_session(lambda session: session.get_prompt(name, arguments))
+    async def call_tool(
+        self,
+        name: str,
+        arguments: Dict[str, Any],
+        *,
+        timeout_s: float = DEFAULT_MCP_TIMEOUT_S,
+    ):
+        return await self._with_session(
+            lambda session: session.call_tool(name, arguments),
+            timeout_s=timeout_s,
+        )
 
-
-def _clean_path(path: Path) -> None:
-    if path.is_dir():
-        shutil.rmtree(path, ignore_errors=True)
-    elif path.exists():
-        path.unlink(missing_ok=True)
+    async def get_prompt(
+        self,
+        name: str,
+        arguments: Dict[str, str] | None = None,
+        *,
+        timeout_s: float = DEFAULT_MCP_TIMEOUT_S,
+    ):
+        return await self._with_session(
+            lambda session: session.get_prompt(name, arguments),
+            timeout_s=timeout_s,
+        )
 
 
 def _write_markdown(entry: Entry, path: Path) -> None:
@@ -256,68 +273,11 @@ def _build_sample_entries() -> List[Entry]:
 
 
 @pytest.fixture(scope="session")
-def test_env() -> TestEnv:
-    data_dir = PROJECT_ROOT / ".data-test"
-    db_path = data_dir / "db" / "knowledge_vault_e2e.db"
-    vault_dir = data_dir / "vault-e2e"
-    vector_dir = data_dir / "vectors-e2e"
-
-    data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / "db").mkdir(parents=True, exist_ok=True)
-
-    _clean_path(db_path)
-    _clean_path(vault_dir)
-    _clean_path(vector_dir)
-
-    vault_dir.mkdir(parents=True, exist_ok=True)
-    vector_dir.mkdir(parents=True, exist_ok=True)
-
-    old_env = {key: os.environ.get(key) for key in ["DB_PATH", "DATA_DIR", "VECTOR_DIR", "VAULT_DIR", "LOG_LEVEL"]}
-    os.environ["DB_PATH"] = str(db_path)
-    os.environ["DATA_DIR"] = str(data_dir)
-    os.environ["VECTOR_DIR"] = str(vector_dir)
-    os.environ["VAULT_DIR"] = str(vault_dir)
-    os.environ["LOG_LEVEL"] = "WARNING"
-    os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-
-    try:
-        import src.utils.config as config_module
-        config_module._config_instance = None
-    except Exception:
-        pass
-
-    store = SQLiteStore(db_path)
-    store.initialize()
-
-    env = os.environ.copy()
-    env.update(
-        {
-            "DB_PATH": str(db_path),
-            "DATA_DIR": str(data_dir),
-            "VECTOR_DIR": str(vector_dir),
-            "VAULT_DIR": str(vault_dir),
-            "LOG_LEVEL": "WARNING",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        }
-    )
-
-    yield TestEnv(
-        data_dir=data_dir,
-        db_path=db_path,
-        vault_dir=vault_dir,
-        vector_dir=vector_dir,
-        env=env,
-    )
-
-    for key, value in old_env.items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
+def test_env(tmp_path_factory: pytest.TempPathFactory) -> TestEnv:
+    return build_test_env(tmp_path_factory)
 
 
-@pytest.fixture
-def mcp_server(test_env: TestEnv, sample_knowledge_db) -> MCPTestClient:
+def _build_mcp_client(test_env: TestEnv) -> MCPTestClient:
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "src.mcp.server"],
@@ -325,6 +285,11 @@ def mcp_server(test_env: TestEnv, sample_knowledge_db) -> MCPTestClient:
         cwd=str(PROJECT_ROOT),
     )
     return MCPTestClient(params=params)
+
+
+@pytest.fixture
+def mcp_server(test_env: TestEnv, sample_knowledge_db) -> MCPTestClient:
+    return _build_mcp_client(test_env)
 
 
 @pytest.fixture(scope="session")
@@ -343,36 +308,67 @@ def sample_knowledge_db(test_env: TestEnv) -> Dict[str, object]:
         _write_markdown(entry, md_path)
         entry_ids.append(store.insert_entry(entry, str(md_path)))
 
-    vector_enabled = False
-    vector_error = ""
-    from src.utils.config import get_config
-
-    if os.getenv("PKV_RUN_LIVE") == "1" and get_config().embd_api_key:
-        try:
-            from src.ai.embedder import Embedder
-            from src.storage.vector_store import VectorStore
-
-            config_vector_dir = get_config().vector_index_dir
-            if Path(config_vector_dir).resolve() == test_env.vector_dir.resolve():
-                embedder = Embedder()
-                vector_store = VectorStore(test_env.vector_dir)
-                for entry, kid in zip(entries, entry_ids):
-                    vector = embedder.embed_document(entry.content or entry.summary_100_words)
-                    vector_store.add_doc_vector(kid, vector)
-                vector_enabled = True
-            else:
-                vector_error = (
-                    "VECTOR_DIR 环境变量未生效，向量索引目录不一致，跳过向量构建"
-                )
-        except Exception as exc:
-            vector_error = str(exc)
-
     return {
         "db_path": test_env.db_path,
         "vault_dir": test_env.vault_dir,
         "vector_dir": test_env.vector_dir,
         "entries": entries,
         "entry_ids": entry_ids,
-        "vector_enabled": vector_enabled,
-        "vector_error": vector_error,
+        "vector_enabled": False,
+        "vector_error": "",
     }
+
+
+@pytest.fixture(scope="session")
+def live_vector_knowledge_db(
+    test_env: TestEnv,
+    sample_knowledge_db: Dict[str, object],
+) -> Dict[str, object]:
+    """Build a real embedding index only for explicitly selected network tests."""
+    if test_env.env.get("PKV_RUN_LIVE") != "1":
+        pytest.skip("需要 PKV_RUN_LIVE=1 才运行真实向量测试")
+
+    with temporary_test_config(test_env) as config:
+        if not config.embd_api_key:
+            pytest.skip("需要在 config/local.yaml 配置 embedding API Key")
+
+        config_vector_dir = Path(config.vector_index_dir)
+        if config_vector_dir.resolve() != test_env.vector_dir.resolve():
+            pytest.fail(
+                "VECTOR_DIR 环境变量未生效，拒绝在非测试目录构建真实向量索引",
+                pytrace=False,
+            )
+
+        try:
+            from src.ai.embedder import Embedder
+            from src.storage.vector_store import VectorStore
+
+            entries = sample_knowledge_db["entries"]
+            entry_ids = sample_knowledge_db["entry_ids"]
+            assert isinstance(entries, list)
+            assert isinstance(entry_ids, list)
+
+            embedder = Embedder()
+            vector_store = VectorStore(test_env.vector_dir)
+            for entry, kid in zip(entries, entry_ids):
+                vector = embedder.embed_document(
+                    entry.content or entry.summary_100_words
+                )
+                vector_store.add_doc_vector(kid, vector)
+        except Exception as exc:
+            pytest.fail(
+                f"真实向量索引构建失败: {type(exc).__name__}",
+                pytrace=False,
+            )
+
+    result = dict(sample_knowledge_db)
+    result["vector_enabled"] = True
+    return result
+
+
+@pytest.fixture
+def live_mcp_server(
+    test_env: TestEnv,
+    live_vector_knowledge_db: Dict[str, object],
+) -> MCPTestClient:
+    return _build_mcp_client(test_env)

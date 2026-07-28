@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-import os
 import statistics
 import time
 from datetime import datetime
@@ -13,7 +11,6 @@ from typing import Any, Dict, List
 import pytest
 
 from src.storage.sqlite_store import SQLiteStore
-from src.utils.config import get_config
 
 
 def _parse_tool_content(result) -> Dict[str, Any]:
@@ -45,16 +42,11 @@ def _parse_time(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def _has_embedding_key() -> bool:
-    if os.getenv("PKV_RUN_LIVE") != "1":
-        return False
-    return bool(get_config().embd_api_key)
-
-
 async def _call_search(session, payload: Dict[str, Any], timeout_s: float = 60.0):
-    return await asyncio.wait_for(
-        session.call_tool("search_knowledge", payload),
-        timeout=timeout_s,
+    return await session.call_tool(
+        "search_knowledge",
+        payload,
+        timeout_s=timeout_s,
     )
 
 
@@ -91,9 +83,11 @@ async def test_search_with_tag_filter(mcp_server, sample_knowledge_db):
 
 @pytest.mark.asyncio
 async def test_search_empty_result(mcp_server):
+    # A multi-token query intentionally relaxes to OR after a strict miss.
+    # Use one unique token so this assertion tests the no-results contract.
     result = await _call_search(
         mcp_server,
-        {"query": "不存在的关键词xyz123", "strategy": "bm25", "top_k": 5},
+        {"query": "pkvnomatchxyz123", "strategy": "bm25", "top_k": 5},
     )
     data = _parse_tool_content(result)
     assert data["total"] == 0
@@ -101,7 +95,7 @@ async def test_search_empty_result(mcp_server):
 
 
 @pytest.mark.asyncio
-async def test_search_strategy_selection(mcp_server, sample_knowledge_db):
+async def test_search_strategy_selection(mcp_server):
     auto_short = await _call_search(
         mcp_server,
         {"query": "AI 工作流", "strategy": "auto", "top_k": 5},
@@ -117,20 +111,21 @@ async def test_search_strategy_selection(mcp_server, sample_knowledge_db):
     _assert_search_payload(bm25_data, min_total=1)
     assert auto_data["results"][0]["title"] == bm25_data["results"][0]["title"]
 
-    if not _has_embedding_key() or not sample_knowledge_db.get("vector_enabled"):
-        return
 
+@pytest.mark.network
+@pytest.mark.asyncio
+async def test_search_live_vector_strategies(live_mcp_server):
     long_query = "如何设计一个可扩展的 AI 工作流 系统 并进行效果评估"
     auto_long = await _call_search(
-        mcp_server,
+        live_mcp_server,
         {"query": long_query, "strategy": "auto", "top_k": 5},
     )
     hybrid = await _call_search(
-        mcp_server,
+        live_mcp_server,
         {"query": long_query, "strategy": "hybrid", "top_k": 5},
     )
     vector = await _call_search(
-        mcp_server,
+        live_mcp_server,
         {"query": "语义搜索 评测", "strategy": "vector", "top_k": 5},
     )
 
@@ -138,6 +133,7 @@ async def test_search_strategy_selection(mcp_server, sample_knowledge_db):
     hybrid_data = _parse_tool_content(hybrid)
     vector_data = _parse_tool_content(vector)
 
+    _assert_search_payload(auto_long_data, min_total=1)
     _assert_search_payload(hybrid_data, min_total=1)
     _assert_search_payload(vector_data, min_total=1)
     assert auto_long_data["results"][0]["title"] == hybrid_data["results"][0]["title"]

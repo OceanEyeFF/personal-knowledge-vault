@@ -1,0 +1,11 @@
+name: pkv-test-py311
+
+channels:
+  - conda-forge
+
+dependencies:
+  # P0 supports one interpreter contract only. Keep this exact minor version.
+  - python=3.11
+  - pip
+  # Use the Windows binary package instead of requiring a local C++ toolchain.
+  - hnswlib=0.8.0

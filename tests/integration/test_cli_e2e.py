@@ -25,11 +25,11 @@ from click.testing import CliRunner
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import src.cli.commands as commands
-from src.storage.markdown_store import Entry, MarkdownStore
-from src.storage.sqlite_store import SQLiteStore
-from src.utils import config as config_module
-from src.utils.config import Config
+import src.cli.commands as commands  # noqa: E402
+from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
+from src.storage.sqlite_store import SQLiteStore  # noqa: E402
+from src.utils import config as config_module  # noqa: E402
+from src.utils.config import Config  # noqa: E402
 
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -273,6 +273,7 @@ ARCHIVE_TEST_URL = os.getenv("PKV_E2E_ARCHIVE_URL")
 RUN_LIVE = os.getenv("PKV_RUN_LIVE") == "1"
 
 
+@pytest.mark.network
 @pytest.mark.skipif(
     not RUN_LIVE or not ARCHIVE_TEST_URL,
     reason="需要 PKV_RUN_LIVE=1 和 PKV_E2E_ARCHIVE_URL 才运行真实归档测试",

@@ -23,6 +23,9 @@ import src.utils.config as config_module
 from src.utils.config import get_config
 
 
+pytestmark = pytest.mark.network
+
+
 def _require_live_api_config(config: object) -> None:
     """显式 live 模式下，缺少凭据必须失败，且错误中不得包含凭据值。"""
     required_fields = {

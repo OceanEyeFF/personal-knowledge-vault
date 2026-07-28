@@ -37,7 +37,9 @@ class StubSQLiteStore:
 
 class StubMarkdownStore:
     def __init__(self, content_map=None, should_fail: bool = False):
-        self.content_map = content_map or {}
+        self.content_map = {
+            Path(file_path): content for file_path, content in (content_map or {}).items()
+        }
         self.should_fail = should_fail
 
     def load(self, file_path: Path):
@@ -46,7 +48,7 @@ class StubMarkdownStore:
         return Entry(
             title=file_path.stem,
             source_type="generic",
-            content=self.content_map[str(file_path)],
+            content=self.content_map[file_path],
         )
 
 
@@ -230,13 +232,11 @@ def test_evidence_helper_paths_cover_dedup_trim_tokenize_and_fallbacks() -> None
         _make_item(6, retrieval_score=0.5, content_preview=""),
     ) == 0.0
     assert service._compute_freshness_score(high_score, None) == 0.0
-    assert (
-        service._compute_freshness_score(
-            _make_item(7, retrieval_score=0.5, archived_at="not-a-time"),
-            service._parse_timestamp("2026-03-11 10:00:00"),
-        )
-        == 0.0
+    invalid_freshness = service._compute_freshness_score(
+        _make_item(7, retrieval_score=0.5, archived_at="not-a-time"),
+        service._parse_timestamp("2026-03-11 10:00:00"),
     )
+    assert invalid_freshness == 0.0
     service.text_processor.tokenize_chinese = lambda text: "   "  # type: ignore[method-assign]
     assert "alpha" in service._tokenize_text("Alpha 图谱")
     assert service._load_content_preview("") == ""
@@ -269,35 +269,31 @@ def test_exploration_helper_paths_cover_validation_and_fallbacks() -> None:
 
     service.text_processor.tokenize_chinese = lambda text: "   "  # type: ignore[method-assign]
     assert "alpha" in service._entry_tokens({"title": "Alpha 图谱"})
-    assert (
-        service._compute_semantic_bridge_score({}, {"title": ""}, {2}, {})
-        == 0.0
+    empty_bridge_score = service._compute_semantic_bridge_score(
+        {}, {"title": ""}, {2}, {}
     )
-    assert (
-        service._compute_semantic_bridge_score(
-            {},
-            {"title": "Alpha"},
-            {2},
-            {2: {}},
-        )
-        == 0.0
+    assert empty_bridge_score == 0.0
+    missing_bridge_score = service._compute_semantic_bridge_score(
+        {},
+        {"title": "Alpha"},
+        {2},
+        {2: {}},
     )
+    assert missing_bridge_score == 0.0
     assert service._infer_timeline_source([], []) == "archived_at"
-    assert (
-        service._infer_timeline_source(
-            [
-                TimelinePoint(
-                    knowledge_id=1,
-                    title="NoTime",
-                    time_value="",
-                    time_source="event_time",
-                    retrieval_score=0.1,
-                )
-            ],
-            ["event_time", "published_at", "archived_at"],
-        )
-        == "archived_at"
+    inferred_source = service._infer_timeline_source(
+        [
+            TimelinePoint(
+                knowledge_id=1,
+                title="NoTime",
+                time_value="",
+                time_source="event_time",
+                retrieval_score=0.1,
+            )
+        ],
+        ["event_time", "published_at", "archived_at"],
     )
+    assert inferred_source == "archived_at"
     assert service._parse_time_sort_key("2026-03-01T10:00:00Z")[:2] == (0, 0)
 
     explanation = RelationExplanationResult(
