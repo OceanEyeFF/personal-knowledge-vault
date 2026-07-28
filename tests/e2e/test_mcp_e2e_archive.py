@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -23,7 +24,10 @@ def _parse_tool_content(result) -> Dict[str, Any]:
 
 
 async def _call_tool(session, tool_name: str, payload: Dict[str, Any], timeout_s: float = 120.0):
-    return await session.call_tool(tool_name, payload, timeout_s=timeout_s)
+    return await asyncio.wait_for(
+        session.call_tool(tool_name, payload),
+        timeout=timeout_s,
+    )
 
 
 def _assert_error_payload(payload: Dict[str, Any], expected_substr: str | None = None) -> None:

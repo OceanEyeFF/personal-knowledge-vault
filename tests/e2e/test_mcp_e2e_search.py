@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import statistics
 import time
@@ -43,10 +44,9 @@ def _parse_time(value: str) -> datetime:
 
 
 async def _call_search(session, payload: Dict[str, Any], timeout_s: float = 60.0):
-    return await session.call_tool(
-        "search_knowledge",
-        payload,
-        timeout_s=timeout_s,
+    return await asyncio.wait_for(
+        session.call_tool("search_knowledge", payload),
+        timeout=timeout_s,
     )
 
 
