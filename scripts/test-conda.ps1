@@ -57,11 +57,18 @@ if ($LASTEXITCODE -ne 0) {
     )
     exit 1
 }
-$pythonMinor = (
+$pythonMinorCandidate = (
     $versionOutput |
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
         Select-Object -Last 1
-).Trim()
+)
+if ([string]::IsNullOrWhiteSpace([string]$pythonMinorCandidate)) {
+    [Console]::Error.WriteLine(
+        "错误: Conda 环境 '$envName' 未返回 Python 版本 (empty version output)。"
+    )
+    exit 1
+}
+$pythonMinor = ([string]$pythonMinorCandidate).Trim()
 if ($pythonMinor -ne "3.11") {
     [Console]::Error.WriteLine(
         "错误: P0 只支持 Python 3.11，环境 '$envName' 当前为 $pythonMinor。"
@@ -108,14 +115,6 @@ function Invoke-IsolatedTestStep {
     }
 }
 
-$previousEnvironmentName = $env:PKV_CONDA_ENV
-$previousRunLive = $env:PKV_RUN_LIVE
-$previousArchiveUrl = $env:PKV_E2E_ARCHIVE_URL
-$previousBytecodeSetting = $env:PYTHONDONTWRITEBYTECODE
-$env:PKV_CONDA_ENV = $envName
-$env:PKV_RUN_LIVE = "0"
-$env:PKV_E2E_ARCHIVE_URL = ""
-$env:PYTHONDONTWRITEBYTECODE = "1"
 $exitCode = 1
 $runId = [Guid]::NewGuid().ToString("N").Substring(0, 8)
 $testRunRoot = ".data-test\conda-$runId"
@@ -136,8 +135,19 @@ if (-not $testRunPath.StartsWith(
     exit 1
 }
 
-Push-Location $projectRoot
+$previousEnvironmentName = $env:PKV_CONDA_ENV
+$previousRunLive = $env:PKV_RUN_LIVE
+$previousArchiveUrl = $env:PKV_E2E_ARCHIVE_URL
+$previousBytecodeSetting = $env:PYTHONDONTWRITEBYTECODE
+$locationPushed = $false
 try {
+    $env:PKV_CONDA_ENV = $envName
+    $env:PKV_RUN_LIVE = "0"
+    $env:PKV_E2E_ARCHIVE_URL = ""
+    $env:PYTHONDONTWRITEBYTECODE = "1"
+    Push-Location $projectRoot
+    $locationPushed = $true
+
     Write-Host "Conda 环境: $envName" -ForegroundColor Green
     Write-Host "Python 契约: 3.11" -ForegroundColor Green
     Write-Host "测试范围: $Suite" -ForegroundColor Green
@@ -162,6 +172,8 @@ try {
                 "-m",
                 "not network and not manual",
                 "--basetemp=$testRunRoot\smoke\tmp\pytest",
+                "-o",
+                "cache_dir=$testRunRoot\smoke\cache",
                 "-q"
             )
         if ($lastStepExitCode -ne 0) {
@@ -180,6 +192,8 @@ try {
                 "pytest",
                 "--collect-only",
                 "--basetemp=$testRunRoot\collect\tmp\pytest",
+                "-o",
+                "cache_dir=$testRunRoot\collect\cache",
                 "-q"
             ) `
             -CaptureOutput
@@ -208,6 +222,8 @@ try {
                 "-m",
                 "not network and not manual",
                 "--basetemp=$testRunRoot\offline\tmp\pytest",
+                "-o",
+                "cache_dir=$testRunRoot\offline\cache",
                 "-q"
             )
         if ($lastStepExitCode -ne 0) {
@@ -222,7 +238,9 @@ try {
 } catch {
     [Console]::Error.WriteLine("错误: $($_.Exception.Message)")
 } finally {
-    Pop-Location
+    if ($locationPushed) {
+        Pop-Location
+    }
     if ($null -eq $previousEnvironmentName) {
         Remove-Item Env:PKV_CONDA_ENV -ErrorAction SilentlyContinue
     } else {

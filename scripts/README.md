@@ -24,8 +24,8 @@
 Windows `P0` 预检依次验证默认收集和完整离线套件。MCP 95% 覆盖率仍由
 Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可以使用
 `-Suite Smoke`、`-Suite Contract` 或 `-Suite Offline` 缩小范围。所有 pytest
-命令都排除 `manual` 与 `network`；项目运行路径和 pytest 临时目录位于每次新建的
-`.data-test/conda-*` 目录。
+命令都排除 `manual` 与 `network`；项目运行路径、pytest 临时目录和 cache
+目录均位于每次新建的 `.data-test/conda-*` 目录。
 
 ---
 
