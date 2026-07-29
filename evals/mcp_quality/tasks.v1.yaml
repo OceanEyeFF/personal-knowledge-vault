@@ -1,0 +1,489 @@
+schema_version: pkv.mcp_quality_tasks.v1
+description: >
+  Phase C 最小 MCP 质量评测集。16 条任务使用固定离线数据，
+  验证 Tool 发现/调用契约、参数、关系推理结果、chunk 证据质量，
+  以及三个 partial Tool 的可观察性。expected_call 是 gold call；
+  proposed_call 是本次执行计划，未来可由外部 Agent 预测文件替换。
+thresholds:
+  overall: 0.90
+  tool_selection: 1.00
+  parameters: 1.00
+  result: 0.90
+  evidence_relevance: 0.80
+  citability: 1.00
+  degradation: 1.00
+
+tasks:
+  - id: subgraph_depth_two
+    category: relation_reasoning
+    prompt: 展开 Alpha 两跳内的关系子图。
+    proposed_call: &subgraph_depth_two_call
+      tool: query_subgraph
+      arguments:
+        knowledge_id: "$alpha_id"
+        depth: 2
+        max_nodes: 20
+    expected_call: *subgraph_depth_two_call
+    assertions:
+      - id: correct_nodes
+        dimension: result
+        path: nodes[*].knowledge_id
+        op: set_equals
+        expected: ["$alpha_id", "$beta_id", "$gamma_id", "$delta_id"]
+      - id: correct_edge_count
+        dimension: result
+        path: total_edges
+        op: equals
+        expected: 4
+      - id: not_truncated
+        dimension: result
+        path: truncated
+        op: equals
+        expected: false
+
+  - id: subgraph_relation_filter
+    category: relation_reasoning
+    prompt: 只查看 Alpha 两跳内 references 类型的关系。
+    proposed_call: &subgraph_filter_call
+      tool: query_subgraph
+      arguments:
+        knowledge_id: "$alpha_id"
+        depth: 2
+        relation_types: [references]
+        max_nodes: 20
+    expected_call: *subgraph_filter_call
+    assertions:
+      - id: filtered_edge_types
+        dimension: result
+        path: edges[*].relation_type
+        op: set_equals
+        expected: [references]
+      - id: filtered_nodes
+        dimension: result
+        path: nodes[*].knowledge_id
+        op: set_equals
+        expected: ["$alpha_id", "$beta_id"]
+
+  - id: explain_direct_relation
+    category: relation_reasoning
+    prompt: 解释 Alpha 与 Beta 为什么直接相关。
+    proposed_call: &explain_direct_call
+      tool: explain_relation
+      arguments:
+        source_knowledge_id: "$alpha_id"
+        target_knowledge_id: "$beta_id"
+        max_depth: 2
+    expected_call: *explain_direct_call
+    assertions:
+      - id: direct_found
+        dimension: result
+        path: found
+        op: equals
+        expected: true
+      - id: direct_type
+        dimension: result
+        path: explanation_type
+        op: equals
+        expected: direct
+      - id: direct_hops
+        dimension: result
+        path: hops
+        op: equals
+        expected: 1
+      - id: direct_evidence
+        dimension: result
+        path: evidence_items
+        op: not_empty
+
+  - id: explain_multihop_relation
+    category: relation_reasoning
+    prompt: 找出 Alpha 到 Delta 的两跳证据路径。
+    proposed_call: &explain_multihop_call
+      tool: explain_relation
+      arguments:
+        source_knowledge_id: "$alpha_id"
+        target_knowledge_id: "$delta_id"
+        max_depth: 2
+    expected_call: *explain_multihop_call
+    assertions:
+      - id: path_found
+        dimension: result
+        path: found
+        op: equals
+        expected: true
+      - id: path_hops
+        dimension: result
+        path: hops
+        op: equals
+        expected: 2
+      - id: path_intermediate
+        dimension: result
+        path: intermediate_knowledge_ids
+        op: set_equals
+        expected: ["$gamma_id"]
+      - id: path_evidence_count
+        dimension: result
+        path: evidence_count
+        op: equals
+        expected: 2
+
+  - id: explain_unreachable_relation
+    category: relation_reasoning
+    prompt: 判断 Alpha 与未连接的 Version Base 是否存在两跳关系。
+    proposed_call: &explain_unreachable_call
+      tool: explain_relation
+      arguments:
+        source_knowledge_id: "$alpha_id"
+        target_knowledge_id: "$version_base_id"
+        max_depth: 2
+    expected_call: *explain_unreachable_call
+    assertions:
+      - id: unreachable_not_found
+        dimension: result
+        path: found
+        op: equals
+        expected: false
+      - id: unreachable_zero_hops
+        dimension: result
+        path: hops
+        op: equals
+        expected: 0
+
+  - id: collect_document_evidence
+    category: evidence
+    prompt: 收集 Alpha 与 Delta 的文档级证据链。
+    proposed_call: &collect_document_call
+      tool: collect_evidence
+      arguments:
+        question: Alpha 和 Delta 的证据链是什么？
+        top_k: 2
+        relation_max_depth: 2
+        include_chunks: false
+    expected_call: *collect_document_call
+    assertions:
+      - id: document_evidence_found
+        dimension: result
+        path: found
+        op: equals
+        expected: true
+      - id: document_evidence_count
+        dimension: result
+        path: total_evidence
+        op: equals
+        expected: 2
+      - id: document_chunk_status
+        dimension: degradation
+        path: chunk_retrieval_status
+        op: equals
+        expected: not_requested
+      - id: document_relation_trace
+        dimension: result
+        path: evidence[1].relation_hops
+        op: equals
+        expected: 2
+
+  - id: collect_chunk_evidence_relevance
+    category: chunk_evidence
+    prompt: 返回可直接引用的 Alpha 到 Delta 的相关 chunk 证据。
+    proposed_call: &collect_chunk_call
+      tool: collect_evidence
+      arguments:
+        question: chunk-success Alpha 到 Delta 的证据链
+        top_k: 3
+        relation_max_depth: 2
+        include_chunks: true
+    expected_call: *collect_chunk_call
+    assertions:
+      - id: chunk_success_status
+        dimension: degradation
+        path: chunk_retrieval_status
+        op: equals
+        expected: success
+      - id: chunk_ids_present
+        dimension: citability
+        path: evidence[*].chunk_id
+        op: set_equals
+        expected: [101, 401, 301]
+      - id: top_chunk_relevant_alpha
+        dimension: evidence_relevance
+        path: evidence[0].chunk_text
+        op: contains
+        expected: Alpha
+      - id: top_chunk_relevant_delta
+        dimension: evidence_relevance
+        path: evidence[0].chunk_text
+        op: contains
+        expected: Delta
+      - id: top_chunk_source_url
+        dimension: citability
+        path: evidence[0].source_url
+        op: not_empty
+      - id: top_chunk_stable_locator
+        dimension: citability
+        path: evidence[0].citation_locator
+        op: not_empty
+        priority: P0
+        impact: high
+        message: chunk 证据缺少面向 Agent 的稳定 citation_locator
+        phase_b_hint: 为每条 chunk 证据返回稳定 locator（knowledge_id + chunk_id/index + source）。
+
+  - id: collect_chunk_no_hits
+    category: chunk_evidence
+    prompt: chunk 没有命中时仍返回可观察的文档级证据。
+    proposed_call: &collect_chunk_no_hits_call
+      tool: collect_evidence
+      arguments:
+        question: chunk-no-hits Alpha 证据
+        top_k: 2
+        include_chunks: true
+    expected_call: *collect_chunk_no_hits_call
+    assertions:
+      - id: no_hits_status
+        dimension: degradation
+        path: chunk_retrieval_status
+        op: equals
+        expected: no_hits
+      - id: no_hits_document_fallback
+        dimension: result
+        path: total_evidence
+        op: gte
+        expected: 1
+      - id: no_hits_not_misreported_as_error
+        dimension: degradation
+        path: limitation_notes
+        op: length_equals
+        expected: 0
+
+  - id: collect_chunk_path_unavailable
+    category: degraded_contract
+    prompt: chunk 路径不存在时显式降级并说明原因。
+    proposed_call: &collect_chunk_path_unavailable_call
+      tool: collect_evidence
+      arguments:
+        question: chunk-path-unavailable Alpha 证据
+        top_k: 2
+        include_chunks: true
+    expected_call: *collect_chunk_path_unavailable_call
+    assertions:
+      - id: path_unavailable_status
+        dimension: degradation
+        path: chunk_retrieval_status
+        op: equals
+        expected: path_unavailable
+      - id: path_unavailable_note
+        dimension: degradation
+        path: limitation_notes
+        op: contains
+        expected: chunk_degraded[path_unavailable] chunk 检索路径不可用，已降级为文档级证据
+      - id: path_unavailable_fallback
+        dimension: result
+        path: total_evidence
+        op: gte
+        expected: 1
+
+  - id: collect_chunk_search_error
+    category: degraded_contract
+    prompt: chunk 查询异常时显式降级并说明原因。
+    proposed_call: &collect_chunk_search_error_call
+      tool: collect_evidence
+      arguments:
+        question: chunk-search-error Alpha 证据
+        top_k: 2
+        include_chunks: true
+    expected_call: *collect_chunk_search_error_call
+    assertions:
+      - id: search_error_status
+        dimension: degradation
+        path: chunk_retrieval_status
+        op: equals
+        expected: search_error
+      - id: search_error_note
+        dimension: degradation
+        path: limitation_notes
+        op: contains
+        expected: chunk_degraded[search_error] chunk 检索异常，已降级为文档级证据
+      - id: search_error_fallback
+        dimension: result
+        path: total_evidence
+        op: gte
+        expected: 1
+
+  - id: find_bridges_partial_contract
+    category: partial_tool
+    prompt: 找出 Alpha 子图中的桥接候选并公开实现边界。
+    proposed_call: &find_bridges_call
+      tool: find_bridges
+      arguments:
+        seed_knowledge_id: "$alpha_id"
+        top_k: 5
+        max_depth: 2
+    expected_call: *find_bridges_call
+    assertions:
+      - id: bridge_partial_level
+        dimension: degradation
+        path: implementation_level
+        op: equals
+        expected: partial
+      - id: bridge_limitations_visible
+        dimension: degradation
+        path: limitation_notes
+        op: not_empty
+      - id: bridge_sources_visible
+        dimension: degradation
+        path: evidence_sources
+        op: contains_all
+        expected: [relation_subgraph, graph_bridge_signal]
+      - id: bridge_candidate
+        dimension: result
+        path: items[*].knowledge_id
+        op: contains
+        expected: "$gamma_id"
+      - id: bridge_evidence_trace
+        dimension: citability
+        path: items[0].evidence_path
+        op: not_empty
+        priority: P1
+        impact: high
+        message: 桥接候选没有可逐跳核验的 evidence_path
+        phase_b_hint: 在 candidate 中返回用于 bridge_score 的关系边/路径证据。
+
+  - id: timeline_partial_contract
+    category: partial_tool
+    prompt: 按结构化时间重建 Alpha 时间线并公开时间来源。
+    proposed_call: &timeline_call
+      tool: timeline_of
+      arguments:
+        topic: Alpha 时间线
+        top_k: 5
+        sort_order: asc
+    expected_call: *timeline_call
+    assertions:
+      - id: timeline_partial_level
+        dimension: degradation
+        path: implementation_level
+        op: equals
+        expected: partial
+      - id: timeline_limitations_visible
+        dimension: degradation
+        path: limitation_notes
+        op: not_empty
+      - id: timeline_sources_visible
+        dimension: degradation
+        path: evidence_sources
+        op: contains_all
+        expected: [query_results, entry_metadata, structured_time_fields]
+      - id: timeline_order
+        dimension: result
+        path: items[*].knowledge_id
+        op: equals
+        expected: ["$alpha_id", "$beta_id"]
+      - id: timeline_source_priority
+        dimension: result
+        path: time_source_priority
+        op: equals
+        expected: [event_time, published_at, archived_at]
+      - id: timeline_item_locator
+        dimension: citability
+        path: items[0].citation_locator
+        op: not_empty
+        priority: P1
+        impact: high
+        message: 时间线条目缺少可回到原文的 citation_locator
+        phase_b_hint: 为 timeline point 补 source_url/file_path 与稳定 locator。
+
+  - id: contrast_partial_contract
+    category: partial_tool
+    prompt: 对比 Topic A 与 Topic B，并公开关系图信号和实现限制。
+    proposed_call: &contrast_call
+      tool: contrast
+      arguments:
+        topic_a: Topic A
+        topic_b: Topic B
+        top_k: 5
+    expected_call: *contrast_call
+    assertions:
+      - id: contrast_partial_level
+        dimension: degradation
+        path: implementation_level
+        op: equals
+        expected: partial
+      - id: contrast_limitations_visible
+        dimension: degradation
+        path: limitation_notes
+        op: not_empty
+      - id: contrast_sources_visible
+        dimension: degradation
+        path: evidence_sources
+        op: contains_all
+        expected: [query_results, relation_graph]
+      - id: contrast_overlap
+        dimension: result
+        path: overlap_knowledge_ids
+        op: set_equals
+        expected: ["$gamma_id"]
+      - id: contrast_shared_tags
+        dimension: result
+        path: shared_tags
+        op: set_equals
+        expected: [共同, 桥接]
+      - id: contrast_dimension_provenance
+        dimension: citability
+        path: comparison_dimensions.provenance
+        op: not_empty
+        priority: P1
+        impact: medium
+        message: 对比维度没有可引用的来源映射
+        phase_b_hint: 为 shared/only/relation signals 返回候选与来源映射。
+
+  - id: parameter_clamping
+    category: parameter_contract
+    prompt: 使用超范围参数查询时应按公开上限安全收敛。
+    proposed_call: &parameter_clamping_call
+      tool: query_subgraph
+      arguments:
+        knowledge_id: "$alpha_id"
+        depth: 99
+        max_nodes: 999
+    expected_call: *parameter_clamping_call
+    assertions:
+      - id: depth_clamped
+        dimension: parameters
+        path: max_depth
+        op: equals
+        expected: 4
+      - id: node_limit_effective
+        dimension: parameters
+        path: total_nodes
+        op: lte
+        expected: 200
+
+  - id: collect_empty_question_validation
+    category: parameter_contract
+    prompt: 空问题应在 Tool 层返回明确验证错误。
+    proposed_call: &collect_empty_call
+      tool: collect_evidence
+      arguments:
+        question: "   "
+    expected_call: *collect_empty_call
+    assertions:
+      - id: empty_question_error
+        dimension: parameters
+        path: error
+        op: equals
+        expected: question 不能为空
+
+  - id: timeline_invalid_sort_validation
+    category: parameter_contract
+    prompt: 非法时间线排序方向应返回明确验证错误。
+    proposed_call: &timeline_invalid_sort_call
+      tool: timeline_of
+      arguments:
+        topic: Alpha 时间线
+        sort_order: sideways
+    expected_call: *timeline_invalid_sort_call
+    assertions:
+      - id: invalid_sort_error
+        dimension: parameters
+        path: error
+        op: contains
+        expected: sort_order

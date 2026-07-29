@@ -524,6 +524,18 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 .\scripts\run-test.ps1 -Direct -Command @("python", "src/utils/verify_setup.py")
 ```
 
+**Phase C MCP 最小离线评测**:
+
+```powershell
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-quality -Command @(
+  "python", "-m", "evals.mcp_quality",
+  "--output", ".data-test/mcp-quality/result.json"
+)
+```
+
+固定任务、评分维度、隔离边界和当前失败矩阵见
+[MCP 最小评测闭环](docs/operations/MCP最小评测闭环.md)。
+
 详细说明：[tests/CLAUDE.md](tests/CLAUDE.md)
 
 ## 🤝 贡献指南

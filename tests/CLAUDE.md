@@ -25,6 +25,14 @@
 - 测试模块在收集/import 阶段不得联网。
 - CI 显式设置 `PKV_RUN_LIVE=0`，并把所有运行时路径放在 runner 临时目录。
 
+### Phase C MCP 最小评测
+
+- `evals/mcp_quality/tasks.v1.yaml` 固定 16 条离线推理任务。
+- runner 经过 FastMCP `list_tools` / `call_tool`，使用临时 SQLite/Vault 与确定性检索 fixture。
+- `tests/unit/test_mcp_quality_scorer.py` 固定任务/评分契约。
+- `tests/integration/test_mcp_quality_eval.py` 固定当前分数与失败矩阵。
+- 运行方式见 `docs/operations/MCP最小评测闭环.md`；临时 JSON 结果只写入 `.data-test`。
+
 ---
 
 ## 测试文件清单
@@ -350,6 +358,11 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 - E2E 公共 fixture 改为纯离线，真实向量构建独立 opt-in。
 - CI 改为 master 项目级离线测试与显式 MCP 覆盖率门槛。
 - 测试数据统一写入 pytest/runner 临时目录。
+
+### 2026-07-29 (Phase C 最小评测闭环)
+- 新增 16 条固定离线 MCP 推理任务及可复现 runner/scorer。
+- 新增 Tool/参数/结果、chunk 相关性/可引用性和 partial/degraded 契约评分。
+- 固定当前 115/119 基线与 4 项 Phase B 可引用性失败矩阵。
 
 ### 2026-02-19 00:58 (M8+M9)
 - 新增 MCP 单元测试: `test_mcp_tools.py`, `test_mcp_resources.py`, `test_mcp_prompts.py`, `test_mcp_security.py`

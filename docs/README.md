@@ -24,6 +24,8 @@
 - [QUICKSTART.md](./operations/QUICKSTART.md)
 - [维护指南.md](./operations/维护指南.md)
 - [关系回填质量验证指南.md](./operations/关系回填质量验证指南.md)
+- [MCP 最小评测闭环](./operations/MCP最小评测闭环.md)
+- [MCP 最小评测基线（2026-07-29）](./operations/MCP最小评测基线-2026-07-29.md)
 
 ## 长期参考
 

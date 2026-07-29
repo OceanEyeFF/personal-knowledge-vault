@@ -12,6 +12,15 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### Phase C 最小评测闭环（2026-07-29）
+
+- 新增 `evals/mcp_quality/tasks.v1.yaml`，固定 16 条离线推理任务。
+- 新增可复现 runner/scorer，通过真实 FastMCP 调用验证 Tool、参数、结果、
+  chunk 证据和 partial/degraded 契约。
+- 当前基线为 115/119（96.64%）；4 个未通过检查均集中在可引用性，
+  已形成按优先级排序的 Phase B 失败矩阵。
+- 新增 scorer 单元测试与基线集成回归；不依赖 API key、网络或生产 `.data`。
+
 ### ✨ 新增功能
 
 - ✅ **关系层基础骨架**
