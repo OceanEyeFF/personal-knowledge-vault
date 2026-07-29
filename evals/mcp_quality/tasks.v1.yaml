@@ -5,9 +5,9 @@ description: >
   以及三个 partial Tool 的可观察性。本文件只保存不可变的 gold call；
   被评测的 proposed call 必须从独立 proposals 文件加载。
 policy:
-  mode: baseline_only
-  ci_contract: schema_and_failure_matrix
-  target_gate_activation: phase_b_citation_contract_complete
+  mode: threshold_enforced
+  ci_contract: schema_all_checks_and_thresholds
+  target_gate_activation: active
 target_thresholds:
   overall: 0.90
   tool_selection: 1.00

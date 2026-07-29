@@ -95,6 +95,7 @@ class EvaluationReport:
             },
             "target_thresholds": self.target_thresholds,
             "targets_met": self.targets_met,
+            "thresholds_met": self.targets_met,
             "passed_task_count": sum(task.passed for task in self.tasks),
             "failed_task_count": sum(not task.passed for task in self.tasks),
             "failed_check_count": len(self.failed_checks),
@@ -309,10 +310,12 @@ def _validate_taskset(payload: dict[str, Any]) -> None:
     if payload.get("schema_version") != "pkv.mcp_quality_tasks.v1":
         raise ValueError("unsupported MCP quality taskset schema")
     policy = payload.get("policy", {})
-    if policy.get("mode") != "baseline_only":
-        raise ValueError("Phase C MCP quality policy must be baseline_only")
-    if policy.get("ci_contract") != "schema_and_failure_matrix":
-        raise ValueError("unsupported Phase C CI contract")
+    if policy.get("mode") != "threshold_enforced":
+        raise ValueError("MCP quality policy must enforce thresholds")
+    if policy.get("ci_contract") != "schema_all_checks_and_thresholds":
+        raise ValueError("unsupported MCP quality CI contract")
+    if policy.get("target_gate_activation") != "active":
+        raise ValueError("MCP quality target gate must be active")
     if "target_thresholds" not in payload:
         raise ValueError("taskset must declare target_thresholds")
     tasks = payload.get("tasks")
@@ -396,9 +399,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="在 JSON 中包含每个 Tool 的完整输出",
     )
     parser.add_argument(
+        "--enforce-thresholds",
+        action="store_true",
+        help="当任一固定质量阈值未达到时返回非零退出码",
+    )
+    parser.add_argument(
         "--check-targets",
         action="store_true",
-        help="诊断未来 Phase B 目标；当前 baseline-only CI 不启用",
+        help="--enforce-thresholds 的兼容别名",
     )
     return parser
 
@@ -437,7 +445,8 @@ def main(argv: list[str] | None = None) -> int:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
-    return 1 if args.check_targets and not report.targets_met else 0
+    enforce_thresholds = args.enforce_thresholds or args.check_targets
+    return 1 if enforce_thresholds and not report.targets_met else 0
 
 
 def _require_isolated_output_path(output: Path) -> Path:

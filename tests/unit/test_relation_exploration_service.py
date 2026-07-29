@@ -14,7 +14,15 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.relations.exploration_service import ExplorationService  # noqa: E402
-from src.relations.models import RelationExplanationResult, RelationRecord, RelationSourceType, RelationSubgraphNode, RelationSubgraphResult, RelationType, TimelinePoint  # noqa: E402
+from src.relations.models import (  # noqa: E402
+    RelationExplanationResult,
+    RelationRecord,
+    RelationSourceType,
+    RelationSubgraphNode,
+    RelationSubgraphResult,
+    RelationType,
+    TimelinePoint,
+)
 from src.retrieval.result import SearchResult  # noqa: E402
 
 
@@ -234,6 +242,27 @@ def test_find_bridges_returns_middle_node(exploration_service):
     assert result.items[0].structural_bridge_score > 0
     assert result.items[0].graph_bridge_score > 0
     assert result.items[0].semantic_bridge_score > 0
+    assert result.items[0].evidence_path == [
+        {
+            "relation_id": None,
+            "source_knowledge_id": 1,
+            "target_knowledge_id": 3,
+            "relation_type": "related_document",
+            "relation_source_type": "frontmatter_related_docs",
+            "direction": "directed",
+            "weight": 1.0,
+            "evidence_payload": {"stub": True},
+            "created_at": None,
+            "updated_at": None,
+            "hop_index": 1,
+            "from_knowledge_id": 1,
+            "to_knowledge_id": 3,
+            "traversal_direction": "forward",
+            "citation_locator": (
+                "pkv://entries/1#relation-to:3:related_document"
+            ),
+        }
+    ]
     assert result.limitation_notes
 
 
@@ -283,6 +312,14 @@ def test_timeline_of_sorts_by_archived_at(exploration_service):
     assert [item.knowledge_id for item in result.items] == [1, 2]
     assert result.inferred_time_field == "archived_at"
     assert all(item.time_source == "archived_at" for item in result.items)
+    assert [item.source for item in result.items] == [
+        "pkv://entries/1",
+        "pkv://entries/2",
+    ]
+    assert [item.citation_locator for item in result.items] == [
+        "pkv://entries/1/metadata#archived_at",
+        "pkv://entries/2/metadata#archived_at",
+    ]
 
 
 def test_timeline_of_marks_mixed_inferred_field_for_multi_source_timeline():
@@ -618,6 +655,25 @@ def test_contrast_returns_shared_and_distinct_tags(exploration_service):
         "shared_relation_types": ["references", "related_document"],
         "max_relation_hops": 1,
     }
+    provenance = result.comparison_dimensions["provenance"]
+    assert provenance["shared_tags"]["图谱"]["topic_a"][0] == {
+        "topic_side": "topic_a",
+        "knowledge_id": 1,
+        "source": "pkv://entries/1",
+        "source_url": "",
+        "file_path": "",
+        "citation_locator": "pkv://entries/1",
+    }
+    assert provenance["only_a_tags"]["AI"][0]["knowledge_id"] == 1
+    assert provenance["only_b_tags"]["时间线"][0]["knowledge_id"] == 2
+    assert provenance["overlap_knowledge_ids"]["3"]["topic_a"][
+        "citation_locator"
+    ] == "pkv://entries/3"
+    assert provenance["relation_graph_signal"]
+    assert all(
+        pair["evidence_path"]
+        for pair in provenance["relation_graph_signal"]
+    )
     assert result.topic_a_candidates[0].relation_signal_score > 0
     assert result.topic_b_candidates[0].relation_types == ["references"]
 

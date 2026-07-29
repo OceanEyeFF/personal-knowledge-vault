@@ -374,6 +374,8 @@ class CollectedEvidenceItem:
     relation_summary: str = ""
     relation_path: list[RelationRecord] = field(default_factory=list)
     relation_evidence_items: list[Dict[str, Any]] = field(default_factory=list)
+    citation_source: str = ""
+    citation_locator: str = ""
 
     def __post_init__(self) -> None:
         if self.knowledge_id <= 0:
@@ -403,6 +405,8 @@ class CollectedEvidenceItem:
             "tags": list(self.tags),
             "source_url": self.source_url,
             "file_path": self.file_path,
+            "citation_source": self.citation_source,
+            "citation_locator": self.citation_locator,
             "content_preview": self.content_preview,
             "chunk_id": self.chunk_id,
             "chunk_index": self.chunk_index,
@@ -515,6 +519,7 @@ class BridgeCandidate:
     connected_knowledge_ids: list[int] = field(default_factory=list)
     relation_types: list[str] = field(default_factory=list)
     summary: str = ""
+    evidence_path: list[Dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.knowledge_id <= 0:
@@ -541,6 +546,7 @@ class BridgeCandidate:
             "semantic_bridge_score": self.semantic_bridge_score,
             "connected_knowledge_ids": list(self.connected_knowledge_ids),
             "relation_types": list(self.relation_types),
+            "evidence_path": [dict(item) for item in self.evidence_path],
             "summary": self.summary,
         }
 
@@ -619,6 +625,10 @@ class TimelinePoint:
     abstract: str = ""
     tags: list[str] = field(default_factory=list)
     retrieval_score: float = 0.0
+    source_url: str = ""
+    file_path: str = ""
+    source: str = ""
+    citation_locator: str = ""
 
     def __post_init__(self) -> None:
         if self.knowledge_id <= 0:
@@ -636,6 +646,10 @@ class TimelinePoint:
             "archived_at": self.archived_at,
             "time_source": self.time_source,
             "source_type": self.source_type,
+            "source_url": self.source_url,
+            "file_path": self.file_path,
+            "source": self.source,
+            "citation_locator": self.citation_locator,
             "abstract": self.abstract,
             "tags": list(self.tags),
             "retrieval_score": self.retrieval_score,
@@ -718,6 +732,10 @@ class ContrastCandidateItem:
     retrieval_score: float = 0.0
     relation_signal_score: float = 0.0
     relation_types: list[str] = field(default_factory=list)
+    source_url: str = ""
+    file_path: str = ""
+    source: str = ""
+    citation_locator: str = ""
 
     def __post_init__(self) -> None:
         if self.knowledge_id <= 0:
@@ -734,6 +752,10 @@ class ContrastCandidateItem:
             "abstract": self.abstract,
             "archived_at": self.archived_at,
             "source_type": self.source_type,
+            "source_url": self.source_url,
+            "file_path": self.file_path,
+            "source": self.source,
+            "citation_locator": self.citation_locator,
             "tags": list(self.tags),
             "retrieval_score": self.retrieval_score,
             "relation_signal_score": self.relation_signal_score,

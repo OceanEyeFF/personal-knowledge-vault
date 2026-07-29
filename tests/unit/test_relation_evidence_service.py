@@ -308,12 +308,16 @@ def test_collect_evidence_prefers_chunk_preview_and_exposes_chunk_fields():
     assert result.evidence[0].chunk_id == 101
     assert result.evidence[0].chunk_index == 0
     assert result.evidence[0].chunk_text == "Alpha chunk"
+    assert result.evidence[0].citation_source == "https://example.com/alpha"
+    assert result.evidence[0].citation_locator == "pkv://entries/1#chunk-id:101"
     assert result.evidence[0].ranking_score > 0
     assert result.evidence[0].coverage_score > 0
     assert result.chunk_retrieval_status == "success"
     assert result.limitation_notes == []
     assert result.evidence[1].content_preview == "Beta chunk"
     assert result.evidence[1].chunk_index == 1
+    assert result.evidence[1].citation_source == "https://example.com/beta"
+    assert result.evidence[1].citation_locator == "pkv://entries/2#chunk-id:201"
 
 
 def test_collect_evidence_deduplicates_same_chunk():

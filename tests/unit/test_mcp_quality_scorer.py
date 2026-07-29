@@ -13,6 +13,7 @@ from evals.mcp_quality.runner import (
     _require_isolated_output_path,
     _validate_proposals,
     _validate_taskset,
+    build_parser,
     main,
 )
 from evals.mcp_quality.scorer import MISSING, score_assertion, select_path
@@ -28,6 +29,12 @@ def test_fixed_taskset_has_required_size_and_coverage() -> None:
 
     tasks = payload["tasks"]
     assert len(tasks) == 16
+    assert sum(len(task["assertions"]) + 4 for task in tasks) == 119
+    assert payload["policy"] == {
+        "mode": "threshold_enforced",
+        "ci_contract": "schema_all_checks_and_thresholds",
+        "target_gate_activation": "active",
+    }
     assert all("proposed_call" not in task for task in tasks)
     assert {item["task_id"] for item in proposals["proposals"]} == {
         task["id"] for task in tasks
@@ -49,6 +56,13 @@ def test_fixed_taskset_has_required_size_and_coverage() -> None:
         "partial_tool",
         "parameter_contract",
     } <= categories
+
+
+def test_cli_exposes_threshold_enforcement_and_compatibility_alias() -> None:
+    parser = build_parser()
+
+    assert parser.parse_args(["--enforce-thresholds"]).enforce_thresholds is True
+    assert parser.parse_args(["--check-targets"]).check_targets is True
 
 
 def test_taskset_contains_no_external_or_production_inputs() -> None:
@@ -131,8 +145,9 @@ def test_validate_taskset_rejects_out_of_range_task_count() -> None:
     payload = {
         "schema_version": "pkv.mcp_quality_tasks.v1",
         "policy": {
-            "mode": "baseline_only",
-            "ci_contract": "schema_and_failure_matrix",
+            "mode": "threshold_enforced",
+            "ci_contract": "schema_all_checks_and_thresholds",
+            "target_gate_activation": "active",
         },
         "target_thresholds": {},
         "tasks": [{"id": f"task-{index}"} for index in range(9)],

@@ -18,7 +18,7 @@ MCP 进程内功能测试 (Layer 2)
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, Sequence
+from typing import Any, Dict
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -27,9 +27,9 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.storage.sqlite_store import SQLiteStore
-from src.storage.markdown_store import Entry, MarkdownStore
-from src.relations.models import (
+from src.storage.sqlite_store import SQLiteStore  # noqa: E402
+from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
+from src.relations.models import (  # noqa: E402
     BridgeCandidate,
     BridgeDiscoveryResult,
     CollectedEvidenceItem,
@@ -47,7 +47,7 @@ from src.relations.models import (
 )
 
 # 导入 MCP 实例（会触发 tools/resources/prompts 注册）
-from src.mcp.server import mcp
+from src.mcp.server import mcp  # noqa: E402
 
 
 # ============================================================
@@ -868,6 +868,14 @@ class TestToolCallWriteSecurity:
                     bridge_score=2.25,
                     connected_knowledge_ids=[1, 4],
                     relation_types=["references", "related_document"],
+                    evidence_path=[
+                        {
+                            "hop_index": 1,
+                            "from_knowledge_id": 1,
+                            "to_knowledge_id": 3,
+                            "citation_locator": "pkv://relations/7",
+                        }
+                    ],
                     summary="Gamma 是桥接候选",
                 )
             ],
@@ -892,6 +900,7 @@ class TestToolCallWriteSecurity:
         assert "evidence_sources" in result
         assert "structural_bridge_score" in result["items"][0]
         assert "semantic_bridge_score" in result["items"][0]
+        assert result["items"][0]["evidence_path"][0]["citation_locator"]
 
     @pytest.mark.asyncio
     async def test_timeline_of_success(self):
@@ -906,6 +915,9 @@ class TestToolCallWriteSecurity:
                     title="Alpha",
                     archived_at="2026-03-10 10:00:00",
                     source_type="generic",
+                    source_url="https://example.test/alpha",
+                    source="https://example.test/alpha",
+                    citation_locator="pkv://entries/1/metadata#archived_at",
                     abstract="Alpha 摘要",
                     tags=["AI"],
                     retrieval_score=0.91,
@@ -932,6 +944,8 @@ class TestToolCallWriteSecurity:
         assert "evidence_sources" in result
         assert "time_source_priority" in result
         assert "time_source" in result["items"][0]
+        assert result["items"][0]["source"] == "https://example.test/alpha"
+        assert result["items"][0]["citation_locator"]
 
     @pytest.mark.asyncio
     async def test_contrast_success(self):
@@ -967,6 +981,16 @@ class TestToolCallWriteSecurity:
             only_a_tags=["AI"],
             only_b_tags=["时间线"],
             overlap_knowledge_ids=[],
+            comparison_dimensions={
+                "provenance": {
+                    "shared_tags": {
+                        "共同": {
+                            "topic_a": [{"citation_locator": "pkv://entries/1"}],
+                            "topic_b": [{"citation_locator": "pkv://entries/2"}],
+                        }
+                    }
+                }
+            },
             summary="对比完成",
             limitation_notes=["partial"],
         )
@@ -986,6 +1010,7 @@ class TestToolCallWriteSecurity:
         assert "coverage" in result
         assert "evidence_sources" in result
         assert "comparison_dimensions" in result
+        assert result["comparison_dimensions"]["provenance"]["shared_tags"]
         assert result["shared_tags"] == ["共同"]
 
 

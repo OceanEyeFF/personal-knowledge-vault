@@ -2,7 +2,9 @@
 MCP Tool handler 实现
 
 提供 14 个 Tool:
-- 只读: search_knowledge, get_entry, list_tags, list_entries, get_stats, get_related, query_subgraph, explain_relation, collect_evidence, find_bridges, timeline_of, contrast
+- 只读: search_knowledge, get_entry, list_tags, list_entries, get_stats,
+  get_related, query_subgraph, explain_relation, collect_evidence, find_bridges,
+  timeline_of, contrast
 - 写入: archive_url, archive_text
 
 同步/异步策略说明：
@@ -315,7 +317,11 @@ async def archive_url(url: str) -> dict:
         )
 
         if result.success:
-            logger.info(f"archive_url: 归档成功 kid={result.data.get('knowledge_id', '')}, title={result.data.get('title', '')!r}")
+            logger.info(
+                "archive_url: 归档成功 kid=%s, title=%r",
+                result.data.get("knowledge_id", ""),
+                result.data.get("title", ""),
+            )
             return {
                 "success": True,
                 "knowledge_id": result.data.get("knowledge_id", ""),
@@ -386,7 +392,11 @@ async def archive_text(text: str, title: str = "") -> dict:
         )
 
         if result.success:
-            logger.info(f"archive_text: 归档成功 kid={result.data.get('knowledge_id', '')}, title={result.data.get('title', entry.title)!r}")
+            logger.info(
+                "archive_text: 归档成功 kid=%s, title=%r",
+                result.data.get("knowledge_id", ""),
+                result.data.get("title", entry.title),
+            )
             return {
                 "success": True,
                 "knowledge_id": result.data.get("knowledge_id", ""),
@@ -620,7 +630,7 @@ async def collect_evidence(
         include_chunks: 是否显式返回 chunk 级证据字段，默认 False
 
     Returns:
-        证据聚合结果，包含 seed、summary 和 evidence[] 等字段
+        证据聚合结果；chunk 证据包含 citation_source 与稳定 citation_locator
     """
 
     def _impl():
@@ -660,6 +670,7 @@ async def find_bridges(
 
     注意：
         当前是 partial implementation，已引入局部图桥接信号与轻量文本重合。
+        每个候选公开 seed 到 candidate 的逐跳 evidence_path。
         它适合作为桥接探索入口，不代表完整主题桥接发现。
     """
 
@@ -699,6 +710,7 @@ async def timeline_of(
     注意：
         当前是 partial implementation，会优先使用 event_time > published_at > archived_at
         的结构化真实时间字段排序，缺失时才回退 archived_at。
+        每个时间点公开 source 与定位所用时间字段的 citation_locator。
         它不代表正文中的完整真实事件时间，也还未接入 video_timestamps 或事件时间抽取。
     """
 
@@ -735,6 +747,7 @@ async def contrast(
 
     注意：
         当前是 partial implementation，已引入跨主题显式关系路径信号。
+        comparison_dimensions.provenance 公开候选、来源与关系路径映射。
         它不代表完整语义对比，也未引入 contrast 关系类型。
     """
 

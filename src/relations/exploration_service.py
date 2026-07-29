@@ -19,6 +19,11 @@ from itertools import combinations
 import re
 from typing import Any
 
+from src.relations.citations import (
+    build_entry_locator,
+    build_metadata_locator,
+    resolve_citation_source,
+)
 from src.relations.models import (
     BridgeCandidate,
     BridgeDiscoveryResult,
@@ -124,6 +129,11 @@ class ExplorationService:
                 + semantic_score * 0.2,
                 4,
             )
+            relation_explanation = self.relation_query_service.explain_relation(
+                seed_knowledge_id,
+                knowledge_id,
+                max_depth=max_depth,
+            )
             candidates.append(
                 BridgeCandidate(
                     knowledge_id=knowledge_id,
@@ -135,6 +145,10 @@ class ExplorationService:
                     semantic_bridge_score=round(semantic_score, 4),
                     connected_knowledge_ids=sorted(neighbors),
                     relation_types=sorted(relation_types_by_node[knowledge_id]),
+                    evidence_path=self._build_bridge_evidence_path(
+                        seed_knowledge_id,
+                        relation_explanation,
+                    ),
                     summary=(
                         f"当前把 {knowledge_id} 视为桥接候选，因为它在 {max_depth} 跳子图中"
                         f"连接了 {len(neighbors)} 个相邻节点，局部图桥接信号为 {graph_bridge_score:.2f}，"
@@ -202,6 +216,7 @@ class ExplorationService:
                 resolved_times, time_source_priority
             )
             points.append(
+                # The locator points at the exact structured field used as time_value.
                 TimelinePoint(
                     knowledge_id=result.knowledge_id,
                     title=entry.get("title", result.title),
@@ -211,6 +226,33 @@ class ExplorationService:
                     archived_at=resolved_times["archived_at"],
                     time_source=time_source,
                     source_type=entry.get("source_type", result.metadata.get("source_type", "")),
+                    source_url=str(
+                        entry.get("source_url")
+                        or result.metadata.get("source_url", "")
+                        or ""
+                    ),
+                    file_path=str(
+                        entry.get("file_path")
+                        or result.metadata.get("file_path", "")
+                        or ""
+                    ),
+                    source=resolve_citation_source(
+                        result.knowledge_id,
+                        source_url=str(
+                            entry.get("source_url")
+                            or result.metadata.get("source_url", "")
+                            or ""
+                        ),
+                        file_path=str(
+                            entry.get("file_path")
+                            or result.metadata.get("file_path", "")
+                            or ""
+                        ),
+                    ),
+                    citation_locator=build_metadata_locator(
+                        result.knowledge_id,
+                        time_source,
+                    ),
                     abstract=entry.get("summary_one_sentence", "") or result.highlight,
                     tags=self._parse_tags(entry.get("tags", result.metadata.get("tags", ""))),
                     retrieval_score=round(float(result.score), 4),
@@ -309,6 +351,15 @@ class ExplorationService:
                 "topic_b": len(candidates_b),
             },
             "relation_graph_signal": relation_signal["summary"],
+            "provenance": self._build_contrast_provenance(
+                candidates_a=candidates_a,
+                candidates_b=candidates_b,
+                shared_tags=shared_tags,
+                only_a_tags=only_a_tags,
+                only_b_tags=only_b_tags,
+                overlap_knowledge_ids=overlap_knowledge_ids,
+                relation_pairs=relation_signal["pairs"],
+            ),
         }
 
         return ContrastResult(
@@ -342,12 +393,26 @@ class ExplorationService:
 
     def _build_contrast_item(self, result: Any) -> ContrastCandidateItem:
         entry = self.sqlite_store.query_by_id(result.knowledge_id) or {}
+        source_url = str(
+            entry.get("source_url") or result.metadata.get("source_url", "") or ""
+        )
+        file_path = str(
+            entry.get("file_path") or result.metadata.get("file_path", "") or ""
+        )
         return ContrastCandidateItem(
             knowledge_id=result.knowledge_id,
             title=entry.get("title", result.title),
             abstract=entry.get("summary_one_sentence", "") or result.highlight,
             archived_at=entry.get("archived_at", result.metadata.get("archived_at", "")),
             source_type=entry.get("source_type", result.metadata.get("source_type", "")),
+            source_url=source_url,
+            file_path=file_path,
+            source=resolve_citation_source(
+                result.knowledge_id,
+                source_url=source_url,
+                file_path=file_path,
+            ),
+            citation_locator=build_entry_locator(result.knowledge_id),
             tags=self._parse_tags(entry.get("tags", result.metadata.get("tags", ""))),
             retrieval_score=round(float(result.score), 4),
         )
@@ -360,6 +425,120 @@ class ExplorationService:
         if knowledge_id not in cache:
             cache[knowledge_id] = self.sqlite_store.query_by_id(knowledge_id) or {}
         return cache[knowledge_id]
+
+    @staticmethod
+    def _build_bridge_evidence_path(
+        seed_knowledge_id: int,
+        explanation: Any,
+    ) -> list[dict[str, Any]]:
+        """Serialize the ordered seed-to-candidate path with traversal endpoints."""
+        if not explanation or not explanation.found:
+            return []
+
+        current_knowledge_id = seed_knowledge_id
+        evidence_path: list[dict[str, Any]] = []
+        for hop_index, record in enumerate(explanation.path, start=1):
+            if record.source_knowledge_id == current_knowledge_id:
+                next_knowledge_id = record.target_knowledge_id
+                traversal_direction = "forward"
+            elif record.target_knowledge_id == current_knowledge_id:
+                next_knowledge_id = record.source_knowledge_id
+                traversal_direction = "reverse"
+            else:
+                break
+
+            item = record.to_dict()
+            item.update(
+                {
+                    "hop_index": hop_index,
+                    "from_knowledge_id": current_knowledge_id,
+                    "to_knowledge_id": next_knowledge_id,
+                    "traversal_direction": traversal_direction,
+                    "citation_locator": (
+                        f"pkv://relations/{record.relation_id}"
+                        if record.relation_id is not None
+                        else (
+                            f"{build_entry_locator(current_knowledge_id)}"
+                            f"#relation-to:{next_knowledge_id}:"
+                            f"{record.relation_type.value}"
+                        )
+                    ),
+                }
+            )
+            evidence_path.append(item)
+            current_knowledge_id = next_knowledge_id
+        return evidence_path
+
+    @staticmethod
+    def _candidate_provenance(
+        item: ContrastCandidateItem,
+        topic_side: str,
+    ) -> dict[str, Any]:
+        return {
+            "topic_side": topic_side,
+            "knowledge_id": item.knowledge_id,
+            "source": item.source,
+            "source_url": item.source_url,
+            "file_path": item.file_path,
+            "citation_locator": item.citation_locator,
+        }
+
+    @classmethod
+    def _build_contrast_provenance(
+        cls,
+        *,
+        candidates_a: list[ContrastCandidateItem],
+        candidates_b: list[ContrastCandidateItem],
+        shared_tags: list[str],
+        only_a_tags: list[str],
+        only_b_tags: list[str],
+        overlap_knowledge_ids: list[int],
+        relation_pairs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Map every public comparison signal back to candidates and sources."""
+        tagged_a = {
+            tag: [
+                cls._candidate_provenance(item, "topic_a")
+                for item in candidates_a
+                if tag in item.tags
+            ]
+            for tag in sorted({tag for item in candidates_a for tag in item.tags})
+        }
+        tagged_b = {
+            tag: [
+                cls._candidate_provenance(item, "topic_b")
+                for item in candidates_b
+                if tag in item.tags
+            ]
+            for tag in sorted({tag for item in candidates_b for tag in item.tags})
+        }
+        candidates_by_id_a = {item.knowledge_id: item for item in candidates_a}
+        candidates_by_id_b = {item.knowledge_id: item for item in candidates_b}
+        return {
+            "shared_tags": {
+                tag: {
+                    "topic_a": tagged_a.get(tag, []),
+                    "topic_b": tagged_b.get(tag, []),
+                }
+                for tag in shared_tags
+            },
+            "only_a_tags": {tag: tagged_a.get(tag, []) for tag in only_a_tags},
+            "only_b_tags": {tag: tagged_b.get(tag, []) for tag in only_b_tags},
+            "overlap_knowledge_ids": {
+                str(knowledge_id): {
+                    "topic_a": cls._candidate_provenance(
+                        candidates_by_id_a[knowledge_id],
+                        "topic_a",
+                    ),
+                    "topic_b": cls._candidate_provenance(
+                        candidates_by_id_b[knowledge_id],
+                        "topic_b",
+                    ),
+                }
+                for knowledge_id in overlap_knowledge_ids
+            },
+            "relation_graph_signal": list(relation_pairs),
+        }
 
     @staticmethod
     def _parse_tags(raw_tags: Any) -> list[str]:
@@ -590,6 +769,7 @@ class ExplorationService:
         topic_a_signals: dict[int, dict[str, Any]] = {}
         topic_b_signals: dict[int, dict[str, Any]] = {}
         connected_pairs = 0
+        pair_provenance: list[dict[str, Any]] = []
         relation_types_seen: set[str] = set()
         max_relation_hops = 0
 
@@ -611,6 +791,22 @@ class ExplorationService:
                 relation_types = self._extract_relation_types(explanation)
                 relation_types_seen.update(relation_types)
                 max_relation_hops = max(max_relation_hops, explanation.hops)
+                pair_provenance.append(
+                    {
+                        "topic_a_knowledge_id": item_a.knowledge_id,
+                        "topic_b_knowledge_id": item_b.knowledge_id,
+                        "topic_a_source": item_a.source,
+                        "topic_b_source": item_b.source,
+                        "topic_a_citation_locator": item_a.citation_locator,
+                        "topic_b_citation_locator": item_b.citation_locator,
+                        "confidence": pair_score,
+                        "relation_types": relation_types,
+                        "evidence_path": self._build_bridge_evidence_path(
+                            item_a.knowledge_id,
+                            explanation,
+                        ),
+                    }
+                )
                 self._merge_candidate_relation_signal(
                     topic_a_signals,
                     item_a.knowledge_id,
@@ -627,6 +823,7 @@ class ExplorationService:
         return {
             "topic_a": topic_a_signals,
             "topic_b": topic_b_signals,
+            "pairs": pair_provenance,
             "summary": {
                 "connected_candidate_pairs_count": connected_pairs,
                 "topic_a_connected_candidate_count": len(topic_a_signals),

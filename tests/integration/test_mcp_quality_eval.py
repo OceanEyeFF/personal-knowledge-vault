@@ -28,29 +28,25 @@ def test_mcp_quality_baseline_is_deterministic_and_offline(
     assert report.taskset_version == "pkv.mcp_quality_tasks.v1"
     assert report.proposals_version == "pkv.mcp_quality_proposals.v1"
     assert len(report.tasks) == 16
-    assert report.overall_score == 115 / 119
+    assert report.overall_score == 1.0
     assert report.dimension_scores == {
-        "citability": 1 / 3,
+        "citability": 1.0,
         "degradation": 1.0,
         "evidence_relevance": 1.0,
         "parameters": 1.0,
         "result": 1.0,
         "tool_selection": 1.0,
     }
-    assert report.policy_mode == "baseline_only"
-    assert report.ci_contract == "schema_and_failure_matrix"
-    assert report.targets_met is False
+    assert report.policy_mode == "threshold_enforced"
+    assert report.ci_contract == "schema_all_checks_and_thresholds"
+    assert report.targets_met is True
 
     failures = {
         (task.task_id, check.check_id)
         for task, check in report.failed_checks
     }
-    assert failures == {
-        ("collect_chunk_evidence_relevance", "all_chunks_stable_locator"),
-        ("find_bridges_partial_contract", "all_bridge_evidence_traces"),
-        ("timeline_partial_contract", "all_timeline_item_locators"),
-        ("contrast_partial_contract", "contrast_dimension_provenance"),
-    }
+    assert failures == set()
+    assert sum(len(task.checks) for task in report.tasks) == 119
 
 
 def test_mcp_quality_report_can_hide_tool_outputs(tmp_path: Path) -> None:
@@ -61,8 +57,9 @@ def test_mcp_quality_report_can_hide_tool_outputs(tmp_path: Path) -> None:
 
     assert "output" not in compact["tasks"][0]
     assert "output" in verbose["tasks"][0]
-    assert compact["policy_mode"] == "baseline_only"
-    assert compact["targets_met"] is False
+    assert compact["policy_mode"] == "threshold_enforced"
+    assert compact["targets_met"] is True
+    assert compact["thresholds_met"] is True
 
 
 def test_independent_proposals_detect_wrong_tool_arguments_and_chunk_query(

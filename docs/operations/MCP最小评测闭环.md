@@ -1,6 +1,6 @@
 # MCP 最小评测闭环
 
-> 状态：Phase C / P1 baseline-only 最小闭环
+> 状态：Phase B citation 合同完成 / threshold-enforced 离线闭环
 >
 > 任务集：`pkv.mcp_quality_tasks.v1`
 > 基线：见 [MCP最小评测基线-2026-07-29.md](./MCP最小评测基线-2026-07-29.md)
@@ -12,7 +12,7 @@
 - `query_subgraph`：多跳节点/边、关系类型过滤、参数上限
 - `explain_relation`：直接关系、两跳路径、不可达关系
 - `collect_evidence`：文档证据、chunk 相关性与可引用性、无命中/路径不可用/检索异常降级
-- `find_bridges`、`timeline_of`、`contrast`：partial 标记、限制说明、证据来源、当前结果与待补的引用契约
+- `find_bridges`、`timeline_of`、`contrast`：partial 标记、限制说明、证据来源与逐项 provenance
 - Tool 发现/选择、gold 参数一致性、FastMCP schema 接受性和输入验证
 
 评测经过真实的 FastMCP `list_tools` / `call_tool` 链路。关系查询、证据聚合和探索服务使用真实实现；数据来自临时 SQLite/Markdown 场景，检索与 chunk 命中使用最小确定性 fixture。
@@ -40,12 +40,13 @@ Tool、错误参数或未来 Agent 预测不会与 gold 共用 YAML anchor/对�
 ```powershell
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-quality -Command @(
   "python", "-m", "evals.mcp_quality",
+  "--enforce-thresholds",
   "--output", ".data-test/mcp-quality/result.json"
 )
 ```
 
-查看完整 Tool 输出时追加 `--include-outputs`。`--check-targets` 仅用于人工诊断
-未来 Phase B 目标，当前 baseline-only CI 不调用该参数。
+查看完整 Tool 输出时追加 `--include-outputs`。`--check-targets` 保留为
+`--enforce-thresholds` 的兼容别名。
 
 运行相称回归测试：
 
@@ -70,12 +71,14 @@ Tool、错误参数或未来 Agent 预测不会与 gold 共用 YAML anchor/对�
 - `degradation`
 
 目标阈值由任务集本身版本控制，并报告为 `target_thresholds` /
-`targets_met`。Phase C 当前策略是 `baseline_only`：
+`targets_met`。Phase B citation 合同完成后的策略是 `threshold_enforced`：
 
 - 默认 CI 必须运行 `tests/integration/test_mcp_quality_eval.py`
-- CI 强制报告 schema、16 条任务、独立 proposals、当前分数和四项失败矩阵保持同步
-- 当前 citation 目标不足不会让 CI 失败；这不是已启用的质量门禁
-- Phase B 完成引用契约后，再把目标检查升级为阻断门禁
+- 集成回归固定 schema、16 条任务、119 项检查、独立 proposals 和全通过结果
+- CLI 通过 `--enforce-thresholds` 把任务集内的目标阈值升级为退出码门禁
+- 当前基线为 119/119，`citability=100%`、`targets_met=true`，兼容字段
+  `thresholds_met=true`
+- gold call、baseline proposals、119 项断言及各维度阈值均未因本次收口降低或改写
 
 ## 5. 版本化资产
 
@@ -86,6 +89,7 @@ Tool、错误参数或未来 Agent 预测不会与 gold 共用 YAML anchor/对�
 - `evals/mcp_quality/scorer.py`：路径选择与通用断言评分
 - `evals/mcp_quality/runner.py`：FastMCP 执行、聚合与 CLI
 - `tests/unit/test_mcp_quality_scorer.py`：任务/评分器契约
-- `tests/integration/test_mcp_quality_eval.py`：当前基线与失败矩阵回归
+- `tests/integration/test_mcp_quality_eval.py`：119/119 基线与门禁回归
 
-当 Phase B 修复使已知失败转为通过时，应同步更新基线报告和集成测试中的失败集合；不要降低目标来掩盖改善或回归。
+后续变更必须保持 16 条任务、独立 proposals、119 项检查和现有阈值；
+不得通过修改 gold/proposal、删除断言或改写离线 fixture 掩盖回归。

@@ -12,18 +12,35 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### Phase B citation 合同收口（2026-07-29）
+
+- `collect_evidence` 为每条 chunk 证据新增稳定唯一的
+  `citation_source` / `citation_locator`。
+- `find_bridges` 为每个桥接候选新增可逐跳核验的 `evidence_path`。
+- `timeline_of` 为每个时间点新增 source、原始 source URL/file path 和定位
+  实际时间字段的稳定 locator。
+- `contrast` 为 shared/only tags、重叠条目及关系图 signal 新增
+  `comparison_dimensions.provenance` 候选—来源映射。
+- 三个探索 Tool 继续声明 `implementation_level=partial`，并保留原有
+  `limitation_notes`、`evidence_sources` 与降级边界。
+- 固定离线评测达到 16/16 任务、119/119 检查、citability 100% 和
+  `targets_met=true`（兼容字段 `thresholds_met=true`）；gold、baseline
+  proposals、断言、fixture 与阈值未弱化。
+- 评测策略升级为 `threshold_enforced`，CLI 新增
+  `--enforce-thresholds` 退出码门禁。
+
 ### Phase C 最小评测闭环（2026-07-29）
 
 - 新增 `evals/mcp_quality/tasks.v1.yaml`，固定 16 条离线推理任务。
 - 新增可复现 runner/scorer，通过真实 FastMCP 调用验证 Tool、参数、结果、
   chunk 证据和 partial/degraded 契约。
-- 当前基线为 115/119（96.64%）；4 个未通过检查均集中在可引用性，
+- 初始基线为 115/119（96.64%）；4 个未通过检查均集中在可引用性，
   已形成按优先级排序的 Phase B 失败矩阵。
 - 新增 scorer 单元测试与基线集成回归；不依赖 API key、网络或生产 `.data`。
 - gold taskset 与 baseline proposals 独立存储，并用错误 Tool/参数/chunk query
   反例证明评分能够检出错配。
 - 所有公开评测读写路径在任何读取、建目录或写入前拒绝生产 `.data`。
-- Phase C CI 明确为 baseline-only：阻断 schema/失败矩阵漂移，不阻断当前
+- Phase C 初始 CI 明确为 baseline-only：阻断 schema/失败矩阵漂移，不阻断当时
   citation 目标；Phase B 完成后再升级质量门禁。
 
 ### ✨ 新增功能

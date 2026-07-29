@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 from typing import Any, Optional
 
+from src.relations.citations import build_chunk_locator, resolve_citation_source
 from src.relations.models import CollectedEvidenceItem, CollectedEvidenceResult
 from src.utils.text_utils import get_text_processor
 
@@ -228,6 +229,9 @@ class EvidenceCollectionService:
             )
 
         file_path = entry.get("file_path") or result.metadata.get("file_path", "")
+        source_url = entry.get("source_url", result.metadata.get("source_url", ""))
+        chunk_id = result.metadata.get("chunk_id") if include_chunks else None
+        chunk_index = result.metadata.get("chunk_index") if include_chunks else None
         return CollectedEvidenceItem(
             knowledge_id=knowledge_id,
             title=entry.get("title", result.title),
@@ -235,11 +239,21 @@ class EvidenceCollectionService:
             source_type=entry.get("source_type", result.metadata.get("source_type", "")),
             archived_at=entry.get("archived_at", result.metadata.get("archived_at", "")),
             tags=self._parse_tags(entry.get("tags", result.metadata.get("tags", ""))),
-            source_url=entry.get("source_url", result.metadata.get("source_url", "")),
+            source_url=source_url,
             file_path=file_path,
+            citation_source=resolve_citation_source(
+                knowledge_id,
+                source_url=source_url,
+                file_path=file_path,
+            ),
+            citation_locator=build_chunk_locator(
+                knowledge_id,
+                chunk_id=chunk_id,
+                chunk_index=chunk_index,
+            ),
             content_preview=self._resolve_content_preview(result, file_path, include_chunks),
-            chunk_id=result.metadata.get("chunk_id") if include_chunks else None,
-            chunk_index=result.metadata.get("chunk_index") if include_chunks else None,
+            chunk_id=chunk_id,
+            chunk_index=chunk_index,
             chunk_text=result.metadata.get("chunk_text", "") if include_chunks else "",
             retrieval_rank=retrieval_rank,
             retrieval_score=round(float(result.score), 4),

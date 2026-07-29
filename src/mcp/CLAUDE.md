@@ -78,10 +78,10 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；P
 | `get_related` | `knowledge_id`, `limit?` | `{total, results[{knowledge_id, title, score}]}` | 基于向量相似度的关联推荐 |
 | `query_subgraph` | `knowledge_id`, `depth?`, `relation_types?`, `max_nodes?` | `{seed_knowledge_id, nodes[], edges[], grouped_edges}` | 受限多跳关系子图查询 |
 | `explain_relation` | `source_knowledge_id`, `target_knowledge_id`, `relation_types?`, `max_depth?` | `{found, summary, path[], evidence_items[]}` | 解释两个条目之间为何相关 |
-| `collect_evidence` | `question`, `top_k?`, `relation_max_depth?` | `{seed_knowledge_id, summary, evidence[]}` | 聚合文档级证据包 |
-| `find_bridges` | `seed_knowledge_id`, `top_k?`, `max_depth?` | `{items[], limitation_notes[]}` | 发现显式关系子图中的桥接候选（partial） |
-| `timeline_of` | `topic`, `top_k?`, `sort_order?` | `{items[], inferred_time_field}` | 按 `event_time > published_at > archived_at` 重建弱时间线（partial） |
-| `contrast` | `topic_a`, `topic_b`, `top_k?` | `{shared_tags, only_a_tags, only_b_tags, ...}` | 基于检索候选表面字段做主题对比（partial） |
+| `collect_evidence` | `question`, `top_k?`, `relation_max_depth?` | `{seed_knowledge_id, summary, evidence[]}` | 聚合证据包；chunk 证据含稳定 citation locator |
+| `find_bridges` | `seed_knowledge_id`, `top_k?`, `max_depth?` | `{items[], limitation_notes[]}` | 发现显式关系子图中的桥接候选及逐跳 evidence path（partial） |
+| `timeline_of` | `topic`, `top_k?`, `sort_order?` | `{items[], inferred_time_field}` | 按 `event_time > published_at > archived_at` 重建带来源 locator 的弱时间线（partial） |
+| `contrast` | `topic_a`, `topic_b`, `top_k?` | `{shared_tags, only_a_tags, only_b_tags, ...}` | 基于候选表面字段与来源 provenance 做主题对比（partial） |
 
 #### 写入 Tool
 
@@ -333,6 +333,13 @@ Authorization: Bearer <由秘密存储注入>
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-07-29 (Phase B citation 合同收口)
+- `collect_evidence` chunk 证据新增稳定 citation source/locator。
+- `find_bridges` candidate 新增逐跳 `evidence_path`。
+- `timeline_of` item 新增 source 与时间字段 locator。
+- `contrast` 新增对比维度候选—来源 provenance。
+- 三个探索 Tool 仍为 partial，并保留既有限制和证据来源声明。
 
 ### 2026-02-19 00:58 (M8+M9)
 - 创建 MCP 模块 CLAUDE.md 文档
