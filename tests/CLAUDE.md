@@ -28,9 +28,14 @@
 ### Phase C MCP 最小评测
 
 - `evals/mcp_quality/tasks.v1.yaml` 固定 16 条离线推理任务。
+- gold taskset 与 `proposals.baseline.v1.yaml` 物理分离，反例测试会注入错误
+  Tool、参数和 chunk query 并确认评分失败。
 - runner 经过 FastMCP `list_tools` / `call_tool`，使用临时 SQLite/Vault 与确定性检索 fixture。
 - `tests/unit/test_mcp_quality_scorer.py` 固定任务/评分契约。
-- `tests/integration/test_mcp_quality_eval.py` 固定当前分数与失败矩阵。
+- `tests/integration/test_mcp_quality_eval.py` 固定当前分数、报告 schema 与失败矩阵。
+- 当前 CI 策略为 baseline-only；默认 pytest 强制评测运行与矩阵同步，但
+  Phase B 完成前不把 citation 目标作为阻断门禁。
+- 所有公开评测路径入口都会在读写或创建前拒绝生产 `.data`。
 - 运行方式见 `docs/operations/MCP最小评测闭环.md`；临时 JSON 结果只写入 `.data-test`。
 
 ---
@@ -363,6 +368,8 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 - 新增 16 条固定离线 MCP 推理任务及可复现 runner/scorer。
 - 新增 Tool/参数/结果、chunk 相关性/可引用性和 partial/degraded 契约评分。
 - 固定当前 115/119 基线与 4 项 Phase B 可引用性失败矩阵。
+- gold/proposals 分离；增加错误 Tool/参数/chunk query 与生产路径前置拒绝反例。
+- 明确采用 baseline-only CI，Phase B 完成后再启用 citation 阻断目标。
 
 ### 2026-02-19 00:58 (M8+M9)
 - 新增 MCP 单元测试: `test_mcp_tools.py`, `test_mcp_resources.py`, `test_mcp_prompts.py`, `test_mcp_security.py`

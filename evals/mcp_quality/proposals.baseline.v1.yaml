@@ -1,0 +1,133 @@
+schema_version: pkv.mcp_quality_proposals.v1
+taskset_version: pkv.mcp_quality_tasks.v1
+description: >
+  当前 Phase C baseline 的独立 proposed calls。此文件与 gold taskset 分离，
+  runner 按 task_id 对齐后分别评分 Tool 选择和参数。
+proposals:
+  - task_id: subgraph_depth_two
+    proposed_call:
+      tool: query_subgraph
+      arguments:
+        knowledge_id: "$alpha_id"
+        depth: 2
+        max_nodes: 20
+
+  - task_id: subgraph_relation_filter
+    proposed_call:
+      tool: query_subgraph
+      arguments:
+        knowledge_id: "$alpha_id"
+        depth: 2
+        relation_types: [references]
+        max_nodes: 20
+
+  - task_id: explain_direct_relation
+    proposed_call:
+      tool: explain_relation
+      arguments:
+        source_knowledge_id: "$alpha_id"
+        target_knowledge_id: "$beta_id"
+        max_depth: 2
+
+  - task_id: explain_multihop_relation
+    proposed_call:
+      tool: explain_relation
+      arguments:
+        source_knowledge_id: "$alpha_id"
+        target_knowledge_id: "$delta_id"
+        max_depth: 2
+
+  - task_id: explain_unreachable_relation
+    proposed_call:
+      tool: explain_relation
+      arguments:
+        source_knowledge_id: "$alpha_id"
+        target_knowledge_id: "$version_base_id"
+        max_depth: 2
+
+  - task_id: collect_document_evidence
+    proposed_call:
+      tool: collect_evidence
+      arguments:
+        question: Alpha 和 Delta 的证据链是什么？
+        top_k: 2
+        relation_max_depth: 2
+        include_chunks: false
+
+  - task_id: collect_chunk_evidence_relevance
+    proposed_call:
+      tool: collect_evidence
+      arguments:
+        question: chunk-alpha-delta Alpha 到 Delta 的证据链
+        top_k: 3
+        relation_max_depth: 2
+        include_chunks: true
+
+  - task_id: collect_chunk_no_hits
+    proposed_call:
+      tool: collect_evidence
+      arguments:
+        question: chunk-no-hits Alpha 证据
+        top_k: 2
+        include_chunks: true
+
+  - task_id: collect_chunk_path_unavailable
+    proposed_call:
+      tool: collect_evidence
+      arguments:
+        question: chunk-path-unavailable Alpha 证据
+        top_k: 2
+        include_chunks: true
+
+  - task_id: collect_chunk_search_error
+    proposed_call:
+      tool: collect_evidence
+      arguments:
+        question: chunk-search-error Alpha 证据
+        top_k: 2
+        include_chunks: true
+
+  - task_id: find_bridges_partial_contract
+    proposed_call:
+      tool: find_bridges
+      arguments:
+        seed_knowledge_id: "$alpha_id"
+        top_k: 5
+        max_depth: 2
+
+  - task_id: timeline_partial_contract
+    proposed_call:
+      tool: timeline_of
+      arguments:
+        topic: Alpha 时间线
+        top_k: 5
+        sort_order: asc
+
+  - task_id: contrast_partial_contract
+    proposed_call:
+      tool: contrast
+      arguments:
+        topic_a: Topic A
+        topic_b: Topic B
+        top_k: 5
+
+  - task_id: parameter_clamping
+    proposed_call:
+      tool: query_subgraph
+      arguments:
+        knowledge_id: "$alpha_id"
+        depth: 99
+        max_nodes: 999
+
+  - task_id: collect_empty_question_validation
+    proposed_call:
+      tool: collect_evidence
+      arguments:
+        question: "   "
+
+  - task_id: timeline_invalid_sort_validation
+    proposed_call:
+      tool: timeline_of
+      arguments:
+        topic: Alpha 时间线
+        sort_order: sideways

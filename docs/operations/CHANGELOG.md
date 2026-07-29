@@ -20,6 +20,11 @@
 - 当前基线为 115/119（96.64%）；4 个未通过检查均集中在可引用性，
   已形成按优先级排序的 Phase B 失败矩阵。
 - 新增 scorer 单元测试与基线集成回归；不依赖 API key、网络或生产 `.data`。
+- gold taskset 与 baseline proposals 独立存储，并用错误 Tool/参数/chunk query
+  反例证明评分能够检出错配。
+- 所有公开评测读写路径在任何读取、建目录或写入前拒绝生产 `.data`。
+- Phase C CI 明确为 baseline-only：阻断 schema/失败矩阵漂移，不阻断当前
+  citation 目标；Phase B 完成后再升级质量门禁。
 
 ### ✨ 新增功能
 

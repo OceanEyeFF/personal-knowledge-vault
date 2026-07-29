@@ -25,14 +25,13 @@ class CheckResult:
     phase_b_hint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        actual = None if self.actual is MISSING else self.actual
         return {
             "check_id": self.check_id,
             "dimension": self.dimension,
             "passed": self.passed,
             "weight": self.weight,
             "expected": self.expected,
-            "actual": actual,
+            "actual": _replace_missing(self.actual),
             "message": self.message,
             "priority": self.priority,
             "impact": self.impact,
@@ -121,7 +120,7 @@ def select_path(payload: Any, path: str) -> Any:
         else:
             for value in current:
                 target = _get_key(value, raw_segment)
-                if target is not MISSING:
+                if target is not MISSING or wildcard_used:
                     next_values.append(target)
         current = next_values
         if not current:
@@ -169,6 +168,15 @@ def _apply_operator(operator: str, actual: Any, expected: Any) -> bool:
         return actual is not MISSING and actual == expected
     if operator == "not_empty":
         return actual is not MISSING and actual not in (None, "", [], {})
+    if operator == "all_not_empty":
+        return (
+            isinstance(actual, list)
+            and bool(actual)
+            and all(
+                item is not MISSING and item not in (None, "", [], {})
+                for item in actual
+            )
+        )
     if operator == "truthy":
         return actual is not MISSING and bool(actual)
     if operator == "contains":
@@ -214,3 +222,13 @@ def _apply_operator(operator: str, actual: Any, expected: Any) -> bool:
         except (TypeError, ValueError):
             return False
     raise ValueError(f"unsupported assertion operator: {operator}")
+
+
+def _replace_missing(value: Any) -> Any:
+    if value is MISSING:
+        return None
+    if isinstance(value, list):
+        return [_replace_missing(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _replace_missing(item) for key, item in value.items()}
+    return value

@@ -20,8 +20,8 @@ from src.storage.markdown_store import MarkdownStore
 from src.storage.relation_store import RelationStore
 from src.storage.sqlite_store import SQLiteStore
 
+from .safety import PROJECT_ROOT, reject_production_path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASE_SQL = PROJECT_ROOT / "scripts/migrations/001_initial_schema.sql"
 RELATION_SQL = PROJECT_ROOT / "scripts/migrations/006_add_relations_foundation.sql"
 
@@ -79,29 +79,43 @@ class OfflineChunkSearcher:
         if "chunk-no-hits" in query:
             return []
 
-        rows = [
-            (
-                "alpha_id",
-                101,
-                0,
-                "Alpha 通过 Gamma 的显式关系连接到 Delta，可用于回答证据链问题。",
-                0.97,
-            ),
-            (
-                "delta_id",
-                401,
-                0,
-                "Delta 是 Alpha 经由 Gamma 两跳关系路径的终点证据。",
-                0.91,
-            ),
-            (
-                "gamma_id",
-                301,
-                0,
-                "Gamma 是 Alpha 与 Delta 之间的桥接节点。",
-                0.88,
-            ),
-        ]
+        if "chunk-alpha-delta" in query:
+            rows = [
+                (
+                    "alpha_id",
+                    101,
+                    0,
+                    "Alpha 通过 Gamma 的显式关系连接到 Delta，可用于回答证据链问题。",
+                    0.97,
+                ),
+                (
+                    "delta_id",
+                    401,
+                    0,
+                    "Delta 是 Alpha 经由 Gamma 两跳关系路径的终点证据。",
+                    0.91,
+                ),
+                (
+                    "gamma_id",
+                    301,
+                    0,
+                    "Gamma 是 Alpha 与 Delta 之间的桥接节点。",
+                    0.88,
+                ),
+            ]
+        elif "chunk-beta-only" in query:
+            rows = [
+                (
+                    "beta_id",
+                    201,
+                    0,
+                    "Beta 的独立片段，只用于验证 query 与 chunk 命中不可互换。",
+                    0.95,
+                )
+            ]
+        else:
+            return []
+
         results: list[SearchResult] = []
         for key, chunk_id, chunk_index, chunk_text, score in rows[:limit]:
             knowledge_id = self.aliases[key]
@@ -154,7 +168,10 @@ class OfflineMcpScenario:
     work_dir: Path
 
     def __post_init__(self) -> None:
-        self.work_dir = self.work_dir.resolve()
+        self.work_dir = reject_production_path(
+            self.work_dir,
+            purpose="离线 MCP 场景工作目录",
+        )
         self.db_path = self.work_dir / "db" / "quality-eval.db"
         self.vault_dir = self.work_dir / "vault"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -264,13 +281,13 @@ class OfflineMcpScenario:
             for knowledge_id in self.aliases.values()
         }
         self.query_router = OfflineQueryRouter(self.aliases, self.entries)
-        chunk_searcher = OfflineChunkSearcher(self.aliases, self.entries)
+        self.chunk_searcher = OfflineChunkSearcher(self.aliases, self.entries)
         normal_evidence = EvidenceCollectionService(
             query_router=self.query_router,
             sqlite_store=self.sqlite_store,
             markdown_store=self.markdown_store,
             relation_query_service=self.query_service,
-            chunk_searcher=chunk_searcher,
+            chunk_searcher=self.chunk_searcher,
         )
         unavailable_evidence = EvidenceCollectionService(
             query_router=self.query_router,
