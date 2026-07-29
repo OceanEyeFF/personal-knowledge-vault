@@ -591,6 +591,24 @@ class SQLiteStore:
             row = cursor.fetchone()
             return dict(row) if row else None
 
+    def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict[str, Any]]:
+        """按持久化 chunk_id 查询单个分块。"""
+        if chunk_id <= 0:
+            raise ValueError("chunk_id 必须为正整数")
+
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT chunk_id, knowledge_id, chunk_index, chunk_text,
+                       context_before, context_after, section_title, created_at
+                FROM content_chunks
+                WHERE chunk_id = ?
+                """,
+                (chunk_id,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
     def delete_chunks_by_knowledge_id(self, knowledge_id: int) -> int:
         """删除条目对应的全部分块。"""
         if knowledge_id <= 0:

@@ -216,6 +216,8 @@ def test_chunk_crud_roundtrip(store: SQLiteStore, tmp_path: Path) -> None:
     chunk = store.get_chunk_by_index(knowledge_id, 1)
     assert chunk is not None
     assert chunk["chunk_text"] == "chunk b"
+    chunk_by_id = store.get_chunk_by_id(chunk["chunk_id"])
+    assert chunk_by_id == chunk
 
     deleted_count = store.delete_chunks_by_knowledge_id(knowledge_id)
     assert deleted_count == 2

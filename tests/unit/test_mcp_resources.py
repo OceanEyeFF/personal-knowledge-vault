@@ -123,6 +123,7 @@ class TestGetEntryMetadata:
         data = json.loads(result)
         assert data["knowledge_id"] == 1
         assert data["title"] == "测试微信文章"
+        assert "file_path" not in data
         # tags 应被转换为列表
         assert data["tags"] == ["AI", "NLP"]
         assert data["keywords"] == ["人工智能", "自然语言"]
@@ -139,6 +140,57 @@ class TestGetEntryMetadata:
 
         data = json.loads(result)
         assert "error" in data
+
+
+class TestCitationResources:
+    """精确 citation Resource handler 测试。"""
+
+    @pytest.mark.asyncio
+    async def test_chunk_resource_returns_canonical_locator(self):
+        mock_store = MagicMock()
+        mock_store.get_chunk_by_id.return_value = {
+            "chunk_id": 101,
+            "knowledge_id": 1,
+            "chunk_index": 0,
+            "chunk_text": "精确片段",
+        }
+
+        with patch("src.mcp.resources.get_sqlite_store", return_value=mock_store):
+            from src.mcp.resources import get_entry_chunk
+            result = await get_entry_chunk(knowledge_id="1", chunk_id="101")
+
+        data = json.loads(result)
+        assert data["chunk_text"] == "精确片段"
+        assert data["citation_locator"] == "pkv://entries/1/chunks/101"
+
+    @pytest.mark.asyncio
+    async def test_metadata_field_resource_rejects_non_timeline_field(self):
+        mock_store = MagicMock()
+        mock_store.query_by_id.return_value = MOCK_ENTRY_DB
+
+        with patch("src.mcp.resources.get_sqlite_store", return_value=mock_store):
+            from src.mcp.resources import get_entry_metadata_field
+            with pytest.raises(ValueError, match="不支持"):
+                await get_entry_metadata_field(
+                    knowledge_id="1",
+                    field_name="title",
+                )
+
+    @pytest.mark.asyncio
+    async def test_metadata_field_requires_persisted_legacy_value(self):
+        mock_store = MagicMock()
+        mock_store.query_by_id.return_value = {
+            **MOCK_ENTRY_DB,
+            "file_path": "missing-legacy.md",
+        }
+
+        with patch("src.mcp.resources.get_sqlite_store", return_value=mock_store):
+            from src.mcp.resources import get_entry_metadata_field
+            with pytest.raises(ValueError, match="不存在元数据字段"):
+                await get_entry_metadata_field(
+                    knowledge_id="1",
+                    field_name="published_time",
+                )
 
     @pytest.mark.asyncio
     async def test_invalid_id(self):

@@ -122,6 +122,62 @@ def test_chunk_fixture_distinguishes_queries(tmp_path: Path) -> None:
     assert unknown == []
 
 
+def test_phase_b_citations_resolve_and_runtime_contracts_execute(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        with OfflineMcpScenario(tmp_path / "resource-contract") as scenario:
+            await scenario.registered_tools()
+            outputs = [
+                await scenario.call_tool(
+                    "collect_evidence",
+                    {
+                        "question": "chunk-alpha-delta Alpha 到 Delta 的证据是什么？",
+                        "top_k": 3,
+                        "relation_max_depth": 2,
+                        "include_chunks": True,
+                    },
+                ),
+                await scenario.call_tool(
+                    "find_bridges",
+                    {
+                        "seed_knowledge_id": str(scenario.aliases["alpha_id"]),
+                        "top_k": 5,
+                        "max_depth": 2,
+                    },
+                ),
+                await scenario.call_tool(
+                    "timeline_of",
+                    {
+                        "topic": "Alpha 时间线",
+                        "top_k": 5,
+                        "sort_order": "asc",
+                    },
+                ),
+                await scenario.call_tool(
+                    "contrast",
+                    {
+                        "topic_a": "Topic A",
+                        "topic_b": "Topic B",
+                        "top_k": 5,
+                    },
+                ),
+            ]
+
+            locators = [
+                locator
+                for output in outputs
+                for locator in scenario._citation_locators(output)
+            ]
+            assert any("/chunks/" in locator for locator in locators)
+            assert any("/metadata/" in locator for locator in locators)
+            assert any(locator.startswith("pkv://relations/") for locator in locators)
+            for locator in locators:
+                assert await scenario.read_resource(locator)
+
+    asyncio.run(exercise())
+
+
 def test_public_paths_reject_production_before_read_or_create(
     tmp_path: Path,
     monkeypatch,

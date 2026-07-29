@@ -15,7 +15,10 @@
 - `find_bridges`、`timeline_of`、`contrast`：partial 标记、限制说明、证据来源与逐项 provenance
 - Tool 发现/选择、gold 参数一致性、FastMCP schema 接受性和输入验证
 
-评测经过真实的 FastMCP `list_tools` / `call_tool` 链路。关系查询、证据聚合和探索服务使用真实实现；数据来自临时 SQLite/Markdown 场景，检索与 chunk 命中使用最小确定性 fixture。
+评测经过真实的 FastMCP `list_tools` / `call_tool` / `read_resource`
+链路。关系查询、证据聚合和探索服务使用真实实现；数据来自临时
+SQLite/Markdown 场景，检索与 chunk 命中使用最小确定性 fixture，fixture
+返回的 chunk id 同时存在于隔离 SQLite 的 `content_chunks` 中。
 
 本闭环不评估外部 LLM 的自主 Tool 路由质量。gold `expected_call` 只保存在
 `tasks.v1.yaml`，被评测的 `proposed_call` 独立保存在
@@ -75,6 +78,10 @@ Tool、错误参数或未来 Agent 预测不会与 gold 共用 YAML anchor/对�
 
 - 默认 CI 必须运行 `tests/integration/test_mcp_quality_eval.py`
 - 集成回归固定 schema、16 条任务、119 项检查、独立 proposals 和全通过结果
+- evaluation 运行时合同在 119 项评分之外逐项读取所有 citation locator；
+  校验 bridge 路径连续性、完整候选邻接/断连子图和 semantic provenance，
+  timeline 物理字段及 legacy 持久性，contrast provenance 完整性，并递归
+  拒绝 Phase B 新公开响应中的绝对本机路径
 - CLI 通过 `--enforce-thresholds` 把任务集内的目标阈值升级为退出码门禁
 - 当前基线为 119/119，`citability=100%`、`targets_met=true`，兼容字段
   `thresholds_met=true`
@@ -93,3 +100,13 @@ Tool、错误参数或未来 Agent 预测不会与 gold 共用 YAML anchor/对�
 
 后续变更必须保持 16 条任务、独立 proposals、119 项检查和现有阈值；
 不得通过修改 gold/proposal、删除断言或改写离线 fixture 掩盖回归。
+
+当前精确引用 URI 规范：
+
+- `pkv://entries/{id}/chunks/{chunk_id}`
+- `pkv://entries/{id}/chunk-index/{chunk_index}`
+- `pkv://entries/{id}/metadata/{time_field}`
+- `pkv://relations/{relation_id}`
+- `pkv://relations/by-edge/{source_id}/{target_id}/{relation_type}/{source_type}`
+
+这些 URI 均是注册的 MCP Resource，不使用不可解析的 fragment。

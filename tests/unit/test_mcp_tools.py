@@ -1134,7 +1134,7 @@ class TestTimelineOf:
                     source_type="generic",
                     source_url="https://example.test/alpha",
                     source="https://example.test/alpha",
-                    citation_locator="pkv://entries/1/metadata#event_time",
+                    citation_locator="pkv://entries/1/metadata/event_time",
                     abstract="Alpha 摘要",
                     tags=["AI"],
                     retrieval_score=0.91,
@@ -1166,7 +1166,7 @@ class TestTimelineOf:
         assert result["items"][0]["source"] == "https://example.test/alpha"
         assert (
             result["items"][0]["citation_locator"]
-            == "pkv://entries/1/metadata#event_time"
+            == "pkv://entries/1/metadata/event_time"
         )
         mock_service.timeline_of.assert_called_once()
 

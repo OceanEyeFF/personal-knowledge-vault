@@ -20,9 +20,13 @@ import re
 from typing import Any
 
 from src.relations.citations import (
+    build_entry_metadata_locator,
     build_entry_locator,
     build_metadata_locator,
+    build_relation_locator,
+    read_persisted_metadata_field,
     resolve_citation_source,
+    serialize_relation_evidence,
 )
 from src.relations.models import (
     BridgeCandidate,
@@ -37,6 +41,9 @@ from src.utils.text_utils import get_text_processor
 
 class ExplorationService:
     """关系探索服务的受限实现。"""
+
+    BRIDGE_MAX_NODES = 100
+    BRIDGE_MAX_EDGES = 300
 
     def __init__(
         self,
@@ -71,8 +78,8 @@ class ExplorationService:
             seed_knowledge_id=seed_knowledge_id,
             depth=max_depth,
             per_node_limit=100,
-            max_nodes=100,
-            max_edges=300,
+            max_nodes=self.BRIDGE_MAX_NODES,
+            max_edges=self.BRIDGE_MAX_EDGES,
             group_by_relation_type=False,
         )
         node_depth_map = {
@@ -114,12 +121,13 @@ class ExplorationService:
                 node_depth_map=node_depth_map,
                 max_depth=max_depth,
             )
-            semantic_score = self._compute_semantic_bridge_score(
+            semantic_score_inputs = self._build_semantic_bridge_score_inputs(
                 seed_entry=seed_entry,
                 candidate_entry=entry,
                 neighbor_ids=neighbors,
                 entry_cache=entry_cache,
             )
+            semantic_score = float(semantic_score_inputs["semantic_score"])
             if semantic_score <= 0.0 and graph_bridge_score < 0.45:
                 continue
 
@@ -146,8 +154,20 @@ class ExplorationService:
                     connected_knowledge_ids=sorted(neighbors),
                     relation_types=sorted(relation_types_by_node[knowledge_id]),
                     evidence_path=self._build_bridge_evidence_path(
-                        seed_knowledge_id,
-                        relation_explanation,
+                        seed_knowledge_id=seed_knowledge_id,
+                        candidate_knowledge_id=knowledge_id,
+                        explanation=relation_explanation,
+                        subgraph_edges=subgraph.edges,
+                    ),
+                    supporting_subgraph=self._build_bridge_supporting_subgraph(
+                        seed_knowledge_id=seed_knowledge_id,
+                        candidate_knowledge_id=knowledge_id,
+                        neighbors=neighbors,
+                        adjacency=neighbors_by_node,
+                        node_depth_map=node_depth_map,
+                        subgraph_edges=subgraph.edges,
+                        max_depth=max_depth,
+                        semantic_score_inputs=semantic_score_inputs,
                     ),
                     summary=(
                         f"当前把 {knowledge_id} 视为桥接候选，因为它在 {max_depth} 跳子图中"
@@ -169,6 +189,24 @@ class ExplorationService:
             )
         )
         selected = candidates[:top_k]
+        limitation_notes = [
+            (
+                "当前桥接结果已引入局部图桥接信号（断开邻居对、深度跨度），"
+                "但底层仍只使用显式关系图与轻量文本重合"
+            ),
+            "当前未引入 chunk 级桥接证据、全局中心性分析和语义关系边",
+            (
+                f"查询范围固定为 seed 的 {max_depth} 跳显式关系子图，"
+                f"最多 {self.BRIDGE_MAX_NODES} 个节点、"
+                f"{self.BRIDGE_MAX_EDGES} 条边"
+            ),
+        ]
+        if subgraph.truncated:
+            limitation_notes.append(
+                "本次关系子图已截断；候选集合和未发现结论均不完整，"
+                "不得解释为全图范围的桥接结论"
+            )
+
         return BridgeDiscoveryResult(
             seed_knowledge_id=seed_knowledge_id,
             found=bool(selected),
@@ -185,10 +223,12 @@ class ExplorationService:
                 "entry_tags",
                 "entry_title_summary",
             ],
-            limitation_notes=[
-                "当前桥接结果已引入局部图桥接信号（断开邻居对、深度跨度），但底层仍只使用显式关系图与轻量文本重合",
-                "当前未引入 chunk 级桥接证据、全局中心性分析和语义关系边",
-            ],
+            limitation_notes=limitation_notes,
+            subgraph_truncated=bool(subgraph.truncated),
+            subgraph_max_nodes=self.BRIDGE_MAX_NODES,
+            subgraph_max_edges=self.BRIDGE_MAX_EDGES,
+            subgraph_node_count=len(subgraph.nodes),
+            subgraph_edge_count=len(subgraph.edges),
         )
 
     def timeline_of(
@@ -211,9 +251,16 @@ class ExplorationService:
         points: list[TimelinePoint] = []
         for result in results[:top_k]:
             entry = self.sqlite_store.query_by_id(result.knowledge_id) or {}
-            resolved_times = self._resolve_time_fields(entry, result.metadata)
+            resolved_times, physical_source_fields = self._resolve_time_fields(
+                entry,
+                result.metadata,
+            )
             time_value, time_source = self._select_time_value(
                 resolved_times, time_source_priority
+            )
+            time_source_field = physical_source_fields.get(
+                time_source,
+                time_source,
             )
             points.append(
                 # The locator points at the exact structured field used as time_value.
@@ -225,6 +272,7 @@ class ExplorationService:
                     published_at=resolved_times["published_at"],
                     archived_at=resolved_times["archived_at"],
                     time_source=time_source,
+                    time_source_field=time_source_field,
                     source_type=entry.get("source_type", result.metadata.get("source_type", "")),
                     source_url=str(
                         entry.get("source_url")
@@ -251,7 +299,7 @@ class ExplorationService:
                     ),
                     citation_locator=build_metadata_locator(
                         result.knowledge_id,
-                        time_source,
+                        time_source_field,
                     ),
                     abstract=entry.get("summary_one_sentence", "") or result.highlight,
                     tags=self._parse_tags(entry.get("tags", result.metadata.get("tags", ""))),
@@ -288,6 +336,7 @@ class ExplorationService:
             ],
             limitation_notes=[
                 "当前优先使用 entry/metadata 中的 event_time/published_at 真实时间字段，缺失时才回退 archived_at，不代表正文中的完整真实事件时间",
+                "仅对 SQLite 或 Markdown frontmatter 中可持久读取的时间字段生成精确 locator；临时检索 metadata 或损坏 frontmatter 不作为可引用时间来源",
                 "当前未接入 video_timestamps、正文事件抽取或时间语义解析",
             ],
         )
@@ -427,47 +476,215 @@ class ExplorationService:
         return cache[knowledge_id]
 
     @staticmethod
+    def _relation_key(record: Any) -> tuple[Any, ...]:
+        if record.relation_id is not None:
+            return ("id", record.relation_id)
+        return (
+            "edge",
+            record.source_knowledge_id,
+            record.target_knowledge_id,
+            record.relation_type.value,
+            record.relation_source_type.value,
+        )
+
+    @staticmethod
+    def _relation_citation_locator(record: Any) -> str:
+        return build_relation_locator(
+            relation_id=record.relation_id,
+            source_knowledge_id=record.source_knowledge_id,
+            target_knowledge_id=record.target_knowledge_id,
+            relation_type=record.relation_type.value,
+            relation_source_type=record.relation_source_type.value,
+        )
+
+    @classmethod
+    def _serialize_relation_edge(
+        cls,
+        record: Any,
+        *,
+        evidence_roles: list[str],
+        from_knowledge_id: int | None = None,
+        to_knowledge_id: int | None = None,
+        traversal_direction: str = "",
+        hop_index: int | None = None,
+    ) -> dict[str, Any]:
+        item = serialize_relation_evidence(record)
+        item.update(
+            {
+                "evidence_roles": list(evidence_roles),
+                "citation_locator": cls._relation_citation_locator(record),
+            }
+        )
+        if from_knowledge_id is not None:
+            item["from_knowledge_id"] = from_knowledge_id
+        if to_knowledge_id is not None:
+            item["to_knowledge_id"] = to_knowledge_id
+        if traversal_direction:
+            item["traversal_direction"] = traversal_direction
+        if hop_index is not None:
+            item["hop_index"] = hop_index
+        return item
+
+    @classmethod
     def _build_bridge_evidence_path(
+        cls,
+        *,
         seed_knowledge_id: int,
+        candidate_knowledge_id: int,
         explanation: Any,
+        subgraph_edges: list[Any],
     ) -> list[dict[str, Any]]:
-        """Serialize the ordered seed-to-candidate path with traversal endpoints."""
-        if not explanation or not explanation.found:
-            return []
+        """Cover both seed reachability and every candidate-adjacent edge."""
+        evidence_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+        ordered_keys: list[tuple[Any, ...]] = []
 
         current_knowledge_id = seed_knowledge_id
-        evidence_path: list[dict[str, Any]] = []
-        for hop_index, record in enumerate(explanation.path, start=1):
-            if record.source_knowledge_id == current_knowledge_id:
-                next_knowledge_id = record.target_knowledge_id
-                traversal_direction = "forward"
-            elif record.target_knowledge_id == current_knowledge_id:
-                next_knowledge_id = record.source_knowledge_id
-                traversal_direction = "reverse"
-            else:
-                break
+        if explanation and explanation.found:
+            for hop_index, record in enumerate(explanation.path, start=1):
+                if record.source_knowledge_id == current_knowledge_id:
+                    next_knowledge_id = record.target_knowledge_id
+                    traversal_direction = "forward"
+                elif record.target_knowledge_id == current_knowledge_id:
+                    next_knowledge_id = record.source_knowledge_id
+                    traversal_direction = "reverse"
+                else:
+                    break
 
-            item = record.to_dict()
-            item.update(
-                {
-                    "hop_index": hop_index,
-                    "from_knowledge_id": current_knowledge_id,
-                    "to_knowledge_id": next_knowledge_id,
-                    "traversal_direction": traversal_direction,
-                    "citation_locator": (
-                        f"pkv://relations/{record.relation_id}"
-                        if record.relation_id is not None
-                        else (
-                            f"{build_entry_locator(current_knowledge_id)}"
-                            f"#relation-to:{next_knowledge_id}:"
-                            f"{record.relation_type.value}"
-                        )
-                    ),
-                }
+                key = cls._relation_key(record)
+                evidence_by_key[key] = cls._serialize_relation_edge(
+                    record,
+                    evidence_roles=["seed_path"],
+                    from_knowledge_id=current_knowledge_id,
+                    to_knowledge_id=next_knowledge_id,
+                    traversal_direction=traversal_direction,
+                    hop_index=hop_index,
+                )
+                ordered_keys.append(key)
+                current_knowledge_id = next_knowledge_id
+
+        incident_edges = sorted(
+            (
+                edge
+                for edge in subgraph_edges
+                if candidate_knowledge_id
+                in {edge.source_knowledge_id, edge.target_knowledge_id}
+            ),
+            key=lambda edge: (
+                min(edge.source_knowledge_id, edge.target_knowledge_id),
+                max(edge.source_knowledge_id, edge.target_knowledge_id),
+                edge.relation_type.value,
+                edge.relation_source_type.value,
+                edge.relation_id or 0,
+            ),
+        )
+        for record in incident_edges:
+            if record.source_knowledge_id == candidate_knowledge_id:
+                neighbor_id = record.target_knowledge_id
+                traversal_direction = "forward"
+            else:
+                neighbor_id = record.source_knowledge_id
+                traversal_direction = "reverse"
+            key = cls._relation_key(record)
+            if key in evidence_by_key:
+                roles = evidence_by_key[key]["evidence_roles"]
+                if "candidate_adjacency" not in roles:
+                    roles.append("candidate_adjacency")
+                continue
+            evidence_by_key[key] = cls._serialize_relation_edge(
+                record,
+                evidence_roles=["candidate_adjacency"],
+                from_knowledge_id=candidate_knowledge_id,
+                to_knowledge_id=neighbor_id,
+                traversal_direction=traversal_direction,
             )
-            evidence_path.append(item)
-            current_knowledge_id = next_knowledge_id
-        return evidence_path
+            ordered_keys.append(key)
+
+        return [evidence_by_key[key] for key in ordered_keys]
+
+    @classmethod
+    def _build_bridge_supporting_subgraph(
+        cls,
+        *,
+        seed_knowledge_id: int,
+        candidate_knowledge_id: int,
+        neighbors: set[int],
+        adjacency: dict[int, set[int]],
+        node_depth_map: dict[int, int],
+        subgraph_edges: list[Any],
+        max_depth: int,
+        semantic_score_inputs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Expose the complete bounded subgraph needed to recompute graph scores."""
+        neighbor_list = sorted(neighbors)
+        neighbor_pairs = []
+        disconnected_pairs = []
+        for left_id, right_id in combinations(neighbor_list, 2):
+            connected = right_id in adjacency.get(left_id, set())
+            pair = {
+                "left_knowledge_id": left_id,
+                "right_knowledge_id": right_id,
+                "connected_within_scope": connected,
+            }
+            neighbor_pairs.append(pair)
+            if not connected:
+                disconnected_pairs.append(dict(pair))
+
+        neighbor_depths = {
+            str(neighbor_id): node_depth_map.get(neighbor_id, max_depth)
+            for neighbor_id in neighbor_list
+        }
+        depth_values = sorted(neighbor_depths.values())
+        depth_span = depth_values[-1] - depth_values[0] if depth_values else 0
+        seed_frontier = (
+            seed_knowledge_id in neighbors
+            and any(
+                node_depth_map.get(neighbor_id, max_depth) > 1
+                for neighbor_id in neighbor_list
+                if neighbor_id != seed_knowledge_id
+            )
+        )
+        pair_ratio = len(disconnected_pairs) / max(len(neighbor_pairs), 1)
+
+        scoped_edges = [
+            cls._serialize_relation_edge(
+                record,
+                evidence_roles=["bounded_subgraph_edge"],
+            )
+            for record in subgraph_edges
+        ]
+        return {
+            "scope": {
+                "seed_knowledge_id": seed_knowledge_id,
+                "candidate_knowledge_id": candidate_knowledge_id,
+                "max_depth": max_depth,
+                "node_depths": {
+                    str(knowledge_id): depth
+                    for knowledge_id, depth in sorted(node_depth_map.items())
+                },
+                "edge_completeness": "complete_unless_result_subgraph_truncated",
+            },
+            "edges": scoped_edges,
+            "candidate_connected_knowledge_ids": neighbor_list,
+            "neighbor_pairs": neighbor_pairs,
+            "disconnected_neighbor_pairs": disconnected_pairs,
+            "structural_score_inputs": {
+                "candidate_depth": node_depth_map.get(
+                    candidate_knowledge_id,
+                    max_depth,
+                ),
+                "neighbor_count": len(neighbor_list),
+                "max_depth": max_depth,
+            },
+            "graph_score_inputs": {
+                "disconnected_pair_count": len(disconnected_pairs),
+                "neighbor_pair_count": len(neighbor_pairs),
+                "disconnected_pair_ratio": round(pair_ratio, 6),
+                "neighbor_depths": neighbor_depths,
+                "depth_span": depth_span,
+                "seed_frontier": seed_frontier,
+            },
+            "semantic_score_inputs": semantic_score_inputs,
+        }
 
     @staticmethod
     def _candidate_provenance(
@@ -479,7 +696,6 @@ class ExplorationService:
             "knowledge_id": item.knowledge_id,
             "source": item.source,
             "source_url": item.source_url,
-            "file_path": item.file_path,
             "citation_locator": item.citation_locator,
         }
 
@@ -558,6 +774,147 @@ class ExplorationService:
         neighbor_score = min(neighbor_count / 4.0, 1.0)
         return min(max(0.7 * neighbor_score + 0.3 * depth_bonus, 0.0), 1.0)
 
+    def _build_semantic_bridge_score_inputs(
+        self,
+        seed_entry: dict[str, Any],
+        candidate_entry: dict[str, Any],
+        neighbor_ids: set[int],
+        entry_cache: dict[int, dict[str, Any]],
+    ) -> dict[str, Any]:
+        candidate_tokens = self._entry_tokens(candidate_entry)
+        candidate_knowledge_id = candidate_entry.get("knowledge_id")
+        candidate_locator = (
+            build_entry_locator(int(candidate_knowledge_id))
+            if candidate_knowledge_id
+            else ""
+        )
+        if not candidate_tokens:
+            return {
+                "fields_used": [
+                    "title",
+                    "summary_one_sentence",
+                    "summary_100_words",
+                    "tags",
+                ],
+                "candidate": {
+                    "knowledge_id": candidate_knowledge_id,
+                    "citation_locator": candidate_locator,
+                    "metadata_locator": (
+                        build_entry_metadata_locator(
+                            int(candidate_knowledge_id)
+                        )
+                        if candidate_knowledge_id
+                        else ""
+                    ),
+                    "token_count": 0,
+                },
+                "comparisons": [],
+                "anchor_score": 0.0,
+                "support_score": 0.0,
+                "coverage_score": 0.0,
+                "semantic_score": 0.0,
+            }
+
+        comparison_scores: list[float] = []
+        comparisons: list[dict[str, Any]] = []
+        seed_tokens = self._entry_tokens(seed_entry)
+        if seed_tokens:
+            seed_knowledge_id = seed_entry.get("knowledge_id")
+            overlap_count = len(candidate_tokens & seed_tokens)
+            overlap_score = self._token_overlap(candidate_tokens, seed_tokens)
+            comparison_scores.append(overlap_score)
+            comparisons.append(
+                {
+                    "comparison_role": "seed",
+                    "knowledge_id": seed_knowledge_id,
+                    "citation_locator": (
+                        build_entry_locator(int(seed_knowledge_id))
+                        if seed_knowledge_id
+                        else ""
+                    ),
+                    "metadata_locator": (
+                        build_entry_metadata_locator(int(seed_knowledge_id))
+                        if seed_knowledge_id
+                        else ""
+                    ),
+                    "candidate_token_count": len(candidate_tokens),
+                    "comparison_token_count": len(seed_tokens),
+                    "overlap_token_count": overlap_count,
+                    "overlap_score": round(overlap_score, 6),
+                }
+            )
+
+        for neighbor_id in neighbor_ids:
+            neighbor_entry = self._get_entry(neighbor_id, entry_cache)
+            neighbor_tokens = self._entry_tokens(neighbor_entry)
+            if neighbor_tokens:
+                overlap_count = len(candidate_tokens & neighbor_tokens)
+                overlap_score = self._token_overlap(
+                    candidate_tokens,
+                    neighbor_tokens,
+                )
+                comparison_scores.append(overlap_score)
+                comparisons.append(
+                    {
+                        "comparison_role": "candidate_neighbor",
+                        "knowledge_id": neighbor_id,
+                        "citation_locator": build_entry_locator(neighbor_id),
+                        "metadata_locator": build_entry_metadata_locator(
+                            neighbor_id
+                        ),
+                        "candidate_token_count": len(candidate_tokens),
+                        "comparison_token_count": len(neighbor_tokens),
+                        "overlap_token_count": overlap_count,
+                        "overlap_score": round(overlap_score, 6),
+                    }
+                )
+
+        if not comparison_scores:
+            anchor_score = 0.0
+            support_score = 0.0
+            coverage_score = 0.0
+            semantic_score = 0.0
+        else:
+            top_scores = sorted(comparison_scores, reverse=True)
+            anchor_score = top_scores[0]
+            support_count = min(len(top_scores), 2)
+            support_score = sum(top_scores[:support_count]) / support_count
+            coverage_score = sum(
+                1 for score in top_scores if score >= 0.08
+            ) / len(top_scores)
+            semantic_score = min(
+                max(
+                    anchor_score * 0.55
+                    + support_score * 0.3
+                    + coverage_score * 0.15,
+                    0.0,
+                ),
+                1.0,
+            )
+        return {
+            "fields_used": [
+                "title",
+                "summary_one_sentence",
+                "summary_100_words",
+                "tags",
+            ],
+            "candidate": {
+                "knowledge_id": candidate_knowledge_id,
+                "citation_locator": candidate_locator,
+                "metadata_locator": (
+                    build_entry_metadata_locator(int(candidate_knowledge_id))
+                    if candidate_knowledge_id
+                    else ""
+                ),
+                "token_count": len(candidate_tokens),
+            },
+            "comparisons": comparisons,
+            "anchor_score": round(anchor_score, 6),
+            "support_score": round(support_score, 6),
+            "coverage_score": round(coverage_score, 6),
+            "semantic_score": round(semantic_score, 6),
+        }
+
     def _compute_semantic_bridge_score(
         self,
         seed_entry: dict[str, Any],
@@ -565,35 +922,19 @@ class ExplorationService:
         neighbor_ids: set[int],
         entry_cache: dict[int, dict[str, Any]],
     ) -> float:
-        candidate_tokens = self._entry_tokens(candidate_entry)
-        if not candidate_tokens:
+        """Compatibility wrapper for callers that only need the score."""
+        if (
+            not self._entry_tokens(candidate_entry)
+            or not candidate_entry.get("knowledge_id")
+        ):
             return 0.0
-
-        comparison_scores: list[float] = []
-        seed_tokens = self._entry_tokens(seed_entry)
-        if seed_tokens:
-            comparison_scores.append(self._token_overlap(candidate_tokens, seed_tokens))
-
-        for neighbor_id in neighbor_ids:
-            neighbor_entry = self._get_entry(neighbor_id, entry_cache)
-            neighbor_tokens = self._entry_tokens(neighbor_entry)
-            if neighbor_tokens:
-                comparison_scores.append(
-                    self._token_overlap(candidate_tokens, neighbor_tokens)
-                )
-
-        if not comparison_scores:
-            return 0.0
-        top_scores = sorted(comparison_scores, reverse=True)
-        anchor_score = top_scores[0]
-        support_score = sum(top_scores[: min(len(top_scores), 2)]) / min(
-            len(top_scores),
-            2,
+        inputs = self._build_semantic_bridge_score_inputs(
+            seed_entry=seed_entry,
+            candidate_entry=candidate_entry,
+            neighbor_ids=neighbor_ids,
+            entry_cache=entry_cache,
         )
-        coverage_score = sum(1 for score in top_scores if score >= 0.08) / len(
-            top_scores
-        )
-        return min(max(anchor_score * 0.55 + support_score * 0.3 + coverage_score * 0.15, 0.0), 1.0)
+        return float(inputs["semantic_score"])
 
     @staticmethod
     def _compute_graph_bridge_score(
@@ -665,19 +1006,41 @@ class ExplorationService:
     def _resolve_time_fields(
         entry: dict[str, Any],
         metadata: dict[str, Any],
-    ) -> dict[str, str]:
-        published_at = (
-            entry.get("published_at")
-            or metadata.get("published_at", "")
-            or metadata.get("published_time", "")
-            or metadata.get("publish_time", "")
-            or ""
-        )
-        return {
-            "event_time": str(entry.get("event_time") or metadata.get("event_time", "") or ""),
-            "published_at": str(published_at),
-            "archived_at": str(entry.get("archived_at") or metadata.get("archived_at", "") or ""),
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Resolve semantic time categories and retain their physical field names."""
+        resolved: dict[str, str] = {}
+        physical_fields: dict[str, str] = {}
+        candidates = {
+            "event_time": (
+                ("event_time", entry.get("event_time")),
+                ("event_time", metadata.get("event_time")),
+            ),
+            "published_at": (
+                ("published_at", entry.get("published_at")),
+                ("published_at", metadata.get("published_at")),
+                ("published_time", metadata.get("published_time")),
+                ("publish_time", metadata.get("publish_time")),
+            ),
+            "archived_at": (
+                ("archived_at", entry.get("archived_at")),
+                ("archived_at", metadata.get("archived_at")),
+            ),
         }
+        for semantic_field, field_candidates in candidates.items():
+            resolved[semantic_field] = ""
+            physical_fields[semantic_field] = semantic_field
+            for physical_field, raw_value in field_candidates:
+                if raw_value in (None, ""):
+                    continue
+                found, persisted_value, _ = read_persisted_metadata_field(
+                    entry,
+                    physical_field,
+                )
+                if found and str(persisted_value) == str(raw_value):
+                    resolved[semantic_field] = str(persisted_value)
+                    physical_fields[semantic_field] = physical_field
+                    break
+        return resolved, physical_fields
 
     @staticmethod
     def _select_time_value(
@@ -802,8 +1165,10 @@ class ExplorationService:
                         "confidence": pair_score,
                         "relation_types": relation_types,
                         "evidence_path": self._build_bridge_evidence_path(
-                            item_a.knowledge_id,
-                            explanation,
+                            seed_knowledge_id=item_a.knowledge_id,
+                            candidate_knowledge_id=item_b.knowledge_id,
+                            explanation=explanation,
+                            subgraph_edges=explanation.path,
                         ),
                     }
                 )

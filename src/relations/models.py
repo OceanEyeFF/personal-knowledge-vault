@@ -396,6 +396,11 @@ class CollectedEvidenceItem:
             raise ValueError("relation_hops 不能为负数")
 
     def to_dict(self) -> Dict[str, Any]:
+        from src.relations.citations import (
+            sanitize_public_evidence,
+            serialize_relation_evidence,
+        )
+
         return {
             "knowledge_id": self.knowledge_id,
             "title": self.title,
@@ -404,7 +409,6 @@ class CollectedEvidenceItem:
             "archived_at": self.archived_at,
             "tags": list(self.tags),
             "source_url": self.source_url,
-            "file_path": self.file_path,
             "citation_source": self.citation_source,
             "citation_locator": self.citation_locator,
             "content_preview": self.content_preview,
@@ -422,9 +426,12 @@ class CollectedEvidenceItem:
             "relation_explanation_type": self.relation_explanation_type,
             "relation_hops": self.relation_hops,
             "relation_summary": self.relation_summary,
-            "relation_path": [record.to_dict() for record in self.relation_path],
+            "relation_path": [
+                serialize_relation_evidence(record) for record in self.relation_path
+            ],
             "relation_evidence_items": [
-                dict(item) for item in self.relation_evidence_items
+                sanitize_public_evidence(dict(item))
+                for item in self.relation_evidence_items
             ],
         }
 
@@ -520,6 +527,7 @@ class BridgeCandidate:
     relation_types: list[str] = field(default_factory=list)
     summary: str = ""
     evidence_path: list[Dict[str, Any]] = field(default_factory=list)
+    supporting_subgraph: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.knowledge_id <= 0:
@@ -547,6 +555,7 @@ class BridgeCandidate:
             "connected_knowledge_ids": list(self.connected_knowledge_ids),
             "relation_types": list(self.relation_types),
             "evidence_path": [dict(item) for item in self.evidence_path],
+            "supporting_subgraph": dict(self.supporting_subgraph),
             "summary": self.summary,
         }
 
@@ -564,6 +573,11 @@ class BridgeDiscoveryResult:
     implementation_level: str = "partial"
     evidence_sources: list[str] = field(default_factory=list)
     limitation_notes: list[str] = field(default_factory=list)
+    subgraph_truncated: bool = False
+    subgraph_max_nodes: int = 100
+    subgraph_max_edges: int = 300
+    subgraph_node_count: int = 0
+    subgraph_edge_count: int = 0
 
     def __post_init__(self) -> None:
         if self.seed_knowledge_id <= 0:
@@ -606,6 +620,11 @@ class BridgeDiscoveryResult:
             "implementation_level": self.implementation_level,
             "evidence_sources": list(self.evidence_sources),
             "limitation_notes": list(self.limitation_notes),
+            "subgraph_truncated": self.subgraph_truncated,
+            "subgraph_max_nodes": self.subgraph_max_nodes,
+            "subgraph_max_edges": self.subgraph_max_edges,
+            "subgraph_node_count": self.subgraph_node_count,
+            "subgraph_edge_count": self.subgraph_edge_count,
             "items": [item.to_dict() for item in self.items],
         }
 
@@ -621,6 +640,7 @@ class TimelinePoint:
     published_at: str = ""
     archived_at: str = ""
     time_source: str = "archived_at"
+    time_source_field: str = "archived_at"
     source_type: str = ""
     abstract: str = ""
     tags: list[str] = field(default_factory=list)
@@ -645,9 +665,9 @@ class TimelinePoint:
             "published_at": self.published_at,
             "archived_at": self.archived_at,
             "time_source": self.time_source,
+            "time_source_field": self.time_source_field,
             "source_type": self.source_type,
             "source_url": self.source_url,
-            "file_path": self.file_path,
             "source": self.source,
             "citation_locator": self.citation_locator,
             "abstract": self.abstract,
@@ -753,7 +773,6 @@ class ContrastCandidateItem:
             "archived_at": self.archived_at,
             "source_type": self.source_type,
             "source_url": self.source_url,
-            "file_path": self.file_path,
             "source": self.source,
             "citation_locator": self.citation_locator,
             "tags": list(self.tags),

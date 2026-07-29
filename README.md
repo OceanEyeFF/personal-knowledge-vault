@@ -94,7 +94,7 @@ AI Agent（Claude Code、Cursor 等）通过 MCP 协议直接操作知识库：
 
 **3 个 Prompt 模板**: `search_and_summarize` / `knowledge_qa` / `idea_sharpen`
 
-**4 个 Resource**: 条目全文、元数据、标签列表、统计信息
+**9 个 Resource**: 条目全文/元数据、精确 chunk、时间字段、关系边、标签列表与统计信息
 
 **安全加固**: SSRF 拦截（内网地址过滤）、文本长度限制、Bearer Token 认证
 
@@ -130,7 +130,7 @@ personal-knowledge-vault/
 │   ├── mcp/                           # MCP 服务 (v0.7.0)
 │   │   ├── server.py                  # FastMCP 主入口 (stdio/HTTP)
 │   │   ├── tools.py                   # 14 个 Tool handler
-│   │   ├── resources.py               # 4 个 Resource handler
+│   │   ├── resources.py               # 9 个 Resource handler
 │   │   ├── prompts.py                 # 3 个 Prompt 模板
 │   │   └── utils.py                   # 安全验证 + 序列化
 │   ├── processors/                    # 内容处理器 (7 个)

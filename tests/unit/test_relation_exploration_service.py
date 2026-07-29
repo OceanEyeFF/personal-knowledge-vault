@@ -242,27 +242,52 @@ def test_find_bridges_returns_middle_node(exploration_service):
     assert result.items[0].structural_bridge_score > 0
     assert result.items[0].graph_bridge_score > 0
     assert result.items[0].semantic_bridge_score > 0
-    assert result.items[0].evidence_path == [
+    assert len(result.items[0].evidence_path) == 2
+    seed_edge, frontier_edge = result.items[0].evidence_path
+    assert seed_edge["evidence_roles"] == ["seed_path", "candidate_adjacency"]
+    assert seed_edge["from_knowledge_id"] == 1
+    assert seed_edge["to_knowledge_id"] == 3
+    assert seed_edge["citation_locator"] == (
+        "pkv://relations/by-edge/1/3/related_document/frontmatter_related_docs"
+    )
+    assert frontier_edge["evidence_roles"] == ["candidate_adjacency"]
+    assert frontier_edge["from_knowledge_id"] == 3
+    assert frontier_edge["to_knowledge_id"] == 4
+    assert frontier_edge["citation_locator"] == (
+        "pkv://relations/by-edge/3/4/references/markdown_link"
+    )
+    support = result.items[0].supporting_subgraph
+    assert support["candidate_connected_knowledge_ids"] == [1, 4]
+    assert support["disconnected_neighbor_pairs"] == [
         {
-            "relation_id": None,
-            "source_knowledge_id": 1,
-            "target_knowledge_id": 3,
-            "relation_type": "related_document",
-            "relation_source_type": "frontmatter_related_docs",
-            "direction": "directed",
-            "weight": 1.0,
-            "evidence_payload": {"stub": True},
-            "created_at": None,
-            "updated_at": None,
-            "hop_index": 1,
-            "from_knowledge_id": 1,
-            "to_knowledge_id": 3,
-            "traversal_direction": "forward",
-            "citation_locator": (
-                "pkv://entries/1#relation-to:3:related_document"
-            ),
+            "left_knowledge_id": 1,
+            "right_knowledge_id": 4,
+            "connected_within_scope": False,
         }
     ]
+    assert len(support["edges"]) == 2
+    semantic_inputs = support["semantic_score_inputs"]
+    assert semantic_inputs["candidate"] == {
+        "knowledge_id": 3,
+        "citation_locator": "pkv://entries/3",
+        "metadata_locator": "pkv://entries/3/metadata",
+        "token_count": semantic_inputs["candidate"]["token_count"],
+    }
+    assert semantic_inputs["candidate"]["token_count"] > 0
+    assert {
+        item["knowledge_id"] for item in semantic_inputs["comparisons"]
+    } == {1, 4}
+    assert all(
+        item["citation_locator"].startswith("pkv://entries/")
+        for item in semantic_inputs["comparisons"]
+    )
+    assert all(
+        item["metadata_locator"].endswith("/metadata")
+        for item in semantic_inputs["comparisons"]
+    )
+    assert round(semantic_inputs["semantic_score"], 4) == (
+        result.items[0].semantic_bridge_score
+    )
     assert result.limitation_notes
 
 
@@ -302,6 +327,31 @@ def test_find_bridges_can_keep_graph_only_candidate():
     assert result.items[0].semantic_bridge_score == 0.0
 
 
+def test_find_bridges_discloses_truncated_subgraph(exploration_service):
+    relation_service = exploration_service.relation_query_service
+    original_query_subgraph = relation_service.query_subgraph
+
+    def truncated_query_subgraph(**kwargs):
+        subgraph = original_query_subgraph(**kwargs)
+        subgraph.truncated = True
+        return subgraph
+
+    relation_service.query_subgraph = truncated_query_subgraph
+    result = exploration_service.find_bridges(
+        seed_knowledge_id=1,
+        top_k=3,
+        max_depth=2,
+    )
+    payload = result.to_dict()
+
+    assert payload["subgraph_truncated"] is True
+    assert payload["subgraph_max_nodes"] == 100
+    assert payload["subgraph_max_edges"] == 300
+    assert payload["subgraph_node_count"] == 3
+    assert payload["subgraph_edge_count"] == 2
+    assert any("候选集合和未发现结论均不完整" in note for note in result.limitation_notes)
+
+
 def test_timeline_of_sorts_by_archived_at(exploration_service):
     result = exploration_service.timeline_of(topic="时间线", top_k=5, sort_order="asc")
 
@@ -317,8 +367,8 @@ def test_timeline_of_sorts_by_archived_at(exploration_service):
         "pkv://entries/2",
     ]
     assert [item.citation_locator for item in result.items] == [
-        "pkv://entries/1/metadata#archived_at",
-        "pkv://entries/2/metadata#archived_at",
+        "pkv://entries/1/metadata/archived_at",
+        "pkv://entries/2/metadata/archived_at",
     ]
 
 
@@ -492,7 +542,7 @@ def test_timeline_of_marks_mixed_inferred_field_for_event_and_published_sources(
     assert result.inferred_time_field == "mixed"
 
 
-def test_timeline_of_accepts_legacy_published_time_metadata_key():
+def test_timeline_of_does_not_cite_transient_legacy_published_time():
     query_router = StubQueryRouter(
         {
             "旧发布时间": [
@@ -523,9 +573,100 @@ def test_timeline_of_accepts_legacy_published_time_metadata_key():
 
     result = service.timeline_of(topic="旧发布时间", top_k=5, sort_order="asc")
 
+    assert result.items[0].time_source == "archived_at"
+    assert result.items[0].time_source_field == "archived_at"
+    assert result.items[0].time_value == "2026-03-10 09:00:00"
+    assert result.items[0].published_at == ""
+    assert result.items[0].citation_locator == (
+        "pkv://entries/7/metadata/archived_at"
+    )
+
+
+@pytest.mark.parametrize("field_name", ["published_time", "publish_time"])
+def test_timeline_of_cites_persisted_legacy_frontmatter_field(
+    tmp_path,
+    field_name,
+):
+    value = "2026-03-04 10:00:00"
+    markdown_path = tmp_path / f"{field_name}.md"
+    markdown_path.write_text(
+        f"---\n{field_name}: '{value}'\n---\n# Legacy\n",
+        encoding="utf-8",
+    )
+    query_router = StubQueryRouter(
+        {
+            "持久旧字段": [
+                SearchResult(
+                    knowledge_id=7,
+                    title="Legacy",
+                    score=0.88,
+                    highlight="Legacy 摘要",
+                    metadata={field_name: value},
+                ),
+            ]
+        }
+    )
+    service = ExplorationService(
+        query_router=query_router,
+        sqlite_store=StubSQLiteStore(
+            {
+                7: {
+                    "knowledge_id": 7,
+                    "title": "Legacy",
+                    "file_path": str(markdown_path),
+                    "archived_at": "2026-03-10 09:00:00",
+                }
+            }
+        ),
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    result = service.timeline_of(topic="持久旧字段", top_k=1, sort_order="asc")
+
     assert result.items[0].time_source == "published_at"
-    assert result.items[0].time_value == "2026-03-04 10:00:00"
-    assert result.items[0].published_at == "2026-03-04 10:00:00"
+    assert result.items[0].time_source_field == field_name
+    assert result.items[0].time_value == value
+    assert result.items[0].citation_locator == (
+        f"pkv://entries/7/metadata/{field_name}"
+    )
+
+
+def test_timeline_of_degrades_when_frontmatter_is_unreadable(tmp_path):
+    markdown_path = tmp_path / "broken.md"
+    markdown_path.write_bytes(b"\xff\xfe\x00")
+    query_router = StubQueryRouter(
+        {
+            "损坏旧字段": [
+                SearchResult(
+                    knowledge_id=7,
+                    title="Broken",
+                    score=0.88,
+                    highlight="Broken 摘要",
+                    metadata={"published_time": "2026-03-04 10:00:00"},
+                ),
+            ]
+        }
+    )
+    service = ExplorationService(
+        query_router=query_router,
+        sqlite_store=StubSQLiteStore(
+            {
+                7: {
+                    "knowledge_id": 7,
+                    "title": "Broken",
+                    "file_path": str(markdown_path),
+                    "archived_at": "2026-03-10 09:00:00",
+                }
+            }
+        ),
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    result = service.timeline_of(topic="损坏旧字段", top_k=1, sort_order="asc")
+
+    assert result.items[0].time_source == "archived_at"
+    assert result.items[0].time_source_field == "archived_at"
+    assert any("损坏 frontmatter" in note for note in result.limitation_notes)
 
 
 def test_timeline_of_desc_keeps_missing_time_items_last():
@@ -661,7 +802,6 @@ def test_contrast_returns_shared_and_distinct_tags(exploration_service):
         "knowledge_id": 1,
         "source": "pkv://entries/1",
         "source_url": "",
-        "file_path": "",
         "citation_locator": "pkv://entries/1",
     }
     assert provenance["only_a_tags"]["AI"][0]["knowledge_id"] == 1

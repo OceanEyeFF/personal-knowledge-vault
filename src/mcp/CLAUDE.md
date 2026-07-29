@@ -11,7 +11,7 @@
 ### 核心能力
 
 - **14 个 Tool**: 12 只读 + 2 写入
-- **4 个 Resource**: 条目全文/元数据/标签列表/统计信息
+- **9 个 Resource**: 条目全文/元数据、精确 chunk、时间字段、关系边、标签与统计
 - **3 个 Prompt 模板**: 搜索总结/知识问答/思想磨砺
 - **安全加固**: SSRF 防护 + 文本长度验证 + Bearer Token 认证
 - **双传输**: stdio (本地集成) + streamable-http (远程访问)
@@ -90,14 +90,25 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；P
 | `archive_url` | `url` | `{success, knowledge_id, title, ...}` | 归档网页 (含 SSRF 防护) |
 | `archive_text` | `text`, `title?` | `{success, knowledge_id, title, ...}` | 归档纯文本 (含长度验证) |
 
-### Resources (4 个)
+### Resources (9 个)
 
 | URI | 说明 | 返回格式 |
 |-----|------|----------|
 | `pkv://entries/{knowledge_id}` | 条目 Markdown 全文 | `text/markdown` |
 | `pkv://entries/{knowledge_id}/metadata` | 条目元数据 | `application/json` |
+| `pkv://entries/{knowledge_id}/chunks/{chunk_id}` | 按持久 ID 精确读取 chunk | `application/json` |
+| `pkv://entries/{knowledge_id}/chunk-index/{chunk_index}` | 按条目内序号精确读取 chunk | `application/json` |
+| `pkv://entries/{knowledge_id}/metadata/{field_name}` | 读取持久时间字段；仅允许 timeline 支持字段 | `application/json` |
+| `pkv://relations/{relation_id}` | 按持久 ID 读取关系边 | `application/json` |
+| `pkv://relations/by-edge/{source_id}/{target_id}/{relation_type}/{source_type}` | 按唯一边字段读取关系 | `application/json` |
 | `pkv://tags` | 标签列表 | `application/json` |
 | `pkv://stats` | 统计信息 | `application/json` |
+
+精确 citation 不使用 URI fragment。Tool 返回的 chunk、timeline field 和
+relation locator 必须可直接传给 FastMCP `read_resource`。时间字段 Resource
+只允许 `event_time`、`published_at`、`published_time`、`publish_time` 和
+`archived_at`；legacy alias 仅在对应字段确实持久存在于 Markdown
+frontmatter 时可读，transient 检索 metadata 不会伪装成持久引用。
 
 ### Prompts (3 个)
 
@@ -307,7 +318,7 @@ Authorization: Bearer <由秘密存储注入>
 | `__main__.py` | 支持 `python -m src.mcp.server` 启动 |
 | `server.py` | FastMCP 主入口,单例管理,注册子模块 |
 | `tools.py` | 14 个 Tool handler 实现 |
-| `resources.py` | 4 个 Resource handler 实现 |
+| `resources.py` | 9 个 Resource handler 实现 |
 | `prompts.py` | 3 个 Prompt 模板实现 |
 | `utils.py` | 辅助工具(序列化/安全验证/参数约束) |
 
@@ -333,6 +344,13 @@ Authorization: Bearer <由秘密存储注入>
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-07-29 (Phase B citation Resource 与透明性复核)
+- chunk、metadata field 与 relation locator 改为真实注册、可直接读取的 Resource URI。
+- 固定离线评测逐项执行 `read_resource`，并验证 bridge 邻接/断连子图、
+  semantic score provenance、timeline 物理字段和 contrast provenance。
+- Phase B 新增公开响应递归剔除本机绝对路径；无 URL 时 `source` 回退 entry Resource。
+- `find_bridges` 公开子图截断状态、节点/边限制及完整评分输入，但仍保持 partial。
 
 ### 2026-07-29 (Phase B citation 合同收口)
 - `collect_evidence` chunk 证据新增稳定 citation source/locator。

@@ -426,6 +426,14 @@ class TestResourceRegistration:
         # 带参数的 Resource 是模板
         assert "pkv://entries/{knowledge_id}" in uris
         assert "pkv://entries/{knowledge_id}/metadata" in uris
+        assert "pkv://entries/{knowledge_id}/chunks/{chunk_id}" in uris
+        assert "pkv://entries/{knowledge_id}/chunk-index/{chunk_index}" in uris
+        assert "pkv://entries/{knowledge_id}/metadata/{field_name}" in uris
+        assert "pkv://relations/{relation_id}" in uris
+        assert (
+            "pkv://relations/by-edge/{source_knowledge_id}/"
+            "{target_knowledge_id}/{relation_type}/{relation_source_type}"
+        ) in uris
 
     @pytest.mark.asyncio
     async def test_list_static_resources(self):
@@ -917,7 +925,7 @@ class TestToolCallWriteSecurity:
                     source_type="generic",
                     source_url="https://example.test/alpha",
                     source="https://example.test/alpha",
-                    citation_locator="pkv://entries/1/metadata#archived_at",
+                    citation_locator="pkv://entries/1/metadata/archived_at",
                     abstract="Alpha 摘要",
                     tags=["AI"],
                     retrieval_score=0.91,
