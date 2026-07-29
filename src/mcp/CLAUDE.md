@@ -80,7 +80,7 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；P
 | `explain_relation` | `source_knowledge_id`, `target_knowledge_id`, `relation_types?`, `max_depth?` | `{found, summary, path[], evidence_items[]}` | 解释两个条目之间为何相关 |
 | `collect_evidence` | `question`, `top_k?`, `relation_max_depth?` | `{seed_knowledge_id, summary, evidence[]}` | 聚合证据包；chunk 证据含稳定 citation locator |
 | `find_bridges` | `seed_knowledge_id`, `top_k?`, `max_depth?` | `{items[], limitation_notes[]}` | 发现显式关系子图中的桥接候选及逐跳 evidence path（partial） |
-| `timeline_of` | `topic`, `top_k?`, `sort_order?` | `{items[], inferred_time_field}` | 按 `event_time > published_at > archived_at` 重建带来源 locator 的弱时间线（partial） |
+| `timeline_of` | `topic`, `top_k?`, `sort_order?` | `{items[], inferred_time_field}` | 按 `event_time > published_at > archived_at` 重建弱时间线；无持久时间时以 `unavailable` + entry locator 诚实降级（partial） |
 | `contrast` | `topic_a`, `topic_b`, `top_k?` | `{shared_tags, only_a_tags, only_b_tags, ...}` | 基于候选表面字段与来源 provenance 做主题对比（partial） |
 
 #### 写入 Tool
@@ -109,6 +109,23 @@ relation locator 必须可直接传给 FastMCP `read_resource`。时间字段 Re
 只允许 `event_time`、`published_at`、`published_time`、`publish_time` 和
 `archived_at`；legacy alias 仅在对应字段确实持久存在于 Markdown
 frontmatter 时可读，transient 检索 metadata 不会伪装成持久引用。
+没有可持久读取时间字段的 timeline item 不生成 metadata-field locator：
+`time_value`/`time_source_field` 为空，`time_source`/`time_precision` 为
+`unavailable`，并引用可读的 `pkv://entries/{id}`。
+
+所有 MCP 公开序列化均把 `source_url` 视为不可信输入。Windows/POSIX/UNC
+绝对路径及 `file:` URI 会被清空，`source`/`citation_source` 回退到可读
+entry Resource；嵌套 relation evidence 中的本地引用也会递归脱敏。
+
+entry、chunk 与 frontmatter metadata-field Resource 在读取/返回内容前会先
+解析父 entry 的 canonical 路径（包含 symlink 解析），并严格证明目标是 vault
+根目录内的普通文件。
+越界、UNC、目录、缺失文件、symlink escape、无效/缺失 ID 和 loader 异常均
+以不含底层路径的 MCP 错误拒绝，不返回可被误判为成功的 Markdown 错误页。
+`get_entry` 正文与 `collect_evidence` 的文档/chunk 候选复用同一 guard；
+越界 chunk 文本不得通过检索结果进入公开响应。
+`timeline_of` / `contrast` 同样排除无法由 entry Resource 回读的越界候选，
+不得生成必然不可解析的 entry fallback locator。
 
 ### Prompts (3 个)
 
@@ -351,6 +368,12 @@ Authorization: Bearer <由秘密存储注入>
   semantic score provenance、timeline 物理字段和 contrast provenance。
 - Phase B 新增公开响应递归剔除本机绝对路径；无 URL 时 `source` 回退 entry Resource。
 - `find_bridges` 公开子图截断状态、节点/边限制及完整评分输入，但仍保持 partial。
+- timeline 无持久时间字段时公开 `unavailable` 语义并回退可读 entry
+  Resource，不再生成不存在的 `archived_at` field locator。
+- Tool 与 Resource 统一清空本地路径型 `source_url`（含盘符、UNC、`file:`），
+  并递归脱敏 relation evidence。
+- entry/frontmatter Resource 增加 canonical vault boundary guard；伪成功错误
+  文本改为受控 MCP 错误，固定评测同时执行正向可读与越界拒绝预检。
 
 ### 2026-07-29 (Phase B citation 合同收口)
 - `collect_evidence` chunk 证据新增稳定 citation source/locator。

@@ -119,7 +119,9 @@ def test_exploration_service_wires_lazy_dependencies_once(
         "query_router": object(),
         "sqlite_store": object(),
         "relation_query_service": object(),
+        "vault_dir": Path(".data-test") / "coverage-contract-vault",
     }
+    markdown_store = SimpleNamespace(vault_dir=dependencies["vault_dir"])
     exploration_service = object()
 
     with (
@@ -137,6 +139,11 @@ def test_exploration_service_wires_lazy_dependencies_once(
             server,
             "get_relation_query_service",
             return_value=dependencies["relation_query_service"],
+        ),
+        patch.object(
+            server,
+            "get_markdown_store",
+            return_value=markdown_store,
         ),
         patch(
             "src.relations.exploration_service.ExplorationService",
@@ -255,14 +262,19 @@ async def test_search_semantic_strategies_are_constructed_offline(
 
 
 @pytest.mark.asyncio
-async def test_get_entry_degrades_on_unexpected_markdown_error():
+async def test_get_entry_degrades_on_unexpected_markdown_error(tmp_path: Path):
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    entry_path = vault_dir / "offline.md"
+    entry_path.write_text("# Offline", encoding="utf-8")
     sqlite_store = MagicMock()
     sqlite_store.query_by_id.return_value = {
         "knowledge_id": 1,
         "title": "Offline entry",
-        "file_path": "vault/offline.md",
+        "file_path": str(entry_path),
     }
     markdown_store = MagicMock()
+    markdown_store.vault_dir = vault_dir
     markdown_store.load.side_effect = RuntimeError("decode failed")
 
     with (
@@ -279,7 +291,7 @@ async def test_get_entry_degrades_on_unexpected_markdown_error():
     ):
         result = await tools.get_entry("1")
 
-    assert result["content"] == "(读取失败)"
+    assert result["content"] == "(内容不可用)"
 
 
 @pytest.mark.asyncio
@@ -292,7 +304,7 @@ async def test_archive_url_degrades_on_workflow_exception():
 
     assert result == {
         "success": False,
-        "error": "归档异常: workflow unavailable",
+        "error": "归档异常",
     }
 
 
@@ -344,7 +356,7 @@ async def test_archive_text_degrades_on_processor_exception():
 
     assert result == {
         "success": False,
-        "error": "归档异常: parse failed",
+        "error": "归档异常",
     }
 
 
@@ -454,6 +466,55 @@ async def test_relation_tools_translate_service_value_errors(
     assert result == {"error": "invalid offline request"}
 
 
+@pytest.mark.parametrize(
+    ("handler_name", "getter_name", "service_method", "kwargs"),
+    [
+        (
+            "query_subgraph",
+            "get_relation_query_service",
+            "query_subgraph",
+            {"knowledge_id": "1"},
+        ),
+        (
+            "explain_relation",
+            "get_relation_query_service",
+            "explain_relation",
+            {"source_knowledge_id": "1", "target_knowledge_id": "2"},
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_relation_tools_redact_local_evidence_payloads(
+    handler_name,
+    getter_name,
+    service_method,
+    kwargs,
+):
+    result_object = MagicMock()
+    result_object.to_dict.return_value = {
+        "knowledge_id": 1,
+        "edges": [
+            {
+                "evidence_payload": {
+                    "source_file_path": r"C:\\Users\\audit\\secret.md",
+                    "target_file_path": r"\\\\server\\private\\target.md",
+                    "source_url": "file:///C:/Users/audit/source.md",
+                }
+            }
+        ],
+    }
+    service = MagicMock()
+    getattr(service, service_method).return_value = result_object
+
+    with patch.object(tools, getter_name, return_value=service):
+        result = await getattr(tools, handler_name)(**kwargs)
+
+    payload = result["edges"][0]["evidence_payload"]
+    assert "source_file_path" not in payload
+    assert "target_file_path" not in payload
+    assert payload["source_url"] == ""
+
+
 @pytest.mark.asyncio
 async def test_contrast_rejects_empty_first_topic():
     assert await tools.contrast(topic_a=" ", topic_b="B") == {
@@ -462,14 +523,19 @@ async def test_contrast_rejects_empty_first_topic():
 
 
 @pytest.mark.asyncio
-async def test_entry_resource_handles_empty_and_failed_markdown():
+async def test_entry_resource_handles_empty_and_failed_markdown(tmp_path: Path):
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    entry_path = vault_dir / "offline.md"
+    entry_path.write_text("# Offline", encoding="utf-8")
     sqlite_store = MagicMock()
     sqlite_store.query_by_id.return_value = {
         "knowledge_id": 1,
         "title": "Offline entry",
-        "file_path": "vault/offline.md",
+        "file_path": str(entry_path),
     }
     markdown_store = MagicMock()
+    markdown_store.vault_dir = vault_dir
 
     with (
         patch.object(
@@ -484,13 +550,13 @@ async def test_entry_resource_handles_empty_and_failed_markdown():
         ),
     ):
         markdown_store.load.return_value = SimpleNamespace(content="")
-        empty_result = await resources.get_entry_content("1")
+        with pytest.raises(ValueError, match="条目内容不可用"):
+            await resources.get_entry_content("1")
 
         markdown_store.load.side_effect = RuntimeError("decode failed")
-        failed_result = await resources.get_entry_content("1")
-
-    assert "(内容不可用)" in empty_result
-    assert "(读取失败: decode failed)" in failed_result
+        with pytest.raises(ValueError, match="条目内容不可用") as exc_info:
+            await resources.get_entry_content("1")
+        assert "decode failed" not in str(exc_info.value)
 
 
 def test_utils_cover_summary_and_url_parse_degradation():

@@ -352,6 +352,125 @@ def test_find_bridges_discloses_truncated_subgraph(exploration_service):
     assert any("候选集合和未发现结论均不完整" in note for note in result.limitation_notes)
 
 
+def test_bridge_and_contrast_exclude_unsafe_relation_paths(tmp_path: Path):
+    """公开 relation locator 不能经过 vault 外的中间条目。"""
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    alpha_path = vault_dir / "alpha.md"
+    delta_path = vault_dir / "delta.md"
+    alpha_path.write_text("# Alpha", encoding="utf-8")
+    delta_path.write_text("# Delta", encoding="utf-8")
+    outside_path = tmp_path / "outside.md"
+    outside_path.write_text("# Private", encoding="utf-8")
+    edge_alpha_outside = RelationRecord(
+        source_knowledge_id=1,
+        target_knowledge_id=2,
+        relation_type=RelationType.REFERENCES,
+        relation_source_type=RelationSourceType.MANUAL,
+    )
+    edge_outside_delta = RelationRecord(
+        source_knowledge_id=2,
+        target_knowledge_id=3,
+        relation_type=RelationType.REFERENCES,
+        relation_source_type=RelationSourceType.MANUAL,
+    )
+
+    class UnsafePathRelationService:
+        def query_subgraph(self, seed_knowledge_id: int, depth: int = 2, **kwargs):
+            return RelationSubgraphResult(
+                seed_knowledge_id=seed_knowledge_id,
+                max_depth=depth,
+                nodes=[
+                    RelationSubgraphNode(knowledge_id=1, depth=0),
+                    RelationSubgraphNode(knowledge_id=2, depth=1),
+                    RelationSubgraphNode(knowledge_id=3, depth=2),
+                ],
+                edges=[edge_alpha_outside, edge_outside_delta],
+            )
+
+        def explain_relation(
+            self,
+            source_knowledge_id: int,
+            target_knowledge_id: int,
+            max_depth: int = 2,
+        ):
+            return RelationExplanationResult(
+                source_knowledge_id=source_knowledge_id,
+                target_knowledge_id=target_knowledge_id,
+                found=True,
+                explanation_type="path",
+                hops=2,
+                path=[edge_alpha_outside, edge_outside_delta],
+                supporting_relations=[edge_alpha_outside, edge_outside_delta],
+            )
+
+    query_router = StubQueryRouter(
+        {
+            "Topic A": [
+                SearchResult(
+                    knowledge_id=1,
+                    title="Alpha",
+                    score=0.9,
+                    highlight="Alpha",
+                    metadata={"tags": "shared"},
+                )
+            ],
+            "Topic B": [
+                SearchResult(
+                    knowledge_id=3,
+                    title="Delta",
+                    score=0.8,
+                    highlight="Delta",
+                    metadata={"tags": "shared"},
+                )
+            ],
+        }
+    )
+    sqlite_store = StubSQLiteStore(
+        {
+            1: {
+                "knowledge_id": 1,
+                "title": "Alpha",
+                "summary_one_sentence": "Alpha",
+                "tags": "shared",
+                "file_path": str(alpha_path),
+            },
+            2: {
+                "knowledge_id": 2,
+                "title": "Private",
+                "summary_one_sentence": "Private",
+                "tags": "private",
+                "file_path": str(outside_path),
+            },
+            3: {
+                "knowledge_id": 3,
+                "title": "Delta",
+                "summary_one_sentence": "Delta",
+                "tags": "shared",
+                "file_path": str(delta_path),
+            },
+        }
+    )
+    service = ExplorationService(
+        query_router=query_router,
+        sqlite_store=sqlite_store,
+        relation_query_service=UnsafePathRelationService(),
+        vault_dir=vault_dir,
+    )
+
+    bridge = service.find_bridges(seed_knowledge_id=1, top_k=3, max_depth=2)
+    contrast = service.contrast("Topic A", "Topic B", top_k=2)
+
+    assert bridge.found is False
+    assert bridge.items == []
+    assert bridge.subgraph_edge_count == 0
+    assert any("关系边未通过 vault 文件边界校验" in note for note in bridge.limitation_notes)
+    relation_summary = contrast.comparison_dimensions["relation_graph_signal"]
+    assert relation_summary["connected_candidate_pairs_count"] == 0
+    assert contrast.comparison_dimensions["provenance"]["relation_graph_signal"] == []
+    assert any("候选关系路径未通过 vault 文件边界校验" in note for note in contrast.limitation_notes)
+
+
 def test_timeline_of_sorts_by_archived_at(exploration_service):
     result = exploration_service.timeline_of(topic="时间线", top_k=5, sort_order="asc")
 
@@ -619,6 +738,7 @@ def test_timeline_of_cites_persisted_legacy_frontmatter_field(
             }
         ),
         relation_query_service=StubRelationQueryService(),
+        vault_dir=tmp_path,
     )
 
     result = service.timeline_of(topic="持久旧字段", top_k=1, sort_order="asc")
@@ -660,6 +780,7 @@ def test_timeline_of_degrades_when_frontmatter_is_unreadable(tmp_path):
             }
         ),
         relation_query_service=StubRelationQueryService(),
+        vault_dir=tmp_path,
     )
 
     result = service.timeline_of(topic="损坏旧字段", top_k=1, sort_order="asc")
@@ -705,6 +826,52 @@ def test_timeline_of_desc_keeps_missing_time_items_last():
     result = service.timeline_of(topic="时间线", top_k=5, sort_order="desc")
 
     assert [item.knowledge_id for item in result.items] == [1, 2]
+
+
+def test_timeline_without_persisted_time_uses_honest_entry_fallback():
+    query_router = StubQueryRouter(
+        {
+            "无时间": [
+                SearchResult(
+                    knowledge_id=7,
+                    title="No Time",
+                    score=0.8,
+                    highlight="没有时间字段",
+                    metadata={
+                        "source_url": "file:///C:/Users/fixture/no-time.md",
+                    },
+                ),
+            ]
+        }
+    )
+    service = ExplorationService(
+        query_router=query_router,
+        sqlite_store=StubSQLiteStore(
+            {
+                7: {
+                    "knowledge_id": 7,
+                    "title": "No Time",
+                    "source_url": "file:///C:/Users/fixture/no-time.md",
+                    "archived_at": "",
+                }
+            }
+        ),
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    result = service.timeline_of(topic="无时间", top_k=1, sort_order="asc")
+    public = result.to_dict()
+    item = public["items"][0]
+
+    assert result.inferred_time_field == "unavailable"
+    assert item["time_source"] == "unavailable"
+    assert item["time_precision"] == "unavailable"
+    assert item["time_source_field"] == ""
+    assert item["time_value"] == ""
+    assert item["citation_locator"] == "pkv://entries/7"
+    assert item["source_url"] == ""
+    assert item["source"] == "pkv://entries/7"
+    assert any("不作为精确时间点" in note for note in public["limitation_notes"])
 
 
 def test_timeline_of_sorting_handles_parseable_unparseable_and_missing_time():
@@ -866,7 +1033,7 @@ def test_exploration_helper_fallback_branches(
         == 0.0
     )
     assert exploration_service._token_overlap(set(), {"alpha"}) == 0.0
-    assert exploration_service._infer_timeline_source([], []) == "archived_at"
+    assert exploration_service._infer_timeline_source([], []) == "unavailable"
     assert (
         exploration_service._infer_timeline_source(
             [
@@ -874,13 +1041,13 @@ def test_exploration_helper_fallback_branches(
                     knowledge_id=9,
                     title="NoTime",
                     time_value="",
-                    time_source="archived_at",
+                    time_source="unavailable",
                     retrieval_score=0.1,
                 )
             ],
             ["event_time", "published_at", "archived_at"],
         )
-        == "archived_at"
+        == "unavailable"
     )
     assert ExplorationService._parse_time_sort_key("2026-03-01T08:00:00Z")[:2] == (0, 0)
 

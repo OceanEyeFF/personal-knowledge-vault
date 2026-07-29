@@ -37,6 +37,7 @@ class StubSQLiteStore:
 
 class StubMarkdownStore:
     def __init__(self, content_map=None, should_fail: bool = False):
+        self.vault_dir = Path("/")
         self.content_map = {
             Path(file_path): content for file_path, content in (content_map or {}).items()
         }
@@ -50,6 +51,14 @@ class StubMarkdownStore:
             source_type="generic",
             content=self.content_map[file_path],
         )
+
+
+@pytest.fixture(autouse=True)
+def allow_stub_markdown_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "src.relations.evidence_service.resolve_vault_file_path",
+        lambda file_path, vault_dir: Path(file_path),
+    )
 
 
 class StubRelationQueryService:
@@ -280,20 +289,20 @@ def test_exploration_helper_paths_cover_validation_and_fallbacks() -> None:
         {2: {}},
     )
     assert missing_bridge_score == 0.0
-    assert service._infer_timeline_source([], []) == "archived_at"
+    assert service._infer_timeline_source([], []) == "unavailable"
     inferred_source = service._infer_timeline_source(
         [
             TimelinePoint(
                 knowledge_id=1,
                 title="NoTime",
                 time_value="",
-                time_source="event_time",
+                time_source="unavailable",
                 retrieval_score=0.1,
             )
         ],
         ["event_time", "published_at", "archived_at"],
     )
-    assert inferred_source == "archived_at"
+    assert inferred_source == "unavailable"
     assert service._parse_time_sort_key("2026-03-01T10:00:00Z")[:2] == (0, 0)
 
     explanation = RelationExplanationResult(

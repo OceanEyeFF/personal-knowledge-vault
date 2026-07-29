@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from typing import Optional
+from urllib.parse import unquote, urlparse
 
 import frontmatter
 
@@ -70,7 +71,7 @@ def resolve_citation_source(
 ) -> str:
     """Choose a remote-usable source without exposing a local file path."""
     del file_path
-    return str(source_url or "").strip() or build_entry_locator(knowledge_id)
+    return sanitize_public_source_url(source_url) or build_entry_locator(knowledge_id)
 
 
 _LOCAL_PATH_KEYS = {
@@ -80,24 +81,94 @@ _LOCAL_PATH_KEYS = {
 }
 
 
-def _is_absolute_path_text(value: str) -> bool:
-    return PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
+def is_local_reference(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    decoded = unquote(text)
+    if urlparse(decoded).scheme.lower() == "file":
+        return True
+    windows_path = PureWindowsPath(decoded)
+    return (
+        PurePosixPath(decoded).is_absolute()
+        or windows_path.is_absolute()
+        # Windows root-relative (\\Windows\\...) and NT namespace paths
+        # (\\??\\C:\\...) have no drive, so is_absolute() alone misses them.
+        or bool(windows_path.root)
+    )
+
+
+def sanitize_public_source_url(value: Any) -> str:
+    """Return a remote-safe source URL, clearing filesystem-backed references."""
+    text = str(value or "").strip()
+    if not text or is_local_reference(text):
+        return ""
+    return text
+
+
+def _fallback_knowledge_id(value: dict[str, Any]) -> Optional[int]:
+    for key in ("knowledge_id", "source_knowledge_id", "target_knowledge_id"):
+        raw_id = value.get(key)
+        try:
+            knowledge_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if knowledge_id > 0:
+            return knowledge_id
+    return None
+
+
+def _sanitize_public_dict_key(key: Any, existing: dict[Any, Any]) -> Any:
+    """Redact filesystem-valued dynamic keys without silently overwriting peers."""
+    sanitized_key = (
+        "[redacted-local-reference]"
+        if isinstance(key, str) and is_local_reference(key)
+        else key
+    )
+    if sanitized_key not in existing:
+        return sanitized_key
+    if not isinstance(sanitized_key, str):
+        return sanitized_key
+
+    base_key = sanitized_key
+    index = 2
+    while sanitized_key in existing:
+        sanitized_key = f"{base_key}#{index}"
+        index += 1
+    return sanitized_key
 
 
 def sanitize_public_evidence(value: Any) -> Any:
     """Recursively remove local filesystem locations from public evidence."""
     if isinstance(value, dict):
-        return {
-            key: sanitize_public_evidence(item)
-            for key, item in value.items()
-            if key not in _LOCAL_PATH_KEYS
-        }
+        knowledge_id = _fallback_knowledge_id(value)
+        sanitized: dict[Any, Any] = {}
+        for key, item in value.items():
+            if key in _LOCAL_PATH_KEYS:
+                continue
+            public_key = _sanitize_public_dict_key(key, sanitized)
+            if key == "source_url":
+                sanitized[public_key] = sanitize_public_source_url(item)
+                continue
+            if (
+                key in {"source", "citation_source"}
+                and isinstance(item, str)
+                and is_local_reference(item)
+            ):
+                sanitized[public_key] = (
+                    build_entry_locator(knowledge_id)
+                    if knowledge_id is not None
+                    else "[redacted-local-reference]"
+                )
+                continue
+            sanitized[public_key] = sanitize_public_evidence(item)
+        return sanitized
     if isinstance(value, list):
         return [sanitize_public_evidence(item) for item in value]
     if isinstance(value, tuple):
         return [sanitize_public_evidence(item) for item in value]
-    if isinstance(value, str) and _is_absolute_path_text(value):
-        return "[redacted-local-path]"
+    if isinstance(value, str) and is_local_reference(value):
+        return "[redacted-local-reference]"
     return value
 
 
@@ -106,23 +177,59 @@ def serialize_relation_evidence(record: Any) -> dict[str, Any]:
     return sanitize_public_evidence(record.to_dict())
 
 
+def resolve_vault_file_path(file_path: Any, vault_dir: Any) -> Path:
+    """Resolve one regular file and prove that it remains inside the vault."""
+    raw_path = str(file_path or "").strip()
+    if not raw_path or not vault_dir:
+        raise ValueError("条目文件不可用")
+    if raw_path.startswith(("\\\\", "//")):
+        raise ValueError("条目文件不可用")
+
+    try:
+        resolved_vault = Path(vault_dir).resolve(strict=True)
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = resolved_vault / candidate
+        resolved_file = candidate.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        raise ValueError("条目文件不可用") from None
+
+    if not resolved_vault.is_dir():
+        raise ValueError("条目文件不可用")
+    try:
+        resolved_file.relative_to(resolved_vault)
+    except ValueError:
+        raise ValueError("条目文件不可用") from None
+    if resolved_file == resolved_vault or not resolved_file.is_file():
+        raise ValueError("条目文件不可用")
+    return resolved_file
+
+
 def read_persisted_metadata_field(
     entry: dict[str, Any],
     field_name: str,
+    vault_dir: Any = None,
 ) -> tuple[bool, Any, str]:
     """Read a metadata field only from a persistent entry or Markdown source."""
+    resolved_path: Optional[Path] = None
+    if vault_dir:
+        try:
+            resolved_path = resolve_vault_file_path(
+                entry.get("file_path"),
+                vault_dir,
+            )
+        except Exception:
+            return False, None, ""
+
     if field_name in entry and entry.get(field_name) not in (None, ""):
         return True, entry[field_name], "knowledge_items"
 
-    file_path = str(entry.get("file_path") or "").strip()
-    if file_path:
-        path = Path(file_path)
+    if resolved_path is not None:
         try:
-            if path.is_file():
-                post = frontmatter.load(path)
-                value = post.metadata.get(field_name)
-                if value not in (None, ""):
-                    return True, value, "markdown_frontmatter"
+            post = frontmatter.load(resolved_path)
+            value = post.metadata.get(field_name)
+            if value not in (None, ""):
+                return True, value, "markdown_frontmatter"
         except Exception:
             return False, None, ""
     return False, None, ""

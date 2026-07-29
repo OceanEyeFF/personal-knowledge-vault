@@ -43,6 +43,7 @@ class StubSQLiteStore:
 
 class StubMarkdownStore:
     def __init__(self, content_map):
+        self.vault_dir = Path("/")
         self.content_map = {
             Path(file_path): content for file_path, content in content_map.items()
         }
@@ -53,6 +54,14 @@ class StubMarkdownStore:
             source_type="generic",
             content=self.content_map[file_path],
         )
+
+
+@pytest.fixture(autouse=True)
+def allow_stub_markdown_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "src.relations.evidence_service.resolve_vault_file_path",
+        lambda file_path, vault_dir: Path(file_path),
+    )
 
 
 class StubRelationQueryService:

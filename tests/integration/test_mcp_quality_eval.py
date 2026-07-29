@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -174,6 +175,262 @@ def test_phase_b_citations_resolve_and_runtime_contracts_execute(
             assert any(locator.startswith("pkv://relations/") for locator in locators)
             for locator in locators:
                 assert await scenario.read_resource(locator)
+
+    asyncio.run(exercise())
+
+
+def test_runtime_contract_rejects_readable_but_mismatched_locators() -> None:
+    wrong_chunk_locator = "pkv://entries/2/chunks/201"
+    wrong_chunk_resource = {
+        "knowledge_id": 2,
+        "chunk_id": 201,
+        "chunk_index": 0,
+        "chunk_text": "来自另一条目的真实 chunk",
+        "citation_locator": wrong_chunk_locator,
+    }
+    OfflineMcpScenario._validate_resource_success(
+        wrong_chunk_locator,
+        wrong_chunk_resource,
+    )
+    with pytest.raises(AssertionError, match="entry locator 未指向所在 Tool 条目"):
+        OfflineMcpScenario._validate_collect_contract(
+            {
+                "evidence": [
+                    {
+                        "knowledge_id": 1,
+                        "chunk_id": 101,
+                        "chunk_index": 0,
+                        "chunk_text": "应属于条目 1 的 chunk",
+                        "citation_locator": wrong_chunk_locator,
+                    }
+                ]
+            },
+            {wrong_chunk_locator: wrong_chunk_resource},
+        )
+
+    wrong_relation_locator = "pkv://relations/8"
+    wrong_relation_resource = {
+        "relation_id": 8,
+        "source_knowledge_id": 11,
+        "target_knowledge_id": 12,
+        "relation_type": "mentions",
+        "relation_source_type": "backfill",
+        "citation_locator": wrong_relation_locator,
+    }
+    OfflineMcpScenario._validate_resource_success(
+        wrong_relation_locator,
+        wrong_relation_resource,
+    )
+    with pytest.raises(AssertionError, match="relation locator 未指向所在 Tool 关系边"):
+        OfflineMcpScenario._assert_relation_locator_matches(
+            {
+                "relation_id": 7,
+                "source_knowledge_id": 11,
+                "target_knowledge_id": 12,
+                "relation_type": "mentions",
+                "relation_source_type": "backfill",
+                "citation_locator": wrong_relation_locator,
+            },
+            {wrong_relation_locator: wrong_relation_resource},
+        )
+
+
+def test_timeline_unavailable_and_local_sources_are_safe_through_fastmcp(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        with OfflineMcpScenario(tmp_path / "unavailable-local-source") as scenario:
+            await scenario.registered_tools()
+            timeline = await scenario.call_tool(
+                "timeline_of",
+                {
+                    "topic": "__contract_unavailable__",
+                    "top_k": 1,
+                    "sort_order": "asc",
+                },
+            )
+            item = timeline["items"][0]
+            assert item["time_source"] == "unavailable"
+            assert item["time_precision"] == "unavailable"
+            assert item["time_source_field"] == ""
+            assert item["time_value"] == ""
+            assert item["source_url"] == ""
+            assert item["source"] == item["citation_locator"]
+            assert item["citation_locator"] == (
+                f"pkv://entries/{scenario.aliases['no_time_id']}"
+            )
+            assert await scenario.read_resource(item["citation_locator"])
+            assert any(
+                "不作为精确时间点" in note
+                for note in timeline["limitation_notes"]
+            )
+
+            collect = await scenario.call_tool(
+                "collect_evidence",
+                {
+                    "question": "chunk-alpha-delta 本地 chat 来源安全检查",
+                    "top_k": 3,
+                    "relation_max_depth": 2,
+                    "include_chunks": True,
+                },
+            )
+            contrast = await scenario.call_tool(
+                "contrast",
+                {"topic_a": "Topic A", "topic_b": "Topic B", "top_k": 5},
+            )
+            scenario._assert_no_absolute_paths(collect)
+            scenario._assert_no_absolute_paths(contrast)
+            assert "[redacted-local-reference]" in json.dumps(
+                collect,
+                ensure_ascii=False,
+            )
+            assert "[redacted-local-reference]" in json.dumps(
+                contrast,
+                ensure_ascii=False,
+            )
+
+            for output in (collect, contrast):
+                for locator in scenario._citation_locators(output):
+                    assert await scenario.read_resource(locator)
+
+            for alias in (
+                "gamma_id",
+                "delta_id",
+                "version_base_id",
+                "no_time_id",
+            ):
+                metadata = await scenario.read_resource(
+                    f"pkv://entries/{scenario.aliases[alias]}/metadata"
+                )
+                assert metadata["source_url"] == ""
+                scenario._assert_no_absolute_paths(metadata)
+
+            relation = next(
+                edge
+                for edge in scenario.query_service.query_subgraph(
+                    scenario.aliases["alpha_id"],
+                    depth=2,
+                ).edges
+                if edge.relation_id is not None
+            )
+            relation_resource = await scenario.read_resource(
+                f"pkv://relations/{relation.relation_id}"
+            )
+            scenario._assert_no_absolute_paths(relation_resource)
+            security_fixture = relation_resource["evidence_payload"].get(
+                "security_fixture"
+            )
+            assert security_fixture
+            assert security_fixture["source_url"] == ""
+            assert security_fixture["raw_target"] == "[redacted-local-reference]"
+            assert security_fixture["origin"] == "[redacted-local-reference]"
+            assert security_fixture["nested"]["raw_target"] == (
+                "[redacted-local-reference]"
+            )
+
+    asyncio.run(exercise())
+
+
+def test_entry_resources_enforce_vault_boundary_and_real_errors(
+    tmp_path: Path,
+) -> None:
+    async def assert_rejected_without_path(
+        scenario: OfflineMcpScenario,
+        locator: str,
+        forbidden_paths: list[Path],
+    ) -> None:
+        with pytest.raises(Exception) as exc_info:
+            await scenario.read_resource(locator)
+        message = str(exc_info.value)
+        for forbidden in forbidden_paths:
+            assert str(forbidden) not in message
+
+    async def exercise() -> None:
+        with OfflineMcpScenario(tmp_path / "vault-boundary") as scenario:
+            await scenario.registered_tools()
+
+            outside_file = scenario.resource_boundary_fixtures["outside_path"]
+            missing_file = scenario.resource_boundary_fixtures["missing_path"]
+            for locator in scenario.resource_boundary_fixtures[
+                "rejected_locators"
+            ]:
+                await assert_rejected_without_path(
+                    scenario,
+                    locator,
+                    [outside_file, scenario.vault_dir, missing_file],
+                )
+
+            for knowledge_id in scenario.resource_boundary_fixtures[
+                "unsafe_entry_ids"
+            ]:
+                detail = await scenario.call_tool(
+                    "get_entry",
+                    {"knowledge_id": str(knowledge_id)},
+                )
+                assert detail["content"] == "(内容不可用)"
+                scenario._assert_no_absolute_paths(detail)
+                assert "secret" not in json.dumps(detail, ensure_ascii=False)
+
+            invalid = await scenario.call_tool(
+                "get_entry",
+                {"knowledge_id": str(outside_file)},
+            )
+            assert invalid == {"error": "无效的 knowledge_id，需要数字"}
+            scenario._assert_no_absolute_paths(invalid)
+
+            collected = await scenario.call_tool(
+                "collect_evidence",
+                {
+                    "question": "__contract_outside_entry__",
+                    "top_k": 1,
+                    "relation_max_depth": 1,
+                    "include_chunks": False,
+                },
+            )
+            assert collected["found"] is False
+            assert collected["evidence"] == []
+            assert any(
+                "vault 文件边界校验" in note
+                for note in collected["limitation_notes"]
+            )
+            scenario._assert_no_absolute_paths(collected)
+
+            chunk_collected = await scenario.call_tool(
+                "collect_evidence",
+                {
+                    "question": "__contract_outside_chunk__",
+                    "top_k": 1,
+                    "relation_max_depth": 1,
+                    "include_chunks": True,
+                },
+            )
+            assert chunk_collected["found"] is False
+            assert chunk_collected["evidence"] == []
+            assert "CHUNK_SECRET" not in json.dumps(
+                chunk_collected,
+                ensure_ascii=False,
+            )
+            assert any(
+                "chunk 检索候选未通过 vault 文件边界校验" in note
+                for note in chunk_collected["limitation_notes"]
+            )
+            scenario._assert_no_absolute_paths(chunk_collected)
+
+            alpha_id = scenario.aliases["alpha_id"]
+            assert await scenario.read_resource(f"pkv://entries/{alpha_id}")
+            detail = await scenario.call_tool(
+                "get_entry",
+                {"knowledge_id": str(alpha_id)},
+            )
+            assert "# Alpha" in detail["content"]
+            chunk = await scenario.read_resource(
+                f"pkv://entries/{alpha_id}/chunks/101"
+            )
+            assert chunk["knowledge_id"] == alpha_id
+            metadata = await scenario.read_resource(
+                f"pkv://entries/{alpha_id}/metadata/event_time"
+            )
+            assert metadata["field"] == "event_time"
 
     asyncio.run(exercise())
 

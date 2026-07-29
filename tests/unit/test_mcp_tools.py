@@ -252,11 +252,19 @@ class TestGetEntry:
     """get_entry Tool 测试。"""
 
     @pytest.mark.asyncio
-    async def test_found_entry(self):
+    async def test_found_entry(self, tmp_path: Path):
         """正常查找条目应返回完整信息。"""
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
+        entry_path = vault_dir / "entry.md"
+        entry_path.write_text("# entry\n", encoding="utf-8")
         mock_store = MagicMock()
-        mock_store.query_by_id.return_value = MOCK_ENTRY_DB
+        mock_store.query_by_id.return_value = {
+            **MOCK_ENTRY_DB,
+            "file_path": str(entry_path),
+        }
         mock_md_store = MagicMock()
+        mock_md_store.vault_dir = vault_dir
         mock_md_store.load.return_value = MockEntry()
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
@@ -291,11 +299,17 @@ class TestGetEntry:
         assert "error" in result
 
     @pytest.mark.asyncio
-    async def test_markdown_not_found(self):
+    async def test_markdown_not_found(self, tmp_path: Path):
         """Markdown 文件不存在应优雅降级。"""
+        vault_dir = tmp_path / "vault"
+        vault_dir.mkdir()
         mock_store = MagicMock()
-        mock_store.query_by_id.return_value = MOCK_ENTRY_DB
+        mock_store.query_by_id.return_value = {
+            **MOCK_ENTRY_DB,
+            "file_path": str(vault_dir / "missing.md"),
+        }
         mock_md_store = MagicMock()
+        mock_md_store.vault_dir = vault_dir
         mock_md_store.load.side_effect = FileNotFoundError("文件不存在")
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
@@ -304,7 +318,7 @@ class TestGetEntry:
             result = await get_entry(knowledge_id="1")
 
         assert result["title"] == "测试微信文章"
-        assert "不存在" in result["content"]
+        assert result["content"] == "(内容不可用)"
 
 
 class TestListTags:
@@ -339,6 +353,19 @@ class TestListTags:
 
         assert result["total_tags"] == 0
         assert result["tags"] == []
+
+    @pytest.mark.asyncio
+    async def test_list_tags_redacts_local_values(self):
+        mock_store = MagicMock()
+        mock_store.get_all_tags_with_count.return_value = [
+            {"name": r"\Windows\System32\private", "count": 1},
+        ]
+
+        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store):
+            from src.mcp.tools import list_tags
+            result = await list_tags()
+
+        assert result["tags"][0]["name"] == "[redacted-local-reference]"
 
 
 class TestListEntries:
@@ -422,6 +449,20 @@ class TestGetStats:
 
         assert result["total_entries"] == 100
 
+    @pytest.mark.asyncio
+    async def test_get_stats_redacts_local_values(self):
+        mock_store = MagicMock()
+        mock_store.get_statistics.return_value = {
+            "total_entries": 1,
+            "by_source_type": [(r"\??\C:\private", 1)],
+        }
+
+        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store):
+            from src.mcp.tools import get_stats
+            result = await get_stats()
+
+        assert result["by_source_type"][0][0] == "[redacted-local-reference]"
+
 
 # ============================================================
 # archive_url Tool 测试 (M9 新增)
@@ -483,13 +524,15 @@ class TestArchiveUrl:
 
         assert result["success"] is True
         assert result["knowledge_id"] == 42
+        assert result["entry_locator"] == "pkv://entries/42"
+        assert "file_path" not in result
 
     @pytest.mark.asyncio
     async def test_archive_failure(self):
         """归档失败应返回错误信息。"""
         mock_result = MagicMock()
         mock_result.success = False
-        mock_result.errors = ["抓取失败: 连接超时"]
+        mock_result.errors = [r"抓取失败: C:\\Users\\audit\\private.md"]
 
         from unittest.mock import AsyncMock
         with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
@@ -501,7 +544,8 @@ class TestArchiveUrl:
             result = await archive_url(url="https://example.com/timeout")
 
         assert result["success"] is False
-        assert "抓取失败" in result["error"]
+        assert result["error"] == "归档失败"
+        assert "C:\\Users\\audit" not in result["error"]
 
 
 # ============================================================
@@ -560,6 +604,8 @@ class TestArchiveText:
 
         assert result["success"] is True
         assert result["knowledge_id"] == 43
+        assert result["entry_locator"] == "pkv://entries/43"
+        assert "file_path" not in result
 
     @pytest.mark.asyncio
     async def test_custom_title_override(self):

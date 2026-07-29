@@ -15,7 +15,6 @@ MCP Tool handler 实现
 """
 
 import logging
-from pathlib import Path
 from typing import Optional
 
 import anyio
@@ -34,9 +33,24 @@ from src.mcp.utils import (
     parse_tags_string, serialize_search_result, clamp_param,
     validate_url_security, validate_text_length,
 )
+from src.relations.citations import (
+    build_entry_locator,
+    resolve_vault_file_path,
+    sanitize_public_evidence,
+    sanitize_public_source_url,
+)
 from src.utils.config import get_config
 
 logger = logging.getLogger("pkv.mcp")
+
+
+def _public_entry_locator(knowledge_id: object) -> str:
+    """Return a stable public entry locator without revealing its vault path."""
+    try:
+        parsed_id = int(knowledge_id)
+    except (TypeError, ValueError):
+        return ""
+    return build_entry_locator(parsed_id) if parsed_id > 0 else ""
 
 
 # ============================================================
@@ -102,11 +116,11 @@ async def search_knowledge(
                 if tag in parse_tags_string(r.metadata.get("tags", ""))
             ]
 
-        return {
+        return sanitize_public_evidence({
             "total": len(results),
             "strategy_used": strategy,
             "results": [serialize_search_result(r) for r in results],
-        }
+        })
 
     result = await anyio.to_thread.run_sync(_impl)
     logger.info(f"search_knowledge: 返回 {result.get('total', 0)} 条结果")
@@ -131,12 +145,12 @@ async def get_entry(knowledge_id: str) -> dict:
         try:
             kid = int(knowledge_id)
         except (ValueError, TypeError):
-            return {"error": f"无效的 knowledge_id: {knowledge_id}，需要数字"}
+            return {"error": "无效的 knowledge_id，需要数字"}
 
         store = get_sqlite_store()
         entry = store.query_by_id(kid)
         if not entry:
-            return {"error": f"未找到条目: {knowledge_id}"}
+            return {"error": "未找到条目"}
 
         # 读取 Markdown 全文
         content = ""
@@ -144,17 +158,17 @@ async def get_entry(knowledge_id: str) -> dict:
         if file_path_str:
             try:
                 md_store = get_markdown_store()
-                # MarkdownStore.load() 接收 Path 对象
-                loaded_entry = md_store.load(Path(file_path_str))
+                safe_path = resolve_vault_file_path(
+                    file_path_str,
+                    md_store.vault_dir,
+                )
+                loaded_entry = md_store.load(safe_path)
                 content = loaded_entry.content if loaded_entry else ""
-            except FileNotFoundError:
-                logger.warning(f"Markdown 文件不存在: {file_path_str}")
-                content = "(文件不存在)"
-            except Exception as e:
-                logger.error(f"读取 Markdown 失败: {e}")
-                content = "(读取失败)"
+            except Exception:
+                logger.warning("get_entry 正文读取失败: knowledge_id=%s", kid)
+                content = "(内容不可用)"
 
-        return {
+        return sanitize_public_evidence({
             "knowledge_id": entry["knowledge_id"],
             "title": entry.get("title", ""),
             "abstract": entry.get("summary_one_sentence", ""),  # DB 无 abstract 列
@@ -163,11 +177,11 @@ async def get_entry(knowledge_id: str) -> dict:
             "tags": parse_tags_string(entry.get("tags", "")),
             "keywords": parse_tags_string(entry.get("keywords", "")),
             "source_type": entry.get("source_type", ""),
-            "source_url": entry.get("source_url", ""),
+            "source_url": sanitize_public_source_url(entry.get("source_url", "")),
             "archived_at": entry.get("archived_at", ""),
             "word_count": entry.get("word_count", 0),
             "content": content or "(内容不可用)",
-        }
+        })
 
     return await anyio.to_thread.run_sync(_impl)
 
@@ -186,10 +200,10 @@ async def list_tags() -> dict:
     def _impl():
         store = get_sqlite_store()
         tags = store.get_all_tags_with_count()
-        return {
+        return sanitize_public_evidence({
             "total_tags": len(tags),
             "tags": [{"name": t["name"], "count": t["count"]} for t in tags],
-        }
+        })
 
     return await anyio.to_thread.run_sync(_impl)
 
@@ -243,7 +257,7 @@ async def list_entries(
             tag=tag if tag else None,
         )
 
-        return {
+        return sanitize_public_evidence({
             "total": total,
             "page": _page,
             "per_page": _per_page,
@@ -260,7 +274,7 @@ async def list_entries(
                 }
                 for e in entries
             ],
-        }
+        })
 
     return await anyio.to_thread.run_sync(_impl)
 
@@ -278,7 +292,7 @@ async def get_stats() -> dict:
     """
     def _impl():
         store = get_sqlite_store()
-        return store.get_statistics()
+        return sanitize_public_evidence(store.get_statistics())
 
     return await anyio.to_thread.run_sync(_impl)
 
@@ -298,7 +312,7 @@ async def archive_url(url: str) -> dict:
         url: 要归档的网页链接（必须是 http/https，禁止内网地址）
 
     Returns:
-        归档结果，包含 knowledge_id、标题、文件路径等
+        归档结果，包含 knowledge_id、标题和可读取的 entry locator
     """
     # 前置安全验证
     valid, error = validate_url_security(url)
@@ -322,23 +336,25 @@ async def archive_url(url: str) -> dict:
                 result.data.get("knowledge_id", ""),
                 result.data.get("title", ""),
             )
-            return {
+            return sanitize_public_evidence({
                 "success": True,
                 "knowledge_id": result.data.get("knowledge_id", ""),
                 "title": result.data.get("title", ""),
-                "file_path": str(result.data.get("file_path", "")),
+                "entry_locator": _public_entry_locator(
+                    result.data.get("knowledge_id")
+                ),
                 "tags": result.data.get("tags", []),
                 "abstract": result.data.get("summary_one_sentence", ""),
-            }
+            })
         else:
             logger.warning(f"archive_url: 归档失败 url={url!r}, errors={result.errors}")
             return {
                 "success": False,
-                "error": result.errors[0] if result.errors else "归档失败",
+                "error": "归档失败",
             }
-    except Exception as e:
-        logger.error(f"archive_url 执行异常: {e}")
-        return {"success": False, "error": f"归档异常: {e}"}
+    except Exception:
+        logger.exception("archive_url 执行异常")
+        return {"success": False, "error": "归档异常"}
 
 
 # ============================================================
@@ -358,7 +374,7 @@ async def archive_text(text: str, title: str = "") -> dict:
         title: 可选标题（不提供则自动从文本提取）
 
     Returns:
-        归档结果，包含 knowledge_id、标题、文件路径等
+        归档结果，包含 knowledge_id、标题和可读取的 entry locator
     """
     # 前置安全验证：文本长度
     valid, error = validate_text_length(text)
@@ -397,22 +413,24 @@ async def archive_text(text: str, title: str = "") -> dict:
                 result.data.get("knowledge_id", ""),
                 result.data.get("title", entry.title),
             )
-            return {
+            return sanitize_public_evidence({
                 "success": True,
                 "knowledge_id": result.data.get("knowledge_id", ""),
                 "title": result.data.get("title", entry.title),
-                "file_path": str(result.data.get("file_path", "")),
+                "entry_locator": _public_entry_locator(
+                    result.data.get("knowledge_id")
+                ),
                 "tags": result.data.get("tags", entry.tags),
-            }
+            })
         else:
             logger.warning(f"archive_text: 归档失败 errors={result.errors}")
             return {
                 "success": False,
-                "error": result.errors[0] if result.errors else "归档失败",
+                "error": "归档失败",
             }
-    except Exception as e:
-        logger.error(f"archive_text 执行异常: {e}")
-        return {"success": False, "error": f"归档异常: {e}"}
+    except Exception:
+        logger.exception("archive_text 执行异常")
+        return {"success": False, "error": "归档异常"}
 
 
 # ============================================================
@@ -491,16 +509,16 @@ async def get_related(knowledge_id: str, limit: int = 5) -> dict:
                         "score": score,
                     })
 
-            return {
+            return sanitize_public_evidence({
                 "total": len(results),
                 "results": results,
-            }
+            })
 
-        except Exception as e:
-            logger.warning(f"get_related 向量搜索失败: {e}")
+        except Exception:
+            logger.exception("get_related 向量搜索失败")
             return {
                 "results": [],
-                "message": f"向量搜索不可用: {e}",
+                "message": "向量搜索不可用",
             }
 
     return await anyio.to_thread.run_sync(_impl)
@@ -551,7 +569,7 @@ async def query_subgraph(
         except ValueError as e:
             return {"error": str(e)}
 
-        return result.to_dict()
+        return sanitize_public_evidence(result.to_dict())
 
     return await anyio.to_thread.run_sync(_impl)
 
@@ -605,7 +623,7 @@ async def explain_relation(
         except ValueError as e:
             return {"error": str(e)}
 
-        return result.to_dict()
+        return sanitize_public_evidence(result.to_dict())
 
     return await anyio.to_thread.run_sync(_impl)
 
@@ -651,7 +669,7 @@ async def collect_evidence(
         except ValueError as e:
             return {"error": str(e)}
 
-        return result.to_dict()
+        return sanitize_public_evidence(result.to_dict())
 
     return await anyio.to_thread.run_sync(_impl)
 
@@ -690,7 +708,7 @@ async def find_bridges(
         except ValueError as e:
             return {"error": str(e)}
 
-        return result.to_dict()
+        return sanitize_public_evidence(result.to_dict())
 
     return await anyio.to_thread.run_sync(_impl)
 
@@ -728,7 +746,7 @@ async def timeline_of(
         except ValueError as e:
             return {"error": str(e)}
 
-        return result.to_dict()
+        return sanitize_public_evidence(result.to_dict())
 
     return await anyio.to_thread.run_sync(_impl)
 
@@ -767,6 +785,6 @@ async def contrast(
         except ValueError as e:
             return {"error": str(e)}
 
-        return result.to_dict()
+        return sanitize_public_evidence(result.to_dict())
 
     return await anyio.to_thread.run_sync(_impl)

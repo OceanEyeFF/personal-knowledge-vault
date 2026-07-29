@@ -454,8 +454,10 @@ async def test_scenario_2_archive_and_search(mcp_patches, archive_stub):
 
     assert archive_result["success"] is True
     assert archive_result.get("knowledge_id")
-    assert archive_result.get("file_path")
-    assert Path(archive_result["file_path"]).exists()
+    assert archive_result["entry_locator"] == (
+        f"pkv://entries/{archive_result['knowledge_id']}"
+    )
+    assert "file_path" not in archive_result
 
     assert_search_schema(search_result)
     titles = [r["title"] for r in search_result["results"]]

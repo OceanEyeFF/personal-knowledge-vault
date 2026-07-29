@@ -4,14 +4,15 @@
 >
 > **文档版本**: v1.1
 > **创建日期**: 2026-02-16
-> **最后更新**: 2026-03-31 (补充当前代码基线的推理型 MCP Tool 状态说明)
+> **最后更新**: 2026-07-29 (对齐 Phase B 引用与 Resource 合同)
 > **作者**: 幽浮喵 (猫娘工程师)
 > **目标版本**: v0.7.0
 
-> **当前代码补注（2026-03-31）**：
+> **当前代码补注（2026-07-29）**：
 > - 本文主体仍保留 `v0.7.0` 设计稿结构；当前代码真相以 `README.md`、`docs/overview/当前事实基线-2026-03.md` 与 `src/mcp/tools.py` 为准。
 > - 当前 MCP 代码基线已扩展为 `14` 个 Tool，其中 `query_subgraph`、`explain_relation`、`collect_evidence`、`find_bridges`、`timeline_of`、`contrast` 已落地。
 > - `find_bridges`、`timeline_of`、`contrast` 仍属于 `partial`：当前分别补入 `graph_bridge_signal`、`structured_time_fields`、`relation_graph_signal` 等受限推理信号。
+> - 当前已注册 `9` 条 Resource；chunk、metadata field 和 relation locator 都可直接读取。公开 MCP 的结构化字段不返回本机文件路径，写入 Tool 以 `pkv://entries/{id}` locator 回传新条目；entry Markdown 正文保持原文，不做内容级路径替换。
 
 ---
 
@@ -44,13 +45,19 @@ AI Agent 可调用的操作能力：
 | Tool 名称 | 描述 | 输入 | 输出 | 优先级 |
 |-----------|------|------|------|--------|
 | `search_knowledge` | 搜索知识库 | query, strategy?, top_k?, filters? | 搜索结果列表 | **P0** |
-| `get_entry` | 获取单条知识详情 | knowledge_id 或 file_path | 完整知识条目 | **P0** |
+| `get_entry` | 获取单条知识详情 | knowledge_id | 完整知识条目 | **P0** |
 | `list_tags` | 列出所有标签及统计 | - | 标签列表+计数 | **P0** |
 | `list_entries` | 浏览知识条目列表 | page?, per_page?, sort?, filter? | 条目列表 | **P1** |
 | `archive_url` | 归档网页 URL | url | 归档结果 | **P1** |
 | `archive_text` | 归档纯文本 | text, title? | 归档结果 | **P1** |
 | `get_stats` | 知识库统计信息 | - | 统计数据 | **P1** |
 | `get_related` | 获取关联知识 | knowledge_id, limit? | 关联条目列表 | **P2** |
+| `query_subgraph` | 查询关系子图 | knowledge_id, depth?, relation_types?, max_nodes? | 节点、边和截断状态 | **P1** |
+| `explain_relation` | 解释两条目关系 | source_knowledge_id, target_knowledge_id, max_depth? | 最短关系路径与证据 | **P1** |
+| `collect_evidence` | 聚合可引用证据 | question, top_k? | 文档/chunk/关系证据 | **P1** |
+| `find_bridges` | 发现局部图桥接候选 | seed_knowledge_id, top_k? | partial bridge 线索 | **P1** |
+| `timeline_of` | 查询弱时间线 | topic, top_k? | partial timeline 线索 | **P1** |
+| `contrast` | 比较两个主题 | topic_a, topic_b, top_k? | partial contrast 线索 | **P1** |
 
 ### 2.2 Resources（资源）
 
@@ -60,9 +67,13 @@ AI Agent 可读取的静态/动态数据：
 |-------------|------|------|--------|
 | `pkv://entries/{knowledge_id}` | 知识条目内容 | 动态 | **P0** |
 | `pkv://entries/{knowledge_id}/metadata` | 条目元数据 | 动态 | **P0** |
+| `pkv://entries/{knowledge_id}/chunks/{chunk_id}` | 精确持久 chunk | 动态 | **P1** |
+| `pkv://entries/{knowledge_id}/chunk-index/{chunk_index}` | 按条目内索引读取 chunk | 动态 | **P1** |
+| `pkv://entries/{knowledge_id}/metadata/{field_name}` | 精确时间元数据字段 | 动态 | **P1** |
+| `pkv://relations/{relation_id}` | 精确关系边 | 动态 | **P1** |
+| `pkv://relations/by-edge/{source_knowledge_id}/{target_knowledge_id}/{relation_type}/{relation_source_type}` | 按唯一边字段读取关系 | 动态 | **P1** |
 | `pkv://tags` | 标签列表 | 动态 | **P1** |
 | `pkv://stats` | 知识库统计 | 动态 | **P1** |
-| `pkv://config` | 系统配置信息 | 静态 | **P2** |
 
 ### 2.3 Prompts（提示词模板）
 
@@ -497,7 +508,7 @@ async def archive_url(url: str) -> dict:
             "success": True,
             "knowledge_id": result.data.get("knowledge_id", ""),
             "title": result.data.get("title", ""),
-            "file_path": str(result.data.get("file_path", "")),
+            "entry_locator": f"pkv://entries/{result.data.get('knowledge_id', '')}",
             "tags": result.data.get("tags", []),
             "abstract": result.data.get("abstract", ""),
         }
@@ -527,7 +538,7 @@ async def archive_text(text: str, title: str = "") -> dict:
             "success": True,
             "knowledge_id": result.data.get("knowledge_id", ""),
             "title": result.data.get("title", ""),
-            "file_path": str(result.data.get("file_path", "")),
+            "entry_locator": f"pkv://entries/{result.data.get('knowledge_id', '')}",
             "tags": result.data.get("tags", []),
         }
     else:

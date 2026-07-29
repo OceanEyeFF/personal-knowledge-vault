@@ -11,11 +11,14 @@ from __future__ import annotations
 from datetime import datetime
 from difflib import SequenceMatcher
 import logging
-from pathlib import Path
 import re
 from typing import Any, Optional
 
-from src.relations.citations import build_chunk_locator, resolve_citation_source
+from src.relations.citations import (
+    build_chunk_locator,
+    resolve_citation_source,
+    resolve_vault_file_path,
+)
 from src.relations.models import CollectedEvidenceItem, CollectedEvidenceResult
 from src.utils.text_utils import get_text_processor
 
@@ -65,8 +68,16 @@ class EvidenceCollectionService:
         if relation_max_depth <= 0:
             raise ValueError("relation_max_depth 必须大于 0")
 
-        search_results = self.query_router.search(question_clean, limit=top_k)
         limitation_notes: list[str] = []
+        raw_search_results = self.query_router.search(question_clean, limit=top_k)
+        search_results, excluded_count = self._filter_results_by_vault(
+            raw_search_results
+        )
+        if excluded_count:
+            limitation_notes.append(
+                f"{excluded_count} 个检索候选未通过 vault 文件边界校验，"
+                "已从文档级证据中排除"
+            )
         chunk_retrieval_status = self.CHUNK_STATUS_NOT_REQUESTED
         if include_chunks:
             chunk_results, chunk_retrieval_status, chunk_limitation_note = (
@@ -74,6 +85,14 @@ class EvidenceCollectionService:
             )
             if chunk_limitation_note:
                 limitation_notes.append(chunk_limitation_note)
+            chunk_results, excluded_chunk_count = self._filter_results_by_vault(
+                chunk_results
+            )
+            if excluded_chunk_count:
+                limitation_notes.append(
+                    f"{excluded_chunk_count} 个 chunk 检索候选未通过 vault "
+                    "文件边界校验，已从 chunk 证据中排除"
+                )
         else:
             chunk_results = []
 
@@ -533,7 +552,11 @@ class EvidenceCollectionService:
             return ""
 
         try:
-            entry = self.markdown_store.load(Path(file_path))
+            safe_path = resolve_vault_file_path(
+                file_path,
+                self.markdown_store.vault_dir,
+            )
+            entry = self.markdown_store.load(safe_path)
         except Exception:
             return ""
 
@@ -541,6 +564,27 @@ class EvidenceCollectionService:
             line.strip() for line in entry.content.splitlines() if line.strip()
         )
         return normalized[:max_chars]
+
+    def _entry_file_is_safe(self, entry: dict[str, Any]) -> bool:
+        try:
+            resolve_vault_file_path(
+                entry.get("file_path"),
+                self.markdown_store.vault_dir,
+            )
+        except Exception:
+            return False
+        return True
+
+    def _filter_results_by_vault(
+        self,
+        results: list[Any],
+    ) -> tuple[list[Any], int]:
+        safe_results: list[Any] = []
+        for result in results:
+            entry = self.sqlite_store.query_by_id(result.knowledge_id) or {}
+            if self._entry_file_is_safe(entry):
+                safe_results.append(result)
+        return safe_results, len(results) - len(safe_results)
 
     @staticmethod
     def _evidence_key(

@@ -110,3 +110,32 @@ Tool、错误参数或未来 Agent 预测不会与 gold 共用 YAML anchor/对�
 - `pkv://relations/by-edge/{source_id}/{target_id}/{relation_type}/{source_type}`
 
 这些 URI 均是注册的 MCP Resource，不使用不可解析的 fragment。
+
+`timeline_of` 只在真实持久时间字段存在时使用
+`pkv://entries/{id}/metadata/{time_field}`。若候选没有任何持久时间字段，
+item 必须输出空 `time_value/time_source_field`、
+`time_source/time_precision=unavailable`，并回退可读的
+`pkv://entries/{id}` 与公开 limitation。
+
+Tool 和 Resource 的公开负载会清空盘符、UNC、POSIX 绝对路径及 `file:`
+URI 形式的 `source_url`，相应来源回退 entry Resource；relation evidence
+中的本地引用按值递归脱敏。固定评测启动预检与真实 FastMCP 集成回归均覆盖
+这些负向 fixture，且不改变 16 条任务、119 项评分检查或阈值。
+
+entry、chunk 与 frontmatter metadata-field Resource 只允许读取/返回父 entry
+的 canonical resolved path 位于当前隔离 vault 内的普通文件；symlink escape、
+vault 外文件、UNC、
+目录和缺失文件均受控拒绝。无效/缺失 ID、loader 异常同样返回不含本机路径的
+MCP 错误，而非普通 Markdown/JSON“错误页”。评测 `read_resource` 会拒绝空
+内容、错误对象和历史伪成功错误文本，因此只有真正成功的 Resource 才计入可引用。
+同一边界校验也用于 `get_entry` 的正文加载及 `collect_evidence` 的
+`content_preview`：越界条目不会被工具旁路读取，前者降级为不含路径的
+“内容不可用”，后者同时过滤文档与 chunk 检索候选并公开 vault 边界
+limitation，越界 chunk 的文本不会进入公开证据。
+`timeline_of` 与 `contrast` 也会排除无法由 entry Resource 回读的越界候选，
+避免为其生成表面合法、实际必然失败的 fallback locator。
+
+固定 runtime contract 递归收集全部 `*_locator`，并把公开字段中完整的
+`pkv://` source/fallback 也视为 Resource 引用逐项读取；entry、chunk、
+metadata field、relation Resource 还会核对端点、持久 ID/索引、必要字段和
+canonical locator，不能以非空错误文本或错位 Resource 冒充可引用成功。

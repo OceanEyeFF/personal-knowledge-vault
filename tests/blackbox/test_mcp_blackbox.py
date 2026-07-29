@@ -35,6 +35,7 @@ import pytest
 from mcp import StdioServerParameters
 from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client
+from mcp.shared.exceptions import McpError
 
 # 确保项目根目录在 Python path 中
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -42,6 +43,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # ============================================================
 # 辅助函数
 # ============================================================
+
 
 def get_server_params(
     db_path: str,
@@ -800,16 +802,14 @@ class TestResources:
 
     @pytest.mark.asyncio
     async def test_read_entry_not_found(self, empty_db_path):
-        """pkv://entries/99999 应返回 "未找到" 信息。"""
+        """pkv://entries/99999 应返回真实 MCP 错误，而非伪成功正文。"""
         params = get_server_params(empty_db_path)
 
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                result = await session.read_resource("pkv://entries/99999")
-
-        text = result.contents[0].text
-        assert "未找到" in text
+                with pytest.raises(McpError, match="未找到条目"):
+                    await session.read_resource("pkv://entries/99999")
 
 
 # ============================================================

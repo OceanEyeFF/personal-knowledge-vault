@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 from itertools import combinations
+from pathlib import Path
 import re
 from typing import Any
 
@@ -26,6 +27,7 @@ from src.relations.citations import (
     build_relation_locator,
     read_persisted_metadata_field,
     resolve_citation_source,
+    resolve_vault_file_path,
     serialize_relation_evidence,
 )
 from src.relations.models import (
@@ -50,10 +52,12 @@ class ExplorationService:
         query_router: Any,
         sqlite_store: Any,
         relation_query_service: Any,
+        vault_dir: Path | None = None,
     ) -> None:
         self.query_router = query_router
         self.sqlite_store = sqlite_store
         self.relation_query_service = relation_query_service
+        self.vault_dir = Path(vault_dir) if vault_dir is not None else None
         self.text_processor = get_text_processor()
 
     def find_bridges(
@@ -74,6 +78,30 @@ class ExplorationService:
         if max_depth <= 0:
             raise ValueError("max_depth 必须大于 0")
 
+        entry_cache: dict[int, dict[str, Any]] = {}
+        seed_entry = self._get_entry(seed_knowledge_id, entry_cache)
+        if not self._entry_file_is_safe(seed_entry):
+            return BridgeDiscoveryResult(
+                seed_knowledge_id=seed_knowledge_id,
+                found=False,
+                max_depth=max_depth,
+                summary=(
+                    f"围绕 seed={seed_knowledge_id} 未发现可公开的桥接候选，"
+                    "因为种子条目未通过 vault 文件边界校验"
+                ),
+                evidence_sources=[
+                    "relation_subgraph",
+                    "graph_bridge_signal",
+                    "entry_tags",
+                    "entry_title_summary",
+                ],
+                limitation_notes=[
+                    "种子条目未通过 vault 文件边界校验，未查询或公开其关系证据"
+                ],
+                subgraph_max_nodes=self.BRIDGE_MAX_NODES,
+                subgraph_max_edges=self.BRIDGE_MAX_EDGES,
+            )
+
         subgraph = self.relation_query_service.query_subgraph(
             seed_knowledge_id=seed_knowledge_id,
             depth=max_depth,
@@ -83,12 +111,20 @@ class ExplorationService:
             group_by_relation_type=False,
         )
         node_depth_map = {
-            node.knowledge_id: node.depth for node in subgraph.nodes
+            node.knowledge_id: node.depth
+            for node in subgraph.nodes
+            if self._entry_file_is_safe(
+                self._get_entry(node.knowledge_id, entry_cache)
+            )
         }
+        public_edges, excluded_unsafe_edge_count = (
+            self._filter_relation_records_by_vault(subgraph.edges, entry_cache)
+        )
+        excluded_unsafe_node_count = len(subgraph.nodes) - len(node_depth_map)
         neighbors_by_node: dict[int, set[int]] = defaultdict(set)
         relation_types_by_node: dict[int, set[str]] = defaultdict(set)
 
-        for edge in subgraph.edges:
+        for edge in public_edges:
             neighbors_by_node[edge.source_knowledge_id].add(edge.target_knowledge_id)
             neighbors_by_node[edge.target_knowledge_id].add(edge.source_knowledge_id)
             relation_types_by_node[edge.source_knowledge_id].add(
@@ -99,8 +135,8 @@ class ExplorationService:
             )
 
         candidates: list[BridgeCandidate] = []
-        entry_cache: dict[int, dict[str, Any]] = {}
-        seed_entry = self._get_entry(seed_knowledge_id, entry_cache)
+        excluded_unsafe_explanation_count = 0
+        excluded_unexplainable_candidate_count = 0
         for knowledge_id, neighbors in neighbors_by_node.items():
             if knowledge_id == seed_knowledge_id:
                 continue
@@ -142,6 +178,15 @@ class ExplorationService:
                 knowledge_id,
                 max_depth=max_depth,
             )
+            if not relation_explanation.found:
+                excluded_unexplainable_candidate_count += 1
+                continue
+            if not self._relation_records_are_vault_safe(
+                relation_explanation.path + relation_explanation.supporting_relations,
+                entry_cache,
+            ):
+                excluded_unsafe_explanation_count += 1
+                continue
             candidates.append(
                 BridgeCandidate(
                     knowledge_id=knowledge_id,
@@ -157,7 +202,7 @@ class ExplorationService:
                         seed_knowledge_id=seed_knowledge_id,
                         candidate_knowledge_id=knowledge_id,
                         explanation=relation_explanation,
-                        subgraph_edges=subgraph.edges,
+                        subgraph_edges=public_edges,
                     ),
                     supporting_subgraph=self._build_bridge_supporting_subgraph(
                         seed_knowledge_id=seed_knowledge_id,
@@ -165,7 +210,7 @@ class ExplorationService:
                         neighbors=neighbors,
                         adjacency=neighbors_by_node,
                         node_depth_map=node_depth_map,
-                        subgraph_edges=subgraph.edges,
+                        subgraph_edges=public_edges,
                         max_depth=max_depth,
                         semantic_score_inputs=semantic_score_inputs,
                     ),
@@ -206,6 +251,29 @@ class ExplorationService:
                 "本次关系子图已截断；候选集合和未发现结论均不完整，"
                 "不得解释为全图范围的桥接结论"
             )
+        if excluded_unsafe_node_count or excluded_unsafe_edge_count:
+            limitation_notes.append(
+                f"{excluded_unsafe_node_count} 个节点、{excluded_unsafe_edge_count} 条关系边"
+                "未通过 vault 文件边界校验，已从公开桥接范围排除"
+            )
+        if excluded_unsafe_explanation_count:
+            limitation_notes.append(
+                f"{excluded_unsafe_explanation_count} 条候选关系路径未通过 vault "
+                "文件边界校验，未作为桥接证据公开"
+            )
+        if excluded_unexplainable_candidate_count:
+            limitation_notes.append(
+                f"{excluded_unexplainable_candidate_count} 个局部图候选缺少可验证的 "
+                "seed 路径，未作为桥接证据公开"
+            )
+
+        public_scope_truncated = bool(
+            subgraph.truncated
+            or excluded_unsafe_node_count
+            or excluded_unsafe_edge_count
+            or excluded_unsafe_explanation_count
+            or excluded_unexplainable_candidate_count
+        )
 
         return BridgeDiscoveryResult(
             seed_knowledge_id=seed_knowledge_id,
@@ -224,11 +292,11 @@ class ExplorationService:
                 "entry_title_summary",
             ],
             limitation_notes=limitation_notes,
-            subgraph_truncated=bool(subgraph.truncated),
+            subgraph_truncated=public_scope_truncated,
             subgraph_max_nodes=self.BRIDGE_MAX_NODES,
             subgraph_max_edges=self.BRIDGE_MAX_EDGES,
-            subgraph_node_count=len(subgraph.nodes),
-            subgraph_edge_count=len(subgraph.edges),
+            subgraph_node_count=len(node_depth_map),
+            subgraph_edge_count=len(public_edges),
         )
 
     def timeline_of(
@@ -249,21 +317,34 @@ class ExplorationService:
         results = self.query_router.search(topic_clean, limit=top_k)
         time_source_priority = ["event_time", "published_at", "archived_at"]
         points: list[TimelinePoint] = []
+        excluded_entry_count = 0
         for result in results[:top_k]:
             entry = self.sqlite_store.query_by_id(result.knowledge_id) or {}
+            if not self._entry_file_is_safe(entry):
+                excluded_entry_count += 1
+                continue
             resolved_times, physical_source_fields = self._resolve_time_fields(
                 entry,
                 result.metadata,
+                self.vault_dir,
             )
             time_value, time_source = self._select_time_value(
                 resolved_times, time_source_priority
             )
             time_source_field = physical_source_fields.get(
                 time_source,
-                time_source,
+                "",
+            )
+            has_persisted_time = bool(time_value and time_source_field)
+            citation_locator = (
+                build_metadata_locator(
+                    result.knowledge_id,
+                    time_source_field,
+                )
+                if has_persisted_time
+                else build_entry_locator(result.knowledge_id)
             )
             points.append(
-                # The locator points at the exact structured field used as time_value.
                 TimelinePoint(
                     knowledge_id=result.knowledge_id,
                     title=entry.get("title", result.title),
@@ -273,6 +354,9 @@ class ExplorationService:
                     archived_at=resolved_times["archived_at"],
                     time_source=time_source,
                     time_source_field=time_source_field,
+                    time_precision=(
+                        "structured_field" if has_persisted_time else "unavailable"
+                    ),
                     source_type=entry.get("source_type", result.metadata.get("source_type", "")),
                     source_url=str(
                         entry.get("source_url")
@@ -297,10 +381,7 @@ class ExplorationService:
                             or ""
                         ),
                     ),
-                    citation_locator=build_metadata_locator(
-                        result.knowledge_id,
-                        time_source_field,
-                    ),
+                    citation_locator=citation_locator,
                     abstract=entry.get("summary_one_sentence", "") or result.highlight,
                     tags=self._parse_tags(entry.get("tags", result.metadata.get("tags", ""))),
                     retrieval_score=round(float(result.score), 4),
@@ -317,6 +398,25 @@ class ExplorationService:
         real_time_count = sum(
             1 for item in points if item.time_source in {"event_time", "published_at"}
         )
+        unavailable_time_count = sum(
+            1 for item in points if item.time_source == "unavailable"
+        )
+        limitation_notes = [
+            "当前优先使用 entry/metadata 中的 event_time/published_at 真实时间字段，缺失时才回退 archived_at，不代表正文中的完整真实事件时间",
+            "仅对 SQLite 或 Markdown frontmatter 中可持久读取的时间字段生成精确 locator；临时检索 metadata 或损坏 frontmatter 不作为可引用时间来源",
+            "当前未接入 video_timestamps、正文事件抽取或时间语义解析",
+        ]
+        if unavailable_time_count:
+            limitation_notes.append(
+                f"{unavailable_time_count} 个候选缺少可持久读取的时间字段；"
+                "这些 item 标记 time_source/time_precision=unavailable，"
+                "仅引用 entry Resource，不作为精确时间点"
+            )
+        if excluded_entry_count:
+            limitation_notes.append(
+                f"{excluded_entry_count} 个候选未通过 vault 文件边界校验，"
+                "已从时间线中排除"
+            )
         return TimelineResult(
             topic=topic_clean,
             found=bool(points),
@@ -325,7 +425,8 @@ class ExplorationService:
             items=points,
             summary=(
                 f"围绕主题「{topic_clean}」按时间来源优先级重建了 {len(points)} 个时间点，"
-                f"其中 {real_time_count} 个命中了 event_time/published_at"
+                f"其中 {real_time_count} 个命中了 event_time/published_at，"
+                f"{unavailable_time_count} 个缺少可持久读取的时间字段"
                 if points
                 else f"未找到可用于主题「{topic_clean}」时间线重建的候选条目"
             ),
@@ -334,11 +435,7 @@ class ExplorationService:
                 "entry_metadata",
                 "structured_time_fields",
             ],
-            limitation_notes=[
-                "当前优先使用 entry/metadata 中的 event_time/published_at 真实时间字段，缺失时才回退 archived_at，不代表正文中的完整真实事件时间",
-                "仅对 SQLite 或 Markdown frontmatter 中可持久读取的时间字段生成精确 locator；临时检索 metadata 或损坏 frontmatter 不作为可引用时间来源",
-                "当前未接入 video_timestamps、正文事件抽取或时间语义解析",
-            ],
+            limitation_notes=limitation_notes,
         )
 
     def contrast(
@@ -357,8 +454,10 @@ class ExplorationService:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
 
-        results_a = self.query_router.search(topic_a_clean, limit=top_k)
-        results_b = self.query_router.search(topic_b_clean, limit=top_k)
+        raw_results_a = self.query_router.search(topic_a_clean, limit=top_k)
+        raw_results_b = self.query_router.search(topic_b_clean, limit=top_k)
+        results_a, excluded_a = self._filter_results_by_vault(raw_results_a)
+        results_b, excluded_b = self._filter_results_by_vault(raw_results_b)
 
         candidates_a = [
             self._build_contrast_item(result)
@@ -437,7 +536,23 @@ class ExplorationService:
             limitation_notes=[
                 "当前已引入跨主题显式关系路径信号，但底层仍只依赖低歧义显式关系图与候选表层文本，不代表完整语义对比",
                 "当前未引入 contrast 关系类型，也未建模争议/补充/因果等高级语义边",
-            ],
+            ]
+            + (
+                [
+                    f"{excluded_a + excluded_b} 个候选未通过 vault "
+                    "文件边界校验，已从对比中排除"
+                ]
+                if excluded_a or excluded_b
+                else []
+            )
+            + (
+                [
+                    f"{relation_signal['excluded_unsafe_relation_path_count']} 条"
+                    "候选关系路径未通过 vault 文件边界校验，未作为关系图信号"
+                ]
+                if relation_signal["excluded_unsafe_relation_path_count"]
+                else []
+            ),
         )
 
     def _build_contrast_item(self, result: Any) -> ContrastCandidateItem:
@@ -474,6 +589,60 @@ class ExplorationService:
         if knowledge_id not in cache:
             cache[knowledge_id] = self.sqlite_store.query_by_id(knowledge_id) or {}
         return cache[knowledge_id]
+
+    def _entry_file_is_safe(self, entry: dict[str, Any]) -> bool:
+        if self.vault_dir is None:
+            return True
+        try:
+            resolve_vault_file_path(entry.get("file_path"), self.vault_dir)
+        except Exception:
+            return False
+        return True
+
+    def _filter_results_by_vault(
+        self,
+        results: list[Any],
+    ) -> tuple[list[Any], int]:
+        safe_results: list[Any] = []
+        for result in results:
+            entry = self.sqlite_store.query_by_id(result.knowledge_id) or {}
+            if self._entry_file_is_safe(entry):
+                safe_results.append(result)
+        return safe_results, len(results) - len(safe_results)
+
+    def _relation_endpoints_are_vault_safe(
+        self,
+        record: Any,
+        entry_cache: dict[int, dict[str, Any]],
+    ) -> bool:
+        """A public relation locator is usable only when both entries are usable."""
+        return self._entry_file_is_safe(
+            self._get_entry(record.source_knowledge_id, entry_cache)
+        ) and self._entry_file_is_safe(
+            self._get_entry(record.target_knowledge_id, entry_cache)
+        )
+
+    def _relation_records_are_vault_safe(
+        self,
+        records: list[Any],
+        entry_cache: dict[int, dict[str, Any]],
+    ) -> bool:
+        return all(
+            self._relation_endpoints_are_vault_safe(record, entry_cache)
+            for record in records
+        )
+
+    def _filter_relation_records_by_vault(
+        self,
+        records: list[Any],
+        entry_cache: dict[int, dict[str, Any]],
+    ) -> tuple[list[Any], int]:
+        public_records = [
+            record
+            for record in records
+            if self._relation_endpoints_are_vault_safe(record, entry_cache)
+        ]
+        return public_records, len(records) - len(public_records)
 
     @staticmethod
     def _relation_key(record: Any) -> tuple[Any, ...]:
@@ -1006,6 +1175,7 @@ class ExplorationService:
     def _resolve_time_fields(
         entry: dict[str, Any],
         metadata: dict[str, Any],
+        vault_dir: Path | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
         """Resolve semantic time categories and retain their physical field names."""
         resolved: dict[str, str] = {}
@@ -1035,6 +1205,7 @@ class ExplorationService:
                 found, persisted_value, _ = read_persisted_metadata_field(
                     entry,
                     physical_field,
+                    vault_dir=vault_dir,
                 )
                 if found and str(persisted_value) == str(raw_value):
                     resolved[semantic_field] = str(persisted_value)
@@ -1051,7 +1222,7 @@ class ExplorationService:
             value = time_fields.get(field, "")
             if value:
                 return value, field
-        return "", priority[-1]
+        return "", "unavailable"
 
     @staticmethod
     def _infer_timeline_source(
@@ -1059,7 +1230,7 @@ class ExplorationService:
         priority: list[str],
     ) -> str:
         if not priority:
-            return "archived_at"
+            return "unavailable"
         source_counts = {field: 0 for field in priority}
         parseable_counts = {field: 0 for field in priority}
 
@@ -1083,7 +1254,7 @@ class ExplorationService:
             source: count for source, count in baseline_counts.items() if count > 0
         }
         if not nonzero:
-            return priority[-1]
+            return "unavailable"
 
         max_count = max(nonzero.values())
         leaders = [source for source, count in nonzero.items() if count == max_count]
@@ -1135,6 +1306,8 @@ class ExplorationService:
         pair_provenance: list[dict[str, Any]] = []
         relation_types_seen: set[str] = set()
         max_relation_hops = 0
+        entry_cache: dict[int, dict[str, Any]] = {}
+        excluded_unsafe_relation_path_count = 0
 
         for item_a in candidates_a:
             for item_b in candidates_b:
@@ -1147,6 +1320,12 @@ class ExplorationService:
                     max_depth=2,
                 )
                 if not explanation.found:
+                    continue
+                if not self._relation_records_are_vault_safe(
+                    explanation.path + explanation.supporting_relations,
+                    entry_cache,
+                ):
+                    excluded_unsafe_relation_path_count += 1
                     continue
 
                 connected_pairs += 1
@@ -1189,6 +1368,9 @@ class ExplorationService:
             "topic_a": topic_a_signals,
             "topic_b": topic_b_signals,
             "pairs": pair_provenance,
+            "excluded_unsafe_relation_path_count": (
+                excluded_unsafe_relation_path_count
+            ),
             "summary": {
                 "connected_candidate_pairs_count": connected_pairs,
                 "topic_a_connected_candidate_count": len(topic_a_signals),

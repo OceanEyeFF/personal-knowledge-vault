@@ -397,10 +397,13 @@ class CollectedEvidenceItem:
 
     def to_dict(self) -> Dict[str, Any]:
         from src.relations.citations import (
+            resolve_citation_source,
             sanitize_public_evidence,
+            sanitize_public_source_url,
             serialize_relation_evidence,
         )
 
+        public_source_url = sanitize_public_source_url(self.source_url)
         return {
             "knowledge_id": self.knowledge_id,
             "title": self.title,
@@ -408,8 +411,11 @@ class CollectedEvidenceItem:
             "source_type": self.source_type,
             "archived_at": self.archived_at,
             "tags": list(self.tags),
-            "source_url": self.source_url,
-            "citation_source": self.citation_source,
+            "source_url": public_source_url,
+            "citation_source": resolve_citation_source(
+                self.knowledge_id,
+                source_url=self.citation_source or public_source_url,
+            ),
             "citation_locator": self.citation_locator,
             "content_preview": self.content_preview,
             "chunk_id": self.chunk_id,
@@ -639,8 +645,9 @@ class TimelinePoint:
     event_time: str = ""
     published_at: str = ""
     archived_at: str = ""
-    time_source: str = "archived_at"
-    time_source_field: str = "archived_at"
+    time_source: str = "unavailable"
+    time_source_field: str = ""
+    time_precision: str = "unavailable"
     source_type: str = ""
     abstract: str = ""
     tags: list[str] = field(default_factory=list)
@@ -657,6 +664,12 @@ class TimelinePoint:
             raise ValueError("retrieval_score 必须在 [0.0, 1.0] 范围内")
 
     def to_dict(self) -> Dict[str, Any]:
+        from src.relations.citations import (
+            resolve_citation_source,
+            sanitize_public_source_url,
+        )
+
+        public_source_url = sanitize_public_source_url(self.source_url)
         return {
             "knowledge_id": self.knowledge_id,
             "title": self.title,
@@ -666,9 +679,13 @@ class TimelinePoint:
             "archived_at": self.archived_at,
             "time_source": self.time_source,
             "time_source_field": self.time_source_field,
+            "time_precision": self.time_precision,
             "source_type": self.source_type,
-            "source_url": self.source_url,
-            "source": self.source,
+            "source_url": public_source_url,
+            "source": resolve_citation_source(
+                self.knowledge_id,
+                source_url=self.source or public_source_url,
+            ),
             "citation_locator": self.citation_locator,
             "abstract": self.abstract,
             "tags": list(self.tags),
@@ -686,7 +703,7 @@ class TimelineResult:
 
     topic: str
     found: bool
-    inferred_time_field: str = "archived_at"
+    inferred_time_field: str = "unavailable"
     time_source_priority: list[str] = field(default_factory=list)
     items: list[TimelinePoint] = field(default_factory=list)
     summary: str = ""
@@ -766,14 +783,23 @@ class ContrastCandidateItem:
             raise ValueError("relation_signal_score 必须在 [0.0, 1.0] 范围内")
 
     def to_dict(self) -> Dict[str, Any]:
+        from src.relations.citations import (
+            resolve_citation_source,
+            sanitize_public_source_url,
+        )
+
+        public_source_url = sanitize_public_source_url(self.source_url)
         return {
             "knowledge_id": self.knowledge_id,
             "title": self.title,
             "abstract": self.abstract,
             "archived_at": self.archived_at,
             "source_type": self.source_type,
-            "source_url": self.source_url,
-            "source": self.source,
+            "source_url": public_source_url,
+            "source": resolve_citation_source(
+                self.knowledge_id,
+                source_url=self.source or public_source_url,
+            ),
             "citation_locator": self.citation_locator,
             "tags": list(self.tags),
             "retrieval_score": self.retrieval_score,
@@ -828,6 +854,8 @@ class ContrastResult:
         return _clamp_score(signal_count / 4.0)
 
     def to_dict(self) -> Dict[str, Any]:
+        from src.relations.citations import sanitize_public_evidence
+
         return {
             "schema_version": self.schema_version,
             "topic_a": self.topic_a,
@@ -840,7 +868,9 @@ class ContrastResult:
             "implementation_level": self.implementation_level,
             "evidence_sources": list(self.evidence_sources),
             "limitation_notes": list(self.limitation_notes),
-            "comparison_dimensions": dict(self.comparison_dimensions),
+            "comparison_dimensions": sanitize_public_evidence(
+                dict(self.comparison_dimensions)
+            ),
             "shared_tags": list(self.shared_tags),
             "only_a_tags": list(self.only_a_tags),
             "only_b_tags": list(self.only_b_tags),

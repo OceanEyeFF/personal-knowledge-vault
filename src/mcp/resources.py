@@ -11,7 +11,6 @@ Resource vs Tool 选择原则：
 
 import json
 import logging
-from pathlib import Path
 
 import anyio
 
@@ -27,6 +26,8 @@ from src.relations.citations import (
     build_metadata_locator,
     build_relation_locator,
     read_persisted_metadata_field,
+    resolve_vault_file_path,
+    sanitize_public_evidence,
     serialize_relation_evidence,
 )
 
@@ -45,14 +46,34 @@ def _positive_int(raw_value: str, field_name: str) -> int:
     try:
         value = int(raw_value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"无效的 {field_name}: {raw_value}") from exc
+        raise ValueError(f"无效的 {field_name}") from exc
     if value <= 0:
         raise ValueError(f"{field_name} 必须为正整数")
     return value
 
 
 def _json_resource(payload: dict) -> str:
-    return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    return json.dumps(
+        sanitize_public_evidence(payload),
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
+
+
+def _require_vault_entry(knowledge_id: int) -> dict:
+    """Return a parent entry only when its canonical source is inside the vault."""
+    entry = get_sqlite_store().query_by_id(knowledge_id)
+    if not entry:
+        raise ValueError("未找到条目")
+    try:
+        resolve_vault_file_path(
+            entry.get("file_path"),
+            get_markdown_store().vault_dir,
+        )
+    except Exception:
+        raise ValueError("条目内容不可用") from None
+    return entry
 
 
 # ============================================================
@@ -70,31 +91,23 @@ async def get_entry_content(knowledge_id: str) -> str:
         Markdown 格式的全文内容
     """
     def _impl():
-        try:
-            kid = int(knowledge_id)
-        except (ValueError, TypeError):
-            return f"# 错误\n\n无效的 knowledge_id: {knowledge_id}"
+        kid = _positive_int(knowledge_id, "knowledge_id")
 
-        store = get_sqlite_store()
-        entry = store.query_by_id(kid)
-        if not entry:
-            return f"# 未找到条目\n\nknowledge_id: {knowledge_id}"
-
-        file_path_str = entry.get("file_path", "")
-        if not file_path_str:
-            return f"# {entry.get('title', '无标题')}\n\n(文件路径缺失)"
+        entry = _require_vault_entry(kid)
 
         try:
             md_store = get_markdown_store()
-            loaded_entry = md_store.load(Path(file_path_str))
+            safe_path = resolve_vault_file_path(
+                entry.get("file_path"),
+                md_store.vault_dir,
+            )
+            loaded_entry = md_store.load(safe_path)
             if loaded_entry and loaded_entry.content:
                 return loaded_entry.content
-            return f"# {entry.get('title', '无标题')}\n\n(内容不可用)"
-        except FileNotFoundError:
-            return f"# {entry.get('title', '无标题')}\n\n(Markdown 文件不存在)"
-        except Exception as e:
-            logger.error(f"读取 Resource pkv://entries/{knowledge_id} 失败: {e}")
-            return f"# {entry.get('title', '无标题')}\n\n(读取失败: {e})"
+        except Exception:
+            logger.warning("读取 entry Resource 失败: knowledge_id=%s", kid)
+            raise ValueError("条目内容不可用") from None
+        raise ValueError("条目内容不可用")
 
     return await anyio.to_thread.run_sync(_impl)
 
@@ -117,18 +130,9 @@ async def get_entry_metadata(knowledge_id: str) -> str:
         try:
             kid = int(knowledge_id)
         except (ValueError, TypeError):
-            return json.dumps(
-                {"error": f"无效的 knowledge_id: {knowledge_id}"},
-                ensure_ascii=False,
-            )
+            raise ValueError("无效的 knowledge_id") from None
 
-        store = get_sqlite_store()
-        entry = store.query_by_id(kid)
-        if not entry:
-            return json.dumps(
-                {"error": f"未找到条目: {knowledge_id}"},
-                ensure_ascii=False,
-            )
+        entry = _require_vault_entry(kid)
 
         # 转换 tags/keywords 为列表后再序列化
         entry_dict = dict(entry)
@@ -136,7 +140,7 @@ async def get_entry_metadata(knowledge_id: str) -> str:
         entry_dict["tags"] = parse_tags_string(entry_dict.get("tags", ""))
         entry_dict["keywords"] = parse_tags_string(entry_dict.get("keywords", ""))
 
-        return json.dumps(entry_dict, ensure_ascii=False, indent=2, default=str)
+        return _json_resource(entry_dict)
 
     return await anyio.to_thread.run_sync(_impl)
 
@@ -147,6 +151,7 @@ async def get_entry_chunk(knowledge_id: str, chunk_id: str) -> str:
     def _impl() -> str:
         kid = _positive_int(knowledge_id, "knowledge_id")
         cid = _positive_int(chunk_id, "chunk_id")
+        _require_vault_entry(kid)
         chunk = get_sqlite_store().get_chunk_by_id(cid)
         if not chunk or int(chunk["knowledge_id"]) != kid:
             raise ValueError(f"未找到条目 {kid} 的 chunk_id={cid}")
@@ -164,10 +169,11 @@ async def get_entry_chunk_by_index(knowledge_id: str, chunk_index: str) -> str:
         kid = _positive_int(knowledge_id, "knowledge_id")
         try:
             index = int(chunk_index)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"无效的 chunk_index: {chunk_index}") from exc
+        except (TypeError, ValueError):
+            raise ValueError("无效的 chunk_index") from None
         if index < 0:
             raise ValueError("chunk_index 不能为负数")
+        _require_vault_entry(kid)
         chunk = get_sqlite_store().get_chunk_by_index(kid, index)
         if not chunk:
             raise ValueError(f"未找到条目 {kid} 的 chunk_index={index}")
@@ -198,6 +204,7 @@ async def get_entry_metadata_field(knowledge_id: str, field_name: str) -> str:
         found, value, storage_field = read_persisted_metadata_field(
             entry,
             requested_field,
+            vault_dir=get_markdown_store().vault_dir,
         )
         if not found:
             raise ValueError(f"条目 {kid} 不存在元数据字段: {requested_field}")
@@ -237,6 +244,8 @@ async def get_relation_resource(relation_id: str) -> str:
         record = relation_store.get_relation(rid)
         if not record:
             raise ValueError(f"未找到关系: {rid}")
+        _require_vault_entry(record.source_knowledge_id)
+        _require_vault_entry(record.target_knowledge_id)
         return _relation_payload(record)
 
     return await anyio.to_thread.run_sync(_impl)
@@ -268,13 +277,16 @@ async def get_relation_by_edge_resource(
                 "关系边无法唯一解析: "
                 f"{source_id}->{target_id}/{relation_type}/{relation_source_type}"
             )
-        return _relation_payload(matches[0])
+        record = matches[0]
+        _require_vault_entry(record.source_knowledge_id)
+        _require_vault_entry(record.target_knowledge_id)
+        return _relation_payload(record)
 
     return await anyio.to_thread.run_sync(_impl)
 
 
 # ============================================================
-# Resource 3: pkv://tags — 标签列表
+# Resource 8: pkv://tags — 标签列表
 # ============================================================
 
 @mcp.resource("pkv://tags")
@@ -287,17 +299,13 @@ async def get_tags_resource() -> str:
     def _impl():
         store = get_sqlite_store()
         tags = store.get_all_tags_with_count()
-        return json.dumps(
-            {"total_tags": len(tags), "tags": tags},
-            ensure_ascii=False,
-            indent=2,
-        )
+        return _json_resource({"total_tags": len(tags), "tags": tags})
 
     return await anyio.to_thread.run_sync(_impl)
 
 
 # ============================================================
-# Resource 4: pkv://stats — 统计信息
+# Resource 9: pkv://stats — 统计信息
 # ============================================================
 
 @mcp.resource("pkv://stats")
@@ -310,6 +318,6 @@ async def get_stats_resource() -> str:
     def _impl():
         store = get_sqlite_store()
         stats = store.get_statistics()
-        return json.dumps(stats, ensure_ascii=False, indent=2, default=str)
+        return _json_resource(stats)
 
     return await anyio.to_thread.run_sync(_impl)

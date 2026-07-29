@@ -19,8 +19,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.storage.sqlite_store import SQLiteStore
-from src.storage.markdown_store import Entry, MarkdownStore
+from src.storage.sqlite_store import SQLiteStore  # noqa: E402
+from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
 
 
 @pytest.fixture
@@ -214,8 +214,10 @@ class TestResourcesIntegration:
         """pkv://entries/{id}/metadata 应返回有效 JSON。"""
         from unittest.mock import patch
         store, vault_dir, entry_ids = populated_db
+        md_store = MarkdownStore(vault_dir)
 
-        with patch("src.mcp.resources.get_sqlite_store", return_value=store):
+        with patch("src.mcp.resources.get_sqlite_store", return_value=store), \
+             patch("src.mcp.resources.get_markdown_store", return_value=md_store):
             from src.mcp.resources import get_entry_metadata
             result = await get_entry_metadata(knowledge_id=str(entry_ids[0]))
 

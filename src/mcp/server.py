@@ -15,8 +15,6 @@ PKV MCP Server 主入口
 """
 
 import logging
-from pathlib import Path
-from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
@@ -157,6 +155,7 @@ def get_exploration_service():
             query_router=get_query_router(),
             sqlite_store=get_sqlite_store(),
             relation_query_service=get_relation_query_service(),
+            vault_dir=get_markdown_store().vault_dir,
         )
         logger.info("ExplorationService 单例初始化完成")
     return _exploration_service
@@ -171,7 +170,7 @@ def get_exploration_service():
 # 当直接运行本文件时 __name__ == "__main__"，但子模块中
 # from src.mcp.server import mcp 会创建另一个 src.mcp.server 副本。
 # 在导入子模块前将自身注册为 src.mcp.server，确保引用同一实例。
-import sys as _sys
+import sys as _sys  # noqa: E402
 _sys.modules.setdefault("src.mcp.server", _sys.modules[__name__])
 
 from src.mcp import tools  # noqa: E402, F401
