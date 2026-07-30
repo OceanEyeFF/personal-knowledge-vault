@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from pathlib import Path
 
@@ -107,6 +108,9 @@ def test_independent_proposals_detect_wrong_tool_arguments_and_chunk_query(
     assert chunk_checks["top_chunk_relevant_alpha"].passed is False
     assert chunk_checks["top_chunk_relevant_delta"].passed is False
     assert chunk_checks["chunk_ids_present"].passed is False
+    assert report.targets_met is False
+    assert report.dimension_scores["tool_selection"] < 1.0
+    assert report.dimension_scores["parameters"] < 1.0
 
 
 def test_chunk_fixture_distinguishes_queries(tmp_path: Path) -> None:
@@ -233,6 +237,132 @@ def test_runtime_contract_rejects_readable_but_mismatched_locators() -> None:
             },
             {wrong_relation_locator: wrong_relation_resource},
         )
+
+
+def test_phase_b_oracles_reject_bridge_timeline_contrast_and_chunk_mutations(
+    tmp_path: Path,
+) -> None:
+    async def resources_for(
+        scenario: OfflineMcpScenario,
+        payload: dict,
+    ) -> dict[str, object]:
+        locators = scenario._citation_locators(payload)
+        return {
+            locator: await scenario.read_resource(locator)
+            for locator in locators
+        }
+
+    async def exercise() -> None:
+        with OfflineMcpScenario(tmp_path / "oracle-mutations") as scenario:
+            await scenario.registered_tools()
+
+            bridge = await scenario.call_tool(
+                "find_bridges",
+                {
+                    "seed_knowledge_id": str(scenario.aliases["alpha_id"]),
+                    "top_k": 5,
+                    "max_depth": 2,
+                },
+            )
+            bridge_resources = await resources_for(scenario, bridge)
+            bad_bridge = copy.deepcopy(bridge)
+            bridge_edge = next(
+                edge
+                for item in bad_bridge["items"]
+                for edge in item["evidence_path"]
+                if "seed_path" in edge["evidence_roles"]
+            )
+            bridge_edge["hop_index"] = 99
+            with pytest.raises(
+                AssertionError,
+                match="bridge seed path hop_index 不连续",
+            ):
+                scenario._validate_bridge_contract(
+                    bad_bridge,
+                    bridge_resources,
+                )
+
+            timeline = await scenario.call_tool(
+                "timeline_of",
+                {
+                    "topic": "__contract_event_time__",
+                    "top_k": 1,
+                    "sort_order": "asc",
+                },
+            )
+            timeline_resources = await resources_for(scenario, timeline)
+            bad_timeline = copy.deepcopy(timeline)
+            bad_timeline["items"][0]["time_value"] = "1900-01-01"
+            with pytest.raises(
+                AssertionError,
+                match="timeline Resource 时间值与 Tool 输出不一致",
+            ):
+                scenario._validate_timeline_contract(
+                    bad_timeline,
+                    timeline_resources,
+                )
+
+            contrast = await scenario.call_tool(
+                "contrast",
+                {
+                    "topic_a": "Topic A",
+                    "topic_b": "Topic B",
+                    "top_k": 5,
+                },
+            )
+            contrast_resources = await resources_for(scenario, contrast)
+            bad_contrast = copy.deepcopy(contrast)
+            dimension_name = next(
+                name
+                for name in ("shared_tags", "only_a_tags", "only_b_tags")
+                if bad_contrast[name]
+            )
+            visible_value = bad_contrast[dimension_name][0]
+            bad_contrast["comparison_dimensions"]["provenance"][
+                dimension_name
+            ].pop(visible_value)
+            with pytest.raises(
+                AssertionError,
+                match=f"contrast {dimension_name} provenance 覆盖不完整",
+            ):
+                scenario._validate_contrast_contract(
+                    bad_contrast,
+                    contrast_resources,
+                )
+
+            collected = await scenario.call_tool(
+                "collect_evidence",
+                {
+                    "question": "chunk-alpha-delta Alpha 到 Delta 的证据是什么？",
+                    "top_k": 3,
+                    "relation_max_depth": 2,
+                    "include_chunks": True,
+                },
+            )
+            collect_resources = await resources_for(scenario, collected)
+            wrong_locator = (
+                f"pkv://entries/{scenario.aliases['beta_id']}/chunks/201"
+            )
+            collect_resources[wrong_locator] = await scenario.read_resource(
+                wrong_locator
+            )
+            bad_collect = copy.deepcopy(collected)
+            chunk_item = next(
+                item
+                for item in bad_collect["evidence"]
+                if item.get("chunk_id") is not None
+            )
+            chunk_item["citation_locator"] = wrong_locator
+            with pytest.raises(
+                AssertionError,
+                match="entry locator 未指向所在 Tool 条目",
+            ):
+                scenario._validate_collect_contract(
+                    bad_collect,
+                    collect_resources,
+                )
+
+    asyncio.run(exercise())
 
 
 def test_timeline_unavailable_and_local_sources_are_safe_through_fastmcp(

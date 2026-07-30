@@ -63,14 +63,34 @@ def mock_stores():
         yield mock_store
 
 
+@pytest.fixture(scope="module", autouse=True)
+def isolate_qsettings(tmp_path_factory):
+    """Route QSettings to a session-temporary INI file, never the user registry."""
+
+    settings_root = tmp_path_factory.mktemp("qsettings-main-window")
+    QSettings.setDefaultFormat(QSettings.IniFormat)
+    QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(settings_root))
+    QSettings.setPath(
+        QSettings.IniFormat,
+        QSettings.SystemScope,
+        str(settings_root / "system"),
+    )
+    yield
+    settings = QSettings("PKV", "MainWindow")
+    settings.clear()
+    settings.sync()
+
+
 @pytest.fixture(autouse=True)
-def clean_qsettings():
-    """每个测试前后清理 QSettings，避免测试间状态污染。"""
+def clean_qsettings(isolate_qsettings):
+    """每个测试前后清理隔离 QSettings，避免测试间状态污染。"""
+
     settings = QSettings("PKV", "MainWindow")
     settings.clear()
     yield
     settings = QSettings("PKV", "MainWindow")
     settings.clear()
+    settings.sync()
 
 
 @pytest.fixture
@@ -336,9 +356,6 @@ class TestSettingsPersistence:
         settings = QSettings("PKV", "MainWindow")
         saved_theme = settings.value("theme")
         assert saved_theme == "dark"
-
-        # 清理 QSettings（避免影响其他测试）
-        settings.clear()
 
     def test_close_event_saves_settings(self, main_window):
         """关闭窗口时自动保存状态。"""

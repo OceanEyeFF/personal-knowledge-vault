@@ -384,3 +384,79 @@ class TestDeleteFeature:
             browser_view._execute_delete(entry)
 
         mock_store.delete_entry.assert_called_once_with(entry["knowledge_id"])
+
+    def test_execute_delete_calls_all_storage_layers(
+        self,
+        browser_view,
+        mock_store,
+        tmp_path,
+    ):
+        """best-effort 删除仍应尝试 Markdown 与 Vector 辅助存储。"""
+
+        mock_store.delete_entry = MagicMock(return_value=True)
+        markdown_store = MagicMock()
+        markdown_store.vault_dir = tmp_path / "vault"
+        vector_store = MagicMock()
+        entry = MOCK_ENTRIES[0]
+
+        with patch(
+            "src.gui.stores.get_sqlite_store",
+            return_value=mock_store,
+        ), patch(
+            "src.gui.stores.get_markdown_store",
+            return_value=markdown_store,
+        ), patch(
+            "src.gui.stores.get_vector_store",
+            return_value=vector_store,
+        ):
+            browser_view._execute_delete(entry)
+
+        mock_store.delete_entry.assert_called_once_with(entry["knowledge_id"])
+        markdown_store.delete.assert_called_once_with(
+            Path(markdown_store.vault_dir) / entry["file_path"]
+        )
+        vector_store.delete_vectors_for_entry.assert_called_once_with(
+            entry["knowledge_id"]
+        )
+
+    def test_execute_delete_reports_primary_store_failures_but_attempts_cleanup(
+        self,
+        browser_view,
+        mock_store,
+        tmp_path,
+    ):
+        """A failure in one layer must not silently skip later cleanup layers."""
+
+        mock_store.delete_entry.side_effect = RuntimeError("sqlite failed")
+        markdown_store = MagicMock()
+        markdown_store.vault_dir = tmp_path / "vault"
+        markdown_store.delete.side_effect = OSError("markdown failed")
+        vector_store = MagicMock()
+        vector_store.delete_vectors_for_entry.side_effect = RuntimeError(
+            "vector failed"
+        )
+        entry = MOCK_ENTRIES[0]
+
+        with patch(
+            "src.gui.stores.get_sqlite_store",
+            return_value=mock_store,
+        ), patch(
+            "src.gui.stores.get_markdown_store",
+            return_value=markdown_store,
+        ), patch(
+            "src.gui.stores.get_vector_store",
+            return_value=vector_store,
+        ), patch(
+            "src.gui.views.browser_view.QMessageBox.warning"
+        ) as warning:
+            browser_view._execute_delete(entry)
+
+        markdown_store.delete.assert_called_once()
+        vector_store.delete_vectors_for_entry.assert_called_once_with(
+            entry["knowledge_id"]
+        )
+        warning.assert_called_once()
+        warning_message = warning.call_args.args[2]
+        assert "数据库删除失败: sqlite failed" in warning_message
+        assert "文件删除失败: markdown failed" in warning_message
+        assert "vector failed" not in warning_message

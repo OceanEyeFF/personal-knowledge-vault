@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import statistics
-import time
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
 
@@ -25,18 +23,28 @@ def _parse_tool_content(result) -> Dict[str, Any]:
 
 def _assert_search_payload(data: Dict[str, Any], min_total: int = 1) -> None:
     assert isinstance(data, dict)
-    assert "total" in data
-    assert "strategy_used" in data
-    assert "results" in data
+    assert set(data) == {"total", "strategy_used", "results"}
+    assert isinstance(data["total"], int)
+    assert not isinstance(data["total"], bool)
+    assert isinstance(data["strategy_used"], str)
     assert isinstance(data["results"], list)
+    assert data["total"] == len(data["results"])
     assert data["total"] >= min_total
 
     for item in data["results"]:
         assert isinstance(item, dict)
-        for key in ["knowledge_id", "title", "abstract", "score", "tags", "source_type", "archived_at"]:
-            assert key in item
+        assert set(item) == {
+            "knowledge_id",
+            "title",
+            "abstract",
+            "score",
+            "tags",
+            "source_type",
+            "archived_at",
+        }
         assert isinstance(item["tags"], list)
         assert isinstance(item["score"], (int, float))
+        assert not isinstance(item["score"], bool)
 
 
 def _parse_time(value: str) -> datetime:
@@ -109,6 +117,8 @@ async def test_search_strategy_selection(mcp_server):
     bm25_data = _parse_tool_content(bm25)
     _assert_search_payload(auto_data, min_total=1)
     _assert_search_payload(bm25_data, min_total=1)
+    assert auto_data["strategy_used"] == "auto"
+    assert bm25_data["strategy_used"] == "bm25"
     assert auto_data["results"][0]["title"] == bm25_data["results"][0]["title"]
 
 
@@ -159,19 +169,18 @@ async def test_search_ranking(mcp_server, sample_knowledge_db):
     assert _parse_time(data["results"][0]["archived_at"]) == max(times)
 
 
-def test_search_performance(sample_knowledge_db):
+def test_search_repeated_calls_are_deterministic(sample_knowledge_db):
     from src.retrieval.bm25_retriever import BM25Retriever
 
     retriever = BM25Retriever(sample_knowledge_db["db_path"])
 
-    # Warm-up (jieba + SQLite cache)
-    retriever.search("AI", limit=5)
+    snapshots = [
+        [
+            (item.knowledge_id, item.title, item.score)
+            for item in retriever.search("AI", limit=5)
+        ]
+        for _ in range(3)
+    ]
 
-    durations: List[float] = []
-    for _ in range(5):
-        start = time.perf_counter()
-        retriever.search("AI", limit=5)
-        durations.append(time.perf_counter() - start)
-
-    avg_ms = statistics.mean(durations) * 1000
-    assert avg_ms < 100, f"平均响应时间过慢: {avg_ms:.2f}ms"
+    assert snapshots[0]
+    assert snapshots[1:] == [snapshots[0], snapshots[0]]

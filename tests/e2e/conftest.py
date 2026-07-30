@@ -288,6 +288,24 @@ def _build_mcp_client(test_env: TestEnv) -> MCPTestClient:
 
 
 @pytest.fixture
+def archive_test_env(tmp_path_factory: pytest.TempPathFactory) -> TestEnv:
+    """Give every archive case a fresh database and Vault.
+
+    Archive tests mutate all storage layers, so sharing the search fixture at
+    session scope makes their result depend on collection order.
+    """
+
+    return build_test_env(tmp_path_factory, prefix="pkv-e2e-archive")
+
+
+@pytest.fixture
+def archive_mcp_server(archive_test_env: TestEnv) -> MCPTestClient:
+    """Build an MCP client whose child process only sees the archive fixture."""
+
+    return _build_mcp_client(archive_test_env)
+
+
+@pytest.fixture
 def mcp_server(test_env: TestEnv, sample_knowledge_db) -> MCPTestClient:
     return _build_mcp_client(test_env)
 

@@ -62,7 +62,7 @@ class CLIBlackboxTester:
         self.test_dir = test_dir
         self.python_exe = python_exe
         self.project_root = PROJECT_ROOT
-        self.data_dir = test_dir / ".data"
+        self.data_dir = test_dir / "test-data"
         self.db_path = self.data_dir / "db" / "knowledge_vault.db"
         self.vault_dir = self.data_dir / "vault"
         self.vector_dir = self.data_dir / "vectors"
@@ -218,7 +218,8 @@ def test_search_command_with_results(cli_tester: CLIBlackboxTester):
     """测试 search 命令（有结果）。"""
     result = cli_tester.run_cli("search", "Python", "--strategy", "bm25")
     assert result.returncode == 0
-    assert "Python 装饰器详解" in result.stdout or "Python" in result.stdout
+    assert "找到 1 条结果 (bm25 策略)" in result.stdout
+    assert "Python 装饰器详解" in result.stdout
 
 
 def test_search_command_with_json_output(cli_tester: CLIBlackboxTester):
@@ -235,13 +236,20 @@ def test_search_command_with_json_output(cli_tester: CLIBlackboxTester):
     )
     assert result.returncode == 0
 
-    # 验证 JSON 格式
-    try:
-        data = json.loads(result.stdout)
-        assert "results" in data
-        assert isinstance(data["results"], list)
-    except json.JSONDecodeError:
-        pytest.fail("输出不是有效的 JSON 格式")
+    data = json.loads(result.stdout)
+    assert set(data) == {"query", "strategy", "total", "results"}
+    assert data["query"] == "Docker"
+    assert data["strategy"] == "bm25"
+    assert data["total"] == 1
+    assert len(data["results"]) == data["total"]
+    assert set(data["results"][0]) == {
+        "entry_id",
+        "title",
+        "snippet",
+        "score",
+        "metadata",
+    }
+    assert data["results"][0]["title"] == "Docker 容器化实践"
 
 
 def test_search_command_no_results(cli_tester: CLIBlackboxTester):
@@ -253,22 +261,27 @@ def test_search_command_no_results(cli_tester: CLIBlackboxTester):
         "bm25",
     )
     assert result.returncode == 0
-    # 应该有友好的提示而不是报错
+    assert "找到 0 条结果 (bm25 策略)" in result.stdout
+    assert "Python 装饰器详解" not in result.stdout
 
 
 def test_list_command(cli_tester: CLIBlackboxTester):
     """测试 list 命令。"""
     result = cli_tester.run_cli("list", "--limit", "10")
     assert result.returncode == 0
-    # 应该包含至少一条测试数据
-    assert "Python" in result.stdout or "Docker" in result.stdout or "React" in result.stdout
+    assert "Python 装饰器详解" in result.stdout
+    assert "Docker 容器化实践" in result.stdout
+    assert "React Hooks 使用指南" in result.stdout
 
 
 def test_list_command_with_tag_filter(cli_tester: CLIBlackboxTester):
     """测试 list 命令（标签过滤）。"""
     result = cli_tester.run_cli("list", "--tag", "Python")
     assert result.returncode == 0
-    assert "Python 装饰器详解" in result.stdout or "Python" in result.stdout
+    assert "知识条目列表 (标签: Python)" in result.stdout
+    assert "Python 装饰器详解" in result.stdout
+    assert "Docker 容器化实践" not in result.stdout
+    assert "React Hooks 使用指南" not in result.stdout
 
 
 def test_show_command_by_id(cli_tester: CLIBlackboxTester):
@@ -278,43 +291,58 @@ def test_show_command_by_id(cli_tester: CLIBlackboxTester):
     # 假设第一条是 ID=1
     result = cli_tester.run_cli("show", "1")
     assert result.returncode == 0
-    # 应该显示条目详情
+    assert "知识条目 #1" in result.stdout
+    assert "Python 装饰器详解" in result.stdout
+    assert "https://example.com/python-decorators" in result.stdout
 
 
 def test_show_command_by_url(cli_tester: CLIBlackboxTester):
     """测试 show 命令（通过 URL）。"""
     result = cli_tester.run_cli("show", "--url", "https://example.com/python-decorators")
     assert result.returncode == 0
-    assert "Python 装饰器详解" in result.stdout or "Python" in result.stdout
+    assert "Python 装饰器详解" in result.stdout
+    assert "https://example.com/python-decorators" in result.stdout
 
 
 def test_show_command_not_found(cli_tester: CLIBlackboxTester):
     """测试 show 命令（条目不存在）。"""
     result = cli_tester.run_cli("show", "99999", check=False)
-    # 应该返回非零退出码或友好的错误提示
-    assert result.returncode != 0 or "未找到" in result.stdout or "not found" in result.stdout.lower()
+    assert result.returncode == 1
+    assert "警告: 未找到对应条目" in result.stdout
 
 
 def test_config_show_command(cli_tester: CLIBlackboxTester):
     """测试 config show 命令。"""
     result = cli_tester.run_cli("config", "show")
     assert result.returncode == 0
-    assert "data_dir" in result.stdout.lower() or "数据目录" in result.stdout
+    for key in (
+        "data_dir",
+        "vault_dir",
+        "db_path",
+        "storage.vector_index_dir",
+        "storage.log_dir",
+        "storage.tmp_dir",
+    ):
+        assert key in result.stdout
+    assert "ai.llm.api_key" in result.stdout
+    assert "未设置" in result.stdout
 
 
 def test_config_get_command(cli_tester: CLIBlackboxTester):
     """测试 config get 命令。"""
     result = cli_tester.run_cli("config", "get", "data_dir")
     assert result.returncode == 0
-    # 应该显示配置值
+    assert "".join(result.stdout.splitlines()) == str(cli_tester.data_dir)
 
 
 def test_stats_command(cli_tester: CLIBlackboxTester):
     """测试 stats 命令。"""
     result = cli_tester.run_cli("stats")
     assert result.returncode == 0
-    # 应该包含统计信息
-    assert "3" in result.stdout or "条目" in result.stdout or "entries" in result.stdout.lower()
+    assert "知识库统计" in result.stdout
+    assert "总条目数: 3" in result.stdout
+    assert "- text: 3" in result.stdout
+    assert "Python (1)" in result.stdout
 
 
 def test_invalid_command(cli_tester: CLIBlackboxTester):
@@ -335,6 +363,8 @@ def test_search_bm25_strategy(cli_tester: CLIBlackboxTester):
         "5",
     )
     assert result.returncode == 0
+    assert "找到 1 条结果 (bm25 策略)" in result.stdout
+    assert "Python 装饰器详解" in result.stdout
 
 
 def test_verbose_mode(cli_tester: CLIBlackboxTester):
@@ -347,7 +377,7 @@ def test_verbose_mode(cli_tester: CLIBlackboxTester):
         "bm25",
     )
     assert result.returncode == 0
-    # verbose 模式可能在 stderr 输出日志
+    assert "Docker 容器化实践" in result.stdout
 
 
 def test_debug_mode(cli_tester: CLIBlackboxTester):
@@ -360,7 +390,7 @@ def test_debug_mode(cli_tester: CLIBlackboxTester):
         "bm25",
     )
     assert result.returncode == 0
-    # debug 模式可能在 stderr 输出详细日志
+    assert "React Hooks 使用指南" in result.stdout
 
 
 # ========== 集成场景测试 ==========
@@ -378,10 +408,12 @@ def test_full_workflow_search_show(cli_tester: CLIBlackboxTester):
         "1",
     )
     assert search_result.returncode == 0
+    assert "Python 装饰器详解" in search_result.stdout
 
     # 2. 显示详情（假设第一条是 ID=1）
     show_result = cli_tester.run_cli("show", "1")
     assert show_result.returncode == 0
+    assert "Python 装饰器详解" in show_result.stdout
 
 
 def test_list_and_filter(cli_tester: CLIBlackboxTester):
@@ -389,13 +421,20 @@ def test_list_and_filter(cli_tester: CLIBlackboxTester):
     # 1. 列出所有
     list_all = cli_tester.run_cli("list")
     assert list_all.returncode == 0
+    assert all(
+        title in list_all.stdout
+        for title in (
+            "Python 装饰器详解",
+            "Docker 容器化实践",
+            "React Hooks 使用指南",
+        )
+    )
 
     # 2. 按标签过滤
     list_filtered = cli_tester.run_cli("list", "--tag", "Python")
     assert list_filtered.returncode == 0
-
-    # 过滤结果应该少于或等于总数
-    # （这里只是验证命令执行成功）
+    assert "Python 装饰器详解" in list_filtered.stdout
+    assert "Docker 容器化实践" not in list_filtered.stdout
 
 
 if __name__ == "__main__":

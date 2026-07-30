@@ -104,6 +104,32 @@ def parse_tool_content(result) -> Dict[str, Any]:
     raise ValueError(f"无法解析 call_tool 结果: {result}")
 
 
+def assert_stats_payload(payload: Dict[str, Any]) -> None:
+    """Assert the canonical statistics schema after stdio serialization."""
+
+    assert set(payload) == {"total_entries", "by_source_type", "top_tags"}
+    assert isinstance(payload["total_entries"], int)
+    assert not isinstance(payload["total_entries"], bool)
+    assert payload["total_entries"] >= 0
+    assert isinstance(payload["by_source_type"], list)
+    assert all(
+        isinstance(item, list)
+        and len(item) == 2
+        and isinstance(item[0], str)
+        and isinstance(item[1], int)
+        and not isinstance(item[1], bool)
+        for item in payload["by_source_type"]
+    )
+    assert isinstance(payload["top_tags"], list)
+    assert all(
+        set(item) == {"name", "count"}
+        and isinstance(item["name"], str)
+        and isinstance(item["count"], int)
+        and not isinstance(item["count"], bool)
+        for item in payload["top_tags"]
+    )
+
+
 # ============================================================
 # Fixtures
 # ============================================================
@@ -410,7 +436,7 @@ class TestReadonlyTools:
                 result = await session.call_tool("get_stats", {})
 
         data = parse_tool_content(result)
-        assert "total_entries" in data or "total" in data
+        assert_stats_payload(data)
 
     @pytest.mark.asyncio
     async def test_list_entries_pagination(self, populated_db_path):
@@ -610,7 +636,7 @@ class TestWriteToolSecurity:
 
         data = parse_tool_content(result)
         assert data["success"] is False
-        assert "超过" in data["error"] or "限制" in data["error"]
+        assert data["error"] == "文本长度 100001 超过限制 100000 字符"
 
     @pytest.mark.asyncio
     async def test_get_related_invalid_id(self, empty_db_path):
@@ -752,7 +778,7 @@ class TestResources:
                 result = await session.read_resource("pkv://stats")
 
         data = json.loads(result.contents[0].text)
-        assert "total_entries" in data or "total" in data
+        assert_stats_payload(data)
 
     @pytest.mark.asyncio
     async def test_read_entry_metadata(self, populated_db_path):
@@ -853,7 +879,7 @@ class TestEndToEnd:
                 # Step 4: 查看统计
                 stats_result = await session.call_tool("get_stats", {})
                 stats = parse_tool_content(stats_result)
-                assert "total_entries" in stats or "total" in stats
+                assert_stats_payload(stats)
 
                 # Step 5: 列出标签
                 tags_result = await session.call_tool("list_tags", {})

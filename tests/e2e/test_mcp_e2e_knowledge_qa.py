@@ -126,10 +126,12 @@ async def test_idea_sharpen_prompt(mcp_server):
     )
     text = _extract_prompt_text(prompt_result)
 
-    assert "思想磨砺" in text or "idea Sharpen" in text
+    assert "思想磨砺" in text
+    assert "idea Sharpen" in text
     assert "核心价值" in text
     assert "关键观点" in text
-    assert "search_knowledge" in text or "get_related" in text
+    assert "search_knowledge" in text
+    assert "get_related" in text
     assert "42" in text
     assert "get_entry" in text
 

@@ -1,5 +1,6 @@
 """Unit tests for the Phase C offline MCP scorer and task contract."""
 
+import copy
 from pathlib import Path
 import re
 
@@ -114,8 +115,15 @@ def test_wildcard_keeps_missing_values_for_all_item_contracts() -> None:
         ("contains", ["a", "b"], "b", True),
         ("contains_all", ["a", "b"], ["a", "b"], True),
         ("set_equals", [2, 1], [1, 2], True),
+        ("set_equals", [1, 1, 2], [2, 1], True),
+        ("set_equals", [True], [1], False),
+        ("equals", True, 1, False),
+        ("equals", [True], [1], False),
         ("length_equals", [1, 2], 2, True),
+        ("length_equals", [1, 2], "2", False),
         ("gte", 0.8, 0.7, True),
+        ("gte", "0.8", 0.7, False),
+        ("gte", float("inf"), 0.7, False),
         ("lte", 4, 4, True),
         ("not_empty", "", None, False),
         ("all_not_empty", ["a", "b"], None, True),
@@ -142,19 +150,107 @@ def test_score_assertion_operators(
 
 
 def test_validate_taskset_rejects_out_of_range_task_count() -> None:
-    payload = {
-        "schema_version": "pkv.mcp_quality_tasks.v1",
-        "policy": {
-            "mode": "threshold_enforced",
-            "ci_contract": "schema_all_checks_and_thresholds",
-            "target_gate_activation": "active",
-        },
-        "target_thresholds": {},
-        "tasks": [{"id": f"task-{index}"} for index in range(9)],
-    }
+    payload = yaml.safe_load(DEFAULT_TASKSET.read_text(encoding="utf-8"))
+    payload["tasks"] = payload["tasks"][:9]
 
     with pytest.raises(ValueError, match="10-20"):
         _validate_taskset(payload)
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("threshold_bool", r"finite number in \[0, 1\]"),
+        ("threshold_missing", "complete v1 dimension set"),
+        ("task_category", "non-empty category"),
+        ("expected_tool_type", "non-empty string tool"),
+        ("assertions_type", "non-empty list"),
+        ("duplicate_assertion", "globally unique"),
+        ("unknown_dimension", "unknown target dimension"),
+        ("unsupported_operator", "unsupported assertion operator"),
+        ("empty_path", "path must be a non-empty string"),
+        ("zero_weight", "weight must be finite and positive"),
+        ("missing_expected", "requires expected value"),
+        ("invalid_priority", "priority is invalid"),
+        ("invalid_impact", "impact is invalid"),
+    ],
+)
+def test_validate_taskset_rejects_malformed_contracts(
+    case: str,
+    message: str,
+) -> None:
+    payload = yaml.safe_load(DEFAULT_TASKSET.read_text(encoding="utf-8"))
+    first_task = payload["tasks"][0]
+    first_assertion = first_task["assertions"][0]
+
+    if case == "threshold_bool":
+        payload["target_thresholds"]["overall"] = True
+    elif case == "threshold_missing":
+        payload["target_thresholds"].pop("citability")
+    elif case == "task_category":
+        first_task["category"] = ""
+    elif case == "expected_tool_type":
+        first_task["expected_call"]["tool"] = 7
+    elif case == "assertions_type":
+        first_task["assertions"] = {}
+    elif case == "duplicate_assertion":
+        duplicate = copy.deepcopy(payload["tasks"][1]["assertions"][0])
+        duplicate["id"] = first_assertion["id"]
+        payload["tasks"][1]["assertions"].append(duplicate)
+    elif case == "unknown_dimension":
+        first_assertion["dimension"] = "accuracy"
+    elif case == "unsupported_operator":
+        first_assertion["op"] = "roughly_equals"
+    elif case == "empty_path":
+        first_assertion["path"] = ""
+    elif case == "zero_weight":
+        first_assertion["weight"] = 0
+    elif case == "missing_expected":
+        first_assertion["op"] = "equals"
+        first_assertion.pop("expected", None)
+    elif case == "invalid_priority":
+        first_assertion["priority"] = "urgent"
+    elif case == "invalid_impact":
+        first_assertion["impact"] = "catastrophic"
+    else:  # pragma: no cover - parameter table is exhaustive
+        raise AssertionError(case)
+
+    with pytest.raises(ValueError, match=message):
+        _validate_taskset(payload)
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("payload_type", "must be a mapping"),
+        ("proposal_item_type", "each proposal must be a mapping"),
+        ("task_id_type", "task ids must be non-empty"),
+        ("tool_type", "non-empty string tool"),
+        ("missing_arguments", "arguments mapping"),
+    ],
+)
+def test_validate_proposals_rejects_malformed_calls(
+    case: str,
+    message: str,
+) -> None:
+    taskset = yaml.safe_load(DEFAULT_TASKSET.read_text(encoding="utf-8"))
+    proposals = yaml.safe_load(DEFAULT_PROPOSALS.read_text(encoding="utf-8"))
+
+    if case == "payload_type":
+        proposals = []  # type: ignore[assignment]
+    elif case == "proposal_item_type":
+        proposals["proposals"][0] = "not-a-mapping"
+    elif case == "task_id_type":
+        proposals["proposals"][0]["task_id"] = 1
+    elif case == "tool_type":
+        proposals["proposals"][0]["proposed_call"]["tool"] = 7
+    elif case == "missing_arguments":
+        proposals["proposals"][0]["proposed_call"].pop("arguments")
+    else:  # pragma: no cover - parameter table is exhaustive
+        raise AssertionError(case)
+
+    with pytest.raises(ValueError, match=message):
+        _validate_proposals(proposals, taskset)
 
 
 def test_default_taskset_is_version_controlled_beside_runner() -> None:

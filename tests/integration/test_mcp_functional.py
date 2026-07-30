@@ -74,6 +74,32 @@ def parse_tool_result(result: Any) -> Dict[str, Any]:
     raise ValueError(f"无法解析 call_tool 结果: {type(result)}")
 
 
+def assert_stats_payload(payload: Dict[str, Any]) -> None:
+    """Assert the canonical public statistics schema."""
+
+    assert set(payload) == {"total_entries", "by_source_type", "top_tags"}
+    assert isinstance(payload["total_entries"], int)
+    assert not isinstance(payload["total_entries"], bool)
+    assert payload["total_entries"] >= 0
+    assert isinstance(payload["by_source_type"], list)
+    assert all(
+        isinstance(item, list)
+        and len(item) == 2
+        and isinstance(item[0], str)
+        and isinstance(item[1], int)
+        and not isinstance(item[1], bool)
+        for item in payload["by_source_type"]
+    )
+    assert isinstance(payload["top_tags"], list)
+    assert all(
+        set(item) == {"name", "count"}
+        and isinstance(item["name"], str)
+        and isinstance(item["count"], int)
+        and not isinstance(item["count"], bool)
+        for item in payload["top_tags"]
+    )
+
+
 # ============================================================
 # Fixtures
 # ============================================================
@@ -440,8 +466,8 @@ class TestResourceRegistration:
         """应返回静态 Resource（pkv://tags, pkv://stats）。"""
         resources = await mcp.list_resources()
         uris = {str(r.uri) for r in resources}
-        assert "pkv://tags" in uris or "pkv://tags/" in uris
-        assert "pkv://stats" in uris or "pkv://stats/" in uris
+        assert "pkv://tags" in uris
+        assert "pkv://stats" in uris
 
 
 # ============================================================
@@ -534,8 +560,7 @@ class TestToolCallReadonly:
             raw = await mcp.call_tool("get_stats", {})
 
         result = parse_tool_result(raw)
-        # get_statistics 返回的字典应包含条目信息
-        assert "total_entries" in result or "total" in result
+        assert_stats_payload(result)
 
 
 # ============================================================
@@ -591,7 +616,7 @@ class TestToolCallWriteSecurity:
         )
         result = parse_tool_result(raw)
         assert result["success"] is False
-        assert "scheme" in result["error"] or "http" in result["error"]
+        assert result["error"] == "URL scheme 必须是 http 或 https，当前: ftp"
 
     @pytest.mark.asyncio
     async def test_archive_url_rejects_empty(self):
@@ -629,7 +654,7 @@ class TestToolCallWriteSecurity:
         )
         result = parse_tool_result(raw)
         assert result["success"] is False
-        assert "超过" in result["error"] or "限制" in result["error"]
+        assert result["error"] == "文本长度 100001 超过限制 100000 字符"
 
     @pytest.mark.asyncio
     async def test_get_related_invalid_id(self):
@@ -1055,7 +1080,7 @@ class TestResourceRead:
 
         content = list(contents)[0]
         data = json.loads(content.content)
-        assert "total_entries" in data or "total" in data
+        assert_stats_payload(data)
 
     @pytest.mark.asyncio
     async def test_read_entry_content_resource(self, populated_db):
@@ -1071,8 +1096,7 @@ class TestResourceRead:
         content = list(contents)[0]
         text = content.content
         assert isinstance(text, str)
-        # 内容应来自 Markdown 文件
-        assert "AI 工程化" in text or "title" in text.lower()
+        assert "AI 工程化" in text
 
     @pytest.mark.asyncio
     async def test_read_entry_metadata_resource(self, populated_db):

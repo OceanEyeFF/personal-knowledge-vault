@@ -191,4 +191,4 @@ class TestVectorStoreDelete:
         results = vector_store.search_doc(vec1, k=2)
         result_ids = [r[0] for r in results]
         assert 1 not in result_ids
-        assert 2 in result_ids or 3 in result_ids
+        assert set(result_ids) == {2, 3}
