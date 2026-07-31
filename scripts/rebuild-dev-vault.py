@@ -164,9 +164,7 @@ def resolve_rebuild_root(
         pass
     for part in lexical.parts[1:]:
         if Path(part).name.casefold() in _PROHIBITED_ROOT_NAMES:
-            raise RootRejectedError(
-                f"重建根路径不得包含生产数据目录名: {part}"
-            )
+            raise RootRejectedError(f"重建根路径不得包含生产数据目录名: {part}")
 
     # 2. 仓库外路径一律拒绝（无任何旁路开关）。
     if not _is_relative_to(lexical, project_root):
@@ -187,21 +185,15 @@ def resolve_rebuild_root(
     rel_parts = lexical.relative_to(test_root).parts
     for part in rel_parts:
         if Path(part).name.casefold() in _TEST_ROOT_NAMES:
-            raise RootRejectedError(
-                f"重建根路径不得嵌套测试根目录名: {part}"
-            )
+            raise RootRejectedError(f"重建根路径不得嵌套测试根目录名: {part}")
 
     # 4. 仅对候选根执行链接检查与解析后边界复核。
     link = _has_unsafe_link_on_path(test_root)
     if link is not None:
-        raise RootRejectedError(
-            f"测试数据路径不得经过 junction 或符号链接: {link}"
-        )
+        raise RootRejectedError(f"测试数据路径不得经过 junction 或符号链接: {link}")
     link = _has_unsafe_link_on_path(lexical)
     if link is not None:
-        raise RootRejectedError(
-            f"测试数据路径不得经过 junction 或符号链接: {link}"
-        )
+        raise RootRejectedError(f"测试数据路径不得经过 junction 或符号链接: {link}")
     resolved = lexical.resolve(strict=False)
     resolved_test_root = test_root.resolve(strict=False)
     if not _is_relative_to(resolved, resolved_test_root):
@@ -338,9 +330,7 @@ def _validate_rebuilt_root(root: Path, db_path: Path) -> dict:
                 f"manifest 版本不支持: {manifest.get('manifest_version')!r}"
             )
         if manifest.get("tool") != TOOL_NAME:
-            manifest_issues.append(
-                f"manifest 工具标识不匹配: {manifest.get('tool')!r}"
-            )
+            manifest_issues.append(f"manifest 工具标识不匹配: {manifest.get('tool')!r}")
         if not isinstance(manifest.get("seeded"), bool):
             manifest_issues.append("manifest seeded 字段必须是布尔值")
     issues.extend(manifest_issues)
@@ -360,9 +350,7 @@ def _validate_rebuilt_root(root: Path, db_path: Path) -> dict:
         if schema_version != latest:
             issues.append(f"数据库版本 {schema_version} 不是最新 {latest}")
         if pending:
-            issues.append(
-                f"存在 {len(pending)} 个待执行迁移，不能视为 up_to_date"
-            )
+            issues.append(f"存在 {len(pending)} 个待执行迁移，不能视为 up_to_date")
 
         entry_count = _safe_entry_count(db_path)
         if entry_count is None:
@@ -620,7 +608,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="仅健康检查，绝不写入",
     )
-    parser.add_argument("--json", action="store_true", help="输出机器可读 JSON 结果契约")
+    parser.add_argument(
+        "--json", action="store_true", help="输出机器可读 JSON 结果契约"
+    )
     parser.add_argument("--quiet", action="store_true", help="抑制人类可读输出")
     return parser.parse_args(argv)
 

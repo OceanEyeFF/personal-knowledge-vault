@@ -125,6 +125,7 @@ def _make_sentinel_root(root: Path) -> Path:
 # 危险目标拒绝（纯字符串，不访问文件系统）
 # ============================================================
 
+
 class TestRootRejection:
     def test_default_root_is_dedicated_data_test_dir(self) -> None:
         module = _load_script_module()
@@ -244,6 +245,7 @@ class TestRootRejection:
 # fail-closed 契约（sentinel-only / 缺失 DB / 无效 manifest）
 # ============================================================
 
+
 def test_sentinel_only_root_fails_closed(managed_root: Path) -> None:
     root = _make_sentinel_root(managed_root)
     result = _run_script(["--root", str(root), "--json"])
@@ -288,9 +290,7 @@ def test_check_only_on_missing_root_fails_without_creating(
 
 def test_force_rebuilds_incomplete_root(managed_root: Path) -> None:
     root = _make_sentinel_root(managed_root)
-    result = _run_script(
-        ["--root", str(root), "--force", "--count", "2", "--json"]
-    )
+    result = _run_script(["--root", str(root), "--force", "--count", "2", "--json"])
     assert result.returncode == 0, result.stdout + result.stderr
     report = _parse_json_output(result)
     assert report["ok"]
@@ -338,9 +338,7 @@ def test_seed_count_drift_fails_closed(managed_root: Path) -> None:
     except (OSError, json.JSONDecodeError) as exc:
         raise AssertionError(f"manifest 读取失败: {manifest_path}") from exc
     manifest["seed_count"] = 99
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
-    )
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     result = _run_script(["--root", str(root), "--json"])
     assert result.returncode == 1
     report = _parse_json_output(result)
@@ -388,6 +386,7 @@ def test_no_seed_root_is_verifiable(managed_root: Path) -> None:
 # ============================================================
 # 端到端流程（子进程，受控根位于仓库 .data-test 下）
 # ============================================================
+
 
 def test_rebuild_creates_isolated_root(managed_root: Path) -> None:
     result = _run_script(
@@ -486,9 +485,7 @@ def test_rebuild_seed_is_deterministic(managed_root: Path) -> None:
 def test_check_only_reports_valid_root(managed_root: Path) -> None:
     rebuilt = _run_script(["--root", str(managed_root), "--count", "2", "--json"])
     assert rebuilt.returncode == 0, rebuilt.stdout + rebuilt.stderr
-    checked = _run_script(
-        ["--root", str(managed_root), "--check-only", "--json"]
-    )
+    checked = _run_script(["--root", str(managed_root), "--check-only", "--json"])
     assert checked.returncode == 0, checked.stdout + checked.stderr
     report = _parse_json_output(checked)
     assert report["phase"] == "checked"
