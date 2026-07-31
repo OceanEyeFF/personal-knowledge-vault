@@ -34,12 +34,14 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 **用途**: 使用 Conda 创建 Python 3.11 环境并安装依赖
 
 **运行方式**:
+
 ```powershell
 # 在 PowerShell 中运行
 .\scripts\setup-conda.ps1
 ```
 
 **功能**:
+
 - ✅ 检查 Conda 是否安装
 - ✅ 创建 Python 3.11 Conda 环境 (`py311-private`)
 - ✅ 通过 `conda run` 固定目标环境
@@ -50,6 +52,7 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 - ✅ 创建数据目录
 
 **优势**:
+
 - ✨ 避免 Python 3.13 兼容性问题
 - ✨ 环境隔离更彻底
 - ✨ 可以方便地切换 Python 版本
@@ -61,12 +64,14 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 **用途**: 在指定 Conda 环境中运行 smoke、收集契约、离线全套或 Windows P0 预检
 
 **运行方式**:
+
 ```powershell
 .\scripts\test-conda.ps1
 .\scripts\test-conda.ps1 -EnvironmentName pkv-test-py311 -Suite P0
 ```
 
 **功能**:
+
 - ✅ 检查 Conda 环境是否存在
 - ✅ 强制 Python 3.11 并执行 `pip check`
 - ✅ 通过 `run-test.ps1` 使用显式目标环境和隔离路径
@@ -82,25 +87,29 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 
 1. **确保已安装 Conda**:
    - 如果没有，请安装 [Miniconda](https://docs.conda.io/en/latest/miniconda.html) 或 Anaconda
-   - 下载地址: https://docs.conda.io/en/latest/miniconda.html
+   - 下载地址: <https://docs.conda.io/en/latest/miniconda.html>
 
 2. **运行 Conda 安装脚本**:
+
    ```powershell
    .\scripts\setup-conda.ps1
    ```
 
 3. **编辑本机配置**:
+
    ```powershell
    notepad config\local.yaml
    # 填入 ai.llm.api_key 和 ai.embedding.api_key
    ```
 
 4. **运行验证测试**:
+
    ```powershell
    .\scripts\test-conda.ps1
    ```
 
 5. **使用统一 Windows 运行器**:
+
    ```powershell
    .\scripts\run-windows.ps1 python -m src.cli.commands --help
    ```
@@ -120,6 +129,7 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 **用途**: 使用隔离的测试数据路径运行 PKV CLI，或通过 `-Direct -Command @(...)` 运行 pytest、Python 等直接命令（不影响生产数据）
 
 **运行方式**:
+
 ```powershell
 # 在测试环境归档网页
 .\scripts\run-test.ps1 archive "https://example.com"
@@ -135,6 +145,7 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 ```
 
 **功能**:
+
 - ✅ 由脚本直接设置进程级测试路径，不读取额外配置文件
 - ✅ `-Direct` 模式通过显式 `-Command` 数组安全运行 pytest、Python 诊断等非 CLI 命令
 - ✅ 隔离测试数据到 `.data-test/` 目录
@@ -144,11 +155,13 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 - ✅ 显示测试环境状态
 
 **命令分派**:
+
 - 默认模式会执行 `python -m src.cli.commands <参数>`，只用于 `archive`、`search`、`stats` 等 PKV CLI 子命令。
 - `-Direct` 模式原样执行显式 `-Command @(...)` 数组中的元素，例如 pytest 或 Python 脚本及其参数。
 - 两种模式都会先设置 `DATA_DIR`、`DB_PATH`、`VAULT_DIR`、`VECTOR_DIR`、`LOG_DIR`、`TMP_DIR`，并拒绝 `.data/`、junction 与符号链接目标。
 
 **使用场景**:
+
 - 测试新功能而不影响生产数据
 - 验证数据库变更
 - 开发调试
@@ -160,12 +173,14 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 **用途**: 在安全隔离根上执行 可受控清理 → 数据库迁移 → 确定性最小种子 → 健康检查 的完整重建流程，幂等可重复。
 
 **安全契约**:
+
 - 默认根目录为仓库内 `.data-test/rebuild-dev`，绝不隐式指向生产 `.data/`。
-- 自定义 `--root` 必须位于仓库 `.data-test` 下；`.data`、仓库其他目录、文件系统根、用户主目录等危险目标一律拒绝。
-- 仓库外根目录默认拒绝，仅 CI/测试可显式传入 `--allow-outside-repo`（仍拒绝 `.data` 与链接目标）。
+- 重建根严格只能是仓库 `.data-test` 的专用子目录；`.data`、仓库其他目录、仓库外路径、文件系统根、用户主目录等危险目标一律拒绝，无任何旁路开关。
+- 危险目标拒绝为纯字符串判断（不解析、不 stat 被拒绝路径）。
 - 清理前递归检查 junction / 符号链接 / 硬链接；迁移始终 `--no-backup` 语义（`auto_backup=False`），不会调用读取生产 `.data` 的备份脚本。
 
 **运行方式**:
+
 ```powershell
 # 重建或检查默认根（.data-test/rebuild-dev）
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py")
@@ -181,12 +196,13 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 ```
 
 **行为**（同一根重复执行）:
+
 1. 根目录已存在且非空、未传 `--force` → 只读健康检查，报告 `up_to_date`（幂等，不做任何写入）。
 2. 根目录为空/不存在 → 迁移 8 个脚本至 v1.2.3 + 生成默认 3 条确定性种子 + 健康检查。
 3. 传 `--force` → 受控清理（先校验链接）后完整重建。
 4. `--check-only` → 任意状态只读健康检查。
 
-**离线测试**: `tests/unit/test_rebuild_dev_vault.py`（临时根隔离 / 幂等 / 危险目标拒绝 / 结果契约）。
+**离线测试**: `tests/unit/test_rebuild_dev_vault.py`（受控根隔离 / 幂等 / 危险目标拒绝含仓库外一律拒绝 / 结果契约 / 生产路径不访问监控）。测试重建均使用 `.data-test` 下受控临时子目录，外部临时目录仅用于验证“必须被拒绝”。
 
 ---
 
@@ -195,6 +211,7 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 **用途**: 备份生产数据到 `.data-backup/` 目录
 
 **运行方式**:
+
 ```powershell
 # 手动备份
 .\scripts\backup-data.ps1
@@ -204,12 +221,14 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 ```
 
 **功能**:
+
 - ✅ 完整备份 `.data/` 目录
 - ✅ 生成备份信息文件（时间戳、大小、说明）
 - ✅ 显示最近的 5 个备份
 - ✅ 自动计算备份大小和文件数
 
 **最佳实践**:
+
 - 重要变更前先备份
 - 定期清理旧备份（手动）
 
@@ -220,6 +239,7 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 **用途**: 从备份恢复数据
 
 **运行方式**:
+
 ```powershell
 # 交互式选择备份恢复
 .\scripts\restore-data.ps1
@@ -229,12 +249,14 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 ```
 
 **功能**:
+
 - ✅ 列出所有可用备份（含详细信息）
 - ✅ 交互式选择备份版本
 - ✅ 安全确认机制（需输入 YES）
 - ✅ 自动验证恢复结果
 
 **警告**:
+
 - ⚠️ 恢复操作会**完全替换**当前 `.data/` 目录
 - ⚠️ 建议先备份当前数据再恢复
 
@@ -253,11 +275,13 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 ### Q1: PowerShell 提示"无法加载脚本"
 
 **错误信息**:
+
 ```
 无法加载文件 xxx.ps1，因为在此系统上禁止运行脚本
 ```
 
 **解决方案**:
+
 ```powershell
 # 临时允许运行脚本（仅当前会话）
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
@@ -271,6 +295,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ### Q2: 虚拟环境激活失败
 
 **解决方案**:
+
 ```powershell
 # 手动激活虚拟环境
 .\.venv\Scripts\Activate.ps1   # PowerShell
@@ -286,11 +311,13 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 **原因**: Python 3.13 太新，部分包还没有提供预编译版本
 
 **推荐解决方案**: 使用 Conda 创建 Python 3.11 环境
+
 ```powershell
 .\scripts\setup-conda.ps1
 ```
 
 **或手动降级 Python**:
+
 1. 卸载 Python 3.13
 2. 安装 Python 3.11
 3. 重新运行 `.\scripts\legacy\setup.ps1`
@@ -302,6 +329,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 **原因**: 需要 C++ 编译器
 
 **Windows 解决方案**:
+
 1. 安装 [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 2. 或安装 [Visual Studio Community](https://visualstudio.microsoft.com/)（选择"使用 C++ 的桌面开发"工作负载）
 

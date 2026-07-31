@@ -1,13 +1,16 @@
 """离线测试：scripts/rebuild-dev-vault.py 开发专用轻量重建入口。
 
 覆盖:
-- 临时根隔离:重建产物全部落在隔离根内，绝不触碰仓库 .data
+- 受控根隔离:重建产物全部落在仓库 .data-test 下的受控临时子目录内
+- 生产路径契约:脚本不构造、不访问仓库 .data 相关路径（字符串级 + 监控证明）
 - 幂等:重复执行不破坏已有重建，条目数稳定
-- 危险目标拒绝:.data / 仓库外 / 文件系统根 / 主目录 / 链接绕过
-- 结果契约:--json 输出结构与退出码
+- 危险目标拒绝:纯字符串拒绝（不调用 resolve/stat/exists/lstat）；仓库外一律拒绝
+- 结果契约:--json 输出结构与退出码；--check-only 只读，不创建目标目录
 
-所有子进程重建均使用 pytest tmp_path（--allow-outside-repo 显式开启），
-或在仓库 .data-test 下创建临时子目录；不读取、不写入生产 .data。
+安全约定:
+- 重建子进程均使用 .data-test 下受控生成的临时子目录（测试后清理），
+  外部 tmp_path 一律只用于验证“必须被拒绝”。
+- 测试不读取、不 stat、不枚举仓库 .data；对其仅做字符串级比较。
 """
 
 from __future__ import annotations
@@ -15,14 +18,18 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
+import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-REPO_DATA_DIR = PROJECT_ROOT / ".data"
+# 仅字符串构造，绝不用于任何文件系统访问。
+_REPO_DATA_PREFIX = os.path.normcase(str(PROJECT_ROOT / ".data"))
 
 
 def _load_script_module():
@@ -51,21 +58,59 @@ def _run_script(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 def _parse_json_output(result: subprocess.CompletedProcess[str]) -> dict:
     assert result.stdout.strip(), f"空 stdout: {result.stderr}"
-    return json.loads(result.stdout)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"stdout 不是合法 JSON: {result.stdout[:200]}") from exc
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _assert_not_production_path(path: str) -> None:
+    """字符串级断言：路径不落在仓库 .data 目录下（不访问文件系统）。"""
+    normalized = os.path.normcase(os.path.normpath(path))
+    prefix = os.path.normcase(os.path.normpath(_REPO_DATA_PREFIX))
+    if normalized == prefix or normalized.startswith(prefix + os.sep):
+        raise AssertionError(f"路径指向生产数据目录: {path}")
+
+
+@pytest.fixture
+def managed_root() -> Iterator[Path]:
+    """仓库 .data-test 下的受控临时根；测试后清理（先校验链接）。"""
+    root = PROJECT_ROOT / ".data-test" / f"rebuild-test-{uuid.uuid4().hex[:12]}"
+    yield root
+    if root.exists():
+        for child in [root, *root.rglob("*")]:
+            try:
+                st = os.lstat(child)
+            except OSError:
+                continue
+            is_reparse = bool((st.st_file_attributes or 0) & 0x400)
+            if is_reparse or os.path.islink(child):
+                raise AssertionError(f"测试根包含链接，拒绝自动清理: {child}")
+        try:
+            shutil.rmtree(root)
+        except OSError as exc:
+            raise AssertionError(f"测试根清理失败: {root} - {exc}") from exc
 
 
 # ============================================================
-# 危险目标拒绝（进程内快速验证）
+# 危险目标拒绝（纯字符串，不访问文件系统）
 # ============================================================
 
 class TestRootRejection:
     def test_default_root_is_dedicated_data_test_dir(self) -> None:
         module = _load_script_module()
-        root, in_repo = module.resolve_rebuild_root(module.DEFAULT_ROOT_REL)
-        assert in_repo
+        root = module.resolve_rebuild_root(module.DEFAULT_ROOT_REL)
         assert root == (PROJECT_ROOT / ".data-test" / "rebuild-dev").resolve()
-        # 默认根绝不指向 .data
-        assert ".data" not in [root.name, root.parent.name]
+        # 字符串级：默认根名称不得是 .data
+        assert root.name != ".data"
 
     def test_reject_production_data_dir(self) -> None:
         module = _load_script_module()
@@ -92,27 +137,47 @@ class TestRootRejection:
         with pytest.raises(module.RootRejectedError):
             module.resolve_rebuild_root(str(Path.home()))
 
-    def test_reject_outside_repo_without_explicit_opt_in(
-        self, tmp_path: Path
-    ) -> None:
+    def test_reject_outside_repo_always(self, tmp_path: Path) -> None:
+        """仓库外路径一律拒绝（无任何旁路开关）。"""
         module = _load_script_module()
         with pytest.raises(module.RootRejectedError):
             module.resolve_rebuild_root(str(tmp_path))
-        # 显式开启后允许（CI/测试临时根），但仍拒绝 .data 名称
-        root, in_repo = module.resolve_rebuild_root(
-            str(tmp_path), allow_outside_repo=True
-        )
-        assert not in_repo
-        assert root == tmp_path.resolve()
         with pytest.raises(module.RootRejectedError):
-            module.resolve_rebuild_root(
-                str(tmp_path / ".data"), allow_outside_repo=True
-            )
+            module.resolve_rebuild_root(str(tmp_path / "sub"))
+
+    def test_reject_nested_test_root_and_data_components(self) -> None:
+        module = _load_script_module()
+        with pytest.raises(module.RootRejectedError):
+            module.resolve_rebuild_root(".data-test/.data-test/x")
+        with pytest.raises(module.RootRejectedError):
+            module.resolve_rebuild_root(".data-test/x/.data")
+
+    def test_rejection_never_touches_filesystem(self, monkeypatch) -> None:
+        """危险路径拒绝必须纯字符串判断，不得调用 resolve/stat/exists/lstat。"""
+        module = _load_script_module()
+
+        def boom(*args, **kwargs):
+            raise AssertionError("危险路径拒绝不得访问文件系统")
+
+        monkeypatch.setattr(Path, "resolve", boom)
+        monkeypatch.setattr(Path, "exists", boom)
+        monkeypatch.setattr(Path, "stat", boom)
+        monkeypatch.setattr(os, "lstat", boom)
+        for bad in (
+            ".data",
+            ".data-test",
+            "src",
+            ".",
+            Path.cwd().anchor,
+            str(Path.home()),
+        ):
+            with pytest.raises(module.RootRejectedError):
+                module.resolve_rebuild_root(bad)
 
     def test_reject_symlink_under_test_root(self, tmp_path: Path) -> None:
         module = _load_script_module()
-        # 目标位于系统临时目录；链接建在仓库 .data-test 下（Git 已忽略）。
-        link_dir = PROJECT_ROOT / ".data-test" / f"rebuild-link-{os.getpid()}"
+        # 链接建在仓库 .data-test 下（Git 已忽略），目标位于系统临时目录。
+        link_dir = PROJECT_ROOT / ".data-test" / f"rebuild-link-{uuid.uuid4().hex[:8]}"
         link = link_dir / "evil"
         link_dir.mkdir(parents=True, exist_ok=True)
         target = tmp_path / "real-target"
@@ -135,9 +200,9 @@ class TestRootRejection:
                 subprocess.run(["cmd", "/c", "rmdir", str(link)], check=False)
             subprocess.run(["cmd", "/c", "rmdir", str(link_dir)], check=False)
 
-    def test_reject_hardlinked_db_file_under_root(self, tmp_path: Path) -> None:
+    def test_reject_hardlinked_file_under_root(self) -> None:
         module = _load_script_module()
-        outer = PROJECT_ROOT / ".data-test" / f"rebuild-hardlink-{os.getpid()}"
+        outer = PROJECT_ROOT / ".data-test" / f"rebuild-hardlink-{uuid.uuid4().hex[:8]}"
         outer.mkdir(parents=True, exist_ok=True)
         probe = outer / "probe.txt"
         probe.write_text("x", encoding="utf-8")
@@ -155,30 +220,12 @@ class TestRootRejection:
 
 
 # ============================================================
-# 端到端流程（子进程，临时根隔离）
+# 端到端流程（子进程，受控根位于仓库 .data-test 下）
 # ============================================================
 
-def _snapshot_data_dir() -> tuple[bool, int | None]:
-    """记录仓库 .data 目录状态，用于验证重建不触碰生产数据。"""
-    if not REPO_DATA_DIR.exists():
-        return False, None
-    return True, REPO_DATA_DIR.stat().st_mtime_ns
-
-
-def test_rebuild_creates_isolated_root(tmp_path: Path) -> None:
-    root = tmp_path / "vault-rebuild"
-    data_before = _snapshot_data_dir()
+def test_rebuild_creates_isolated_root(managed_root: Path) -> None:
     result = _run_script(
-        [
-            "--root",
-            str(root),
-            "--seed",
-            "20260731",
-            "--count",
-            "3",
-            "--allow-outside-repo",
-            "--json",
-        ]
+        ["--root", str(managed_root), "--seed", "20260731", "--count", "3", "--json"]
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -190,74 +237,38 @@ def test_rebuild_creates_isolated_root(tmp_path: Path) -> None:
     assert report["schema_version"] == "1.2.3"
     assert report["health"]["healthy"]
 
-    db_path = root / "db" / "knowledge_vault.db"
+    db_path = managed_root / "db" / "knowledge_vault.db"
     assert db_path.exists()
-    assert (root / "vault").is_dir()
-    markdown_files = list((root / "vault").rglob("*.md"))
-    assert len(markdown_files) == 3
-    # 仓库 .data 目录状态必须保持不变（不存在，或 mtime 不变）
-    assert _snapshot_data_dir() == data_before, "重建不得触碰仓库 .data"
+    assert len(list((managed_root / "vault").rglob("*.md"))) == 3
+    # 契约：报告中的实际路径位于受控根内，且字符串级不指向生产 .data
+    assert _is_under(Path(report["root"]), managed_root.resolve())
+    assert _is_under(Path(report["db_path"]), managed_root.resolve())
+    _assert_not_production_path(report["root"])
+    _assert_not_production_path(report["db_path"])
 
 
-def test_rebuild_is_idempotent(tmp_path: Path) -> None:
-    root = tmp_path / "vault-rebuild"
-    first = _run_script(
-        [
-            "--root",
-            str(root),
-            "--count",
-            "3",
-            "--allow-outside-repo",
-            "--json",
-        ]
-    )
+def test_rebuild_is_idempotent(managed_root: Path) -> None:
+    first = _run_script(["--root", str(managed_root), "--count", "3", "--json"])
     assert first.returncode == 0, first.stdout + first.stderr
-    db_path = root / "db" / "knowledge_vault.db"
+    db_path = managed_root / "db" / "knowledge_vault.db"
     before_mtime = db_path.stat().st_mtime_ns
 
-    second = _run_script(
-        [
-            "--root",
-            str(root),
-            "--count",
-            "3",
-            "--allow-outside-repo",
-            "--json",
-        ]
-    )
+    second = _run_script(["--root", str(managed_root), "--count", "3", "--json"])
     assert second.returncode == 0, second.stdout + second.stderr
-    second_report = _parse_json_output(second)
-    assert second_report["phase"] == "up_to_date"
-    assert second_report["ok"]
-    assert second_report["stats"]["total_entries"] == 3
+    report = _parse_json_output(second)
+    assert report["phase"] == "up_to_date"
+    assert report["ok"]
+    assert report["stats"]["total_entries"] == 3
     # 幂等路径不做任何写入
     assert db_path.stat().st_mtime_ns == before_mtime
 
 
-def test_rebuild_force_rebuilds_with_new_count(tmp_path: Path) -> None:
-    root = tmp_path / "vault-rebuild"
-    first = _run_script(
-        [
-            "--root",
-            str(root),
-            "--count",
-            "2",
-            "--allow-outside-repo",
-            "--json",
-        ]
-    )
+def test_rebuild_force_rebuilds_with_new_count(managed_root: Path) -> None:
+    first = _run_script(["--root", str(managed_root), "--count", "2", "--json"])
     assert first.returncode == 0, first.stdout + first.stderr
 
     second = _run_script(
-        [
-            "--root",
-            str(root),
-            "--count",
-            "5",
-            "--force",
-            "--allow-outside-repo",
-            "--json",
-        ]
+        ["--root", str(managed_root), "--count", "5", "--force", "--json"]
     )
     assert second.returncode == 0, second.stdout + second.stderr
     report = _parse_json_output(second)
@@ -265,14 +276,13 @@ def test_rebuild_force_rebuilds_with_new_count(tmp_path: Path) -> None:
     assert report["seeded"] == 5
     assert report["stats"]["total_entries"] == 5
     assert report["migrations_applied"] == 8
-    markdown_files = list((root / "vault").rglob("*.md"))
-    assert len(markdown_files) == 5
+    assert len(list((managed_root / "vault").rglob("*.md"))) == 5
 
 
-def test_rebuild_seed_is_deterministic(tmp_path: Path) -> None:
-    root_a = tmp_path / "a"
-    root_b = tmp_path / "b"
-    args = ["--count", "4", "--seed", "42", "--allow-outside-repo", "--json"]
+def test_rebuild_seed_is_deterministic(managed_root: Path) -> None:
+    root_a = managed_root / "a"
+    root_b = managed_root / "b"
+    args = ["--count", "4", "--seed", "42", "--json"]
     result_a = _run_script(["--root", str(root_a), *args])
     result_b = _run_script(["--root", str(root_b), *args])
     assert result_a.returncode == 0, result_a.stdout + result_a.stderr
@@ -298,33 +308,23 @@ def test_rebuild_seed_is_deterministic(tmp_path: Path) -> None:
     assert len(titles_a) == 4
 
 
-def test_check_only_is_read_only(tmp_path: Path) -> None:
-    root = tmp_path / "vault-rebuild"
-    # 对空根执行 --check-only：绝不创建任何目录
+def test_check_only_is_read_only(managed_root: Path) -> None:
+    # 空根 --check-only：绝不创建目标目录
     result = _run_script(
-        ["--root", str(root), "--check-only", "--allow-outside-repo", "--json"]
+        ["--root", str(managed_root), "--check-only", "--json"]
     )
     assert result.returncode == 0, result.stdout + result.stderr
     report = _parse_json_output(result)
     assert report["phase"] == "checked"
     assert report["ok"]
     assert report["schema_version"] == "0.0.0"
-    assert not root.exists(), "--check-only 不得创建任何目录"
+    assert not managed_root.exists(), "--check-only 不得创建目标目录"
 
     # 重建后 check-only 应报告已迁移状态
-    rebuilt = _run_script(
-        [
-            "--root",
-            str(root),
-            "--count",
-            "2",
-            "--allow-outside-repo",
-            "--json",
-        ]
-    )
+    rebuilt = _run_script(["--root", str(managed_root), "--count", "2", "--json"])
     assert rebuilt.returncode == 0, rebuilt.stdout + rebuilt.stderr
     checked = _run_script(
-        ["--root", str(root), "--check-only", "--allow-outside-repo", "--json"]
+        ["--root", str(managed_root), "--check-only", "--json"]
     )
     assert checked.returncode == 0, checked.stdout + checked.stderr
     check_report = _parse_json_output(checked)
@@ -332,18 +332,8 @@ def test_check_only_is_read_only(tmp_path: Path) -> None:
     assert check_report["stats"]["total_entries"] == 2
 
 
-def test_result_contract_fields(tmp_path: Path) -> None:
-    root = tmp_path / "vault-rebuild"
-    result = _run_script(
-        [
-            "--root",
-            str(root),
-            "--count",
-            "1",
-            "--allow-outside-repo",
-            "--json",
-        ]
-    )
+def test_result_contract_fields(managed_root: Path) -> None:
+    result = _run_script(["--root", str(managed_root), "--count", "1", "--json"])
     assert result.returncode == 0, result.stdout + result.stderr
     report = _parse_json_output(result)
     for key in ("ok", "phase", "root", "db_path", "schema_version", "health", "stats"):
@@ -354,18 +344,62 @@ def test_result_contract_fields(tmp_path: Path) -> None:
     assert result.stdout.strip().startswith("{")
 
 
-def test_dangerous_root_rejected_in_subprocess() -> None:
+def test_resolution_never_touches_production_data_path(
+    managed_root: Path, monkeypatch
+) -> None:
+    """监控证明：解析候选根时访问过的路径均不以仓库 .data 为前缀。"""
+    module = _load_script_module()
+    touched: list[str] = []
+    real_resolve = Path.resolve
+    real_exists = Path.exists
+    real_stat = Path.stat
+    real_lstat = os.lstat
+
+    def spy_resolve(self, *args, **kwargs):
+        touched.append(str(self))
+        return real_resolve(self, *args, **kwargs)
+
+    def spy_exists(self, *args, **kwargs):
+        touched.append(str(self))
+        return real_exists(self, *args, **kwargs)
+
+    def spy_stat(self, *args, **kwargs):
+        touched.append(str(self))
+        return real_stat(self, *args, **kwargs)
+
+    def spy_lstat(path):
+        touched.append(str(path))
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "resolve", spy_resolve)
+    monkeypatch.setattr(Path, "exists", spy_exists)
+    monkeypatch.setattr(Path, "stat", spy_stat)
+    monkeypatch.setattr(os, "lstat", spy_lstat)
+
+    root = module.resolve_rebuild_root(str(managed_root))
+    assert root == managed_root.resolve()
+    assert touched, "候选根解析应发生文件系统访问"
+    for touched_path in touched:
+        _assert_not_production_path(touched_path)
+
+
+def test_dangerous_root_rejected_in_subprocess(tmp_path: Path) -> None:
+    # .data → exit 2（纯字符串拒绝）
     result = _run_script(["--root", ".data", "--json"])
     assert result.returncode == 2
     report = _parse_json_output(result)
     assert not report["ok"]
     assert "生产数据" in report["error"]
 
+    # 仓库内非 .data-test 路径 → exit 2
     result = _run_script(["--root", "src", "--json"])
     assert result.returncode == 2
-    report = _parse_json_output(result)
-    assert not report["ok"]
 
-    outside = _run_script(["--root", str(Path.home() / "forbidden-rebuild")])
-    assert outside.returncode == 2
-    assert "仓库外" in outside.stderr
+    # 仓库外（外部 tmp_path）→ exit 2
+    result = _run_script(["--root", str(tmp_path)])
+    assert result.returncode == 2
+    assert "仓库外" in result.stderr
+
+    # 已移除的旁路开关必须被 CLI 拒绝（未知参数 → exit 2）
+    result = _run_script(["--root", str(tmp_path), "--allow-outside-repo"])
+    assert result.returncode == 2

@@ -9,13 +9,21 @@
 
 ## 变更记录 (Changelog)
 
+### 2026-07-31 (P1 安全收紧修订)
+
+- 移除 `--allow-outside-repo` 旁路：重建根严格限定为仓库 `.data-test` 专用子目录，仓库外路径一律拒绝
+- 危险目标拒绝改为纯字符串判断（不 resolve/stat）；测试删除所有对仓库 `.data` 的路径访问，改为字符串级 + monkeypatch/监控契约
+- 测试重建改用 `.data-test` 下受控临时子目录（测后清理），外部临时目录仅用于验证拒绝行为
+
 ### 2026-07-31 (P1 开发专用轻量重建)
+
 - 新增 `scripts/rebuild-dev-vault.py`：隔离根上的 清理→迁移→确定性最小种子→健康检查 重建入口
 - 默认根 `.data-test/rebuild-dev`；拒绝 `.data`、仓库外与危险目标；幂等可重复；`--json` 结果契约
 - 新增离线测试 `tests/unit/test_rebuild_dev_vault.py`（15 用例：临时根隔离/幂等/危险目标拒绝/结果契约）
 - 文档：`scripts/README.md`、`scripts/CLAUDE.md` 更新操作说明
 
 ### 2026-02-23 10:45
+
 - M12 完成：AI 对话完整实现 -- 流式输出 + 知识引用 + URL 归档 + 会话管理
 - 新增 `src/gui/` 模块扩展：ChatView、ChatViewModel、AutocompletePopup、knowledge_ref、theme_colors
 - 新增 `scripts/migrations/004_add_chat_sessions.sql` 数据库迁移
@@ -27,20 +35,23 @@
 - 版本号升级至 v0.8.0-alpha
 
 ### 2026-02-19 00:58
+
 - M8 + M9 完成：MCP 服务层（只读 + 写入 + Prompt + 安全加固）
-- 新增 `src/mcp/` 模块（server.py, tools.py, resources.py, prompts.py, utils.py, __main__.py）
+- 新增 `src/mcp/` 模块（server.py, tools.py, resources.py, prompts.py, utils.py, **main**.py）
 - 新增三层 MCP 测试体系：单元 4 文件 + 集成 2 文件 + 黑盒 1 文件（共 203 tests）
 - 新增 `config/workflows/archive-text.yaml` 工作流配置
 - `src/storage/vector_store.py` 新增 `get_doc_vector()` 方法
 - 版本号升级至 v0.7.0
 
 ### 2026-02-16 18:51
+
 - 基于 v0.6.1 和 M6+M7 完成情况全面更新索引体系
 - 新增 CLI 模块、Scripts 运维脚本、数据库迁移管理器的完整文档
 - 更新模块结构图,体现 AI 安全测试和数据库迁移系统
 - 补充测试覆盖率统计和最新的项目规模数据
 
 ### 2026-02-16 01:53
+
 - 生成完整的 CLAUDE.md 索引文档体系
 - 添加模块结构图和导航面包屑
 - 为每个核心模块生成独立的 CLAUDE.md 文档
@@ -194,7 +205,7 @@ graph TD
 ## 模块索引
 
 | 模块 | 路径 | 职责 | 文档 |
-|------|------|------|------|
+| ------ | ------ | ------ | ------ |
 | **GUI 桌面应用** | `src/gui/` | PySide6 桌面界面 -- 浏览/搜索/归档/AI对话/统计/设置 | [CLAUDE.md](./src/gui/CLAUDE.md) |
 | **CLI 交互层** | `src/cli/` | Click 命令行界面、Rich 终端 UI | [CLAUDE.md](./src/cli/CLAUDE.md) |
 | **MCP 服务层** | `src/mcp/` | MCP Server -- 8 Tool + 4 Resource + 3 Prompt + 安全加固 | [CLAUDE.md](./src/mcp/CLAUDE.md) |
@@ -296,7 +307,7 @@ conda activate py311-private
 ### MCP 三层测试体系 (203 tests)
 
 | 层级 | 文件 | 说明 |
-|------|------|------|
+| ------ | ------ | ------ |
 | **Layer 1** 单元测试 | `test_mcp_tools/resources/prompts/security.py` | Mock 隔离 |
 | **Layer 2** 进程内集成 | `test_mcp_functional/integration.py` | FastMCP 调用 |
 | **Layer 3** stdio 黑盒 | `test_mcp_blackbox.py` | JSON-RPC over stdio |
@@ -344,7 +355,7 @@ conda activate py311-private
 **已完成**: M1-M12 全部里程碑
 
 | 里程碑 | 内容 | 日期 |
-|--------|------|------|
+| -------- | ------ | ------ |
 | M1-M5 | 核心后端 (存储/AI/处理器/检索/工作流) | 2026-02-10~15 |
 | M6-M7 | CLI + 文档 | 2026-02-16 |
 | M8-M9 | MCP Server (8T+4R+3P+安全) | 2026-02-19 |

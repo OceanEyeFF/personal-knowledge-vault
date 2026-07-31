@@ -6,10 +6,9 @@
 
 安全契约（禁止生产数据）:
 - 默认根目录为仓库内 ``.data-test/rebuild-dev``，绝不隐式指向 ``.data``。
-- 自定义根目录必须位于仓库 ``.data-test`` 下；``.data``、仓库其他目录、
-  文件系统根、用户主目录等危险目标一律拒绝。
-- 仓库外根目录默认拒绝；仅显式传入 ``--allow-outside-repo``（CI/测试专用）
-  才允许，且仍拒绝 ``.data`` 与危险目标。
+- 重建根严格只能是仓库 ``.data-test`` 的专用子目录；``.data``、仓库其他
+  目录、仓库外路径、文件系统根、用户主目录等危险目标一律拒绝，无任何旁路开关。
+- 危险目标拒绝为纯字符串判断，不解析、不 stat 被拒绝的路径。
 - 清理前检查路径上的 junction / 符号链接 / 硬链接，拒绝绕过边界。
 - 迁移始终以 ``auto_backup=False`` 执行（自动备份脚本会读取生产 ``.data``）。
 
@@ -38,7 +37,7 @@ import stat
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import frontmatter
 
@@ -98,14 +97,6 @@ def _is_unsafe_link(path: Path) -> bool:
     return stat.S_ISLNK(path_stat.st_mode) or is_reparse_point or is_hard_linked_file
 
 
-def _has_production_name(path: Path) -> bool:
-    return path.name.casefold() in _PROHIBITED_ROOT_NAMES
-
-
-def _is_test_root_itself(path: Path) -> bool:
-    return path.name.casefold() in _TEST_ROOT_NAMES
-
-
 def _has_unsafe_link_on_path(root: Path) -> Optional[Path]:
     """检查现有路径链上的 junction / 符号链接 / 硬链接。"""
     parts = list(root.parts)
@@ -132,82 +123,75 @@ def resolve_rebuild_root(
     root_arg: str,
     *,
     project_root: Path = PROJECT_ROOT,
-    allow_outside_repo: bool = False,
-) -> Tuple[Path, bool]:
-    """解析并校验重建根目录，返回 (规范化根, 是否位于仓库内)。"""
+) -> Path:
+    """解析并校验重建根目录（危险拒绝为纯字符串判断，不 resolve/stat）。
+
+    返回规范化后的根目录路径。重建根必须严格是仓库 ``.data-test`` 下的
+    专用子目录；仓库外路径、生产数据目录名与链接绕过一律拒绝，且无任何
+    旁路开关。
+    """
     lexical = Path(root_arg).expanduser()
     if not lexical.is_absolute():
         lexical = project_root / lexical
     lexical = Path(os.path.abspath(lexical))
 
-    project_root = project_root.resolve()
-    lexical_test_root = (project_root / ".data-test").resolve()
+    test_root = project_root / ".data-test"
 
-    # 1. 危险目标：文件系统根、项目根本身、用户主目录、生产数据目录名。
+    # 1. 纯字符串危险目标拒绝（不调用 resolve/stat/exists/lstat）。
     if lexical == lexical.parent:
         raise RootRejectedError(f"拒绝文件系统根目录作为重建根: {lexical}")
     if lexical == project_root:
         raise RootRejectedError("重建根不能是项目根目录")
     try:
-        if lexical == Path.home().resolve():
+        if lexical == Path.home():
             raise RootRejectedError("重建根不能是用户主目录")
-    except (OSError, RuntimeError):
+    except RuntimeError:
         pass
-    if _has_production_name(lexical):
-        raise RootRejectedError(
-            f"拒绝生产数据目录作为重建根: {lexical}（不得指向 .data 等目录）"
-        )
-    if _is_test_root_itself(lexical):
-        raise RootRejectedError(
-            f"重建根必须是 .data-test 下的专用子目录，不能是 .data-test 本身: {lexical}"
-        )
-
-    # 2. 仓库内路径：只允许严格位于 .data-test 下的专用子目录。
-    if _is_relative_to(lexical, project_root):
-        if _is_relative_to(lexical, lexical_test_root):
-            if lexical == lexical_test_root:
-                raise RootRejectedError(
-                    "重建根必须是 .data-test 下的专用子目录，"
-                    f"不能是 .data-test 本身: {lexical}"
-                )
-            link = _has_unsafe_link_on_path(lexical_test_root)
-            if link is not None:
-                raise RootRejectedError(
-                    f"测试数据路径不得经过 junction 或符号链接: {link}"
-                )
-            link = _has_unsafe_link_on_path(lexical)
-            if link is not None:
-                raise RootRejectedError(
-                    f"测试数据路径不得经过 junction 或符号链接: {link}"
-                )
-            resolved = lexical.resolve(strict=False)
-            if not _is_relative_to(resolved, lexical_test_root):
-                raise RootRejectedError(
-                    "测试数据路径解析后越过仓库 .data-test 边界"
-                )
-            return resolved, True
-        raise RootRejectedError(
-            f"仓库内重建根只能位于 .data-test 下，禁止其他项目路径: {lexical}"
-        )
-
-    # 3. 仓库外路径：默认拒绝；CI/测试可显式 --allow-outside-repo。
-    if not allow_outside_repo:
-        raise RootRejectedError(
-            f"仓库外重建根默认拒绝: {lexical}；"
-            "CI/测试临时目录需显式传入 --allow-outside-repo"
-        )
     for part in lexical.parts[1:]:
         if Path(part).name.casefold() in _PROHIBITED_ROOT_NAMES:
             raise RootRejectedError(
-                f"外部重建根路径不得包含生产数据目录名: {part}"
+                f"重建根路径不得包含生产数据目录名: {part}"
             )
+
+    # 2. 仓库外路径一律拒绝（无任何旁路开关）。
+    if not _is_relative_to(lexical, project_root):
+        raise RootRejectedError(
+            f"重建根必须位于仓库 .data-test 下，仓库外路径拒绝: {lexical}"
+        )
+
+    # 3. 仓库内路径：只允许严格位于 .data-test 下的专用子目录。
+    if not _is_relative_to(lexical, test_root):
+        raise RootRejectedError(
+            f"仓库内重建根只能位于 .data-test 下，禁止其他项目路径: {lexical}"
+        )
+    if lexical == test_root:
+        raise RootRejectedError(
+            "重建根必须是 .data-test 下的专用子目录，"
+            f"不能是 .data-test 本身: {lexical}"
+        )
+    rel_parts = lexical.relative_to(test_root).parts
+    for part in rel_parts:
+        if Path(part).name.casefold() in _TEST_ROOT_NAMES:
+            raise RootRejectedError(
+                f"重建根路径不得嵌套测试根目录名: {part}"
+            )
+
+    # 4. 仅对候选根执行链接检查与解析后边界复核。
+    link = _has_unsafe_link_on_path(test_root)
+    if link is not None:
+        raise RootRejectedError(
+            f"测试数据路径不得经过 junction 或符号链接: {link}"
+        )
     link = _has_unsafe_link_on_path(lexical)
     if link is not None:
-        raise RootRejectedError(f"外部重建根不得经过 junction 或符号链接: {link}")
+        raise RootRejectedError(
+            f"测试数据路径不得经过 junction 或符号链接: {link}"
+        )
     resolved = lexical.resolve(strict=False)
-    if _is_relative_to(resolved, project_root):
-        raise RootRejectedError("外部重建根不得通过链接指向仓库内部")
-    return resolved, False
+    resolved_test_root = test_root.resolve(strict=False)
+    if not _is_relative_to(resolved, resolved_test_root):
+        raise RootRejectedError("测试数据路径解析后越过仓库 .data-test 边界")
+    return resolved
 
 
 def _cleanup_root(root: Path) -> None:
@@ -428,11 +412,6 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="仅健康检查，绝不写入",
     )
-    parser.add_argument(
-        "--allow-outside-repo",
-        action="store_true",
-        help="CI/测试专用：允许仓库外根目录（仍拒绝 .data 与危险目标）",
-    )
     parser.add_argument("--json", action="store_true", help="输出机器可读 JSON 结果契约")
     parser.add_argument("--quiet", action="store_true", help="抑制人类可读输出")
     return parser.parse_args(argv)
@@ -444,10 +423,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         _prepare_json_mode()
 
     try:
-        root, _in_repo = resolve_rebuild_root(
-            args.root,
-            allow_outside_repo=args.allow_outside_repo,
-        )
+        root = resolve_rebuild_root(args.root)
         db_path = root / "db" / "knowledge_vault.db"
 
         if args.check_only:
