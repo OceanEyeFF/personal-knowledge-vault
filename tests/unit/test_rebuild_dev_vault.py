@@ -3,9 +3,13 @@
 覆盖:
 - 受控根隔离:重建产物全部落在仓库 .data-test 下的受控临时子目录内
 - 生产路径契约:脚本不构造、不访问仓库 .data 相关路径（字符串级 + 监控证明）
-- 幂等:重复执行不破坏已有重建，条目数稳定
+- fail-closed:非空但不完整/未知的 root 不带 --force 必须拒绝（exit 1，
+  JSON 带 error/phase），不写入、不清理；只有本脚本完整生成的 root 才可
+  报告 up_to_date / exit 0
+- manifest 契约:版本化 rebuild-manifest.json 识别本脚本产物；缺失/损坏/
+  字段不一致/pending migrations/条目数漂移均拒绝
+- 幂等、--force 重建、--no-seed 可验证、--check-only 只读且对缺失 DB 失败
 - 危险目标拒绝:纯字符串拒绝（不调用 resolve/stat/exists/lstat）；仓库外一律拒绝
-- 结果契约:--json 输出结构与退出码；--check-only 只读，不创建目标目录
 
 安全约定:
 - 重建子进程均使用 .data-test 下受控生成的临时子目录（测试后清理），
@@ -98,6 +102,23 @@ def managed_root() -> Iterator[Path]:
             shutil.rmtree(root)
         except OSError as exc:
             raise AssertionError(f"测试根清理失败: {root} - {exc}") from exc
+
+
+def _read_manifest(root: Path) -> dict:
+    manifest_path = root / "rebuild-manifest.json"
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise AssertionError(f"manifest 读取失败: {manifest_path}") from exc
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _make_sentinel_root(root: Path) -> Path:
+    """创建只含 sentinel.txt 的非空 root（无 db、无 manifest）。"""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "sentinel.txt").write_text("junk", encoding="utf-8")
+    return root
 
 
 # ============================================================
@@ -220,6 +241,151 @@ class TestRootRejection:
 
 
 # ============================================================
+# fail-closed 契约（sentinel-only / 缺失 DB / 无效 manifest）
+# ============================================================
+
+def test_sentinel_only_root_fails_closed(managed_root: Path) -> None:
+    root = _make_sentinel_root(managed_root)
+    result = _run_script(["--root", str(root), "--json"])
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert not report["ok"]
+    assert report["phase"] == "invalid"
+    assert "manifest" in report["error"] or any(
+        "manifest" in issue for issue in report["issues"]
+    )
+    # 未写入、未清理：sentinel 仍在，db/vault 未创建
+    assert (root / "sentinel.txt").is_file()
+    assert not (root / "db").exists()
+    assert not (root / "vault").exists()
+    assert sorted(p.name for p in root.iterdir()) == ["sentinel.txt"]
+
+
+def test_missing_db_check_only_fails(managed_root: Path) -> None:
+    root = _make_sentinel_root(managed_root)
+    result = _run_script(["--root", str(root), "--check-only", "--json"])
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert not report["ok"]
+    assert report["phase"] == "invalid"
+    assert any("数据库" in issue for issue in report["issues"])
+    # check-only 绝不创建目录或数据库
+    assert not (root / "db").exists()
+    assert not (root / "vault").exists()
+    assert sorted(p.name for p in root.iterdir()) == ["sentinel.txt"]
+
+
+def test_check_only_on_missing_root_fails_without_creating(
+    managed_root: Path,
+) -> None:
+    result = _run_script(["--root", str(managed_root), "--check-only", "--json"])
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert not report["ok"]
+    assert report["phase"] == "invalid"
+    assert not managed_root.exists(), "--check-only 不得创建目标目录"
+
+
+def test_force_rebuilds_incomplete_root(managed_root: Path) -> None:
+    root = _make_sentinel_root(managed_root)
+    result = _run_script(
+        ["--root", str(root), "--force", "--count", "2", "--json"]
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert report["ok"]
+    assert report["phase"] == "rebuilt"
+    assert report["seeded"] == 2
+    assert report["stats"]["total_entries"] == 2
+    assert not (root / "sentinel.txt").exists()
+    manifest = _read_manifest(root)
+    assert manifest["seeded"]
+    assert manifest["seed_count"] == 2
+    assert manifest["schema_version"] == "1.2.3"
+
+
+def test_invalid_manifest_fails_closed(managed_root: Path) -> None:
+    root = managed_root
+    first = _run_script(["--root", str(root), "--count", "2", "--json"])
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    # 损坏的 manifest（非法 JSON）→ 拒绝
+    (root / "rebuild-manifest.json").write_text("not json", encoding="utf-8")
+    result = _run_script(["--root", str(root), "--json"])
+    assert result.returncode == 1
+    report = _parse_json_output(result)
+    assert not report["ok"]
+    assert report["phase"] == "invalid"
+    assert any("manifest" in issue for issue in report["issues"])
+
+    # 删除 manifest → 拒绝
+    (root / "rebuild-manifest.json").unlink()
+    result = _run_script(["--root", str(root), "--json"])
+    assert result.returncode == 1
+    report = _parse_json_output(result)
+    assert report["phase"] == "invalid"
+
+
+def test_seed_count_drift_fails_closed(managed_root: Path) -> None:
+    root = managed_root
+    first = _run_script(["--root", str(root), "--count", "2", "--json"])
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    # 篡改 manifest 期望条目数 → 结构校验失败
+    manifest_path = root / "rebuild-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AssertionError(f"manifest 读取失败: {manifest_path}") from exc
+    manifest["seed_count"] = 99
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+    result = _run_script(["--root", str(root), "--json"])
+    assert result.returncode == 1
+    report = _parse_json_output(result)
+    assert report["phase"] == "invalid"
+    assert any("条目数" in issue for issue in report["issues"])
+
+
+def test_pending_migrations_not_up_to_date(managed_root: Path, monkeypatch) -> None:
+    root = managed_root
+    first = _run_script(["--root", str(root), "--count", "1", "--json"])
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    module = _load_script_module()
+    monkeypatch.setattr(
+        module.MigrationManager,
+        "get_pending_migrations",
+        lambda self: [("9.9.9", Path("unused.sql"))],
+    )
+    validation = module._validate_rebuilt_root(root, root / "db" / "knowledge_vault.db")
+    assert not validation["ok"]
+    assert any("待执行迁移" in issue for issue in validation["issues"])
+
+
+def test_no_seed_root_is_verifiable(managed_root: Path) -> None:
+    root = managed_root
+    first = _run_script(["--root", str(root), "--no-seed", "--json"])
+    assert first.returncode == 0, first.stdout + first.stderr
+    report = _parse_json_output(first)
+    assert report["ok"]
+    assert report["phase"] == "rebuilt"
+    assert report["seeded"] == 0
+    assert report["stats"]["total_entries"] == 0
+
+    manifest = _read_manifest(root)
+    assert not manifest["seeded"]
+    assert manifest["seed_count"] == 0
+
+    second = _run_script(["--root", str(root), "--json"])
+    assert second.returncode == 0, second.stdout + second.stderr
+    report = _parse_json_output(second)
+    assert report["phase"] == "up_to_date"
+    assert report["ok"]
+
+
+# ============================================================
 # 端到端流程（子进程，受控根位于仓库 .data-test 下）
 # ============================================================
 
@@ -245,6 +411,13 @@ def test_rebuild_creates_isolated_root(managed_root: Path) -> None:
     assert _is_under(Path(report["db_path"]), managed_root.resolve())
     _assert_not_production_path(report["root"])
     _assert_not_production_path(report["db_path"])
+    # manifest 契约
+    manifest = _read_manifest(managed_root)
+    assert manifest["manifest_version"] == 1
+    assert manifest["tool"] == "rebuild-dev-vault"
+    assert manifest["seeded"]
+    assert manifest["seed_count"] == 3
+    assert manifest["schema_version"] == "1.2.3"
 
 
 def test_rebuild_is_idempotent(managed_root: Path) -> None:
@@ -277,6 +450,8 @@ def test_rebuild_force_rebuilds_with_new_count(managed_root: Path) -> None:
     assert report["stats"]["total_entries"] == 5
     assert report["migrations_applied"] == 8
     assert len(list((managed_root / "vault").rglob("*.md"))) == 5
+    manifest = _read_manifest(managed_root)
+    assert manifest["seed_count"] == 5
 
 
 def test_rebuild_seed_is_deterministic(managed_root: Path) -> None:
@@ -308,28 +483,18 @@ def test_rebuild_seed_is_deterministic(managed_root: Path) -> None:
     assert len(titles_a) == 4
 
 
-def test_check_only_is_read_only(managed_root: Path) -> None:
-    # 空根 --check-only：绝不创建目标目录
-    result = _run_script(
-        ["--root", str(managed_root), "--check-only", "--json"]
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    report = _parse_json_output(result)
-    assert report["phase"] == "checked"
-    assert report["ok"]
-    assert report["schema_version"] == "0.0.0"
-    assert not managed_root.exists(), "--check-only 不得创建目标目录"
-
-    # 重建后 check-only 应报告已迁移状态
+def test_check_only_reports_valid_root(managed_root: Path) -> None:
     rebuilt = _run_script(["--root", str(managed_root), "--count", "2", "--json"])
     assert rebuilt.returncode == 0, rebuilt.stdout + rebuilt.stderr
     checked = _run_script(
         ["--root", str(managed_root), "--check-only", "--json"]
     )
     assert checked.returncode == 0, checked.stdout + checked.stderr
-    check_report = _parse_json_output(checked)
-    assert check_report["schema_version"] == "1.2.3"
-    assert check_report["stats"]["total_entries"] == 2
+    report = _parse_json_output(checked)
+    assert report["phase"] == "checked"
+    assert report["ok"]
+    assert report["schema_version"] == "1.2.3"
+    assert report["stats"]["total_entries"] == 2
 
 
 def test_result_contract_fields(managed_root: Path) -> None:

@@ -178,6 +178,7 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 - 重建根严格只能是仓库 `.data-test` 的专用子目录；`.data`、仓库其他目录、仓库外路径、文件系统根、用户主目录等危险目标一律拒绝，无任何旁路开关。
 - 危险目标拒绝为纯字符串判断（不解析、不 stat 被拒绝路径）。
 - 清理前递归检查 junction / 符号链接 / 硬链接；迁移始终 `--no-backup` 语义（`auto_backup=False`），不会调用读取生产 `.data` 的备份脚本。
+- **fail-closed**：通过版本化 `rebuild-manifest.json`（合成重建元数据）识别本脚本完整生成的 root；非空但缺少/损坏 manifest、数据库缺失、结构不完整、pending migrations 或版本未到最新的 root 一律拒绝（exit 1，JSON 带 `phase=invalid` 与 `error`），不写入、不清理，必须显式 `--force` 才能重建。
 
 **运行方式**:
 
@@ -197,10 +198,11 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 
 **行为**（同一根重复执行）:
 
-1. 根目录已存在且非空、未传 `--force` → 只读健康检查，报告 `up_to_date`（幂等，不做任何写入）。
-2. 根目录为空/不存在 → 迁移 8 个脚本至 v1.2.3 + 生成默认 3 条确定性种子 + 健康检查。
-3. 传 `--force` → 受控清理（先校验链接）后完整重建。
-4. `--check-only` → 任意状态只读健康检查。
+1. 根目录已存在且非空、未传 `--force` → 先做 fail-closed 结构校验（manifest + DB + schema/pending + 条目数 + vault）；通过才报告 `up_to_date` / exit 0，否则 `phase=invalid` / exit 1（不写入、不清理）。
+2. 根目录为空/不存在 → 迁移 8 个脚本至 v1.2.3 + 生成默认 3 条确定性种子 + 健康检查 + 写入 manifest。
+3. 传 `--force` → 受控清理（先校验链接）后完整重建（仅限已通过边界校验的 `.data-test` 专用子目录）。
+4. `--check-only` → 只读；对不存在或不完整的 DB/root 必须失败（exit 1），绝不创建目录或数据库，也不把迁移脚本合法误当 vault 健康。
+5. `--no-seed` → 可验证：manifest 记录 `seeded=false, seed_count=0`，重复运行仍 `up_to_date`。
 
 **离线测试**: `tests/unit/test_rebuild_dev_vault.py`（受控根隔离 / 幂等 / 危险目标拒绝含仓库外一律拒绝 / 结果契约 / 生产路径不访问监控）。测试重建均使用 `.data-test` 下受控临时子目录，外部临时目录仅用于验证“必须被拒绝”。
 

@@ -11,6 +11,10 @@
 - 危险目标拒绝为纯字符串判断，不解析、不 stat 被拒绝的路径。
 - 清理前检查路径上的 junction / 符号链接 / 硬链接，拒绝绕过边界。
 - 迁移始终以 ``auto_backup=False`` 执行（自动备份脚本会读取生产 ``.data``）。
+- 通过版本化 ``rebuild-manifest.json`` 识别本脚本完整生成的 root；非空但
+  缺少/损坏 manifest、数据库缺失、结构不完整、pending migrations 或版本
+  未到最新的 root 一律 fail-closed 拒绝（exit 1），不写入、不清理，
+  必须显式 ``--force`` 才能重建。
 
 用法:
   python scripts/rebuild-dev-vault.py                  # 重建或检查默认根
@@ -20,8 +24,8 @@
   python scripts/rebuild-dev-vault.py --json           # 机器可读结果契约
 
 退出码:
-  0  成功（重建 / 已最新 / 健康检查通过）
-  1  流程失败（迁移、种子或健康检查不通过）
+  0  成功（重建 / 本脚本完整生成且结构校验通过的 root 已是最新 / 健康检查通过）
+  1  流程失败（迁移、种子或健康检查不通过；或非空但未通过结构校验的 root 拒绝）
   2  参数或根目录校验拒绝（危险目标等）
 """
 
@@ -37,7 +41,6 @@ import stat
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import frontmatter
 
@@ -68,6 +71,18 @@ _SEED_BODIES = [
 ]
 _SEED_TAGS = ["重建", "种子", "开发", "测试"]
 
+MANIFEST_NAME = "rebuild-manifest.json"
+MANIFEST_VERSION = 1
+TOOL_NAME = "rebuild-dev-vault"
+_MANIFEST_KEYS = (
+    "manifest_version",
+    "tool",
+    "schema_version",
+    "seeded",
+    "seed_count",
+)
+_STANDARD_DIRS = ("db", "vault", "vectors", "logs", "tmp")
+
 
 class RebuildError(Exception):
     """重建流程失败（退出码 1）。"""
@@ -97,7 +112,7 @@ def _is_unsafe_link(path: Path) -> bool:
     return stat.S_ISLNK(path_stat.st_mode) or is_reparse_point or is_hard_linked_file
 
 
-def _has_unsafe_link_on_path(root: Path) -> Optional[Path]:
+def _has_unsafe_link_on_path(root: Path) -> Path | None:
     """检查现有路径链上的 junction / 符号链接 / 硬链接。"""
     parts = list(root.parts)
     for index in range(len(parts) - 1, -1, -1):
@@ -217,6 +232,171 @@ def _run_migrations(db_path: Path) -> int:
     return applied
 
 
+def _ensure_standard_dirs(root: Path) -> None:
+    """补齐重建根的标准子目录，保证结构完整可验证。"""
+    for name in _STANDARD_DIRS:
+        (root / name).mkdir(parents=True, exist_ok=True)
+
+
+def _load_manifest(root: Path) -> dict | None:
+    """读取重建 manifest；缺失或格式错误返回 None。"""
+    manifest_path = root / MANIFEST_NAME
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_manifest(
+    root: Path,
+    *,
+    schema_version: str,
+    seeded: bool,
+    seed_count: int,
+    seed: int,
+) -> Path:
+    """原子写入版本化重建 manifest（最后一步，标记完整成功生成）。"""
+    payload = {
+        "manifest_version": MANIFEST_VERSION,
+        "tool": TOOL_NAME,
+        "schema_version": schema_version,
+        "seeded": bool(seeded),
+        "seed_count": seed_count,
+        "seed": seed,
+        "created_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    target = root / MANIFEST_NAME
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp, target)
+    return target
+
+
+def _parse_version_from_migration(migration_file: Path) -> str | None:
+    """从迁移脚本读取 '-- Version: x.y.z'。"""
+    try:
+        for line in migration_file.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("-- Version:"):
+                return stripped.split(":", 1)[-1].strip() or None
+    except OSError:
+        return None
+    return None
+
+
+def _version_key(version: str) -> tuple:
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except ValueError:
+        return (0, 0, 0)
+
+
+def _latest_migration_version(migrations_dir: Path) -> str:
+    """迁移链中最大的脚本版本号。"""
+    latest = "0.0.0"
+    for migration_file in sorted(migrations_dir.glob("*.sql")):
+        version = _parse_version_from_migration(migration_file)
+        if version and _version_key(version) > _version_key(latest):
+            latest = version
+    return latest
+
+
+def _safe_entry_count(db_path: Path) -> int | None:
+    """只读统计条目数；数据库缺失/未初始化时返回 None（不创建任何文件）。"""
+    if not db_path.exists():
+        return None
+    store = SQLiteStore(db_path)
+    if not store.table_exists("knowledge_items"):
+        return None
+    try:
+        return store.count_entries()
+    except Exception:
+        return None
+
+
+def _validate_rebuilt_root(root: Path, db_path: Path) -> dict:
+    """fail-closed 结构校验：仅本脚本完整生成的 root 才算有效。
+
+    校验: manifest 存在且字段完整、数据库存在、schema 为最新、无 pending
+    migrations、条目数与 manifest 期望一致、vault 目录存在。
+    """
+    issues: list[str] = []
+    manifest = _load_manifest(root)
+    manifest_issues: list[str] = []
+    if manifest is None:
+        manifest_issues.append(f"缺少或损坏的 {MANIFEST_NAME}")
+    else:
+        missing = [key for key in _MANIFEST_KEYS if key not in manifest]
+        if missing:
+            manifest_issues.append(f"manifest 字段不完整: {', '.join(missing)}")
+        if manifest.get("manifest_version") != MANIFEST_VERSION:
+            manifest_issues.append(
+                f"manifest 版本不支持: {manifest.get('manifest_version')!r}"
+            )
+        if manifest.get("tool") != TOOL_NAME:
+            manifest_issues.append(
+                f"manifest 工具标识不匹配: {manifest.get('tool')!r}"
+            )
+        if not isinstance(manifest.get("seeded"), bool):
+            manifest_issues.append("manifest seeded 字段必须是布尔值")
+    issues.extend(manifest_issues)
+
+    schema_version = "0.0.0"
+    if not db_path.exists():
+        issues.append("数据库缺失: db/knowledge_vault.db")
+    else:
+        manager = MigrationManager(db_path, MIGRATIONS_DIR)
+        try:
+            schema_version = manager.get_current_version()
+            pending = manager.get_pending_migrations()
+        except Exception as exc:
+            issues.append(f"数据库读取失败: {exc}")
+            pending = []
+        latest = _latest_migration_version(MIGRATIONS_DIR)
+        if schema_version != latest:
+            issues.append(f"数据库版本 {schema_version} 不是最新 {latest}")
+        if pending:
+            issues.append(
+                f"存在 {len(pending)} 个待执行迁移，不能视为 up_to_date"
+            )
+
+        entry_count = _safe_entry_count(db_path)
+        if entry_count is None:
+            issues.append("数据库缺少 knowledge_items 表或不可统计")
+        elif manifest is not None and not manifest_issues:
+            manifest_schema = manifest.get("schema_version")
+            if manifest_schema not in (None, schema_version):
+                issues.append(
+                    f"manifest 记录版本 {manifest_schema} 与数据库 {schema_version} 不一致"
+                )
+            try:
+                expected = int(manifest.get("seed_count") or 0)
+            except (TypeError, ValueError):
+                issues.append("manifest seed_count 字段无效")
+                expected = None
+            if manifest.get("seeded"):
+                if expected is not None and entry_count != expected:
+                    issues.append(
+                        f"条目数 {entry_count} 与 manifest 期望 {expected} 不一致"
+                    )
+            elif entry_count != 0:
+                issues.append(f"no-seed root 不应有条目（当前 {entry_count}）")
+
+    if not (root / "vault").is_dir():
+        issues.append("vault 目录缺失")
+
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "manifest": manifest,
+        "schema_version": schema_version,
+    }
+
+
 def _build_seed_entry(
     index: int,
     *,
@@ -267,8 +447,8 @@ def _seed_entries(
     used_titles: set = set()
     base_time = datetime(2026, 2, 1, 9, 0, 0)
 
-    file_paths: List[Path] = []
-    entry_ids: List[int] = []
+    file_paths: list[Path] = []
+    entry_ids: list[int] = []
     for index in range(count):
         entry = _build_seed_entry(
             index, rng=rng, base_time=base_time, used_titles=used_titles
@@ -288,7 +468,7 @@ def _seed_entries(
     return len(entry_ids)
 
 
-def _update_related_docs(file_path: Path, related_ids: List[int]) -> None:
+def _update_related_docs(file_path: Path, related_ids: list[int]) -> None:
     post = frontmatter.load(file_path)
     post.metadata["related_docs"] = related_ids
     file_path.write_text(frontmatter.dumps(post), encoding="utf-8")
@@ -301,11 +481,11 @@ def _current_version_if_exists(db_path: Path) -> str:
     return MigrationManager(db_path, MIGRATIONS_DIR).get_current_version()
 
 
-def _health_report(root: Path, db_path: Path) -> Dict:
+def _health_report(root: Path, db_path: Path) -> dict:
     """只读健康检查：迁移链健康 + 数据库统计。"""
     manager = MigrationManager(db_path, MIGRATIONS_DIR)
     health = manager.run_health_check()
-    stats: Dict = {}
+    stats: dict = {}
     if db_path.exists():
         store = SQLiteStore(db_path)
         if store.table_exists("knowledge_items"):
@@ -319,35 +499,63 @@ def _health_report(root: Path, db_path: Path) -> Dict:
     }
 
 
-def _check_only(db_path: Path) -> Dict:
-    """仅健康检查（绝不写入）。"""
+def _check_only(root: Path, db_path: Path) -> dict:
+    """仅健康检查（绝不写入）；对不存在或不完整的 root/db 必须失败。"""
+    if not db_path.exists():
+        return {
+            "ok": False,
+            "root": str(root),
+            "db_path": str(db_path),
+            "schema_version": "0.0.0",
+            "error": "数据库不存在：--check-only 不创建任何目录或数据库",
+            "issues": ["数据库缺失: db/knowledge_vault.db"],
+        }
+    validation = _validate_rebuilt_root(root, db_path)
+    if not validation["ok"]:
+        return {
+            "ok": False,
+            "root": str(root),
+            "db_path": str(db_path),
+            "schema_version": validation.get("schema_version", "0.0.0"),
+            "error": "root 结构不完整或非本脚本生成，不能视为健康",
+            "issues": validation["issues"],
+        }
     manager = MigrationManager(db_path, MIGRATIONS_DIR)
     health = manager.run_health_check()
-    stats: Dict = {}
-    if db_path.exists():
-        store = SQLiteStore(db_path)
-        if store.table_exists("knowledge_items"):
-            stats = store.get_statistics()
+    stats: dict = {}
+    store = SQLiteStore(db_path)
+    if store.table_exists("knowledge_items"):
+        stats = store.get_statistics()
     return {
+        "ok": bool(health.get("healthy")),
+        "root": str(root),
         "db_path": str(db_path),
-        "schema_version": _current_version_if_exists(db_path),
+        "schema_version": manager.get_current_version(),
         "health": health,
         "stats": stats,
     }
 
 
-def _print_summary(report: Dict, *, quiet: bool) -> None:
+def _print_summary(report: dict, *, quiet: bool) -> None:
     if quiet:
         return
     phase = report.get("phase", "checked")
-    health = report["health"]
-    issues = health.get("issues", [])
-    stats = report.get("stats", {})
     print("=" * 60)
     print(" PKV 开发重建结果")
     print("=" * 60)
     print(f"  根目录: {report.get('root', '-')}")
     print(f"  阶段: {phase}")
+    if phase == "invalid":
+        print(f"  ✗ {report.get('error', 'root 结构校验失败')}")
+        for issue in report.get("issues", []):
+            print(f"    - {issue}")
+        print("  提示: 非空 root 未通过结构校验时不会写入或清理；")
+        print("        如需重建请显式使用 --force")
+        print("=" * 60)
+        return
+    health = report["health"]
+    issues = health.get("issues", [])
+    stats = report.get("stats", {})
     print(f"  数据库: {report.get('db_path', '-')}")
     print(f"  迁移版本: {report['schema_version']}")
     if report.get("migrations_applied") is not None:
@@ -365,7 +573,7 @@ def _print_summary(report: Dict, *, quiet: bool) -> None:
     print("=" * 60)
 
 
-def _emit_json(payload: Dict, exit_code: int) -> None:
+def _emit_json(payload: dict, exit_code: int) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     raise SystemExit(exit_code)
 
@@ -375,7 +583,7 @@ def _prepare_json_mode() -> None:
     logging.getLogger("jieba").disabled = True
 
 
-def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="PKV 开发专用轻量重建（安全隔离根，禁止生产 .data）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -417,7 +625,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.json:
         _prepare_json_mode()
@@ -427,9 +635,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         db_path = root / "db" / "knowledge_vault.db"
 
         if args.check_only:
-            report = _check_only(db_path)
-            report["phase"] = "checked"
-            report["ok"] = bool(report["health"].get("healthy"))
+            report = _check_only(root, db_path)
+            report["phase"] = "checked" if report["ok"] else "invalid"
             if args.json:
                 _emit_json(report, 0 if report["ok"] else 1)
             _print_summary(report, quiet=args.quiet)
@@ -438,10 +645,31 @@ def main(argv: Optional[List[str]] = None) -> int:
         root_exists_nonempty = root.exists() and any(root.iterdir())
 
         if root_exists_nonempty and not args.force:
-            # 幂等路径：已有根目录不隐式清理，只做只读健康检查。
+            # 幂等路径：只读校验本脚本完整生成的 root；不完整/未知则 fail-closed。
+            validation = _validate_rebuilt_root(root, db_path)
+            if not validation["ok"]:
+                report = {
+                    "ok": False,
+                    "phase": "invalid",
+                    "root": str(root),
+                    "db_path": str(db_path),
+                    "schema_version": validation.get("schema_version", "0.0.0"),
+                    "error": "root 非空但未通过结构校验（无写入、无清理）",
+                    "issues": validation["issues"],
+                }
+                if args.json:
+                    _emit_json(report, 1)
+                _print_summary(report, quiet=args.quiet)
+                return 1
             report = _health_report(root, db_path)
-            report["phase"] = "up_to_date"
-            report["ok"] = bool(report["health"].get("healthy"))
+            if report["health"].get("healthy"):
+                report["phase"] = "up_to_date"
+                report["ok"] = True
+            else:
+                report["phase"] = "invalid"
+                report["ok"] = False
+                report["error"] = "迁移链健康检查不通过"
+                report["issues"] = report["health"].get("issues", [])
             report["stats"] = report.get("stats") or {}
             if args.json:
                 _emit_json(report, 0 if report["ok"] else 1)
@@ -453,6 +681,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             root.mkdir(parents=True, exist_ok=True)
 
+        _ensure_standard_dirs(root)
         applied = _run_migrations(db_path)
         seeded = 0
         if not args.no_seed:
@@ -463,6 +692,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         report["migrations_applied"] = applied
         report["seeded"] = seeded
         report["ok"] = bool(report["health"].get("healthy"))
+        if report["ok"]:
+            # manifest 最后写入：标记完整成功生成；健康失败则不写（fail-closed）。
+            _write_manifest(
+                root,
+                schema_version=report["schema_version"],
+                seeded=not args.no_seed,
+                seed_count=seeded,
+                seed=args.seed,
+            )
         if args.json:
             _emit_json(report, 0 if report["ok"] else 1)
         _print_summary(report, quiet=args.quiet)
