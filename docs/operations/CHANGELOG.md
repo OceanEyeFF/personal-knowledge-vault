@@ -13,6 +13,24 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### 真实数据验证 Runbook 复审修订：双通道执行模型与证据契约统一（2026-07-31）
+
+- 建立**双通道执行模型**：Agent-safe 通道仅限不接触授权快照、不加载 `config/local.yaml`
+  的静态/合成验证与已交付 base-only 工具（CAT-0）；所有读取真实快照或可能加载 local.yaml
+  的实际 CLI/MCP/migrate/run-test 命令（离线与 live）一律由用户手动执行（CAT-U/CAT-C），
+  Agent 不执行、不读取原始输出，只接收脱敏摘要（Runbook 0.2/2/7.1/8）。
+- G0 明确为**受控入口语义**：只证明 base-only 入口本身，不改变后续子进程 `Config()` 行为；
+  未接入入口的命令保持 user-only，预检不是全局保护（Runbook 7.1-5/10.3-G0/18.1）。
+- 证据契约统一：T-D/E3 禁止"原样记录"；版本化记录仅含脱敏摘要、退出码、计数、哈希、
+  假名 ID、时间、命令类别与模板指纹；原始证据只能存于**工作区之外、用户 ACL 隔离、
+  Agent 不可读**位置，不再称 `.data-backup/` 或工作区内目录为 Agent 不可读（Runbook 12/13，模板 T-D/T-F/T-G）。
+- live 阶段执行人明确为**用户**（或未来不向 Agent 暴露凭据/输出的 launcher，本次不实现）；
+  离线真实快照命令同样按双通道处理（Runbook 8/15.1-15.4）。
+- disposable clone 与 migration 落到可审计步骤：`clones/<clone-id>` 专属数据根、用户制备/验证
+  流程（7.1-7）、历史 schema baseline（版本号/哈希）、pending migration 要求（pending=0 标记
+  "未覆盖"）；migrate.py 无 `--db-path`/受控入口时对应命令不得执行，登记 S5/S7 前置（Runbook 15.5）。
+- 校正 20.1 一致性 checklist、风险/成本表与文档版本（v1.2）。
+
 ### 真实数据验证 Runbook P0 安全/可执行性修订（2026-07-31）
 
 - archive（URL/文本）与 `search --strategy vector/hybrid/auto` 确认会触发真实抓取/LLM/

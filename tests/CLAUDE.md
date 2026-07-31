@@ -241,9 +241,12 @@ Remove-Item Env:PKV_RUN_LIVE
   用户明确授权后的小样本真实数据验证流程（P0 预演 / P1 受控评测 / P2 定期回归）。
 - 真实数据进入测试环境的唯一通道是用户手动执行的"授权快照"（脱敏/假名化后放入
   `.data-test/<scenario>/`）；AI/自动化永不直接访问 `.data/` 或 `config/local.yaml`。
+- **双通道执行模型**：Agent-safe 通道只做不接触快照、不加载 local.yaml 的静态/合成验证；
+  所有读取真实快照或可能加载 local.yaml 的实际 CLI/MCP/migrate 命令（离线与 live）均由
+  用户手动执行，Agent 只接收脱敏摘要。
 - archive 与 `search --strategy vector/hybrid/auto` 本身会触发真实抓取/LLM/Embedding
-  HTTP，属于需单独授权的 live/数据出境阶段，不是默认离线步骤；`PKV_RUN_LIVE` 仅测试
-  收集开关。
+  HTTP，属于需单独授权的 live/数据出境阶段，不是默认离线步骤；`PKV_RUN_LIVE` 仅是
+  测试收集开关，不是网络开关。
 - 空白记录模板见
   [真实数据验证记录模板](../docs/operations/testing/templates/真实数据验证记录模板.md)。
 
