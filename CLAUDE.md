@@ -9,6 +9,12 @@
 
 ## 变更记录 (Changelog)
 
+### 2026-07-31 (P1 开发专用轻量重建)
+- 新增 `scripts/rebuild-dev-vault.py`：隔离根上的 清理→迁移→确定性最小种子→健康检查 重建入口
+- 默认根 `.data-test/rebuild-dev`；拒绝 `.data`、仓库外与危险目标；幂等可重复；`--json` 结果契约
+- 新增离线测试 `tests/unit/test_rebuild_dev_vault.py`（15 用例：临时根隔离/幂等/危险目标拒绝/结果契约）
+- 文档：`scripts/README.md`、`scripts/CLAUDE.md` 更新操作说明
+
 ### 2026-02-23 10:45
 - M12 完成：AI 对话完整实现 -- 流式输出 + 知识引用 + URL 归档 + 会话管理
 - 新增 `src/gui/` 模块扩展：ChatView、ChatViewModel、AutocompletePopup、knowledge_ref、theme_colors

@@ -155,6 +155,41 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 
 ---
 
+#### `rebuild-dev-vault.py` - 开发专用轻量重建入口（P1）
+
+**用途**: 在安全隔离根上执行 可受控清理 → 数据库迁移 → 确定性最小种子 → 健康检查 的完整重建流程，幂等可重复。
+
+**安全契约**:
+- 默认根目录为仓库内 `.data-test/rebuild-dev`，绝不隐式指向生产 `.data/`。
+- 自定义 `--root` 必须位于仓库 `.data-test` 下；`.data`、仓库其他目录、文件系统根、用户主目录等危险目标一律拒绝。
+- 仓库外根目录默认拒绝，仅 CI/测试可显式传入 `--allow-outside-repo`（仍拒绝 `.data` 与链接目标）。
+- 清理前递归检查 junction / 符号链接 / 硬链接；迁移始终 `--no-backup` 语义（`auto_backup=False`），不会调用读取生产 `.data` 的备份脚本。
+
+**运行方式**:
+```powershell
+# 重建或检查默认根（.data-test/rebuild-dev）
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py")
+
+# 指定隔离根并强制完整重建（受控清理）
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--force")
+
+# 仅健康检查（只读，绝不写入）
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--check-only")
+
+# 机器可读结果契约（exit 0/1/2）
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--json")
+```
+
+**行为**（同一根重复执行）:
+1. 根目录已存在且非空、未传 `--force` → 只读健康检查，报告 `up_to_date`（幂等，不做任何写入）。
+2. 根目录为空/不存在 → 迁移 8 个脚本至 v1.2.3 + 生成默认 3 条确定性种子 + 健康检查。
+3. 传 `--force` → 受控清理（先校验链接）后完整重建。
+4. `--check-only` → 任意状态只读健康检查。
+
+**离线测试**: `tests/unit/test_rebuild_dev_vault.py`（临时根隔离 / 幂等 / 危险目标拒绝 / 结果契约）。
+
+---
+
 #### `backup-data.ps1` - 数据备份脚本
 
 **用途**: 备份生产数据到 `.data-backup/` 目录
