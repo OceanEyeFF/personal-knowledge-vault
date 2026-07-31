@@ -1,6 +1,5 @@
 """verify_setup 隔离性测试。"""
 
-import logging
 import os
 from pathlib import Path
 
@@ -28,23 +27,26 @@ def test_verify_setup_main_isolates_paths_and_restores_state(monkeypatch):
             monkeypatch.setenv(key, value)
 
     real_get_config = config_module.get_config
+    base_config_path = Path(__file__).parents[2] / "config" / "config.yaml"
+    isolated_config: config_module.Config | None = None
 
     def get_auto_dim_config():
-        config = real_get_config()
-        config._config.setdefault("ai", {}).setdefault("embedding", {})["dim"] = (
-            "auto"
-        )
-        return config
+        nonlocal isolated_config
+        if isolated_config is None:
+            isolated_config = config_module.Config(str(base_config_path))
+            isolated_config._config.setdefault("ai", {}).setdefault(
+                "embedding", {}
+            )["dim"] = "auto"
+        config_module._config_instance = isolated_config
+        return isolated_config
 
     monkeypatch.setattr(verify_setup, "get_config", get_auto_dim_config)
     monkeypatch.setattr(verify_setup, "test_logger", lambda **_kwargs: None)
 
     shutdown_calls = []
-    real_shutdown = logging.shutdown
 
     def tracked_shutdown():
         shutdown_calls.append(True)
-        real_shutdown()
 
     monkeypatch.setattr(verify_setup.logging, "shutdown", tracked_shutdown)
 

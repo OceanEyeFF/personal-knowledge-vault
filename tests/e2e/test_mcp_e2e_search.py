@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime
 from typing import Any, Dict
@@ -13,12 +12,18 @@ from src.storage.sqlite_store import SQLiteStore
 
 
 def _parse_tool_content(result) -> Dict[str, Any]:
-    if hasattr(result, "content") and result.content:
-        first = result.content[0]
-        text = getattr(first, "text", None)
-        if text:
-            return json.loads(text)
-    raise ValueError(f"无法解析 call_tool 结果: {result}")
+    if getattr(result, "isError", False):
+        raise ValueError(f"call_tool 返回 MCP error: {result}")
+    content = getattr(result, "content", None)
+    if not isinstance(content, list) or len(content) != 1:
+        raise ValueError(f"call_tool 必须返回单一 TextContent: {result}")
+    text = getattr(content[0], "text", None)
+    if not isinstance(text, str) or not text:
+        raise ValueError(f"call_tool TextContent 缺少 JSON 文本: {result}")
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError(f"call_tool JSON 必须为 object: {type(payload).__name__}")
+    return payload
 
 
 def _assert_search_payload(data: Dict[str, Any], min_total: int = 1) -> None:
@@ -51,10 +56,15 @@ def _parse_time(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-async def _call_search(session, payload: Dict[str, Any], timeout_s: float = 60.0):
-    return await asyncio.wait_for(
-        session.call_tool("search_knowledge", payload),
-        timeout=timeout_s,
+async def _call_search(
+    session,
+    payload: Dict[str, Any],
+    timeout_s: float = 60.0,
+):
+    return await session.call_tool(
+        "search_knowledge",
+        payload,
+        timeout_s=timeout_s,
     )
 
 

@@ -680,6 +680,115 @@ class TestArchiveUrlAndInject:
             finally:
                 loop.close()
 
+
+# ===================================================================
+# save_session_to_knowledge_base
+# ===================================================================
+
+
+class TestSaveSessionToKnowledgeBase:
+    """保存对话到知识库的后台 worker 契约。"""
+
+    def test_formats_messages_excludes_system_and_emits_success(
+        self, viewmodel, mock_dependencies, qtbot
+    ) -> None:
+        mock_dependencies["store"].get_session.return_value = {
+            "title": "设计复盘",
+            "messages": [
+                {"role": "system", "content": "不得归档的隐藏上下文"},
+                {"role": "user", "content": "问题一"},
+                {"role": "assistant", "content": "回答一"},
+            ],
+        }
+        worker = MagicMock()
+
+        with patch(
+            "src.gui.viewmodels.archive_viewmodel.ArchiveWorker",
+            return_value=worker,
+        ) as worker_class:
+            assert viewmodel.save_session_to_knowledge_base("session-1") is True
+
+        worker_class.assert_called_once_with(
+            mode="text",
+            data={
+                "title": "设计复盘",
+                "text": (
+                    "# 设计复盘\n\n"
+                    "**User**:\n问题一\n\n"
+                    "**Assistant**:\n回答一\n"
+                ),
+            },
+        )
+        worker.start.assert_called_once_with()
+        success_callback = worker.finished_ok.connect.call_args.args[0]
+        with qtbot.waitSignal(viewmodel.session_saved_to_kb, timeout=1000) as blocker:
+            success_callback({"knowledge_id": 73})
+        assert blocker.args == ["session-1", 73]
+
+    def test_worker_error_is_forwarded_with_session_id(
+        self, viewmodel, mock_dependencies, qtbot
+    ) -> None:
+        mock_dependencies["store"].get_session.return_value = {
+            "title": "失败样例",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        worker = MagicMock()
+
+        with patch(
+            "src.gui.viewmodels.archive_viewmodel.ArchiveWorker",
+            return_value=worker,
+        ):
+            assert viewmodel.save_session_to_knowledge_base("session-2") is True
+
+        error_callback = worker.finished_err.connect.call_args.args[0]
+        with qtbot.waitSignal(
+            viewmodel.session_save_to_kb_failed, timeout=1000
+        ) as blocker:
+            error_callback("存储失败")
+        assert blocker.args == ["session-2", "存储失败"]
+
+    @pytest.mark.parametrize(
+        ("session", "expected_error"),
+        [
+            (None, "会话不存在"),
+            ({"title": "空", "messages": []}, "会话无对话内容"),
+        ],
+        ids=["missing-session", "empty-messages"],
+    )
+    def test_rejects_missing_or_empty_session(
+        self,
+        viewmodel,
+        mock_dependencies,
+        qtbot,
+        session,
+        expected_error,
+    ) -> None:
+        mock_dependencies["store"].get_session.return_value = session
+        with qtbot.waitSignal(
+            viewmodel.session_save_to_kb_failed, timeout=1000
+        ) as blocker:
+            result = viewmodel.save_session_to_knowledge_base("session-3")
+        assert result is False
+        assert blocker.args == ["session-3", expected_error]
+
+    def test_rejects_malformed_message_json(
+        self, viewmodel, mock_dependencies, qtbot
+    ) -> None:
+        mock_dependencies["store"].get_session.return_value = {
+            "title": "损坏会话",
+            "messages": "{not-json",
+        }
+        with qtbot.waitSignal(
+            viewmodel.session_save_to_kb_failed, timeout=1000
+        ) as blocker:
+            result = viewmodel.save_session_to_knowledge_base("session-4")
+        assert result is False
+        assert blocker.args[0] == "session-4"
+        assert blocker.args[1].startswith("保存对话失败:")
+
+class TestArchiveUrlAndInjectCompletion:
+    """URL 归档工作流完成分支。"""
+
     def test_url_archive_success(self, viewmodel, mock_dependencies, qtbot) -> None:
         """归档成功"""
         mock_dependencies["store"].query_by_url.return_value = None

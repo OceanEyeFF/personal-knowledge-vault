@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -272,6 +273,15 @@ def _build_sample_entries() -> List[Entry]:
     return entries
 
 
+def _require_live_network_test(request: pytest.FixtureRequest) -> None:
+    """Reject live fixtures unless the requesting test is explicitly selected."""
+
+    if request.node.get_closest_marker("network") is None:
+        pytest.fail("live fixture requires an explicit network marker", pytrace=False)
+    if os.environ.get("PKV_RUN_LIVE") != "1":
+        pytest.skip("live fixture requires explicit PKV_RUN_LIVE=1")
+
+
 @pytest.fixture(scope="session")
 def test_env(tmp_path_factory: pytest.TempPathFactory) -> TestEnv:
     return build_test_env(tmp_path_factory)
@@ -280,7 +290,7 @@ def test_env(tmp_path_factory: pytest.TempPathFactory) -> TestEnv:
 def _build_mcp_client(test_env: TestEnv) -> MCPTestClient:
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "src.mcp.server"],
+        args=[str(PROJECT_ROOT / "tests" / "offline_entrypoint.py"), "mcp"],
         env=test_env.env,
         cwd=str(PROJECT_ROOT),
     )
@@ -299,6 +309,41 @@ def archive_test_env(tmp_path_factory: pytest.TempPathFactory) -> TestEnv:
 
 
 @pytest.fixture
+def live_archive_test_env(
+    tmp_path_factory: pytest.TempPathFactory,
+    request: pytest.FixtureRequest,
+) -> TestEnv:
+    """Build a separate live runtime only when a selected network test requests it."""
+
+    _require_live_network_test(request)
+    return build_test_env(
+        tmp_path_factory,
+        prefix="pkv-e2e-archive-live",
+        live=True,
+    )
+
+
+@pytest.fixture
+def live_archive_ready(live_archive_test_env: TestEnv) -> TestEnv:
+    """Check live provider configuration only after an opted-in test is selected."""
+
+    with temporary_test_config(
+        live_archive_test_env,
+        load_local=True,
+    ) as config:
+        if not config.llm_api_key or not config.embd_api_key:
+            pytest.skip(
+                "需要在 config/local.yaml 配置 LLM 与 embedding API Key"
+            )
+    return live_archive_test_env
+
+
+@pytest.fixture
+def live_archive_mcp_server(live_archive_ready: TestEnv) -> MCPTestClient:
+    return _build_mcp_client(live_archive_ready)
+
+
+@pytest.fixture
 def archive_mcp_server(archive_test_env: TestEnv) -> MCPTestClient:
     """Build an MCP client whose child process only sees the archive fixture."""
 
@@ -310,8 +355,7 @@ def mcp_server(test_env: TestEnv, sample_knowledge_db) -> MCPTestClient:
     return _build_mcp_client(test_env)
 
 
-@pytest.fixture(scope="session")
-def sample_knowledge_db(test_env: TestEnv) -> Dict[str, object]:
+def _populate_sample_knowledge_db(test_env: TestEnv) -> Dict[str, object]:
     store = SQLiteStore(test_env.db_path)
     store.initialize()
 
@@ -338,20 +382,40 @@ def sample_knowledge_db(test_env: TestEnv) -> Dict[str, object]:
 
 
 @pytest.fixture(scope="session")
+def sample_knowledge_db(test_env: TestEnv) -> Dict[str, object]:
+    return _populate_sample_knowledge_db(test_env)
+
+
+@pytest.fixture
+def live_test_env(
+    tmp_path_factory: pytest.TempPathFactory,
+    request: pytest.FixtureRequest,
+) -> TestEnv:
+    """Create a separate runtime for explicitly selected live vector tests."""
+
+    _require_live_network_test(request)
+    return build_test_env(
+        tmp_path_factory,
+        prefix="pkv-e2e-live",
+        live=True,
+    )
+
+
+@pytest.fixture
 def live_vector_knowledge_db(
-    test_env: TestEnv,
-    sample_knowledge_db: Dict[str, object],
+    live_test_env: TestEnv,
+    request: pytest.FixtureRequest,
 ) -> Dict[str, object]:
     """Build a real embedding index only for explicitly selected network tests."""
-    if test_env.env.get("PKV_RUN_LIVE") != "1":
-        pytest.skip("需要 PKV_RUN_LIVE=1 才运行真实向量测试")
+    _require_live_network_test(request)
 
-    with temporary_test_config(test_env) as config:
+    sample_knowledge_db = _populate_sample_knowledge_db(live_test_env)
+    with temporary_test_config(live_test_env, load_local=True) as config:
         if not config.embd_api_key:
             pytest.skip("需要在 config/local.yaml 配置 embedding API Key")
 
         config_vector_dir = Path(config.vector_index_dir)
-        if config_vector_dir.resolve() != test_env.vector_dir.resolve():
+        if config_vector_dir.resolve() != live_test_env.vector_dir.resolve():
             pytest.fail(
                 "VECTOR_DIR 环境变量未生效，拒绝在非测试目录构建真实向量索引",
                 pytrace=False,
@@ -367,7 +431,7 @@ def live_vector_knowledge_db(
             assert isinstance(entry_ids, list)
 
             embedder = Embedder()
-            vector_store = VectorStore(test_env.vector_dir)
+            vector_store = VectorStore(live_test_env.vector_dir)
             for entry, kid in zip(entries, entry_ids):
                 vector = embedder.embed_document(
                     entry.content or entry.summary_100_words
@@ -386,7 +450,7 @@ def live_vector_knowledge_db(
 
 @pytest.fixture
 def live_mcp_server(
-    test_env: TestEnv,
+    live_test_env: TestEnv,
     live_vector_knowledge_db: Dict[str, object],
 ) -> MCPTestClient:
-    return _build_mcp_client(test_env)
+    return _build_mcp_client(live_test_env)

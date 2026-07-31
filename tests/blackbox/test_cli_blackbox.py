@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -21,38 +20,14 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+from tests.offline_runtime import prepare_offline_child_env
 
-
-# 子进程只加载版本化基础配置，避免读取开发机的 config/local.yaml 和 API Key。
-ISOLATED_CLI_BOOTSTRAP = """
-import sys
-from pathlib import Path
-
-import src.utils.config as config_module
-
-base_config_path = Path(sys.argv.pop(1))
-
-
-def load_base_config():
-    return config_module.Config(str(base_config_path))
-
-
-config_module._config_instance = load_base_config()
-
-import src.cli.commands as commands_module
-
-commands_module.Config = load_base_config
-
-from src.main import main
-
-main()
-"""
 
 
 class CLIBlackboxTester:
     """CLI 黑盒测试工具类。"""
 
-    def __init__(self, test_dir: Path, python_exe: str = "python"):
+    def __init__(self, test_dir: Path, python_exe: str = sys.executable):
         """初始化测试器。
 
         Args:
@@ -68,6 +43,7 @@ class CLIBlackboxTester:
         self.vector_dir = self.data_dir / "vectors"
         self.log_dir = self.data_dir / "logs"
         self.tmp_dir = self.data_dir / "tmp"
+        self.entry_ids: dict[str, int] = {}
 
         # 创建必要的目录
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -92,21 +68,20 @@ class CLIBlackboxTester:
         """
         cmd = [
             self.python_exe,
-            "-c",
-            ISOLATED_CLI_BOOTSTRAP,
-            str(self.project_root / "config" / "config.yaml"),
+            str(self.project_root / "tests" / "offline_entrypoint.py"),
+            "cli",
             *args,
         ]
-        env = os.environ.copy()
-        env.update(
-            {
-                "DATA_DIR": str(self.data_dir),
-                "DB_PATH": str(self.db_path),
-                "VAULT_DIR": str(self.vault_dir),
-                "VECTOR_DIR": str(self.vector_dir),
-                "LOG_DIR": str(self.log_dir),
-                "TMP_DIR": str(self.tmp_dir),
-            }
+        env = prepare_offline_child_env(
+            project_root=self.project_root,
+            runtime_overrides={
+                "DATA_DIR": self.data_dir,
+                "DB_PATH": self.db_path,
+                "VAULT_DIR": self.vault_dir,
+                "VECTOR_DIR": self.vector_dir,
+                "LOG_DIR": self.log_dir,
+                "TMP_DIR": self.tmp_dir,
+            },
         )
 
         result = subprocess.run(
@@ -117,6 +92,7 @@ class CLIBlackboxTester:
             text=True,
             encoding="utf-8",
             errors="replace",  # 处理编码错误
+            timeout=30,
             check=False,
         )
 
@@ -178,7 +154,8 @@ class CLIBlackboxTester:
 
         for i, entry in enumerate(test_entries, 1):
             file_path = str(self.vault_dir / f"test-entry-{i}.md")
-            sqlite_store.insert_entry(entry, file_path)
+            knowledge_id = sqlite_store.insert_entry(entry, file_path)
+            self.entry_ids[entry.title] = knowledge_id
 
         # 移除对 sqlite_store 的引用，让垃圾回收器处理连接
         del sqlite_store
@@ -286,12 +263,10 @@ def test_list_command_with_tag_filter(cli_tester: CLIBlackboxTester):
 
 def test_show_command_by_id(cli_tester: CLIBlackboxTester):
     """测试 show 命令（通过 ID）。"""
-    # 先获取一个条目的 ID
-    cli_tester.run_cli("list", "--limit", "1")
-    # 假设第一条是 ID=1
-    result = cli_tester.run_cli("show", "1")
+    knowledge_id = cli_tester.entry_ids["Python 装饰器详解"]
+    result = cli_tester.run_cli("show", str(knowledge_id))
     assert result.returncode == 0
-    assert "知识条目 #1" in result.stdout
+    assert f"知识条目 #{knowledge_id}" in result.stdout
     assert "Python 装饰器详解" in result.stdout
     assert "https://example.com/python-decorators" in result.stdout
 
@@ -406,12 +381,20 @@ def test_full_workflow_search_show(cli_tester: CLIBlackboxTester):
         "bm25",
         "--limit",
         "1",
+        "--format",
+        "json",
     )
     assert search_result.returncode == 0
-    assert "Python 装饰器详解" in search_result.stdout
+    search_payload = json.loads(search_result.stdout)
+    assert search_payload["total"] == 1
+    assert len(search_payload["results"]) == 1
+    first_result = search_payload["results"][0]
+    assert first_result["title"] == "Python 装饰器详解"
+    knowledge_id = first_result["entry_id"]
+    assert knowledge_id == cli_tester.entry_ids["Python 装饰器详解"]
 
-    # 2. 显示详情（假设第一条是 ID=1）
-    show_result = cli_tester.run_cli("show", "1")
+    # 2. 使用搜索结果中的真实 ID 显示详情
+    show_result = cli_tester.run_cli("show", str(knowledge_id))
     assert show_result.returncode == 0
     assert "Python 装饰器详解" in show_result.stdout
 
@@ -435,7 +418,3 @@ def test_list_and_filter(cli_tester: CLIBlackboxTester):
     assert list_filtered.returncode == 0
     assert "Python 装饰器详解" in list_filtered.stdout
     assert "Docker 容器化实践" not in list_filtered.stdout
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "--tb=short"])

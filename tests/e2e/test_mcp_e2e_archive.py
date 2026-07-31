@@ -2,31 +2,40 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
 
 import pytest
 
 from src.storage.sqlite_store import SQLiteStore
-from src.utils.config import get_config
 
 
 def _parse_tool_content(result) -> Dict[str, Any]:
-    if hasattr(result, "content") and result.content:
-        first = result.content[0]
-        text = getattr(first, "text", None)
-        if text:
-            return json.loads(text)
-    raise ValueError(f"无法解析 call_tool 结果: {result}")
+    if getattr(result, "isError", False):
+        raise ValueError(f"call_tool 返回 MCP error: {result}")
+    content = getattr(result, "content", None)
+    if not isinstance(content, list) or len(content) != 1:
+        raise ValueError(f"call_tool 必须返回单一 TextContent: {result}")
+    text = getattr(content[0], "text", None)
+    if not isinstance(text, str) or not text:
+        raise ValueError(f"call_tool TextContent 缺少 JSON 文本: {result}")
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError(f"call_tool JSON 必须为 object: {type(payload).__name__}")
+    return payload
 
 
-async def _call_tool(session, tool_name: str, payload: Dict[str, Any], timeout_s: float = 120.0):
-    return await asyncio.wait_for(
-        session.call_tool(tool_name, payload),
-        timeout=timeout_s,
+async def _call_tool(
+    session,
+    tool_name: str,
+    payload: Dict[str, Any],
+    timeout_s: float = 120.0,
+):
+    return await session.call_tool(
+        tool_name,
+        payload,
+        timeout_s=timeout_s,
     )
 
 
@@ -78,33 +87,23 @@ def _assert_search_payload(data: Dict[str, Any]) -> None:
     assert data["total"] == len(data["results"])
 
 
-def _has_archive_api_keys() -> bool:
-    if os.getenv("PKV_RUN_LIVE") != "1":
-        return False
-    config = get_config()
-    return bool(config.llm_api_key) and bool(config.embd_api_key)
-
 
 @pytest.mark.network
-@pytest.mark.skipif(
-    not _has_archive_api_keys(),
-    reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",
-)
 @pytest.mark.asyncio
-async def test_archive_url_success(archive_mcp_server, archive_test_env):
+async def test_archive_url_success(live_archive_mcp_server, live_archive_test_env):
     urls: Iterable[Tuple[str, str]] = [
         ("wechat", "https://mp.weixin.qq.com/s/ZET927baoFCj3In_11fKeA"),
         ("zhihu", "https://zhuanlan.zhihu.com/p/1989702804772758028"),
         ("generic", "https://api-docs.deepseek.com/zh-cn/news/news251201"),
     ]
 
-    store = SQLiteStore(archive_test_env.db_path)
+    store = SQLiteStore(live_archive_test_env.db_path)
 
     for source_type, url in urls:
         before_count = store.count_entries(source_type=source_type)
 
         result = await _call_tool(
-            archive_mcp_server,
+            live_archive_mcp_server,
             "archive_url",
             {"url": url},
             timeout_s=180.0,
@@ -119,7 +118,7 @@ async def test_archive_url_success(archive_mcp_server, archive_test_env):
         assert entry is not None
         assert entry["source_type"] == source_type
         assert entry["source_url"] == url
-        _assert_stored_markdown_is_isolated(entry, archive_test_env.vault_dir)
+        _assert_stored_markdown_is_isolated(entry, live_archive_test_env.vault_dir)
 
 
 @pytest.mark.asyncio
@@ -165,19 +164,15 @@ async def test_archive_url_invalid_format(
 
 
 @pytest.mark.network
-@pytest.mark.skipif(
-    not _has_archive_api_keys(),
-    reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",
-)
 @pytest.mark.asyncio
-async def test_archive_text_success(archive_mcp_server, archive_test_env):
+async def test_archive_text_success(live_archive_mcp_server, live_archive_test_env):
     text = "# E2E 归档纯文本\n\n这是一次端到端归档测试，验证文本能被成功写入数据库。"
 
-    store = SQLiteStore(archive_test_env.db_path)
+    store = SQLiteStore(live_archive_test_env.db_path)
     before_count = store.count_entries(source_type="text")
 
     result = await _call_tool(
-        archive_mcp_server,
+        live_archive_mcp_server,
         "archive_text",
         {"text": text},
         timeout_s=120.0,
@@ -192,21 +187,17 @@ async def test_archive_text_success(archive_mcp_server, archive_test_env):
     assert entry is not None
     assert entry["source_type"] == "text"
     assert "E2E 归档纯文本" in entry["title"]
-    _assert_stored_markdown_is_isolated(entry, archive_test_env.vault_dir)
+    _assert_stored_markdown_is_isolated(entry, live_archive_test_env.vault_dir)
 
 
 @pytest.mark.network
-@pytest.mark.skipif(
-    not _has_archive_api_keys(),
-    reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",
-)
 @pytest.mark.asyncio
-async def test_archive_text_with_title(archive_mcp_server):
+async def test_archive_text_with_title(live_archive_mcp_server):
     text = "E2E 标题覆盖测试内容，包含标签词：归档、标题、标签。"
     title = "E2E 自定义标题"
 
     result = await _call_tool(
-        archive_mcp_server,
+        live_archive_mcp_server,
         "archive_text",
         {"text": text, "title": title},
         timeout_s=120.0,
@@ -232,17 +223,13 @@ async def test_archive_text_length_limit(archive_mcp_server):
 
 
 @pytest.mark.network
-@pytest.mark.skipif(
-    not _has_archive_api_keys(),
-    reason="需要 PKV_RUN_LIVE=1 且在 config/local.yaml 配置 API Key",
-)
 @pytest.mark.asyncio
-async def test_archive_then_search(archive_mcp_server):
+async def test_archive_then_search(live_archive_mcp_server):
     keyword = "归档搜索验证E2E"
     text = f"# {keyword}\n\n归档后立即搜索，确保结果可检索。"
 
     archive_result = await _call_tool(
-        archive_mcp_server,
+        live_archive_mcp_server,
         "archive_text",
         {"text": text, "title": keyword},
         timeout_s=120.0,
@@ -251,7 +238,7 @@ async def test_archive_then_search(archive_mcp_server):
     _assert_archive_success(archive_data)
 
     search_result = await _call_tool(
-        archive_mcp_server,
+        live_archive_mcp_server,
         "search_knowledge",
         {"query": keyword, "strategy": "bm25", "top_k": 5},
         timeout_s=60.0,

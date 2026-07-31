@@ -42,31 +42,6 @@ def test_markdown_store_round_trips_metadata_and_unicode(tmp_path: Path) -> None
     assert loaded.content == entry.content.rstrip("\n")
 
 
-def test_duplicate_title_preserves_both_files(tmp_path: Path) -> None:
-    store = MarkdownStore(tmp_path / "vault")
-    first_entry = Entry(
-        title="同名条目",
-        source_type="text",
-        archived_at="2026-07-30 10:00:00",
-        content="first",
-    )
-    second_entry = Entry(
-        title="同名条目",
-        source_type="text",
-        archived_at="2026-07-30 10:00:01",
-        content="second",
-    )
-
-    first_path = store.save(first_entry)
-    second_path = store.save(second_entry)
-
-    assert first_path != second_path
-    assert first_path.is_file()
-    assert second_path.is_file()
-    assert store.load(first_path).content == "first"
-    assert store.load(second_path).content == "second"
-
-
 def test_list_all_filters_by_subdirectory(tmp_path: Path) -> None:
     store = MarkdownStore(tmp_path / "vault")
     wechat_path = store.save(

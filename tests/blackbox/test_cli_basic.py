@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from src.storage.sqlite_store import SQLiteStore
+from tests.offline_runtime import prepare_offline_child_env
 
 
 class CLITester:
@@ -43,7 +43,12 @@ class CLITester:
         Returns:
             subprocess.CompletedProcess: 命令执行结果
         """
-        cmd = [self.python_exe, "-m", "src.main"] + list(args)
+        cmd = [
+            self.python_exe,
+            str(self.project_root / "tests" / "offline_entrypoint.py"),
+            "cli",
+            *args,
+        ]
 
         result = subprocess.run(
             cmd,
@@ -53,6 +58,7 @@ class CLITester:
             text=True,
             encoding="utf-8",
             errors="replace",  # 处理编码错误
+            timeout=30,
             check=False,
         )
 
@@ -85,16 +91,9 @@ def cli(tmp_path: Path) -> CLITester:
             path.mkdir(parents=True, exist_ok=True)
 
     SQLiteStore(db_path).initialize()
-    env = os.environ.copy()
-    env.update({key: str(path) for key, path in runtime_paths.items()})
-    env.update(
-        {
-            "PKV_RUN_LIVE": "0",
-            "PKV_E2E_ARCHIVE_URL": "",
-            "DEEPSEEK_API_KEY": "",
-            "OPENAI_API_KEY": "",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        }
+    env = prepare_offline_child_env(
+        project_root=Path(__file__).resolve().parents[2],
+        runtime_overrides=runtime_paths,
     )
     return CLITester(env=env)
 
@@ -274,7 +273,3 @@ def test_stats_output_format(cli: CLITester):
     assert "知识库统计" in result.stdout
     assert "总条目数: 0" in result.stdout
     assert "暂无标签" in result.stdout
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "--tb=short"])

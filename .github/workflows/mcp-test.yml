@@ -25,7 +25,10 @@ concurrency:
 env:
   PYTHONUNBUFFERED: "1"
   PYTHONDONTWRITEBYTECODE: "1"
+  PYTEST_ADDOPTS: "--strict-markers"
   PKV_RUN_LIVE: "0"
+  PKV_TEST_OFFLINE: "1"
+  PKV_TEST_LOAD_LOCAL: "0"
   PKV_E2E_ARCHIVE_URL: ""
   DEEPSEEK_API_KEY: ""
   OPENAI_API_KEY: ""
@@ -54,7 +57,7 @@ jobs:
 
       - name: Prepare isolated runtime
         run: |
-          data_dir="$RUNNER_TEMP/pkv-tests/contract"
+          data_dir="$GITHUB_WORKSPACE/.data-test/ci/contract"
           report_dir="$RUNNER_TEMP/pkv-reports/contract"
           {
             echo "DATA_DIR=$data_dir"
@@ -65,6 +68,8 @@ jobs:
             echo "TMP_DIR=$data_dir/tmp"
             echo "TMPDIR=$data_dir/tmp"
             echo "PKV_REPORT_DIR=$report_dir"
+            echo "COVERAGE_FILE=$report_dir/.coverage"
+            echo "PKV_TEST_PROJECT_ROOT=$GITHUB_WORKSPACE"
           } >> "$GITHUB_ENV"
           mkdir -p \
             "$data_dir/db" \
@@ -128,7 +133,7 @@ jobs:
 
       - name: Prepare isolated runtime
         run: |
-          data_dir="$RUNNER_TEMP/pkv-tests/${{ matrix.suite }}"
+          data_dir="$GITHUB_WORKSPACE/.data-test/ci/${{ matrix.suite }}"
           report_dir="$RUNNER_TEMP/pkv-reports/${{ matrix.suite }}"
           {
             echo "DATA_DIR=$data_dir"
@@ -139,6 +144,8 @@ jobs:
             echo "TMP_DIR=$data_dir/tmp"
             echo "TMPDIR=$data_dir/tmp"
             echo "PKV_REPORT_DIR=$report_dir"
+            echo "COVERAGE_FILE=$report_dir/.coverage"
+            echo "PKV_TEST_PROJECT_ROOT=$GITHUB_WORKSPACE"
           } >> "$GITHUB_ENV"
           mkdir -p \
             "$data_dir/db" \
@@ -187,7 +194,7 @@ jobs:
 
       - name: Prepare isolated runtime
         run: |
-          data_dir="$RUNNER_TEMP/pkv-tests/mcp-coverage"
+          data_dir="$GITHUB_WORKSPACE/.data-test/ci/mcp-coverage"
           report_dir="$RUNNER_TEMP/pkv-reports/mcp-coverage"
           {
             echo "DATA_DIR=$data_dir"
@@ -198,6 +205,8 @@ jobs:
             echo "TMP_DIR=$data_dir/tmp"
             echo "TMPDIR=$data_dir/tmp"
             echo "PKV_REPORT_DIR=$report_dir"
+            echo "COVERAGE_FILE=$report_dir/.coverage"
+            echo "PKV_TEST_PROJECT_ROOT=$GITHUB_WORKSPACE"
           } >> "$GITHUB_ENV"
           mkdir -p \
             "$data_dir/db" \

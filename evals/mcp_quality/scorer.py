@@ -195,19 +195,14 @@ def _apply_operator(operator: str, actual: Any, expected: Any) -> bool:
     if operator == "truthy":
         return actual is not MISSING and bool(actual)
     if operator == "contains":
-        if actual is MISSING:
-            return False
-        try:
-            return expected in actual
-        except TypeError:
-            return False
+        return _strict_contains(actual, expected)
     if operator == "contains_all":
         if actual is MISSING:
             return False
-        try:
-            return all(item in actual for item in expected)
-        except TypeError:
+        expected_items = _membership_items(expected)
+        if not expected_items:
             return False
+        return all(_strict_contains(actual, item) for item in expected_items)
     if operator == "set_equals":
         return _typed_set_equals(actual, expected)
     if operator == "length_equals":
@@ -238,16 +233,52 @@ def _strict_equal(actual: Any, expected: Any) -> bool:
     if type(actual) is not type(expected):
         return False
     if isinstance(actual, dict):
-        return (
-            actual.keys() == expected.keys()
-            and all(_strict_equal(actual[key], expected[key]) for key in actual)
-        )
+        if len(actual) != len(expected):
+            return False
+        unmatched = list(expected.items())
+        for actual_key, actual_value in actual.items():
+            for index, (expected_key, expected_value) in enumerate(unmatched):
+                if _strict_equal(actual_key, expected_key):
+                    if not _strict_equal(actual_value, expected_value):
+                        return False
+                    unmatched.pop(index)
+                    break
+            else:
+                return False
+        return not unmatched
     if isinstance(actual, (list, tuple)):
         return len(actual) == len(expected) and all(
             _strict_equal(left, right)
             for left, right in zip(actual, expected)
         )
+    if isinstance(actual, (set, frozenset)):
+        return _typed_set_equals(actual, expected)
     return actual == expected
+
+
+def _strict_contains(actual: Any, expected: Any) -> bool:
+    """Apply substring or container membership without bool/int coercion."""
+
+    if actual is MISSING:
+        return False
+    if isinstance(actual, str):
+        return isinstance(expected, str) and expected in actual
+    actual_items = _membership_items(actual)
+    if actual_items is None:
+        return False
+    return any(_strict_equal(item, expected) for item in actual_items)
+
+
+def _membership_items(value: Any) -> list[Any] | None:
+    """Return membership candidates for JSON-like containers."""
+
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return list(value.keys())
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return list(value)
+    return None
 
 
 def _typed_set_equals(actual: Any, expected: Any) -> bool:

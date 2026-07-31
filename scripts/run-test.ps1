@@ -3,8 +3,8 @@
 在隔离的测试数据目录中运行 PKV CLI 或显式的直接测试命令。
 
 .DESCRIPTION
-生产数据的备份/恢复脚本不能通过此包装器运行。数据库迁移只允许直接调用 Python，
-且可写迁移必须显式传入 --no-backup，避免自动备份读取生产 .data。
+生产数据的备份/恢复与数据库迁移脚本不能通过此包装器运行。迁移脚本尚未接入
+base-only 配置入口，仅隔离 DATA_DIR 不能阻止读取 config/local.yaml。
 
 .EXAMPLE
 .\scripts\run-test.ps1 stats
@@ -13,10 +13,7 @@
 .\scripts\run-test.ps1 -DataRoot .data-test\archive-smoke archive "https://example.com"
 
 .EXAMPLE
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests\unit\test_text_utils.py", "-q")
-
-.EXAMPLE
-.\scripts\run-test.ps1 -Direct -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\unit-text -Command @("python", "-m", "pytest", "tests\unit\test_text_utils.py", "-q")
 #>
 
 [CmdletBinding(PositionalBinding = $false)]
@@ -96,52 +93,37 @@ function Test-CommandMentionsText {
     return $false
 }
 
-function Test-HasExactArgument {
-    param(
-        [Parameter(Mandatory = $true)][string[]]$Arguments,
-        [Parameter(Mandatory = $true)][string]$Value
-    )
-
-    foreach ($argument in $Arguments) {
-        if ($argument.Equals($Value, [System.StringComparison]::Ordinal)) {
-            return $true
-        }
-    }
-    return $false
-}
-
-function Test-IsDirectPythonMigration {
+function Test-IsPytestInvocation {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     if ($Arguments.Count -eq 0) {
         return $false
     }
+    $commandName = [System.IO.Path]::GetFileNameWithoutExtension(
+        $Arguments[0]
+    ).ToLowerInvariant()
+    return (
+        $commandName -in @("pytest", "py.test") -or
+        (
+            $commandName -in @("python", "python3", "py") -and
+            $Arguments.Count -ge 3 -and
+            $Arguments[1] -eq "-m" -and
+            $Arguments[2] -eq "pytest"
+        )
+    )
+}
 
-    $executable = [System.IO.Path]::GetFileName($Arguments[0])
-    $pythonExecutables = @("python", "python.exe", "python3", "python3.exe", "py", "py.exe")
-    if ($pythonExecutables -notcontains $executable.ToLowerInvariant()) {
-        return $false
-    }
+function Test-HasPytestConfigBypass {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
-    for ($index = 1; $index -lt $Arguments.Count; $index++) {
-        $argument = $Arguments[$index]
-        if (
-            [System.IO.Path]::GetFileName($argument).Equals(
-                "migrate.py",
-                [System.StringComparison]::OrdinalIgnoreCase
-            )
-        ) {
+    foreach ($argument in $Arguments) {
+        if ($argument -in @("--noconftest", "--confcutdir", "--rootdir", "-c", "--config-file")) {
             return $true
         }
-        if (
-            $argument -eq "-m" -and
-            ($index + 1) -lt $Arguments.Count -and
-            $Arguments[$index + 1].Equals(
-                "scripts.migrate",
-                [System.StringComparison]::Ordinal
-            )
-        ) {
-            return $true
+        foreach ($prefix in @("--confcutdir=", "--rootdir=", "--config-file=")) {
+            if ($argument.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
         }
     }
     return $false
@@ -389,29 +371,19 @@ $isMigrationCommand = (
     (Test-CommandMentionsText -Arguments $normalizedCommand -Text "migrate.py") -or
     (Test-CommandMentionsText -Arguments $normalizedCommand -Text "scripts.migrate")
 )
-if ($Direct -and $isMigrationCommand -and -not (Test-IsDirectPythonMigration $normalizedCommand)) {
+if ($Direct -and $isMigrationCommand) {
     [Console]::Error.WriteLine(
-        "测试迁移仅允许直接调用 python scripts/migrate.py 或 python -m scripts.migrate"
+        "测试包装器禁止 migration：脚本尚未接入 base-only 配置入口"
     )
     exit 2
 }
 
-$isReadOnlyMigration = (
-    (Test-HasExactArgument -Arguments $normalizedCommand -Value "--dry-run") -or
-    (Test-HasExactArgument -Arguments $normalizedCommand -Value "--version") -or
-    (Test-HasExactArgument -Arguments $normalizedCommand -Value "--health-check")
+$isDirectPytest = $Direct -and (
+    Test-IsPytestInvocation -Arguments $normalizedCommand
 )
-$skipsMigrationBackup = Test-HasExactArgument `
-    -Arguments $normalizedCommand `
-    -Value "--no-backup"
-if (
-    $Direct -and
-    $isMigrationCommand -and
-    -not $isReadOnlyMigration -and
-    -not $skipsMigrationBackup
-) {
+if ($isDirectPytest -and (Test-HasPytestConfigBypass -Arguments $normalizedCommand)) {
     [Console]::Error.WriteLine(
-        "测试迁移必须使用 --no-backup；自动备份脚本会读取生产 .data"
+        "测试包装器禁止改变 pytest 的 root conftest/config 边界"
     )
     exit 2
 }
@@ -453,11 +425,22 @@ $runtimePaths = [ordered]@{
     LOG_DIR    = Join-Path $RequestedDataRoot "logs"
     TMP_DIR    = Join-Path $RequestedDataRoot "tmp"
 }
-$previousValues = @{}
-
+$managedEnvironment = [ordered]@{}
 foreach ($key in $runtimePaths.Keys) {
+    $managedEnvironment[$key] = $runtimePaths[$key]
+}
+$managedEnvironment["COVERAGE_FILE"] = Join-Path $RequestedDataRoot "reports\.coverage"
+$managedEnvironment["PYTHONDONTWRITEBYTECODE"] = "1"
+$managedEnvironment["PYTEST_ADDOPTS"] = "--strict-markers"
+$managedEnvironment["PKV_RUN_LIVE"] = "0"
+$managedEnvironment["PKV_TEST_OFFLINE"] = "1"
+$managedEnvironment["PKV_TEST_LOAD_LOCAL"] = "0"
+$managedEnvironment["PKV_TEST_PROJECT_ROOT"] = $ProjectRoot
+
+$previousValues = @{}
+foreach ($key in $managedEnvironment.Keys) {
     $previousValues[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
-    [Environment]::SetEnvironmentVariable($key, $runtimePaths[$key], "Process")
+    [Environment]::SetEnvironmentVariable($key, $managedEnvironment[$key], "Process")
 }
 
 Write-Host "========================================" -ForegroundColor Cyan
@@ -472,7 +455,8 @@ try {
         $runtimePaths.VAULT_DIR,
         $runtimePaths.VECTOR_DIR,
         $runtimePaths.LOG_DIR,
-        $runtimePaths.TMP_DIR
+        $runtimePaths.TMP_DIR,
+        (Join-Path $RequestedDataRoot "reports")
     )) {
         [void][System.IO.Directory]::CreateDirectory($path)
         if (-not (Test-Path -LiteralPath $path -PathType Container)) {
@@ -484,14 +468,39 @@ try {
     $invocation = if ($Direct) {
         [string[]]$Command.Clone()
     } else {
-        @("python", "-m", "src.cli.commands") + $Command
+        @("python", "tests/offline_entrypoint.py", "cli") + $Command
     }
+
+    if ($Direct -and (Test-IsPytestInvocation -Arguments $invocation)) {
+        $pytestBaseTemp = Join-Path $RequestedDataRoot "tmp\pytest"
+        $pytestCache = Join-Path $RequestedDataRoot "tmp\pytest-cache"
+        # Insert trusted values before pytest's option terminator so config,
+        # inherited addopts, or earlier arguments cannot redirect writes.
+        $trustedPytestArguments = @(
+            "--basetemp=$pytestBaseTemp",
+            "-o",
+            "cache_dir=$pytestCache"
+        )
+        $terminatorIndex = [Array]::IndexOf($invocation, "--")
+        if ($terminatorIndex -ge 0) {
+            $beforeTerminator = @($invocation[0..($terminatorIndex - 1)])
+            $fromTerminator = @(
+                $invocation[$terminatorIndex..($invocation.Count - 1)]
+            )
+            $invocation = @(
+                $beforeTerminator + $trustedPytestArguments + $fromTerminator
+            )
+        } else {
+            $invocation += $trustedPytestArguments
+        }
+    }
+
     $loggedInvocation = @(Get-RedactedInvocationForLog -Arguments $invocation)
     Write-Host "[执行命令] $($loggedInvocation -join ' ')" -ForegroundColor Cyan
     & (Join-Path $PSScriptRoot "run-windows.ps1") @invocation
     $exitCode = $LASTEXITCODE
 } finally {
-    foreach ($key in $runtimePaths.Keys) {
+    foreach ($key in $managedEnvironment.Keys) {
         [Environment]::SetEnvironmentVariable($key, $previousValues[$key], "Process")
     }
 }

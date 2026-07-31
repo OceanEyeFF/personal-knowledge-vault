@@ -23,13 +23,15 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from src.utils.config import Config
+
 
 # ============================================================
 # Fixtures
 # ============================================================
 
 @pytest.fixture(autouse=True)
-def mock_stores():
+def mock_stores(tmp_path, monkeypatch):
     """Mock 所有存储单例和配置，避免连接真实数据库。"""
     mock_store = MagicMock()
     mock_store.get_all_tags_with_count.return_value = []
@@ -41,25 +43,34 @@ def mock_stores():
         "top_tags": [],
     }
 
-    mock_config = MagicMock()
-    mock_config.llm_api_key = ""
-    mock_config.llm_base_url = ""
-    mock_config.llm_model = "deepseek-chat"
-    mock_config.embd_api_key = ""
-    mock_config.embd_base_url = ""
-    mock_config.embd_model = "text-embedding-3-small"
-    mock_config.db_path = ".data-test/db/test.db"
-    mock_config.vault_dir = ".data-test/vault"
-    mock_config.vector_index_dir = ".data-test/vectors"
-    mock_config.get.return_value = "auto"
+    data_root = tmp_path / "runtime"
+    runtime_paths = {
+        "DATA_DIR": data_root,
+        "DB_PATH": data_root / "db" / "knowledge_vault.db",
+        "VAULT_DIR": data_root / "vault",
+        "VECTOR_DIR": data_root / "vectors",
+        "LOG_DIR": data_root / "logs",
+        "TMP_DIR": data_root / "tmp",
+    }
+    for key, path in runtime_paths.items():
+        monkeypatch.setenv(key, str(path))
+
+    isolated_config = Config(str(_PROJECT_ROOT / "config" / "config.yaml"))
 
     # 延迟导入在函数内部执行 from src.gui.stores import xxx，
     # 因此只需 mock src.gui.stores 模块级函数即可
     with patch("src.gui.stores.get_sqlite_store", return_value=mock_store), \
          patch("src.gui.stores.get_markdown_store", return_value=MagicMock()), \
          patch("src.gui.stores.get_bm25_retriever", return_value=MagicMock()), \
-         patch("src.gui.viewmodels.settings_viewmodel.get_config", return_value=mock_config), \
-         patch("src.utils.config.get_config", return_value=mock_config):
+         patch(
+             "src.gui.viewmodels.settings_viewmodel.get_config",
+             return_value=isolated_config,
+         ), \
+         patch(
+             "src.gui.viewmodels.chat_viewmodel.Config",
+             return_value=isolated_config,
+         ), \
+         patch("src.utils.config.get_config", return_value=isolated_config):
         yield mock_store
 
 

@@ -4,7 +4,7 @@ MCP 协议级 stdio 黑盒测试 (Layer 3)
 通过 MCP SDK 的 stdio_client + ClientSession 启动真实子进程，
 经由 JSON-RPC over stdio 进行端到端协议级测试：
 
-    [pytest] ──stdio_client──> [python -m src.mcp.server] (子进程)
+    [pytest] ──stdio_client──> [tests/offline_entrypoint.py mcp] (子进程)
               <──JSON-RPC───
 
 验证内容：
@@ -26,7 +26,6 @@ MCP 协议级 stdio 黑盒测试 (Layer 3)
 """
 
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -39,6 +38,8 @@ from mcp.shared.exceptions import McpError
 
 # 确保项目根目录在 Python path 中
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+from tests.offline_runtime import prepare_offline_child_env
+
 
 # ============================================================
 # 辅助函数
@@ -60,28 +61,26 @@ def get_server_params(
     Returns:
         StdioServerParameters 实例
     """
-    env = os.environ.copy()
-    if extra_env:
-        env.update(extra_env)
-
     data_dir = Path(db_path).resolve().parent.parent
-    env.update(
-        {
-            "DATA_DIR": str(data_dir),
-            "DB_PATH": str(Path(db_path).resolve()),
-            "VAULT_DIR": str(data_dir / "vault"),
-            "VECTOR_DIR": str(data_dir / "vectors"),
-            "LOG_DIR": str(data_dir / "logs"),
-            "TMP_DIR": str(data_dir / "tmp"),
-            "LOG_LEVEL": log_level,
-        }
+    runtime_overrides: Dict[str, str] = {
+        "DATA_DIR": str(data_dir),
+        "DB_PATH": str(Path(db_path).resolve()),
+        "VAULT_DIR": str(data_dir / "vault"),
+        "VECTOR_DIR": str(data_dir / "vectors"),
+        "LOG_DIR": str(data_dir / "logs"),
+        "TMP_DIR": str(data_dir / "tmp"),
+        "LOG_LEVEL": log_level,
+    }
+    if extra_env:
+        runtime_overrides.update(extra_env)
+    env = prepare_offline_child_env(
+        project_root=PROJECT_ROOT,
+        runtime_overrides=runtime_overrides,
     )
-    # 避免子进程写入字节码缓存
-    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
     return StdioServerParameters(
         command=sys.executable,
-        args=["-m", "src.mcp.server"],
+        args=[str(PROJECT_ROOT / "tests" / "offline_entrypoint.py"), "mcp"],
         env=env,
         cwd=str(PROJECT_ROOT),
     )
@@ -94,14 +93,20 @@ def parse_tool_content(result) -> Dict[str, Any]:
     包含 content: list[TextContent|ImageContent|EmbeddedResource]
     和 isError: bool。
 
-    本函数提取第一个 TextContent 的 text 字段并解析为 dict。
+    成功结果必须只含一个 JSON TextContent，禁止忽略额外块或 isError。
     """
-    if hasattr(result, "content") and result.content:
-        first = result.content[0]
-        text = getattr(first, "text", None)
-        if text:
-            return json.loads(text)
-    raise ValueError(f"无法解析 call_tool 结果: {result}")
+    if getattr(result, "isError", False):
+        raise ValueError(f"call_tool 返回 MCP error: {result}")
+    content = getattr(result, "content", None)
+    if not isinstance(content, list) or len(content) != 1:
+        raise ValueError(f"call_tool 必须返回单一 TextContent: {result}")
+    text = getattr(content[0], "text", None)
+    if not isinstance(text, str) or not text:
+        raise ValueError(f"call_tool TextContent 缺少 JSON 文本: {result}")
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError(f"call_tool JSON 必须为 object: {type(payload).__name__}")
+    return payload
 
 
 def assert_stats_payload(payload: Dict[str, Any]) -> None:
@@ -436,6 +441,15 @@ class TestReadonlyTools:
                 result = await session.call_tool("get_stats", {})
 
         data = parse_tool_content(result)
+        assert data["total_entries"] == 3
+        assert dict(data["by_source_type"]) == {
+            "generic": 1,
+            "wechat": 1,
+            "zhihu": 1,
+        }
+        assert {
+            item["name"]: item["count"] for item in data["top_tags"]
+        }["AI"] == 1
         assert_stats_payload(data)
 
     @pytest.mark.asyncio
@@ -778,6 +792,15 @@ class TestResources:
                 result = await session.read_resource("pkv://stats")
 
         data = json.loads(result.contents[0].text)
+        assert data["total_entries"] == 3
+        assert dict(data["by_source_type"]) == {
+            "generic": 1,
+            "wechat": 1,
+            "zhihu": 1,
+        }
+        assert {
+            item["name"]: item["count"] for item in data["top_tags"]
+        }["AI"] == 1
         assert_stats_payload(data)
 
     @pytest.mark.asyncio

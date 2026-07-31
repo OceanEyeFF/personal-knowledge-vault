@@ -22,6 +22,7 @@ from .scorer import (
     SUPPORTED_ASSERTION_OPERATORS,
     CheckResult,
     TaskScore,
+    _strict_equal,
     score_assertion,
 )
 
@@ -52,6 +53,16 @@ ASSERTIONS_WITH_EXPECTED_VALUE = frozenset(
 )
 ALLOWED_PRIORITIES = frozenset({"P0", "P1", "P2"})
 ALLOWED_IMPACTS = frozenset({"low", "medium", "high"})
+OFFLINE_READ_ONLY_TOOL_ALLOWLIST = frozenset(
+    {
+        "collect_evidence",
+        "contrast",
+        "explain_relation",
+        "find_bridges",
+        "query_subgraph",
+        "timeline_of",
+    }
+)
 
 
 @dataclass
@@ -242,7 +253,10 @@ async def _run_task(
             CheckResult(
                 check_id="arguments_match",
                 dimension="parameters",
-                passed=proposed.get("arguments", {}) == expected.get("arguments", {}),
+                passed=_strict_equal(
+                    proposed.get("arguments", {}),
+                    expected.get("arguments", {}),
+                ),
                 weight=1.0,
                 expected=expected.get("arguments", {}),
                 actual=proposed.get("arguments", {}),
@@ -331,7 +345,15 @@ def _normalize_mcp_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
         "target_knowledge_id",
     }
     return {
-        key: str(value) if key in string_id_fields and isinstance(value, int) else value
+        key: (
+            str(value)
+            if (
+                key in string_id_fields
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+            )
+            else value
+        )
         for key, value in arguments.items()
     }
 
@@ -438,9 +460,15 @@ def _validate_proposals(
 def _validate_call(value: Any, *, label: str) -> None:
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be a mapping")
+    if set(value) != {"tool", "arguments"}:
+        raise ValueError(f"{label} must contain exactly tool and arguments")
     tool = value.get("tool")
     if not isinstance(tool, str) or not tool.strip():
         raise ValueError(f"{label} must contain a non-empty string tool")
+    if tool not in OFFLINE_READ_ONLY_TOOL_ALLOWLIST:
+        raise ValueError(
+            f"{label} selects Tool outside fixed offline read-only allowlist: {tool}"
+        )
     if "arguments" not in value or not isinstance(value["arguments"], dict):
         raise ValueError(f"{label} must contain an arguments mapping")
 
@@ -491,6 +519,13 @@ def _validate_assertion(
     if operator in ASSERTIONS_WITH_EXPECTED_VALUE and "expected" not in assertion:
         raise ValueError(
             f"assertion operator requires expected value: {assertion_id}"
+        )
+    if operator == "contains_all" and (
+        not isinstance(assertion.get("expected"), list)
+        or not assertion["expected"]
+    ):
+        raise ValueError(
+            f"contains_all expected must be a non-empty list: {assertion_id}"
         )
 
     if (

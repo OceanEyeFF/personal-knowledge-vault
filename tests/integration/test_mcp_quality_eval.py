@@ -10,8 +10,13 @@ from pathlib import Path
 import pytest
 import yaml
 
+from evals.mcp_quality import runner as quality_runner
 from evals.mcp_quality import safety
-from evals.mcp_quality.runner import DEFAULT_PROPOSALS, run_evaluation
+from evals.mcp_quality.runner import (
+    DEFAULT_PROPOSALS,
+    DEFAULT_TASKSET,
+    run_evaluation,
+)
 from evals.mcp_quality.scenario import OfflineMcpScenario
 
 
@@ -62,6 +67,65 @@ def test_mcp_quality_report_can_hide_tool_outputs(tmp_path: Path) -> None:
     assert compact["policy_mode"] == "threshold_enforced"
     assert compact["targets_met"] is True
     assert compact["thresholds_met"] is True
+
+
+@pytest.mark.parametrize(
+    ("payload_kind", "tool_name"),
+    [
+        ("taskset", "archive_url"),
+        ("taskset", "archive_text"),
+        ("proposals", "archive_url"),
+        ("proposals", "archive_text"),
+    ],
+)
+def test_non_allowlisted_tools_fail_before_scenario_creation(
+    payload_kind: str,
+    tool_name: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    taskset = yaml.safe_load(DEFAULT_TASKSET.read_text(encoding="utf-8"))
+    proposals = yaml.safe_load(DEFAULT_PROPOSALS.read_text(encoding="utf-8"))
+    if payload_kind == "taskset":
+        taskset["tasks"][0]["expected_call"]["tool"] = tool_name
+    else:
+        proposals["proposals"][0]["proposed_call"]["tool"] = tool_name
+
+    taskset_path = tmp_path / "blocked-taskset.yaml"
+    proposals_path = tmp_path / "blocked-proposals.yaml"
+    taskset_path.write_text(
+        yaml.safe_dump(taskset, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    proposals_path.write_text(
+        yaml.safe_dump(proposals, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    scenario_attempted = False
+
+    def fail_if_scenario_created(*args, **kwargs):
+        nonlocal scenario_attempted
+        scenario_attempted = True
+        raise AssertionError("scenario must not be created for a blocked Tool")
+
+    monkeypatch.setattr(
+        quality_runner,
+        "OfflineMcpScenario",
+        fail_if_scenario_created,
+    )
+    work_dir = tmp_path / "blocked-work"
+
+    with pytest.raises(ValueError, match="fixed offline read-only allowlist"):
+        asyncio.run(
+            run_evaluation(
+                taskset_path=taskset_path,
+                proposals_path=proposals_path,
+                work_dir=work_dir,
+            )
+        )
+
+    assert scenario_attempted is False
+    assert not work_dir.exists()
 
 
 def test_independent_proposals_detect_wrong_tool_arguments_and_chunk_query(

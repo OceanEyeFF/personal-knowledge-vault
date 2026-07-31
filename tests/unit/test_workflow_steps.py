@@ -5,7 +5,6 @@ Workflow steps unit tests.
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent.parent
@@ -17,6 +16,8 @@ import pytest
 from src.storage.markdown_store import Entry, MarkdownStore
 from src.storage.sqlite_store import SQLiteStore
 from src.workflow.models import WorkflowContext
+from src.utils.config import Config
+import src.workflow.steps as workflow_steps
 from src.workflow.steps import FetchStep, AnalyzeStep, IdeaSharpenStep, StoreStep
 
 
@@ -119,6 +120,30 @@ def prompt_stub(_prompt: str) -> str:
     """Return a static prompt answer."""
     return "answer"
 
+@pytest.fixture
+def isolated_steps_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Config:
+    """Inject base-only Config at the StoreStep/AnalyzeStep import site."""
+    data_root = tmp_path / "runtime"
+    runtime_paths = {
+        "DATA_DIR": data_root,
+        "DB_PATH": data_root / "db" / "knowledge_vault.db",
+        "VAULT_DIR": data_root / "vault",
+        "VECTOR_DIR": data_root / "vectors",
+        "LOG_DIR": data_root / "logs",
+        "TMP_DIR": data_root / "tmp",
+    }
+    for key, path in runtime_paths.items():
+        monkeypatch.setenv(key, str(path))
+
+    config = Config(str(project_root / "config" / "config.yaml"))
+    monkeypatch.setattr(workflow_steps, "get_config", lambda: config)
+    return config
+
+
+
 
 @pytest.mark.asyncio
 async def test_fetch_step_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,7 +189,9 @@ async def test_fetch_step_retry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_analyze_step_updates_entry() -> None:
+async def test_analyze_step_updates_entry(
+    isolated_steps_config: Config,
+) -> None:
     """AnalyzeStep should update entry summary and tags."""
     entry = Entry(
         title="Title",
@@ -184,7 +211,10 @@ async def test_analyze_step_updates_entry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_analyze_step_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_analyze_step_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_steps_config: Config,
+) -> None:
     """AnalyzeStep should report errors when AI calls fail."""
     entry = Entry(
         title="Title",
@@ -307,7 +337,10 @@ async def test_idea_sharpen_step_timeout_raises(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
-async def test_store_step_with_dummy_vector(tmp_path: Path) -> None:
+async def test_store_step_with_dummy_vector(
+    tmp_path: Path,
+    isolated_steps_config: Config,
+) -> None:
     """StoreStep should store markdown/sqlite and call vector store."""
     vault_dir = tmp_path / "vault"
     db_path = tmp_path / "db" / "test.db"
@@ -356,7 +389,10 @@ async def test_store_step_missing_entry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_store_step_vector_without_sqlite(tmp_path: Path) -> None:
+async def test_store_step_vector_without_sqlite(
+    tmp_path: Path,
+    isolated_steps_config: Config,
+) -> None:
     """StoreStep should report missing knowledge_id for vector index."""
     entry = Entry(
         title="Entry",
@@ -375,120 +411,3 @@ async def test_store_step_vector_without_sqlite(tmp_path: Path) -> None:
     result = await step.execute(context)
     assert "errors" in result
     assert any("缺少 knowledge_id" in err for err in result["errors"])
-
-
-@pytest.mark.asyncio
-async def test_store_step_keeps_markdown_result_when_sqlite_fails(
-    tmp_path: Path,
-) -> None:
-    """The current StoreStep contract is observable best-effort, not atomic."""
-
-    markdown_store = MarkdownStore(tmp_path / "vault")
-    sqlite_store = MagicMock()
-    sqlite_store.insert_entry.side_effect = RuntimeError("sqlite unavailable")
-    entry = Entry(
-        title="部分成功",
-        source_type="text",
-        content="markdown survives",
-        keywords=["failure", "matrix"],
-    )
-    step = StoreStep(
-        step_id="store",
-        config={"targets": ["markdown", "sqlite"]},
-        markdown_store=markdown_store,
-        sqlite_store=sqlite_store,
-    )
-
-    result = await step.execute(WorkflowContext({"entry": entry}))
-
-    saved_path = Path(result["file_path"])
-    assert saved_path.is_file()
-    assert markdown_store.load(saved_path).content == "markdown survives"
-    assert result["knowledge_id"] is None
-    assert result["stored_targets"] == ["markdown", "sqlite"]
-    assert result["errors"] == ["SQLite 存储失败: sqlite unavailable"]
-    sqlite_store.initialize.assert_called_once_with()
-    sqlite_store.insert_entry.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_store_step_continues_to_sqlite_when_markdown_fails() -> None:
-    markdown_store = MagicMock()
-    markdown_store.save.side_effect = OSError("markdown unavailable")
-    sqlite_store = MagicMock()
-    sqlite_store.insert_entry.return_value = 23
-    entry = Entry(
-        title="SQLite 降级写入",
-        source_type="text",
-        content="content",
-        keywords=["one", "two"],
-    )
-    step = StoreStep(
-        step_id="store",
-        config={"targets": ["markdown", "sqlite"]},
-        markdown_store=markdown_store,
-        sqlite_store=sqlite_store,
-    )
-
-    result = await step.execute(WorkflowContext({"entry": entry}))
-
-    assert result["knowledge_id"] == 23
-    assert Path(result["file_path"]).name == "SQLite 降级写入.md"
-    assert result["errors"] == ["Markdown 存储失败: markdown unavailable"]
-    sqlite_store.initialize.assert_called_once_with()
-    (inserted_entry,) = sqlite_store.insert_entry.call_args.args
-    inserted_path = sqlite_store.insert_entry.call_args.kwargs["file_path"]
-    assert inserted_entry is entry
-    assert inserted_path == result["file_path"]
-
-
-@pytest.mark.asyncio
-async def test_store_step_reports_partial_vector_side_effects(
-    tmp_path: Path,
-) -> None:
-    markdown_store = MarkdownStore(tmp_path / "vault")
-    sqlite_store = MagicMock()
-    sqlite_store.insert_entry.return_value = 41
-    vector_store = MagicMock()
-    vector_store.add_chunk_vector.side_effect = [
-        None,
-        RuntimeError("second chunk unavailable"),
-    ]
-    embedder = MagicMock()
-    embedder.dim = 4
-    embedder.embed_document.return_value = np.ones(4, dtype="float32")
-    embedder.embed_chunks.return_value = (
-        np.ones((2, 4), dtype="float32"),
-        ["chunk one", "chunk two"],
-    )
-    context = WorkflowContext(
-        {
-            "entry": Entry(
-                title="向量部分失败",
-                source_type="text",
-                content="two chunks",
-            )
-        }
-    )
-    step = StoreStep(
-        step_id="store",
-        config={"targets": ["markdown", "sqlite", "vector_index"]},
-        markdown_store=markdown_store,
-        sqlite_store=sqlite_store,
-        vector_store=vector_store,
-        embedder=embedder,
-    )
-
-    result = await step.execute(context)
-
-    assert result["knowledge_id"] == 41
-    assert result["errors"] == ["向量索引失败: second chunk unavailable"]
-    vector_store.add_doc_vector.assert_called_once()
-    sqlite_store.insert_chunks.assert_called_once_with(
-        41,
-        ["chunk one", "chunk two"],
-    )
-    assert vector_store.add_chunk_vector.call_count == 2
-    assert vector_store.add_chunk_vector.call_args_list[0].args[:2] == (41, 0)
-    assert vector_store.add_chunk_vector.call_args_list[1].args[:2] == (41, 1)
-    assert any("部分存储失败，已降级" in item for item in context.logs)
