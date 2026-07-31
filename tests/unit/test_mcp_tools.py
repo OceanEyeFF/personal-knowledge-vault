@@ -400,8 +400,7 @@ class TestListEntries:
             await list_entries(per_page=200)
 
         # 验证 limit 被限制为 100
-        call_args = mock_store.list_entries.call_args
-        assert call_args.kwargs.get("limit") == 100 or call_args[1].get("limit") == 100
+        assert mock_store.list_entries.call_args.kwargs["limit"] == 100
 
     @pytest.mark.asyncio
     async def test_invalid_sort_by(self):

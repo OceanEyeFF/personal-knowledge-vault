@@ -3,10 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Any
 
 
 MISSING = object()
+SUPPORTED_ASSERTION_OPERATORS = frozenset(
+    {
+        "all_not_empty",
+        "contains",
+        "contains_all",
+        "equals",
+        "gte",
+        "length_equals",
+        "lte",
+        "not_empty",
+        "set_equals",
+        "truthy",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -165,7 +180,7 @@ def _get_key(value: Any, key: str) -> Any:
 
 def _apply_operator(operator: str, actual: Any, expected: Any) -> bool:
     if operator == "equals":
-        return actual is not MISSING and actual == expected
+        return actual is not MISSING and _strict_equal(actual, expected)
     if operator == "not_empty":
         return actual is not MISSING and actual not in (None, "", [], {})
     if operator == "all_not_empty":
@@ -180,48 +195,128 @@ def _apply_operator(operator: str, actual: Any, expected: Any) -> bool:
     if operator == "truthy":
         return actual is not MISSING and bool(actual)
     if operator == "contains":
-        if actual is MISSING:
-            return False
-        try:
-            return expected in actual
-        except TypeError:
-            return False
+        return _strict_contains(actual, expected)
     if operator == "contains_all":
         if actual is MISSING:
             return False
-        try:
-            return all(item in actual for item in expected)
-        except TypeError:
+        expected_items = _membership_items(expected)
+        if not expected_items:
             return False
+        return all(_strict_contains(actual, item) for item in expected_items)
     if operator == "set_equals":
-        if actual is MISSING:
-            return False
-        try:
-            return set(actual) == set(expected)
-        except TypeError:
-            return False
+        return _typed_set_equals(actual, expected)
     if operator == "length_equals":
-        if actual is MISSING:
+        if (
+            actual is MISSING
+            or not isinstance(expected, int)
+            or isinstance(expected, bool)
+        ):
             return False
         try:
-            return len(actual) == int(expected)
-        except (TypeError, ValueError):
+            return len(actual) == expected
+        except TypeError:
             return False
     if operator == "gte":
-        if actual is MISSING:
+        if not _is_number(actual) or not _is_number(expected):
             return False
-        try:
-            return float(actual) >= float(expected)
-        except (TypeError, ValueError):
-            return False
+        return float(actual) >= float(expected)
     if operator == "lte":
-        if actual is MISSING:
+        if not _is_number(actual) or not _is_number(expected):
             return False
-        try:
-            return float(actual) <= float(expected)
-        except (TypeError, ValueError):
-            return False
+        return float(actual) <= float(expected)
     raise ValueError(f"unsupported assertion operator: {operator}")
+
+
+def _strict_equal(actual: Any, expected: Any) -> bool:
+    """Compare values without Python's bool/int coercion."""
+
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(actual, dict):
+        if len(actual) != len(expected):
+            return False
+        unmatched = list(expected.items())
+        for actual_key, actual_value in actual.items():
+            for index, (expected_key, expected_value) in enumerate(unmatched):
+                if _strict_equal(actual_key, expected_key):
+                    if not _strict_equal(actual_value, expected_value):
+                        return False
+                    unmatched.pop(index)
+                    break
+            else:
+                return False
+        return not unmatched
+    if isinstance(actual, (list, tuple)):
+        return len(actual) == len(expected) and all(
+            _strict_equal(left, right)
+            for left, right in zip(actual, expected)
+        )
+    if isinstance(actual, (set, frozenset)):
+        return _typed_set_equals(actual, expected)
+    return actual == expected
+
+
+def _strict_contains(actual: Any, expected: Any) -> bool:
+    """Apply substring or container membership without bool/int coercion."""
+
+    if actual is MISSING:
+        return False
+    if isinstance(actual, str):
+        return isinstance(expected, str) and expected in actual
+    actual_items = _membership_items(actual)
+    if actual_items is None:
+        return False
+    return any(_strict_equal(item, expected) for item in actual_items)
+
+
+def _membership_items(value: Any) -> list[Any] | None:
+    """Return membership candidates for JSON-like containers."""
+
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return list(value.keys())
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return list(value)
+    return None
+
+
+def _typed_set_equals(actual: Any, expected: Any) -> bool:
+    """Compare set-like values while preserving element types.
+
+    Multiplicity is intentionally ignored because the declarative operator is
+    named ``set_equals``; ``[1, 1, 2]`` and ``[2, 1]`` are equivalent.
+    """
+
+    supported = (list, tuple, set, frozenset)
+    if (
+        actual is MISSING
+        or not isinstance(actual, supported)
+        or not isinstance(expected, supported)
+    ):
+        return False
+    actual_unique = _strict_unique(actual)
+    expected_unique = _strict_unique(expected)
+    return len(actual_unique) == len(expected_unique) and all(
+        any(_strict_equal(item, candidate) for candidate in expected_unique)
+        for item in actual_unique
+    )
+
+
+def _strict_unique(values: Any) -> list[Any]:
+    unique: list[Any] = []
+    for value in values:
+        if not any(_strict_equal(value, existing) for existing in unique):
+            unique.append(value)
+    return unique
+
+
+def _is_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
 
 
 def _replace_missing(value: Any) -> Any:

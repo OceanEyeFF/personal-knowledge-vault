@@ -67,7 +67,8 @@ class TestKnowledgeQA:
 
     def test_contains_citation_instruction(self):
         result = knowledge_qa("test")
-        assert "引用" in result or "标题" in result
+        assert "引用" in result
+        assert "标题" in result
 
     def test_returns_string(self):
         result = knowledge_qa("any question")
@@ -109,7 +110,8 @@ class TestIdeaSharpen:
 
     def test_contains_search_instruction(self):
         result = idea_sharpen("内容")
-        assert "search_knowledge" in result or "get_related" in result
+        assert "search_knowledge" in result
+        assert "get_related" in result
 
     def test_returns_string(self):
         result = idea_sharpen("test content")

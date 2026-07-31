@@ -77,14 +77,13 @@ Tool、错误参数或未来 Agent 预测不会与 gold 共用 YAML anchor/对�
 `targets_met`。Phase B citation 合同完成后的策略是 `threshold_enforced`：
 
 - 默认 CI 必须运行 `tests/integration/test_mcp_quality_eval.py`
-- 集成回归固定 schema、16 条任务、119 项检查、独立 proposals 和全通过结果
+- 集成回归固定 schema、16 条任务、119 项期望检查与独立 proposals；是否全通过只由对应工作树的受控运行证据决定
 - evaluation 运行时合同在 119 项评分之外逐项读取所有 citation locator；
   校验 bridge 路径连续性、完整候选邻接/断连子图和 semantic provenance，
   timeline 物理字段及 legacy 持久性，contrast provenance 完整性，并递归
   拒绝 Phase B 新公开响应中的绝对本机路径
 - CLI 通过 `--enforce-thresholds` 把任务集内的目标阈值升级为退出码门禁
-- 当前基线为 119/119，`citability=100%`、`targets_met=true`，兼容字段
-  `thresholds_met=true`
+- 2026-07-29 基线快照为 119/119、`citability=100%`、`targets_met=true`，兼容字段 `thresholds_met=true`；2026-07-31 的当前 TestCase dirty tree 已通过 S4c 定向、integration、全量和 MCP coverage 复验
 - gold call、baseline proposals、119 项断言及各维度阈值均未因本次收口降低或改写
 
 ## 5. 版本化资产
@@ -96,7 +95,7 @@ Tool、错误参数或未来 Agent 预测不会与 gold 共用 YAML anchor/对�
 - `evals/mcp_quality/scorer.py`：路径选择与通用断言评分
 - `evals/mcp_quality/runner.py`：FastMCP 执行、聚合与 CLI
 - `tests/unit/test_mcp_quality_scorer.py`：任务/评分器契约
-- `tests/integration/test_mcp_quality_eval.py`：119/119 基线与门禁回归
+- `tests/integration/test_mcp_quality_eval.py`：119 项期望检查、报告 schema 与门禁回归
 
 后续变更必须保持 16 条任务、独立 proposals、119 项检查和现有阈值；
 不得通过修改 gold/proposal、删除断言或改写离线 fixture 掩盖回归。

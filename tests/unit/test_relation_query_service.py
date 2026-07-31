@@ -339,3 +339,32 @@ def test_explain_relation_can_fallback_to_two_hop_path(query_env):
         RelationType.REFERENCES.value,
         RelationType.RELATED_DOCUMENT.value,
     ]
+
+
+def test_query_subgraph_cycle_and_reversed_edges_do_not_duplicate_nodes(query_env):
+    """Alpha↔Gamma cycle and reversed evidence stay finite and deterministic."""
+    service = query_env["query_service"]
+
+    first = service.query_subgraph(query_env["alpha_id"], depth=3)
+    second = service.query_subgraph(query_env["alpha_id"], depth=3)
+
+    assert [(node.knowledge_id, node.depth) for node in first.nodes] == [
+        (query_env["alpha_id"], 0),
+        (query_env["beta_id"], 1),
+        (query_env["gamma_id"], 1),
+        (query_env["delta_id"], 2),
+    ]
+    assert first.to_dict() == second.to_dict()
+
+
+def test_explain_relation_disconnected_component_is_not_found(query_env):
+    result = query_env["query_service"].explain_relation(
+        query_env["alpha_id"],
+        query_env["chapter_id"],
+        max_depth=3,
+    )
+
+    assert result.found is False
+    assert result.explanation_type == "not_found"
+    assert result.hops == 0
+    assert result.path == []

@@ -1,10 +1,10 @@
-# M12 MCP 真实场景测试方案
+# M12 MCP 分层测试方案（默认离线）
 
-> 三层递进式测试框架：Inspector 快速验证 → Python 脚本全流程 → pytest E2E 套件长期维护
+> 三层递进式测试框架：可选 Inspector 探索 → 进程内行为集成 → stdio/E2E 长期回归；真实数据与真实 Provider 属于独立后续流程
 
-**核心理念**：使用 `.data-test/` 与进程级路径覆盖隔离测试数据，应用服务配置仍来自 `config/local.yaml`，循序渐进地验证 MCP 层的可用性。
+**核心理念**：默认自动化只使用工作树内 `.data-test/`、显式 base-only Config、合成数据和 fake provider；不得读取 `config/local.yaml`。真实 Provider/真实 URL 仅属于独立的后续 live 流程，不是默认 TestCase 的完成条件。
 
-当前状态补注（2026-03-11）：
+当前状态补注（2026-07-31）：
 
 - 当前代码基线共 `14` 个 Tool，其中 `query_subgraph`、`explain_relation`、`collect_evidence` 已可调用
 - `find_bridges`、`timeline_of`、`contrast` 也已接入 MCP，但仍属于 partial implementation
@@ -20,24 +20,12 @@
 
 **工具**：`@modelcontextprotocol/inspector`（MCP 官方 CLI）
 
-**步骤**：
-
-```powershell
-# 在仓库根目录启动 Inspector；其 stdio Server 强制使用隔离数据目录。
-Set-Location E:\repos\personal\personal-knowledge-vault
-npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Command "& '.\scripts\run-test.ps1' -DataRoot '.data-test\mcp-inspector' -Direct -Command @('python','-m','src.mcp.server')"
-
-# 浏览器打开 Inspector 提示的本机地址，交互式测试：
-#    - 列出所有 Tool/Resource/Prompt
-#    - 逐一调用 Tool，查看返回值
-#    - 验证参数验证 (Schema)
-#    - 测试错误处理路径
-```
+**当前用法**：Inspector 属于可选人工探索，不进入本轮默认 TestCase 或完成定义。当前协议合同以 `tests/blackbox/test_mcp_blackbox.py` 的 offline stdio 子进程为准。若后续真实数据流程需要 Inspector，应先提供受审计的启动脚本，显式设置 base-only/live sentinel 与目标工作树根；不要在文档中硬编码另一个 checkout，也不要直接启动会合并 local config 的默认入口。
 
 **检查清单**：
 
 - [ ] 14 个 Tool 全部列出 (12 只读 + 2 写入)
-- [ ] 4 个 Resource 全部列出
+- [ ] 2 个静态 Resource 与 7 个 Resource Template 全部列出，并分别通过 `list_resources` / `list_resource_templates` 发现
 - [ ] 3 个 Prompt 全部列出
 - [ ] `search_knowledge "AI"` → 返回搜索结果
 - [ ] `get_entry {valid_id}` → 返回知识条目
@@ -47,7 +35,7 @@ npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Comm
 - [ ] `find_bridges {seed_id}` → 返回 `implementation_level=partial`，且 `evidence_sources` 中包含 `graph_bridge_signal`
 - [ ] `timeline_of {topic}` → 当存在真实时间字段时返回 `inferred_time_field=event_time` 或 `published_at`，并包含 `structured_time_fields`
 - [ ] `contrast {topic_a, topic_b}` → 返回 `shared_tags / only_a_tags / only_b_tags`，且 `comparison_dimensions` 中包含 `relation_graph_signal`
-- [ ] `archive_url "https://example.com"` → 成功/失败响应，且只写入 `.data-test\mcp-inspector`
+- [ ] `archive_url` 私网/非法输入在 Workflow/网络前拒绝，SQLite/Vault 均无副作用；真实 URL 留给独立 live 流程
 - [ ] 无效参数测试 → 返回合理的错误信息
 - [ ] 大数据量返回 → 不超时不崩溃
 
@@ -55,137 +43,41 @@ npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Comm
 
 ---
 
-### 层 2：Python 脚本全流程测试（15-30 分钟）
+### 层 2：进程内 MCP 行为集成测试（5-15 分钟）
 
-**目标**：模拟真实的 Claude Code 客户端行为，验证完整工作流
+**目标**：通过注册后的 FastMCP Tool 验证 MCP 适配、序列化、搜索/详情衔接和生产引用卡片 formatter。该层的归档场景使用 fake `WorkflowEngine`，只计作 MCP 适配覆盖，不宣称真实 YAML/Processor/StoreStep 集成。
 
-**环境**：使用隔离的测试数据库 (`.data-test/db/knowledge_vault.db`)
+**环境**：`scripts/run-test.ps1` 强制的 `.data-test` 根、base-only Config、合成 SQLite/Vault 与 fake provider；无真实网络。
 
-**脚本位置**：`tests/blackbox/test_mcp_client_simulation.py`
+**脚本位置**：`tests/integration/test_mcp_client_simulation.py`
 
-**测试场景**（6 个核心场景）：
+**5 个行为用例**：
 
-#### 场景 1：知识库搜索流程
+1. 搜索后按返回 ID 获取详情，并验证稳定 schema。
+2. fake Workflow 归档成功后可被搜索到，验证 MCP 响应适配与索引可见性。
+3. 无效/私网 URL 在 Workflow 调用前拒绝。
+4. 关联查询使用生产 `build_knowledge_reference()` 与 `format_reference_card_html()` 生成引用卡片。
+5. 无结果返回稳定的空集合合同。
 
-```python
-# 模拟：Claude Code 用户问 "什么是 AI 工作流"
-# 1. search_knowledge("AI 工作流")
-# 2. 获得 3 条结果
-# 3. get_entry(第一条结果的 ID)
-# 4. 获得全文内容
-# 验证：搜索准确率、内容完整性
-```
-
-#### 场景 2：快速归档 URL + 即刻搜索
-
-```python
-# 模拟：Claude Code 用户边对话边归档
-# 1. archive_url("https://mp.weixin.qq.com/...")
-# 2. 等待 2s (模拟用户思考时间)
-# 3. search_knowledge("刚才那个文章的关键词")
-# 4. 验证新归档的内容已出现在搜索结果中
-```
-
-#### 场景 3：知识库内容与引用卡片
-
-```python
-# 模拟：Claude Code 用户获取引用卡片
-# 1. get_related(知识条目 ID)  # 获取相关条目
-# 2. 批量调用 get_entry() 获取完整信息
-# 3. format_reference_card_html() 生成引用卡片
-# 验证：卡片格式、链接有效性、元信息准确
-```
-
-#### 场景 4：搜索建议 Prompt
-
-```python
-# 模拟：Claude Code 用户在 Prompt 中实现搜索建议
-# 1. 调用 Prompt: search_and_summarize("关键词")
-# 2. 验证 Prompt 模板包含 {query}, {results} 变量
-# 3. 实际代入数据验证格式
-```
-
-#### 场景 5：知识库 QA 对话
-
-```python
-# 模拟：Claude Code 在知识库上进行 QA
-# 1. 调用 Prompt: knowledge_qa("问题")
-# 2. 获得包含检索结果的系统提示词
-# 3. 验证上下文格式和数据有效性
-```
-
-#### 场景 6：思想磨砺工作流
-
-```python
-# 模拟：Claude Code 用户的创意碰撞会话
-# 1. 调用 Prompt: idea_sharpen("想法")
-# 2. 可选调用 search_knowledge() 搜索相关灵感
-# 3. 验证 Prompt 是否正确引入背景知识
-```
-
-**脚本框架**：
-
-```python
-# tests/blackbox/test_mcp_client_simulation.py
-import asyncio
-import json
-from pathlib import Path
-from src.mcp.server import MCPServer  # 启动 MCP Server 进程内
-
-class MCPClientSimulator:
-    """模拟 Claude Code MCP 客户端的行为"""
-
-    def __init__(self, mcp_server):
-        self.server = mcp_server
-
-    async def search_and_display(self, query: str):
-        """场景 1: 搜索"""
-        result = await self.server.call_tool("search_knowledge", {"query": query})
-        return json.loads(result)
-
-    async def archive_and_verify(self, url: str):
-        """场景 2: 归档后验证"""
-        archive_result = await self.server.call_tool("archive_url", {"url": url})
-        # 等待异步任务完成
-        await asyncio.sleep(2)
-        # 验证已出现在搜索结果
-        ...
-
-    # 其他场景方法...
-
-async def test_scenario_1_search():
-    """测试场景 1"""
-    simulator = MCPClientSimulator(...)
-    results = await simulator.search_and_display("AI 工作流")
-    assert len(results) > 0
-    assert "标题" in results[0]
-    ...
-
-# 使用隔离包装器运行，避免测试脚本回落到默认 `.data`
-# .\scripts\run-test.ps1 -DataRoot .data-test\mcp-simulation -Direct -Command @("pytest", "tests/blackbox/test_mcp_client_simulation.py", "-v")
-```
+Prompt 模板的生产内容由 `tests/e2e/test_mcp_e2e_knowledge_qa.py` 等注册级/stdio 用例主责，本层不复制 Prompt 组装实现。
 
 **执行方式**：
 
 ```powershell
 # 自动化模式（不需要启动服务）
-.\scripts\run-test.ps1 -DataRoot .data-test\mcp-simulation -Direct -Command @("pytest", "tests/blackbox/test_mcp_client_simulation.py", "-v")
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-simulation -Direct -Command @("python", "-m", "pytest", "tests/integration/test_mcp_client_simulation.py", "-v")
 
-# 或手动模式（debug 用）
-.\scripts\run-test.ps1 -DataRoot .data-test\mcp-manual -Direct -Command @("python", "-m", "src.mcp.server")
-# 另开终端；客户端必须使用同一 DataRoot，不要改为裸命令访问默认 `.data`。
-.\scripts\run-test.ps1 -DataRoot .data-test\mcp-manual -Direct -Command @("python", "tests/blackbox/test_mcp_client_simulation.py")
+# 协议级调试由 stdio 黑盒用例负责；不要直接执行测试模块
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-blackbox -Direct -Command @("python", "-m", "pytest", "tests/blackbox/test_mcp_blackbox.py", "-v")
 ```
 
 **输出示例**：
 
 ```
-✓ 场景 1: 知识库搜索 - 3 条结果
-✓ 场景 2: 归档 URL + 即刻搜索 - 内容已同步
-✓ 场景 3: 引用卡片生成 - 格式正确
-✓ 场景 4: 搜索建议 Prompt - 模板有效
-✓ 场景 5: 知识库 QA Prompt - 上下文完整
-✓ 场景 6: 思想磨砺 Prompt - 灵感补充成功
+✓ 场景 1: 知识库搜索 - schema、排序与详情一致
+✓ 场景 2: 模拟归档 URL + 即刻搜索 - 无真实网络
+✓ 场景 3: 关联查询 + 生产引用卡片格式化
+✓ 错误路径: SSRF 输入拒绝、搜索无结果
 ```
 
 ---
@@ -196,173 +88,56 @@ async def test_scenario_1_search():
 
 **文件结构**：
 
-```
-tests/e2e/
-├── conftest.py                        # 共享 fixtures (MCP Server, 测试数据库)
-├── test_mcp_e2e_search.py            # 搜索相关 E2E
-├── test_mcp_e2e_archive.py           # 归档相关 E2E
-├── test_mcp_e2e_knowledge_qa.py      # QA Prompt E2E
-└── test_mcp_e2e_full_workflow.py     # 完整工作流 E2E
-```
+- `tests/e2e/conftest.py`：构造隔离 `TestEnv` 与带超时的 `MCPTestClient`。
+- `tests/e2e/fixture_utils.py`：在任何目录/SQLite 写入前校验路径，只允许当前工作树 `.data-test`。
+- `tests/e2e/test_mcp_e2e_search.py`：搜索、过滤、分页和稳定响应合同。
+- `tests/e2e/test_mcp_e2e_archive.py`：默认离线的输入拒绝/无副作用合同；真实 URL 用例仅在独立 live lane 选择。
+- `tests/e2e/test_mcp_e2e_knowledge_qa.py`：生产 Prompt 注册内容与真实检索上下文传递。
 
-**核心 Fixture** (`conftest.py`)：
+**核心 Fixture 合同**：
 
-```python
-import pytest
-import os
-from src.mcp.server import MCPServer
-from src.storage.sqlite_store import SQLiteStore
-from pathlib import Path
-
-@pytest.fixture(scope="session")
-def test_env():
-    """设置测试环境 (使用 .data-test/)"""
-    os.environ["DATA_DIR"] = ".data-test/mcp-e2e"
-    yield
-    # 清理 (可选)
-
-@pytest.fixture
-def mcp_server(test_env):
-    """为每个测试启动 MCP Server"""
-    server = MCPServer()
-    # 内存模式或使用 .data-test 数据库
-    yield server
-    # 关闭
-
-@pytest.fixture
-def sample_knowledge_db(mcp_server):
-    """插入测试数据"""
-    store = SQLiteStore()
-    # 插入 10 条知识条目（混合来源：微信、知乎、文本）
-    test_entries = [
-        {"title": "AI 工作流初探", "source_type": "wechat", "content": "..."},
-        # ... 更多条目
-    ]
-    for entry in test_entries:
-        store.add_entry(entry)
-    yield store
-    # 测试后清理
-```
-
-**E2E 测试示例**：
-
-```python
-# tests/e2e/test_mcp_e2e_search.py
-import pytest
-
-class TestMCPSearchE2E:
-    """MCP 搜索功能完整 E2E"""
-
-    @pytest.mark.asyncio
-    async def test_search_by_keyword(self, mcp_server, sample_knowledge_db):
-        """E2E: 按关键词搜索"""
-        result = await mcp_server.call_tool(
-            "search_knowledge",
-            {"query": "AI 工作流", "strategy": "auto"}
-        )
-        entries = json.loads(result)
-
-        assert len(entries) >= 3
-        assert entries[0]["title"] == "AI 工作流初探"
-        assert "content" in entries[0]
-
-    @pytest.mark.asyncio
-    async def test_search_with_tag_filter(self, mcp_server, sample_knowledge_db):
-        """E2E: 带标签过滤的搜索"""
-        # 先为某条条目添加标签
-        sample_knowledge_db.update_tags("entry_id", ["AI", "工作流"])
-
-        result = await mcp_server.call_tool(
-            "search_knowledge",
-            {"query": "工作流", "tag_filter": "AI"}
-        )
-
-        entries = json.loads(result)
-        assert all("AI" in e["tags"] for e in entries)
-
-    @pytest.mark.asyncio
-    async def test_search_empty_result(self, mcp_server):
-        """E2E: 无搜索结果处理"""
-        result = await mcp_server.call_tool(
-            "search_knowledge",
-            {"query": "完全不存在的关键词 xyz123"}
-        )
-
-        entries = json.loads(result)
-        assert len(entries) == 0
-```
+- 子进程只经 `tests/offline_entrypoint.py mcp` 启动，不存在可直接实例化的 `MCPServer` 测试类。
+- 默认模式必须同时满足 `PKV_TEST_OFFLINE=1`、`PKV_TEST_LOAD_LOCAL=0`、`PKV_RUN_LIVE=0`。
+- 所有运行路径先规范化并验证位于 `.data-test`，再创建目录或初始化 SQLite。
+- 子进程环境剥离 Provider secret/proxy，阻断 DNS 与非 loopback raw socket；该 Python guard 不等价于 OS 网络沙箱。
+- 成功 Tool 响应必须是单一 JSON `TextContent` 且 `isError=false`，禁止忽略额外 content block。
 
 **执行与报告**：
 
 ```powershell
 # 运行所有 E2E 测试
-.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("pytest", "tests/e2e", "-v", "--tb=short")
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("python", "-m", "pytest", "tests/e2e", "-v", "--tb=short")
 
 # 仅运行搜索相关
-.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("pytest", "tests/e2e/test_mcp_e2e_search.py", "-v")
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("python", "-m", "pytest", "tests/e2e/test_mcp_e2e_search.py", "-v")
 
 # 生成覆盖率报告
-.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("pytest", "tests/e2e", "--cov=src.mcp", "--cov-report=html")
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("python", "-m", "pytest", "tests/e2e", "--cov=src.mcp", "--cov-report=term-missing")
 ```
 
 ---
 
 ## 二、测试数据库准备
 
-### 使用已有的测试 Fixtures
+### 使用现有测试 Fixtures
 
-浮浮酱发现项目里已有现成的测试数据喵～ 复用方案：
-
-```python
-# tests/fixtures/ 中的样本数据
-- test_urls.json              # 微信/知乎/通用网页 URL 样本
-- wechat_sample.html         # 微信文章样本
-- zhihu_sample.html          # 知乎文章样本
-- ai_chat_sample.json        # AI 聊天记录样本
-
-# 使用方式：
-from tests.fixtures.sample_data import WECHAT_SAMPLES, ZHIHU_SAMPLES
-
-@pytest.fixture
-def populate_test_db():
-    """使用样本数据填充测试数据库"""
-    store = SQLiteStore(db_path=".data-test/db/knowledge_vault.db")
-
-    # 导入微信样本 (3 篇)
-    for url, html in WECHAT_SAMPLES:
-        entry = process_wechat(url, html)
-        store.add_entry(entry)
-
-    # 导入知乎样本 (3 篇)
-    for url, html in ZHIHU_SAMPLES:
-        entry = process_zhihu(url, html)
-        store.add_entry(entry)
-
-    # 插入纯文本条目 (5 篇)
-    for text in TEXT_SAMPLES:
-        entry = create_text_entry(text)
-        store.add_entry(entry)
-
-    yield store
-    # 清理
-```
+不要复制一套只存在于文档的 `TEXT_SAMPLES/process_wechat/process_zhihu` 伪实现。进程内 MCP 合成数据由 `tests/integration/test_mcp_client_simulation.py` 主责；stdio/E2E 数据由 `tests/e2e/conftest.py` 和 `tests/e2e/fixture_utils.py` 主责。二者都必须先验证 `.data-test` containment，再初始化 SQLite/Vault，并由 fixture 负责状态恢复。
 
 ### 一键生成测试数据库
 
 新建辅助脚本 `scripts/setup-test-db.py`：
 
-```bash
-# 生成包含 20 条样本条目的测试数据库
-python scripts/setup-test-db.py --seed 42 --count 20 --output .data-test/db/knowledge_vault.db
+```powershell
+# 生成包含 20 条样本条目的隔离测试数据库
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-seed -Command @("python", "scripts/setup-test-db.py", "--seed", "42", "--count", "20", "--output", ".data-test/mcp-seed/db/knowledge_vault.db")
 
-# 如需离线生成随机向量索引，显式给出测试维度
-python scripts/setup-test-db.py --seed 42 --count 20 --embedding-dim 2560
+# 如需离线生成确定维度的测试向量索引，仍须经同一包装器
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-seed-vectors -Command @("python", "scripts/setup-test-db.py", "--seed", "42", "--count", "20", "--embedding-dim", "2560")
 ```
 
 未传 `--embedding-dim` 时，脚本只生成 SQLite/Vault 测试数据并跳过随机向量
 索引；它不会读取本机 Provider 配置、生产 `.data`，也不会调用真实 Embedding 服务。
-外部临时输出还必须显式传入 `--allow-outside-test-root`；仓库内始终只允许
-写入 `.data-test`。
+本测试策略不使用外部输出能力；产品运行数据与 pytest temp/cache 必须留在当前工作树 `.data-test`。CI 报告和 Windows 包装器的命令桥接 payload 可位于受控 runner/系统临时目录，不得被产品代码作为数据根。
 
 ---
 
@@ -370,56 +145,19 @@ python scripts/setup-test-db.py --seed 42 --count 20 --embedding-dim 2560
 
 ### CI/CD 流水线
 
-```yaml
-# .github/workflows/mcp-test.yml (GitHub Actions 示例)
-name: MCP E2E Tests
+CI 必须复用与本地相同的 fail-closed 合同：数据根位于 checkout 的 `.data-test`，pytest `--basetemp` 位于该数据根，默认排除 `network/manual`，不注入 Provider secret。Windows 本地验证直接调用 `scripts/run-test.ps1`；现有 Linux workflow 暂以受控步骤显式设置同等路径/marker，P1 应抽出 POSIX wrapper 并增加跨平台 wrapper contract，避免安全逻辑长期复制。本文不提供面向开发者的裸 `pytest` 示例。
 
-on: [push, pull_request]
-
-jobs:
-  mcp-e2e:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      # Layer 1: 快速单元测试 (已有)
-      - name: Unit Tests
-        run: pytest tests/unit/test_mcp_*.py -v
-
-      # Layer 2: Python 脚本模拟测试
-      - name: Client Simulation
-        run: pytest tests/blackbox/test_mcp_client_simulation.py -v
-
-      # Layer 3: E2E 测试
-      - name: E2E Tests
-        run: pytest tests/e2e/test_mcp_e2e_*.py -v --cov=src.mcp
-
-      - name: Upload Coverage
-        uses: codecov/codecov-action@v3
-```
+建议三个独立 gate：MCP unit、进程内 simulation、stdio/E2E offline；最后以 `--cov=src.mcp --cov-fail-under=95` 收口。live smoke 进入独立手动工作流，不作为 PR 必过项。
 
 ---
 
 ## 四、快速开始指南
 
-### 第一天：Inspector 快速验证（10 分钟）
+### 第一步：自动化协议快速验证
 
-```powershell
-# 安装 Node.js 依赖
-npm install -g @modelcontextprotocol/inspector
+先经包装器运行 `tests/blackbox/test_mcp_blackbox.py`，确认 offline entrypoint、握手、发现与关键调用。Inspector 仅在独立人工流程有明确目标时使用，不是自动化前置条件。
 
-# 在仓库根目录启动隔离的 stdio Server + Inspector
-Set-Location E:\repos\personal\personal-knowledge-vault
-npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Command "& '.\scripts\run-test.ps1' -DataRoot '.data-test\mcp-inspector' -Direct -Command @('python','-m','src.mcp.server')"
-
-# 浏览器打开 Inspector 提示的本机地址
-# 交互式测试每个 Tool
-```
-
-**预期结果**：8 Tools + 4 Resources + 3 Prompts 全部可用 ✅
+**预期结果**：当前 manifest 的 Tools/Resources/Prompts 全部可发现；精确数量只由单一注册合同主责。
 
 ---
 
@@ -430,12 +168,12 @@ npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Comm
 .\scripts\run-test.ps1 -DataRoot .data-test\mcp-simulation -Direct -Command @("python", "scripts/setup-test-db.py", "--output", ".data-test/mcp-simulation/db/knowledge_vault.db", "--count", "20")
 
 # 2. 运行模拟客户端测试
-.\scripts\run-test.ps1 -DataRoot .data-test\mcp-simulation -Direct -Command @("pytest", "tests/blackbox/test_mcp_client_simulation.py", "-v", "-s")
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-simulation -Direct -Command @("python", "-m", "pytest", "tests/integration/test_mcp_client_simulation.py", "-v", "-s")
 
 # 3. 查看完整日志
 ```
 
-**预期结果**：6 个场景全部通过 ✅
+**预期结果**：5 个进程内行为场景全部通过 ✅
 
 ---
 
@@ -444,14 +182,13 @@ npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Comm
 ```powershell
 # 1. 编写 E2E 测试用例（参考上述代码）
 # 2. 运行 E2E 测试
-.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("pytest", "tests/e2e", "-v")
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("python", "-m", "pytest", "tests/e2e", "-v")
 
 # 3. 查看覆盖率报告
-.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("pytest", "tests/e2e", "--cov=src.mcp", "--cov-report=html")
-Start-Process htmlcov/index.html
+.\scripts\run-test.ps1 -DataRoot .data-test\mcp-e2e -Direct -Command @("python", "-m", "pytest", "tests/e2e", "--cov=src.mcp", "--cov-report=term-missing")
 ```
 
-**预期结果**：MCP 层覆盖率 >90% ✅
+**预期结果**：该层全部离线用例通过；覆盖率以跨 unit/integration/blackbox/E2E 的 `src.mcp >=95%` 单一 gate 为准，不为单层另设冲突阈值。
 
 ---
 
@@ -462,23 +199,23 @@ Start-Process htmlcov/index.html
 | 问题 | 原因 | 解决 |
 |------|------|------|
 | `ModuleNotFoundError: No module named 'mcp'` | MCP SDK 未安装 | `pip install mcp>=0.1.0` |
-| `SSRF 防护拒绝本地 URL` | 安全验证生效 | 改用实际网址或禁用防护（仅测试环境） |
+| `SSRF 防护拒绝本地 URL` | 安全验证生效 | 使用合成公开 URL + fake processor；不得关闭 SSRF 防护 |
 | Inspector 连接超时 | MCP Server 未启动 | 检查 stdio 通信 |
-| 搜索结果为空 | 测试数据库未填充 | 运行 `setup-test-db.py` |
+| 搜索结果为空 | 合成 fixture 未填充 | 由当前测试 fixture 在 `.data-test` 内显式 seed；不要直接运行默认配置脚本 |
 | Token 限制告警 | 测试数据过大 | 减少 `--count` 参数 |
 
 ---
 
 ## 六、验收标准
 
-MCP 真实场景测试完成的标志：
+当前默认离线测试完成的标志：
 
-- [ ] Layer 1: Inspector 中所有 Tool/Resource/Prompt 均可调用，无异常
-- [ ] Layer 2: Python 脚本 6 个场景 100% 通过
-- [ ] Layer 3: E2E 测试套件 >80% 覆盖率，无失败用例
-- [ ] 双主题支持：light/dark 主题下 MCP 返回结果一致
-- [ ] 并发测试：5 并发请求无竞态条件
-- [ ] 长时间运行：1 小时连续运行无内存泄漏
+- [ ] stdio 黑盒 discovery 与代表性 invoke 全部通过离线入口，且无真实网络、Provider 或本机配置读取
+- [ ] 5 个进程内行为用例全部通过，并明确不把 fake Workflow 计作真实归档工作流集成
+- [ ] 默认离线 E2E 全部通过，所有运行时路径位于本次 `.data-test/<case>` 根内
+- [ ] 跨 unit/integration/blackbox/E2E 的单一覆盖门禁满足 `src.mcp >=95%`
+- [ ] Inspector、真实 Provider、真实网页与真实数据均不属于本任务完成定义
+- [ ] 并发、压力和长时间运行属于 P2 独立 lane，具备专用隔离与资源预算后再启用
 
 ---
 

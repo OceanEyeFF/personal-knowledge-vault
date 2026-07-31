@@ -3,15 +3,27 @@
 from __future__ import annotations
 
 import os
-import shutil
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterator, Protocol
 
 from src.storage.sqlite_store import SQLiteStore
+from tests.offline_runtime import (
+    LOAD_LOCAL_SENTINEL,
+    OFFLINE_SENTINEL,
+    PROJECT_ROOT_SENTINEL,
+    RUNTIME_PATH_ENV_KEYS,
+    assert_config_runtime_paths,
+    prepare_live_child_env,
+    prepare_offline_child_env,
+    validate_test_runtime_paths,
+)
 from src.utils import config as config_module
 from src.utils.config import Config
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 
 TEST_RUNTIME_ENV_KEYS = (
@@ -23,14 +35,21 @@ TEST_RUNTIME_ENV_KEYS = (
     "TMP_DIR",
     "LOG_LEVEL",
     "PYTHONDONTWRITEBYTECODE",
+    "PKV_RUN_LIVE",
+    OFFLINE_SENTINEL,
+    LOAD_LOCAL_SENTINEL,
+    PROJECT_ROOT_SENTINEL,
 )
 
 
 class TempPathFactory(Protocol):
     """Minimal protocol needed from pytest's temporary-path factory."""
 
+    def getbasetemp(self) -> Path:
+        """Return pytest's already-established base temp directory."""
+
     def mktemp(self, basename: str, numbered: bool = True) -> Path:
-        """Create and return a temporary directory."""
+        """Create and return a temporary directory below ``getbasetemp``."""
 
 
 @dataclass(frozen=True)
@@ -44,19 +63,17 @@ class TestEnv:
     env: Dict[str, str]
 
 
-def _clean_path(path: Path) -> None:
-    if path.is_dir():
-        shutil.rmtree(path, ignore_errors=True)
-    elif path.exists():
-        path.unlink(missing_ok=True)
-
-
 def build_test_env(
     tmp_path_factory: TempPathFactory,
     *,
     prefix: str = "pkv-e2e",
+    live: bool = False,
 ) -> TestEnv:
     """Build isolated paths and a child-process environment without globals."""
+    validate_test_runtime_paths(
+        project_root=PROJECT_ROOT,
+        runtime_overrides={"DATA_DIR": tmp_path_factory.getbasetemp()},
+    )
     data_dir = tmp_path_factory.mktemp(prefix)
     db_path = data_dir / "db" / "knowledge_vault_e2e.db"
     vault_dir = data_dir / "vault-e2e"
@@ -64,13 +81,23 @@ def build_test_env(
     log_dir = data_dir / "logs-e2e"
     tmp_dir = data_dir / "tmp-e2e"
 
+    runtime_overrides = {
+        "DB_PATH": db_path,
+        "DATA_DIR": data_dir,
+        "VECTOR_DIR": vector_dir,
+        "VAULT_DIR": vault_dir,
+        "LOG_DIR": log_dir,
+        "TMP_DIR": tmp_dir,
+        "LOG_LEVEL": "WARNING",
+    }
+    prepare_env = prepare_live_child_env if live else prepare_offline_child_env
+    env = prepare_env(
+        project_root=PROJECT_ROOT,
+        runtime_overrides=runtime_overrides,
+    )
+
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / "db").mkdir(parents=True, exist_ok=True)
-
-    _clean_path(db_path)
-    _clean_path(vault_dir)
-    _clean_path(vector_dir)
-
     vault_dir.mkdir(parents=True, exist_ok=True)
     vector_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -78,20 +105,6 @@ def build_test_env(
 
     store = SQLiteStore(db_path)
     store.initialize()
-
-    env = os.environ.copy()
-    env.update(
-        {
-            "DB_PATH": str(db_path),
-            "DATA_DIR": str(data_dir),
-            "VECTOR_DIR": str(vector_dir),
-            "VAULT_DIR": str(vault_dir),
-            "LOG_DIR": str(log_dir),
-            "TMP_DIR": str(tmp_dir),
-            "LOG_LEVEL": "WARNING",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        }
-    )
 
     return TestEnv(
         data_dir=data_dir,
@@ -105,8 +118,51 @@ def build_test_env(
 
 
 @contextmanager
-def temporary_test_config(test_env: TestEnv) -> Iterator[Config]:
-    """Temporarily expose isolated paths to in-process config consumers."""
+def temporary_test_config(
+    test_env: TestEnv,
+    *,
+    load_local: bool = False,
+) -> Iterator[Config]:
+    """Expose isolated paths with an explicit base-only or selected live config."""
+    runtime_overrides = {
+        key: test_env.env[key]
+        for key in RUNTIME_PATH_ENV_KEYS
+        if key in test_env.env
+    }
+    canonical = validate_test_runtime_paths(
+        project_root=PROJECT_ROOT,
+        runtime_overrides=runtime_overrides,
+    )
+    expected_paths = validate_test_runtime_paths(
+        project_root=PROJECT_ROOT,
+        runtime_overrides={
+            "DATA_DIR": test_env.data_dir,
+            "DB_PATH": test_env.db_path,
+            "VAULT_DIR": test_env.vault_dir,
+            "VECTOR_DIR": test_env.vector_dir,
+            "LOG_DIR": test_env.log_dir,
+            "TMP_DIR": test_env.tmp_dir,
+        },
+    )
+    if canonical != expected_paths:
+        raise RuntimeError("test environment paths do not match isolated fixture")
+
+    safe_env = dict(test_env.env)
+    safe_env.update(canonical)
+    expected_mode = {
+        "PKV_RUN_LIVE": "1" if load_local else "0",
+        OFFLINE_SENTINEL: "0" if load_local else "1",
+        LOAD_LOCAL_SENTINEL: "1" if load_local else "0",
+        PROJECT_ROOT_SENTINEL: str(PROJECT_ROOT.resolve()),
+    }
+    actual_mode = {
+        key: test_env.env.get(key)
+        for key in expected_mode
+    }
+    if actual_mode != expected_mode:
+        mode_name = "live" if load_local else "offline"
+        raise RuntimeError(f"inconsistent {mode_name} test environment sentinels")
+
     previous_config = config_module._config_instance
     previous_env = {
         key: os.environ.get(key)
@@ -115,12 +171,24 @@ def temporary_test_config(test_env: TestEnv) -> Iterator[Config]:
     try:
         os.environ.update(
             {
-                key: test_env.env[key]
+                key: safe_env[key]
                 for key in TEST_RUNTIME_ENV_KEYS
             }
         )
-        config_module._config_instance = None
-        yield config_module.get_config()
+        base_config_path = PROJECT_ROOT / "config" / "config.yaml"
+        local_config_path = (
+            PROJECT_ROOT / "config" / "local.yaml"
+            if load_local
+            else None
+        )
+        config = Config(
+            str(base_config_path),
+            str(local_config_path) if local_config_path is not None else None,
+        )
+        assert_config_runtime_paths(config, expected_paths)
+        config.ensure_dirs()
+        config_module._config_instance = config
+        yield config
     finally:
         config_module._config_instance = previous_config
         for key, value in previous_env.items():

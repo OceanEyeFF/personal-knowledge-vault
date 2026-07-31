@@ -1,19 +1,23 @@
 """
-Layer 2 MCP 客户端模拟器 + 6 场景测试
+MCP 进程内客户端模拟器集成测试
 
 目标:
 - 进程内调用 FastMCP (asyncio)
 - 使用 pytest tmp_path 隔离环境
 - 集成样本数据 (WECHAT_SAMPLES, ZHIHU_SAMPLES, TEXT_SAMPLES)
+
+本文件不启动 stdio/HTTP 子进程，因此属于 integration；真正的协议黑盒契约
+由 tests/blackbox/test_mcp_blackbox.py 独占。
 """
 
-# ruff: noqa: E402 - 黑盒测试需先将项目根目录加入 sys.path
+# ruff: noqa: E402 - 集成测试需先将项目根目录加入 sys.path
 
 from __future__ import annotations
 
 import asyncio
 import json
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from unittest.mock import patch
@@ -25,6 +29,10 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.gui.utils.knowledge_ref import (  # noqa: E402
+    build_knowledge_reference,
+    format_reference_card_html,
+)
 from src.mcp.server import mcp  # noqa: E402
 from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
 from src.storage.sqlite_store import SQLiteStore  # noqa: E402
@@ -70,29 +78,21 @@ def parse_tool_result(result: Any) -> Dict[str, Any]:
     """将 FastMCP.call_tool() 的返回值解析为 dict。"""
     if isinstance(result, dict):
         return result
-    if isinstance(result, (list, tuple)) and len(result) > 0:
-        first = result[0]
-        text = getattr(first, "text", None)
-        if text:
-            return json.loads(text)
-    raise ValueError(f"无法解析 call_tool 结果: {type(result)}")
-
-
-def extract_prompt_text(prompt_result: Any) -> str:
-    """兼容多种 PromptResult 输出结构，提取文本。"""
-    if hasattr(prompt_result, "messages") and prompt_result.messages:
-        msg = prompt_result.messages[0]
-        content = getattr(msg, "content", None)
-        if isinstance(content, str) and content:
-            return content
-        if hasattr(content, "text"):
-            return content.text
-        return str(msg)
-    return str(prompt_result)
+    if not isinstance(result, (list, tuple)) or len(result) != 1:
+        raise ValueError("call_tool 必须返回单一 JSON TextContent")
+    text = getattr(result[0], "text", None)
+    if not isinstance(text, str) or not text:
+        raise ValueError("call_tool TextContent 缺少 JSON 文本")
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("call_tool JSON 必须为 object")
+    return payload
 
 
 def assert_search_schema(result: Dict[str, Any]) -> None:
     assert "total" in result
+    assert isinstance(result["total"], int)
+    assert not isinstance(result["total"], bool)
     assert "results" in result
     assert isinstance(result["results"], list)
     for item in result["results"]:
@@ -101,6 +101,7 @@ def assert_search_schema(result: Dict[str, Any]) -> None:
         assert isinstance(item["tags"], list)
         assert isinstance(item["score"], (int, float))
 
+        assert not isinstance(item["score"], bool)
 
 def assert_entry_schema(entry: Dict[str, Any]) -> None:
     for key in ["knowledge_id", "title", "content", "tags", "source_type", "source_url"]:
@@ -111,25 +112,17 @@ def assert_entry_schema(entry: Dict[str, Any]) -> None:
 
 def assert_related_schema(result: Dict[str, Any]) -> None:
     assert "results" in result
+    assert "total" in result
     assert isinstance(result["results"], list)
+    assert isinstance(result["total"], int)
+    assert not isinstance(result["total"], bool)
     for item in result["results"]:
         for key in ["knowledge_id", "title", "abstract", "score", "tags", "source_type"]:
             assert key in item
 
 
-def build_reference_card(entry: Dict[str, Any]) -> str:
-    """生成简单的引用卡片 HTML。"""
-    tags = ", ".join(entry.get("tags") or [])
-    source_url = entry.get("source_url") or ""
-    return (
-        f"<div class='ref-card' data-id='{entry['knowledge_id']}'>"
-        f"<a href='{source_url}'>{entry['title']}</a>"
-        f"<span class='meta'>{entry.get('source_type', '')}</span>"
-        f"<span class='tags'>{tags}</span>"
-        "</div>"
-    )
-
-
+        assert isinstance(item["score"], (int, float))
+        assert not isinstance(item["score"], bool)
 # ============================================================
 # MCP 客户端模拟器
 # ============================================================
@@ -184,16 +177,6 @@ class MCPClientSimulator:
 
     async def get_entry_detail(self, entry_id: str) -> Dict[str, Any]:
         return await self._call_tool("get_entry", {"knowledge_id": str(entry_id)})
-
-    async def test_prompt_template(self, prompt_name: str, context: Dict[str, Any]) -> str:
-        context = dict(context or {})
-        injected = context.pop("injected_context", None)
-        result = await self.mcp.get_prompt(prompt_name, context)
-        text = extract_prompt_text(result)
-        if injected:
-            text = f"{text}\n\n[检索上下文]\n{injected}"
-        return text
-
 
 # ============================================================
 # Fixtures: pytest 临时环境 + 样本数据
@@ -363,11 +346,10 @@ def mcp_patches(populated_env):
         patch("src.mcp.tools.get_markdown_store", return_value=populated_env["md_store"]),
         patch("src.mcp.resources.get_markdown_store", return_value=populated_env["md_store"]),
     ]
-    for p in patches:
-        p.start()
-    yield
-    for p in reversed(patches):
-        p.stop()
+    with ExitStack() as stack:
+        for patcher in patches:
+            stack.enter_context(patcher)
+        yield
 
 
 @pytest.fixture
@@ -412,7 +394,7 @@ def archive_stub(populated_env):
 
 
 # ============================================================
-# 6 个真实场景测试
+# MCP 客户端行为场景
 # ============================================================
 
 @pytest.mark.asyncio
@@ -488,85 +470,21 @@ async def test_scenario_3_related_and_reference_cards(mcp_patches, populated_env
 
     related = await simulator.get_related_entries(entry_id, limit=3)
     assert_related_schema(related)
+    assert related["total"] == len(related["results"])
     assert related["total"] >= 1
 
     cards = []
     for item in related["results"]:
         detail = await simulator.get_entry_detail(item["knowledge_id"])
         assert_entry_schema(detail)
-        card = build_reference_card(detail)
+        reference = build_knowledge_reference(detail, content=detail["content"])
+        card = format_reference_card_html(reference)
+        assert reference.knowledge_id == detail["knowledge_id"]
         assert detail["title"] in card
-        assert str(detail["knowledge_id"]) in card
-        if detail.get("source_url"):
-            assert detail["source_url"] in card
+        assert f"ID: {detail['knowledge_id']} |" in card
         cards.append(card)
 
     assert cards
-
-
-@pytest.mark.asyncio
-async def test_scenario_4_prompt_search_suggestion(mcp_patches):
-    """场景 4: 搜索建议 Prompt 模板验证。"""
-    simulator = MCPClientSimulator(mcp)
-
-    prompt = await simulator.test_prompt_template(
-        "search_and_summarize",
-        {"query": "AI 工作流", "context": "准备写一份方案"},
-    )
-    assert "AI 工作流" in prompt
-    assert "准备写一份方案" in prompt
-    assert "search_knowledge" in prompt
-
-
-@pytest.mark.asyncio
-async def test_scenario_5_prompt_knowledge_qa_context(mcp_patches):
-    """场景 5: 知识库 QA Prompt 上下文注入验证。"""
-    simulator = MCPClientSimulator(mcp)
-
-    search_result = await simulator.search_and_display("AI 工作流", strategy="bm25")
-    context_lines = [
-        f"- {item['title']} ({item['source_type']})"
-        for item in search_result["results"][:3]
-    ]
-    injected_context = "\n".join(context_lines)
-
-    prompt = await simulator.test_prompt_template(
-        "knowledge_qa",
-        {"question": "AI 工作流是什么？", "injected_context": injected_context},
-    )
-    assert "AI 工作流是什么" in prompt
-    assert "search_knowledge" in prompt
-    assert "get_entry" in prompt
-    assert "[检索上下文]" in prompt
-    for line in context_lines:
-        assert line in prompt
-
-
-@pytest.mark.asyncio
-async def test_scenario_6_prompt_idea_sharpen_inspiration(mcp_patches, populated_env):
-    """场景 6: 思想磨砺 Prompt 灵感补充验证。"""
-    simulator = MCPClientSimulator(mcp)
-
-    entry_id = populated_env["entry_ids"][0]
-    entry = await simulator.get_entry_detail(entry_id)
-    related = await simulator.get_related_entries(entry_id, limit=2)
-
-    inspiration_lines = ["灵感补充:"] + [
-        f"- {item['title']}" for item in related["results"]
-    ]
-    inspiration_text = "\n".join(inspiration_lines)
-
-    prompt = await simulator.test_prompt_template(
-        "idea_sharpen",
-        {
-            "content": entry["content"][:200],
-            "entry_id": str(entry_id),
-            "injected_context": inspiration_text,
-        },
-    )
-    assert "核心价值" in prompt
-    assert str(entry_id) in prompt
-    assert "灵感补充" in prompt
 
 
 @pytest.mark.asyncio
@@ -579,7 +497,3 @@ async def test_search_no_results_returns_empty(mcp_patches):
     )
     assert result["total"] == 0
     assert result["results"] == []
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))

@@ -23,25 +23,34 @@ from src.storage.sqlite_store import SQLiteStore  # noqa: E402
 from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
 
 
-@pytest.fixture
-def test_db(tmp_path: Path) -> SQLiteStore:
-    """创建临时测试数据库。"""
-    db_path = tmp_path / "test.db"
-    store = SQLiteStore(db_path)
-    store.initialize()
-    return store
+def assert_stats_payload(payload: dict) -> None:
+    """Assert the canonical public statistics schema."""
+
+    assert set(payload) == {"total_entries", "by_source_type", "top_tags"}
+    assert isinstance(payload["total_entries"], int)
+    assert not isinstance(payload["total_entries"], bool)
+    assert payload["total_entries"] >= 0
+    assert isinstance(payload["by_source_type"], list)
+    assert all(
+        isinstance(item, list)
+        and len(item) == 2
+        and isinstance(item[0], str)
+        and isinstance(item[1], int)
+        and not isinstance(item[1], bool)
+        for item in payload["by_source_type"]
+    )
+    assert isinstance(payload["top_tags"], list)
+    assert all(
+        set(item) == {"name", "count"}
+        and isinstance(item["name"], str)
+        and isinstance(item["count"], int)
+        and not isinstance(item["count"], bool)
+        for item in payload["top_tags"]
+    )
 
 
 @pytest.fixture
-def test_vault(tmp_path: Path) -> Path:
-    """创建临时 Markdown vault 目录。"""
-    vault_dir = tmp_path / "vault"
-    vault_dir.mkdir()
-    return vault_dir
-
-
-@pytest.fixture
-def populated_db(test_db: SQLiteStore, test_vault: Path) -> tuple:
+def populated_db(mcp_test_db: SQLiteStore, mcp_test_vault: Path) -> tuple:
     """填充测试数据的数据库和 vault。
 
     Returns:
@@ -87,7 +96,7 @@ def populated_db(test_db: SQLiteStore, test_vault: Path) -> tuple:
     entry_ids = []
     for entry in entries:
         # 创建 Markdown 文件
-        md_dir = test_vault / entry.source_type
+        md_dir = mcp_test_vault / entry.source_type
         md_dir.mkdir(parents=True, exist_ok=True)
         md_path = md_dir / f"{entry.title[:10]}.md"
         md_path.write_text(
@@ -96,10 +105,10 @@ def populated_db(test_db: SQLiteStore, test_vault: Path) -> tuple:
             encoding="utf-8",
         )
         # 插入数据库
-        kid = test_db.insert_entry(entry, str(md_path))
+        kid = mcp_test_db.insert_entry(entry, str(md_path))
         entry_ids.append(kid)
 
-    return test_db, test_vault, entry_ids
+    return mcp_test_db, mcp_test_vault, entry_ids
 
 
 class TestToolsIntegration:
@@ -189,7 +198,7 @@ class TestToolsIntegration:
             from src.mcp.tools import get_stats
             result = await get_stats()
 
-        assert "total_entries" in result or "total" in result
+        assert_stats_payload(result)
 
 
 class TestResourcesIntegration:
@@ -249,4 +258,4 @@ class TestResourcesIntegration:
             result = await get_stats_resource()
 
         data = json.loads(result)
-        assert "total_entries" in data or "total" in data
+        assert_stats_payload(data)
