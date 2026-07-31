@@ -26,7 +26,7 @@
 - [关系回填质量验证指南.md](./operations/关系回填质量验证指南.md)
 - [MCP 最小评测闭环](./operations/MCP最小评测闭环.md)
 - [MCP 最小评测基线（2026-07-29）](./operations/MCP最小评测基线-2026-07-29.md)
-- [真实数据验证 Runbook（P2）](./operations/testing/真实数据验证Runbook.md)
+- [真实数据验证 Runbook（P2）](./operations/testing/真实数据验证Runbook.md)（默认离线；live/数据出境步骤需单独授权）
 - [测试环境隔离指南](./operations/testing/测试环境隔离指南.md)
 
 ## 长期参考

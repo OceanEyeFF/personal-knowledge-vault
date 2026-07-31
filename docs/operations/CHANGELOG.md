@@ -5,12 +5,30 @@
 ---
 
 > 版本口径说明（2026-03-06）：
+>
 > - 当前仓库基线版本：`v0.8.0-alpha`
 > - `v0.6.0` 表示 CLI 入口首次稳定引入
 > - `v0.7.0` 表示 MCP 能力层首次稳定引入
 > - `history/` 下的 `v0.8.0-beta / v0.8.0` 里程碑文档保留阶段性背景，不直接作为当前仓库发布标签
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
+
+### 真实数据验证 Runbook P0 安全/可执行性修订（2026-07-31）
+
+- archive（URL/文本）与 `search --strategy vector/hybrid/auto` 确认会触发真实抓取/LLM/
+  Embedding HTTP（数据出境），已从默认步骤移入 **live/数据出境阶段**（单独授权）；
+  `PKV_RUN_LIVE` 明确为 pytest 收集开关而非应用层网络开关（Runbook 7.3/8/15.1-15.2）。
+- 隔离预检不再使用 `config show`（其默认加载 `config/local.yaml`）；改为 base-only/
+  fail-closed 机制（5c14caa 的 `offline_entrypoint`/`offline_runtime` 或等价实现 S7）并
+  提升为 **G0 硬前置**——未就绪则 P0/P1/P2 不可执行（Runbook 7.1/10.3/18.1）。
+- 证据留存改为仅退出码、计数、哈希、假名 ID 与人工脱敏摘要；原始证据只能由用户保存在
+  Agent 不可读受控位置（Runbook 12/13，模板 T-F/T-G）。
+- MCP 真实快照证据验证改为待实现前置（S6 受控 harness）：stdio 无法跨会话附着，16-task
+  runner 固定 `OfflineMcpScenario`；G7 在 S6 交付前不可执行（Runbook 10.3/15.3）。
+- delete 完整性指标默认从 P1/P2 剔除，S3 工具为其硬前置；删除/可写迁移强制在每场景
+  disposable clone 内执行，快照根只读（Runbook 9/10.1/14/15.4-15.5）。
+- #3 依赖统一为明确 OR 条件：（#3 dev vault 已就绪）或（合成样本预演降级）（Runbook 18.2）。
+- 新增后续任务 S6（真实快照 MCP harness）与 S7（base-only 隔离预检工具）。
 
 ### 真实数据验证 Runbook 规划（2026-07-31）
 
@@ -365,6 +383,7 @@
 #### Milestone 1: 基础设施层 ✅
 
 **核心模块**:
+
 - ✅ **配置系统** ([src/utils/config.py](src/utils/config.py))
   - YAML 配置文件支持
   - 环境变量支持
@@ -394,12 +413,14 @@
   - 字数统计
 
 **开发工具**:
+
 - ✅ **验证脚本** ([src/utils/verify_setup.py](src/utils/verify_setup.py))
   - 全面的系统验证
   - 模块测试
   - 详细日志记录
 
 **安装脚本** ([scripts/](scripts/)):
+
 - ✅ **Conda 方案** (推荐) ⭐
   - `setup-conda.ps1` - 自动创建 Python 3.11 环境
   - `test-conda.ps1` - Conda 环境测试
@@ -411,6 +432,7 @@
   - 详见 `scripts/legacy/README.md`
 
 **文档**:
+
 - ✅ [RUN_ME_FIRST.md](../../RUN_ME_FIRST.md) - 快速开始指南
 - ✅ [scripts/README.md](../../scripts/README.md) - 脚本详细说明
 - ✅ [QUICKSTART.md](QUICKSTART.md) - 安装教程
@@ -431,6 +453,7 @@
 ### 📝 技术栈
 
 **核心依赖**:
+
 - Python 3.11
 - SQLite 3.35+ (FTS5)
 - hnswlib 0.8.0
@@ -439,10 +462,12 @@
 - pyyaml 6.0.1
 
 **AI 服务** (Milestone 2):
+
 - DeepSeek API (摘要生成)
 - OpenAI API (Embedding)
 
 **开发工具**:
+
 - pytest 7.4.4
 - black 24.1.1
 - mypy 1.8.0
@@ -450,12 +475,14 @@
 ### 🎯 下一步计划
 
 **Milestone 2: AI 服务层** (计划中):
+
 - [ ] DeepSeek 客户端封装
 - [ ] OpenAI 客户端封装
 - [ ] Embedder 向量化服务
 - [ ] Prompt 模板管理
 
 **Milestone 3: 内容处理器** (计划中):
+
 - [ ] 微信文章处理器
 - [ ] 知乎内容处理器
 - [ ] 通用网页处理器
