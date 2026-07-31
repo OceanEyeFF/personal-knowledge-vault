@@ -15,6 +15,9 @@
   缺少/损坏 manifest、数据库缺失、结构不完整、pending migrations 或版本
   未到最新的 root 一律 fail-closed 拒绝（exit 1），不写入、不清理，
   必须显式 ``--force`` 才能重建。
+- 对已通过边界校验的已存在 root，在任何内容读取（iterdir / manifest /
+  DB）之前执行只读递归内部链接扫描；发现 symlink / junction / hardlink
+  立即拒绝（exit 2），扫描本身不跟随子项链接。
 
 用法:
   python scripts/rebuild-dev-vault.py                  # 重建或检查默认根
@@ -132,6 +135,35 @@ def _assert_no_unsafe_links_under(root: Path) -> None:
     for child in root.rglob("*"):
         if _is_unsafe_link(child):
             raise RootRejectedError(f"拒绝清理包含链接的目录: {child}")
+
+
+def _find_unsafe_link_under(root: Path) -> Path | None:
+    """只读递归扫描 root 内部是否存在 symlink / junction / hardlink。
+
+    不跟随子项链接：每个子项先 lstat 判定，命中立即返回；目录仅在确认
+    非链接后才递归。仅对已通过 resolve_rebuild_root 字符串/边界校验的
+    候选根调用，任何内容读取之前执行。
+    """
+    if not root.exists():
+        return None
+    if _is_unsafe_link(root):
+        return root
+    try:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                child = Path(entry.path)
+                if _is_unsafe_link(child):
+                    return child
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        found = _find_unsafe_link_under(child)
+                        if found is not None:
+                            return found
+                except OSError:
+                    continue
+    except OSError as exc:
+        raise RebuildError(f"无法扫描重建根内部链接: {root} - {exc}") from exc
+    return None
 
 
 def resolve_rebuild_root(
@@ -623,6 +655,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root = resolve_rebuild_root(args.root)
         db_path = root / "db" / "knowledge_vault.db"
+
+        # 链接安全门：已存在 root 在任何内容读取（iterdir/manifest/DB）之前
+        # 做只读递归内部链接扫描，发现 symlink/junction/hardlink 立即拒绝。
+        if root.exists():
+            unsafe = _find_unsafe_link_under(root)
+            if unsafe is not None:
+                raise RootRejectedError(
+                    f"重建根内部存在链接（symlink/junction/hardlink），拒绝访问: {unsafe}"
+                )
 
         if args.check_only:
             report = _check_only(root, db_path)

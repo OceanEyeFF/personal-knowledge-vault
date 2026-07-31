@@ -9,6 +9,8 @@
 - manifest 契约:版本化 rebuild-manifest.json 识别本脚本产物；缺失/损坏/
   字段不一致/pending migrations/条目数漂移均拒绝
 - 幂等、--force 重建、--no-seed 可验证、--check-only 只读且对缺失 DB 失败
+- 内部链接安全门:对已存在 root，任何内容读取前只读递归扫描
+  symlink/junction/hardlink 并拒绝（exit 2），覆盖 check-only/幂等/force
 - 危险目标拒绝:纯字符串拒绝（不调用 resolve/stat/exists/lstat）；仓库外一律拒绝
 
 安全约定:
@@ -381,6 +383,145 @@ def test_no_seed_root_is_verifiable(managed_root: Path) -> None:
     report = _parse_json_output(second)
     assert report["phase"] == "up_to_date"
     assert report["ok"]
+
+
+# ============================================================
+# 内部链接安全门（manifest/db 形态的 symlink/junction/hardlink）
+# ============================================================
+
+
+def _build_root(root: Path, *, count: int = 1) -> None:
+    result = _run_script(["--root", str(root), "--count", str(count), "--json"])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _make_manifest_hardlink(root: Path) -> Path:
+    """把 rebuild-manifest.json 替换为指向 .data-test 内 marker 的硬链接。"""
+    marker = PROJECT_ROOT / ".data-test" / f"rebuild-marker-{uuid.uuid4().hex[:8]}"
+    marker.write_text("x", encoding="utf-8")
+    manifest_path = root / "rebuild-manifest.json"
+    manifest_path.unlink()
+    os.link(marker, manifest_path)
+    return marker
+
+
+def _make_db_file_hardlink(root: Path) -> Path:
+    """把 db/knowledge_vault.db 替换为指向 .data-test 内 marker 的硬链接。"""
+    marker = PROJECT_ROOT / ".data-test" / f"rebuild-marker-{uuid.uuid4().hex[:8]}"
+    marker.write_text("x", encoding="utf-8")
+    db_file = root / "db" / "knowledge_vault.db"
+    db_file.unlink()
+    os.link(marker, db_file)
+    return marker
+
+
+class TestUnsafeInternalLinks:
+    def test_scan_returns_none_on_clean_root(self, managed_root: Path) -> None:
+        _build_root(managed_root)
+        module = _load_script_module()
+        assert module._find_unsafe_link_under(managed_root) is None
+
+    def test_scan_detects_manifest_hardlink(self, managed_root: Path) -> None:
+        _build_root(managed_root)
+        module = _load_script_module()
+        marker = _make_manifest_hardlink(managed_root)
+        try:
+            found = module._find_unsafe_link_under(managed_root)
+            assert found is not None
+            assert found.name == "rebuild-manifest.json"
+        finally:
+            (managed_root / "rebuild-manifest.json").unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+
+    def test_check_only_rejects_unsafe_child_before_any_read(
+        self, managed_root: Path, monkeypatch
+    ) -> None:
+        """check-only 必须在 _check_only/_load_manifest/db 读取前拒绝。"""
+        _build_root(managed_root)
+        module = _load_script_module()
+        marker = _make_manifest_hardlink(managed_root)
+
+        def boom(*args, **kwargs):
+            raise AssertionError("链接扫描前不得读取 manifest/数据库")
+
+        monkeypatch.setattr(module, "_check_only", boom)
+        monkeypatch.setattr(module, "_load_manifest", boom)
+        monkeypatch.setattr(module, "_health_report", boom)
+        monkeypatch.setattr(module.MigrationManager, "get_current_version", boom)
+        monkeypatch.setattr(module.MigrationManager, "get_pending_migrations", boom)
+        monkeypatch.setattr(module, "SQLiteStore", boom)
+        try:
+            exit_code = module.main(["--root", str(managed_root), "--check-only"])
+        finally:
+            (managed_root / "rebuild-manifest.json").unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+        assert exit_code == 2
+
+    def test_non_force_rejects_unsafe_child_before_validation(
+        self, managed_root: Path, monkeypatch
+    ) -> None:
+        """非 --force 幂等路径必须在 _validate_rebuilt_root 前拒绝。"""
+        _build_root(managed_root)
+        module = _load_script_module()
+        marker = _make_db_file_hardlink(managed_root)
+
+        def boom(*args, **kwargs):
+            raise AssertionError("链接扫描前不得调用结构校验/DB")
+
+        monkeypatch.setattr(module, "_validate_rebuilt_root", boom)
+        monkeypatch.setattr(module, "_health_report", boom)
+        monkeypatch.setattr(module, "_load_manifest", boom)
+        monkeypatch.setattr(module, "SQLiteStore", boom)
+        try:
+            exit_code = module.main(["--root", str(managed_root)])
+        finally:
+            (managed_root / "db" / "knowledge_vault.db").unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+        assert exit_code == 2
+
+    def test_unsafe_db_file_link_rejected_end_to_end(
+        self, managed_root: Path
+    ) -> None:
+        _build_root(managed_root)
+        marker = _make_db_file_hardlink(managed_root)
+        try:
+            result = _run_script(["--root", str(managed_root), "--check-only", "--json"])
+            assert result.returncode == 2, result.stdout + result.stderr
+            report = _parse_json_output(result)
+            assert not report["ok"]
+            assert "链接" in report["error"]
+        finally:
+            (managed_root / "db" / "knowledge_vault.db").unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+
+    def test_unsafe_db_dir_junction_rejected(self, managed_root: Path) -> None:
+        """db 目录被 junction 替换时必须拒绝（链接目标位于 .data-test 内）。"""
+        _build_root(managed_root)
+        target = PROJECT_ROOT / ".data-test" / f"rebuild-jt-{uuid.uuid4().hex[:8]}"
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.rmtree(managed_root / "db")
+        except OSError as exc:
+            raise AssertionError(f"移除真实 db 目录失败: {managed_root / 'db'}") from exc
+        junction = managed_root / "db"
+        try:
+            try:
+                subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except (subprocess.CalledProcessError, OSError):
+                pytest.skip("无法创建 junction（需目录联接权限）")
+            result = _run_script(["--root", str(managed_root), "--check-only", "--json"])
+            assert result.returncode == 2, result.stdout + result.stderr
+            report = _parse_json_output(result)
+            assert not report["ok"]
+            assert "链接" in report["error"]
+        finally:
+            subprocess.run(["cmd", "/c", "rmdir", str(junction)], check=False)
+            target.rmdir()
 
 
 # ============================================================

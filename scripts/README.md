@@ -178,6 +178,7 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 - 重建根严格只能是仓库 `.data-test` 的专用子目录；`.data`、仓库其他目录、仓库外路径、文件系统根、用户主目录等危险目标一律拒绝，无任何旁路开关。
 - 危险目标拒绝为纯字符串判断（不解析、不 stat 被拒绝路径）。
 - 清理前递归检查 junction / 符号链接 / 硬链接；迁移始终 `--no-backup` 语义（`auto_backup=False`），不会调用读取生产 `.data` 的备份脚本。
+- **内部链接安全门**：对已通过边界校验的已存在 root，在任何内容读取（iterdir / manifest / DB）之前执行只读递归内部链接扫描，发现 symlink / junction / hardlink 立即拒绝（exit 2）；扫描不跟随子项链接，覆盖 `--check-only`、非 `--force` 幂等与 `--force` 三条路径。
 - **fail-closed**：通过版本化 `rebuild-manifest.json`（合成重建元数据）识别本脚本完整生成的 root；非空但缺少/损坏 manifest、数据库缺失、结构不完整、pending migrations 或版本未到最新的 root 一律拒绝（exit 1，JSON 带 `phase=invalid` 与 `error`），不写入、不清理，必须显式 `--force` 才能重建。
 
 **运行方式**:
