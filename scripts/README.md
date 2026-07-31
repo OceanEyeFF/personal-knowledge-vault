@@ -177,21 +177,21 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 - 默认根目录为仓库内 `.data-test/rebuild-dev`，绝不隐式指向生产 `.data/`。
 - 重建根严格只能是仓库 `.data-test` 的专用子目录；`.data`、仓库其他目录、仓库外路径、文件系统根、用户主目录等危险目标一律拒绝，无任何旁路开关。
 - 危险目标拒绝为纯字符串判断（不解析、不 stat 被拒绝路径）。
-- 清理前递归检查 junction / 符号链接 / 硬链接；迁移始终 `--no-backup` 语义（`auto_backup=False`），不会调用读取生产 `.data` 的备份脚本。
-- **内部链接安全门**：对已通过边界校验的已存在 root，在任何内容读取（iterdir / manifest / DB）之前执行只读递归内部链接扫描，发现 symlink / junction / hardlink 或扫描无法完整遍历（权限/IO 错误）立即拒绝（exit 2）；扫描不跟随子项链接，不吞掉扫描错误，覆盖 `--check-only`、非 `--force` 幂等与 `--force` 三条路径。
-- **fail-closed**：通过版本化 `rebuild-manifest.json`（合成重建元数据）识别本脚本完整生成的 root；非空但缺少/损坏 manifest、数据库缺失、结构不完整、pending migrations 或版本未到最新的 root 一律拒绝（exit 1，JSON 带 `phase=invalid` 与 `error`），不写入、不清理，必须显式 `--force` 才能重建。
+- 清理前递归检查 junction / 符号链接 / 硬链接 / 内部挂载点；迁移始终 `--no-backup` 语义（`auto_backup=False`），不会调用读取生产 `.data` 的备份脚本。
+- **内部链接安全门**：对已通过边界校验的已存在 root，在任何内容读取（iterdir / manifest / DB）之前执行只读递归内部链接扫描；各读取、清理、迁移、seed 与 manifest 阶段还会复核根目录身份并重新扫描。发现链接/挂载点、根身份变化或扫描无法完整遍历（权限/IO 错误）立即拒绝（exit 2）。执行期间必须由本脚本独占该 root，不支持其他进程并发改名或替换目录。
+- **fail-closed**：通过版本化 `rebuild-manifest.json` 识别本脚本完整生成的 root；校验严格 manifest 类型、SQLite quick/foreign-key 检查与标签计数、核心表/FTS 触发器、FTS rowid 与分词后检索字段同步、schema/pending、SQLite 条目与 Markdown 路径/正文/核心 frontmatter 一一对应，以及五个标准目录。任一缺失或漂移均拒绝（exit 1），不写入、不清理，必须显式 `--force` 才能重建。
 
 **运行方式**:
 
 ```powershell
-# 重建或检查默认根（.data-test/rebuild-dev）
+# 首次重建或按相同参数检查默认根（wrapper 预建的空标准目录可直接使用）
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py")
 
 # 指定隔离根并强制完整重建（受控清理）
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--force")
 
-# 仅健康检查（只读，绝不写入）
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--check-only")
+# 仅健康检查（直接调用以避免 run-test.ps1 预建标准目录；绝不写入）
+python scripts\rebuild-dev-vault.py --root .data-test\rebuild-dev --check-only
 
 # 机器可读结果契约（exit 0/1/2）
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--json")
@@ -199,13 +199,13 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 
 **行为**（同一根重复执行）:
 
-1. 根目录已存在且非空、未传 `--force` → 先做 fail-closed 结构校验（manifest + DB + schema/pending + 条目数 + vault）；通过才报告 `up_to_date` / exit 0，否则 `phase=invalid` / exit 1（不写入、不清理）。
-2. 根目录为空/不存在 → 迁移 8 个脚本至 v1.2.3 + 生成默认 3 条确定性种子 + 健康检查 + 写入 manifest。
+1. 根目录已有内容、未传 `--force` → 先做完整 fail-closed 校验；本次 `--seed` / `--count` / `--no-seed` 还必须与 manifest 一致，通过才报告 `up_to_date`。自定义参数重跑时必须重复传入；如需变更则使用 `--force`。
+2. 根目录为空、不存在，或仅含 wrapper 预建的五个空标准目录 → 迁移 8 个脚本至 v1.2.3 + 生成默认 3 条确定性种子 + 健康检查 + 写入 manifest。
 3. 传 `--force` → 受控清理（先校验链接）后完整重建（仅限已通过边界校验的 `.data-test` 专用子目录）。
-4. `--check-only` → 只读；对不存在或不完整的 DB/root 必须失败（exit 1），绝不创建目录或数据库，也不把迁移脚本合法误当 vault 健康。
+4. `--check-only` → 必须直接调用脚本（wrapper 会预建测试标准目录）；SQLite `mode=ro` 只读，对不存在或不完整的 DB/root 必须失败（exit 1），绝不创建目录或数据库，也不把迁移脚本合法误当 vault 健康。
 5. `--no-seed` → 可验证：manifest 记录 `seeded=false, seed_count=0`，重复运行仍 `up_to_date`。
 
-**离线测试**: `tests/unit/test_rebuild_dev_vault.py`（受控根隔离 / 幂等 / 危险目标拒绝含仓库外一律拒绝 / 结果契约 / 生产路径不访问监控）。测试重建均使用 `.data-test` 下受控临时子目录，外部临时目录仅用于验证“必须被拒绝”。
+**离线测试**: `tests/unit/test_rebuild_dev_vault.py`（受控根隔离 / 幂等 / 危险目标拒绝 / 结果契约 / 候选根解析路径监控 / 主存储与 schema 完整性）。测试重建均使用 `.data-test` 下受控临时子目录，外部临时目录仅用于验证“必须被拒绝”。
 
 ---
 

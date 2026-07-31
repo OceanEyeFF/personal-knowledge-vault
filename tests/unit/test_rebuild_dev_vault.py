@@ -2,12 +2,12 @@
 
 覆盖:
 - 受控根隔离:重建产物全部落在仓库 .data-test 下的受控临时子目录内
-- 生产路径契约:脚本不构造、不访问仓库 .data 相关路径（字符串级 + 监控证明）
+- 生产路径契约:危险路径纯字符串拒绝，候选根解析监控不触及仓库 .data
 - fail-closed:非空但不完整/未知的 root 不带 --force 必须拒绝（exit 1，
   JSON 带 error/phase），不写入、不清理；只有本脚本完整生成的 root 才可
   报告 up_to_date / exit 0
 - manifest 契约:版本化 rebuild-manifest.json 识别本脚本产物；缺失/损坏/
-  字段不一致/pending migrations/条目数漂移均拒绝
+  字段不一致/pending migrations/条目数或 FTS 内容漂移均拒绝
 - 幂等、--force 重建、--no-seed 可验证、--check-only 只读且对缺失 DB 失败
 - 内部链接安全门:对已存在 root，任何内容读取前只读递归扫描
   symlink/junction/hardlink 并拒绝（exit 2），覆盖 check-only/幂等/force
@@ -25,13 +25,16 @@ import importlib.util
 import json
 import os
 import shutil
+import sqlite3
+import stat
 import subprocess
 import sys
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
+import frontmatter
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -93,14 +96,23 @@ def managed_root() -> Iterator[Path]:
     root = PROJECT_ROOT / ".data-test" / f"rebuild-test-{uuid.uuid4().hex[:12]}"
     yield root
     if root.exists():
-        for child in [root, *root.rglob("*")]:
+        stack = [root]
+        while stack:
+            child = stack.pop()
             try:
                 st = os.lstat(child)
             except OSError:
                 continue
-            is_reparse = bool((st.st_file_attributes or 0) & 0x400)
-            if is_reparse or os.path.islink(child):
+            is_reparse = bool(getattr(st, "st_file_attributes", 0) & 0x400)
+            is_hard_link = stat.S_ISREG(st.st_mode) and st.st_nlink > 1
+            if is_reparse or os.path.islink(child) or is_hard_link:
                 raise AssertionError(f"测试根包含链接，拒绝自动清理: {child}")
+            if child.is_dir():
+                try:
+                    with os.scandir(child) as entries:
+                        stack.extend(Path(entry.path) for entry in entries)
+                except OSError as exc:
+                    raise AssertionError(f"测试根扫描失败: {child} - {exc}") from exc
         try:
             shutil.rmtree(root)
         except OSError as exc:
@@ -208,22 +220,35 @@ class TestRootRejection:
         target = tmp_path / "real-target"
         target.mkdir()
         try:
-            try:
-                link.symlink_to(target, target_is_directory=True)
-            except OSError:
-                # Windows 无管理员权限时改用目录联接（mklink /J 通常无需提权）。
-                subprocess.run(
-                    ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
+            if os.name == "nt":
+                try:
+                    link.symlink_to(target, target_is_directory=True)
+                except OSError:
+                    # Windows 无管理员权限时改用目录联接（mklink /J 通常无需提权）。
+                    subprocess.run(
+                        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+            else:
+                try:
+                    link.symlink_to(target, target_is_directory=True)
+                except OSError:
+                    pytest.skip("当前文件系统不支持目录符号链接")
             with pytest.raises(module.RootRejectedError):
                 module.resolve_rebuild_root(str(link))
         finally:
-            if link.is_symlink() or link.exists():
-                subprocess.run(["cmd", "/c", "rmdir", str(link)], check=False)
-            subprocess.run(["cmd", "/c", "rmdir", str(link_dir)], check=False)
+            if os.name == "nt":
+                if link.is_symlink() or link.exists():
+                    subprocess.run(["cmd", "/c", "rmdir", str(link)], check=False)
+                if link_dir.exists():
+                    subprocess.run(
+                        ["cmd", "/c", "rmdir", str(link_dir)], check=False
+                    )
+            else:
+                link.unlink(missing_ok=True)
+                link_dir.rmdir()
 
     def test_reject_hardlinked_file_under_root(self) -> None:
         module = _load_script_module()
@@ -307,6 +332,29 @@ def test_force_rebuilds_incomplete_root(managed_root: Path) -> None:
     assert manifest["schema_version"] == "1.2.3"
 
 
+def test_invalid_count_is_rejected_before_force_cleanup(managed_root: Path) -> None:
+    root = _make_sentinel_root(managed_root)
+    result = _run_script(
+        ["--root", str(root), "--force", "--count", "0", "--json"]
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert not report["ok"]
+    assert "count" in report["error"]
+    assert (root / "sentinel.txt").read_text(encoding="utf-8") == "junk"
+    assert sorted(path.name for path in root.iterdir()) == ["sentinel.txt"]
+
+
+def test_empty_standard_scaffold_is_valid_first_run(managed_root: Path) -> None:
+    for dirname in ("db", "vault", "vectors", "logs", "tmp"):
+        (managed_root / dirname).mkdir(parents=True, exist_ok=True)
+    result = _run_script(["--root", str(managed_root), "--count", "2", "--json"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert report["phase"] == "rebuilt"
+    assert report["stats"]["total_entries"] == 2
+
+
 def test_invalid_manifest_fails_closed(managed_root: Path) -> None:
     root = managed_root
     first = _run_script(["--root", str(root), "--count", "2", "--json"])
@@ -349,6 +397,165 @@ def test_seed_count_drift_fails_closed(managed_root: Path) -> None:
     assert any("条目数" in issue for issue in report["issues"])
 
 
+def test_missing_markdown_primary_file_fails_closed(managed_root: Path) -> None:
+    _build_root(managed_root, count=2)
+    markdown_file = next((managed_root / "vault").rglob("*.md"))
+    markdown_file.unlink()
+
+    result = _run_script(
+        ["--root", str(managed_root), "--count", "2", "--json"]
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert report["phase"] == "invalid"
+    assert any("Markdown" in issue for issue in report["issues"])
+
+
+def test_empty_markdown_primary_file_fails_closed(managed_root: Path) -> None:
+    _build_root(managed_root, count=1)
+    markdown_file = next((managed_root / "vault").rglob("*.md"))
+    markdown_file.write_text("", encoding="utf-8")
+
+    result = _run_script(
+        ["--root", str(managed_root), "--count", "1", "--json"]
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert report["phase"] == "invalid"
+    assert any("Markdown 正文为空" in issue for issue in report["issues"])
+
+
+def test_markdown_metadata_drift_fails_closed(managed_root: Path) -> None:
+    _build_root(managed_root, count=1)
+    markdown_file = next((managed_root / "vault").rglob("*.md"))
+    post = frontmatter.load(markdown_file)
+    post.metadata["title"] = "tampered-title"
+    markdown_file.write_text(frontmatter.dumps(post), encoding="utf-8")
+
+    result = _run_script(
+        ["--root", str(managed_root), "--count", "1", "--json"]
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert report["phase"] == "invalid"
+    assert any("Markdown 元数据" in issue for issue in report["issues"])
+
+
+def test_missing_standard_directory_fails_closed(managed_root: Path) -> None:
+    _build_root(managed_root, count=1)
+    shutil.rmtree(managed_root / "vectors")
+
+    result = _run_script(
+        ["--root", str(managed_root), "--count", "1", "--json"]
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert any("标准目录缺失: vectors" in issue for issue in report["issues"])
+
+
+def test_missing_fts_rows_fail_closed(managed_root: Path) -> None:
+    _build_root(managed_root, count=2)
+    db_path = managed_root / "db" / "knowledge_vault.db"
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute("DELETE FROM knowledge_items_fts")
+
+    result = _run_script(
+        ["--root", str(managed_root), "--count", "2", "--json"]
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert report["phase"] == "invalid"
+    assert any("FTS 索引缺失" in issue for issue in report["issues"])
+
+
+def test_fts_searchable_field_drift_fails_closed(managed_root: Path) -> None:
+    _build_root(managed_root, count=2)
+    db_path = managed_root / "db" / "knowledge_vault.db"
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            rowid = conn.execute(
+                "SELECT knowledge_id FROM knowledge_items ORDER BY knowledge_id LIMIT 1"
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE knowledge_items_fts SET title = ? WHERE rowid = ?",
+                ("tampered-title", rowid),
+            )
+
+    result = _run_script(
+        ["--root", str(managed_root), "--count", "2", "--json"]
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert report["phase"] == "invalid"
+    assert any("检索字段不一致" in issue for issue in report["issues"])
+
+
+def test_foreign_key_orphan_fails_closed(managed_root: Path) -> None:
+    _build_root(managed_root, count=2)
+    db_path = managed_root / "db" / "knowledge_vault.db"
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute(
+                "INSERT INTO knowledge_tags (knowledge_id, tag_id) VALUES (?, ?)",
+                (99999, 99999),
+            )
+        assert conn.execute("PRAGMA foreign_key_check").fetchall()
+
+    result = _run_script(
+        ["--root", str(managed_root), "--count", "2", "--json"]
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert report["phase"] == "invalid"
+    assert any("外键完整性失败" in issue for issue in report["issues"])
+
+
+def test_tag_count_drift_fails_closed(managed_root: Path) -> None:
+    _build_root(managed_root, count=2)
+    db_path = managed_root / "db" / "knowledge_vault.db"
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.execute("UPDATE tags SET count = count + 1")
+
+    result = _run_script(
+        ["--root", str(managed_root), "--count", "2", "--json"]
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert report["phase"] == "invalid"
+    assert any("标签计数与关联不一致" in issue for issue in report["issues"])
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_issue"),
+    [
+        ("schema_version", None, "schema_version"),
+        ("seed_count", True, "seed_count"),
+        ("seed", False, "seed 字段"),
+    ],
+)
+def test_manifest_types_are_strict(
+    managed_root: Path,
+    field: str,
+    value: object,
+    expected_issue: str,
+) -> None:
+    _build_root(managed_root, count=1)
+    manifest_path = managed_root / "rebuild-manifest.json"
+    manifest = _read_manifest(managed_root)
+    manifest[field] = value
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    result = _run_script(
+        ["--root", str(managed_root), "--count", "1", "--json"]
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = _parse_json_output(result)
+    assert any(expected_issue in issue for issue in report["issues"])
+
+
 def test_pending_migrations_not_up_to_date(managed_root: Path, monkeypatch) -> None:
     root = managed_root
     first = _run_script(["--root", str(root), "--count", "1", "--json"])
@@ -379,7 +586,7 @@ def test_no_seed_root_is_verifiable(managed_root: Path) -> None:
     assert not manifest["seeded"]
     assert manifest["seed_count"] == 0
 
-    second = _run_script(["--root", str(root), "--json"])
+    second = _run_script(["--root", str(root), "--no-seed", "--json"])
     assert second.returncode == 0, second.stdout + second.stderr
     report = _parse_json_output(second)
     assert report["phase"] == "up_to_date"
@@ -433,6 +640,41 @@ class TestUnsafeInternalLinks:
         finally:
             (managed_root / "rebuild-manifest.json").unlink(missing_ok=True)
             marker.unlink(missing_ok=True)
+
+    def test_scan_detects_internal_mount_point(
+        self, managed_root: Path, monkeypatch
+    ) -> None:
+        managed_root.mkdir(parents=True)
+        mounted = managed_root / "mounted"
+        mounted.mkdir()
+        module = _load_script_module()
+        path_cls = type(mounted)
+        real_is_mount = path_cls.is_mount
+
+        def fake_is_mount(path: Path) -> bool:
+            if path == mounted:
+                return True
+            try:
+                return real_is_mount(path)
+            except NotImplementedError:
+                return False
+
+        monkeypatch.setattr(path_cls, "is_mount", fake_is_mount)
+        assert module._find_unsafe_link_under(managed_root) == mounted
+
+    def test_root_identity_replacement_is_rejected(self, managed_root: Path) -> None:
+        managed_root.mkdir(parents=True)
+        module = _load_script_module()
+        identity = module._capture_root_identity(managed_root)
+        original = managed_root.with_name(f"{managed_root.name}-original")
+        managed_root.rename(original)
+        managed_root.mkdir()
+        try:
+            with pytest.raises(module.RootRejectedError, match="被替换"):
+                module._assert_root_identity(managed_root, identity)
+        finally:
+            managed_root.rmdir()
+            original.rename(managed_root)
 
     def test_check_only_rejects_unsafe_child_before_any_read(
         self, managed_root: Path, monkeypatch
@@ -497,6 +739,8 @@ class TestUnsafeInternalLinks:
 
     def test_unsafe_db_dir_junction_rejected(self, managed_root: Path) -> None:
         """db 目录被 junction 替换时必须拒绝（链接目标位于 .data-test 内）。"""
+        if os.name != "nt":
+            pytest.skip("Windows junction contract")
         _build_root(managed_root)
         target = PROJECT_ROOT / ".data-test" / f"rebuild-jt-{uuid.uuid4().hex[:8]}"
         target.mkdir(parents=True, exist_ok=True)
@@ -613,6 +857,26 @@ def test_rebuild_creates_isolated_root(managed_root: Path) -> None:
     assert manifest["schema_version"] == "1.2.3"
 
 
+def test_seed_tags_are_unique_and_counts_match_relations(managed_root: Path) -> None:
+    result = _run_script(["--root", str(managed_root), "--count", "3", "--json"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    db_path = managed_root / "db" / "knowledge_vault.db"
+    with closing(sqlite3.connect(db_path)) as conn:
+        tag_count = conn.execute(
+            "SELECT count FROM tags WHERE name = '重建'"
+        ).fetchone()[0]
+        relation_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM knowledge_tags kt
+            JOIN tags t ON t.tag_id = kt.tag_id
+            WHERE t.name = '重建'
+            """
+        ).fetchone()[0]
+    assert tag_count == 3
+    assert relation_count == 3
+
+
 def test_rebuild_is_idempotent(managed_root: Path) -> None:
     first = _run_script(["--root", str(managed_root), "--count", "3", "--json"])
     assert first.returncode == 0, first.stdout + first.stderr
@@ -686,6 +950,23 @@ def test_check_only_reports_valid_root(managed_root: Path) -> None:
     assert report["ok"]
     assert report["schema_version"] == "1.2.3"
     assert report["stats"]["total_entries"] == 2
+
+
+def test_check_only_does_not_modify_any_root_file(managed_root: Path) -> None:
+    rebuilt = _run_script(["--root", str(managed_root), "--count", "2", "--json"])
+    assert rebuilt.returncode == 0, rebuilt.stdout + rebuilt.stderr
+
+    def snapshot() -> dict[str, tuple[int, int]]:
+        return {
+            str(path.relative_to(managed_root)): (path.stat().st_size, path.stat().st_mtime_ns)
+            for path in managed_root.rglob("*")
+            if path.is_file()
+        }
+
+    before = snapshot()
+    checked = _run_script(["--root", str(managed_root), "--check-only", "--json"])
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert snapshot() == before
 
 
 def test_result_contract_fields(managed_root: Path) -> None:

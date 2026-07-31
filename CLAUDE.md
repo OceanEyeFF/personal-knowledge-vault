@@ -56,7 +56,7 @@
 ### 2026-02-19 00:58
 
 - M8 + M9 完成：MCP 服务层（只读 + 写入 + Prompt + 安全加固）
-- 新增 `src/mcp/` 模块（server.py, tools.py, resources.py, prompts.py, utils.py, **main**.py）
+- 新增 `src/mcp/` 模块（server.py, tools.py, resources.py, prompts.py, utils.py, __main__.py）
 - 新增三层 MCP 测试体系：单元 4 文件 + 集成 2 文件 + 黑盒 1 文件（共 203 tests）
 - 新增 `config/workflows/archive-text.yaml` 工作流配置
 - `src/storage/vector_store.py` 新增 `get_doc_vector()` 方法

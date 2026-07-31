@@ -29,8 +29,8 @@
 
 退出码:
   0  成功（重建 / 本脚本完整生成且结构校验通过的 root 已是最新 / 健康检查通过）
-  1  流程失败（迁移、种子或健康检查不通过；或非空但未通过结构校验的 root 拒绝）
-  2  参数或根目录校验拒绝（危险目标等）
+  1  流程/参数值失败（如 count 无效、迁移/种子/健康检查失败，或结构校验拒绝）
+  2  CLI 语法错误或根目录/链接安全拒绝（危险目标等）
 """
 
 from __future__ import annotations
@@ -41,8 +41,10 @@ import logging
 import os
 import random
 import shutil
+import sqlite3
 import stat
 import sys
+from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -55,6 +57,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
 from src.storage.migration_manager import MigrationManager  # noqa: E402
 from src.storage.sqlite_store import SQLiteStore  # noqa: E402
+from src.utils.text_utils import TextProcessor  # noqa: E402
 
 DEFAULT_ROOT_REL = ".data-test/rebuild-dev"
 DEFAULT_SEED = 20260731
@@ -84,8 +87,23 @@ _MANIFEST_KEYS = (
     "schema_version",
     "seeded",
     "seed_count",
+    "seed",
+    "created_at",
 )
 _STANDARD_DIRS = ("db", "vault", "vectors", "logs", "tmp")
+_REQUIRED_TABLES = {
+    "schema_version",
+    "knowledge_items",
+    "content_chunks",
+    "tags",
+    "knowledge_tags",
+    "knowledge_items_fts",
+}
+_REQUIRED_TRIGGERS = {
+    "knowledge_items_ai",
+    "knowledge_items_au",
+    "knowledge_items_ad",
+}
 
 
 class RebuildError(Exception):
@@ -104,8 +122,8 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     return True
 
 
-def _is_unsafe_link(path: Path) -> bool:
-    """检测符号链接 / junction / 硬链接，识别前不得执行破坏性操作。"""
+def _is_unsafe_link(path: Path, *, include_mount: bool = False) -> bool:
+    """检测符号链接 / junction / 硬链接及受控根内部挂载点。"""
     try:
         path_stat = os.lstat(path)
     except FileNotFoundError:
@@ -113,7 +131,20 @@ def _is_unsafe_link(path: Path) -> bool:
     file_attributes = getattr(path_stat, "st_file_attributes", 0)
     is_reparse_point = bool(file_attributes & 0x400)
     is_hard_linked_file = stat.S_ISREG(path_stat.st_mode) and path_stat.st_nlink > 1
-    return stat.S_ISLNK(path_stat.st_mode) or is_reparse_point or is_hard_linked_file
+    try:
+        is_mount = include_mount and path.is_mount()
+    except NotImplementedError:
+        # Python 3.11 on Windows does not implement Path.is_mount(); junctions
+        # and volume mount points remain covered by FILE_ATTRIBUTE_REPARSE_POINT.
+        is_mount = False
+    except OSError as exc:
+        raise RootRejectedError(f"无法判断路径是否为挂载点: {path} - {exc}") from exc
+    return (
+        stat.S_ISLNK(path_stat.st_mode)
+        or is_reparse_point
+        or is_hard_linked_file
+        or is_mount
+    )
 
 
 def _has_unsafe_link_on_path(root: Path) -> Path | None:
@@ -129,13 +160,9 @@ def _has_unsafe_link_on_path(root: Path) -> Path | None:
 
 def _assert_no_unsafe_links_under(root: Path) -> None:
     """清理前递归检查目标目录内不存在链接，避免误删链接指向的真实数据。"""
-    if not root.exists():
-        return
-    if _is_unsafe_link(root):
-        raise RootRejectedError(f"拒绝清理链接形式的根目录: {root}")
-    for child in root.rglob("*"):
-        if _is_unsafe_link(child):
-            raise RootRejectedError(f"拒绝清理包含链接的目录: {child}")
+    unsafe = _find_unsafe_link_under(root)
+    if unsafe is not None:
+        raise RootRejectedError(f"拒绝清理包含链接或挂载点的目录: {unsafe}")
 
 
 def _find_unsafe_link_under(root: Path) -> Path | None:
@@ -149,13 +176,13 @@ def _find_unsafe_link_under(root: Path) -> Path | None:
     """
     if not root.exists():
         return None
-    if _is_unsafe_link(root):
+    if _is_unsafe_link(root, include_mount=True):
         return root
     try:
         with os.scandir(root) as entries:
             for entry in entries:
                 child = Path(entry.path)
-                if _is_unsafe_link(child):
+                if _is_unsafe_link(child, include_mount=True):
                     return child
                 if entry.is_dir(follow_symlinks=False):
                     found = _find_unsafe_link_under(child)
@@ -166,6 +193,44 @@ def _find_unsafe_link_under(root: Path) -> Path | None:
             f"无法完整扫描重建根内部（扫描失败即拒绝）: {root} - {exc}"
         ) from exc
     return None
+
+
+def _capture_root_identity(root: Path) -> tuple[int, int, int, int]:
+    """记录根目录身份，用于在各阶段之间检测并发替换。"""
+    try:
+        root_stat = os.lstat(root)
+    except OSError as exc:
+        raise RootRejectedError(f"无法读取重建根身份: {root} - {exc}") from exc
+    if _is_unsafe_link(root, include_mount=True):
+        raise RootRejectedError(f"重建根是链接或挂载点，拒绝访问: {root}")
+    return (
+        root_stat.st_dev,
+        root_stat.st_ino,
+        stat.S_IFMT(root_stat.st_mode),
+        getattr(root_stat, "st_file_attributes", 0),
+    )
+
+
+def _assert_root_identity(root: Path, expected: tuple[int, int, int, int]) -> None:
+    """在读取/清理/写入阶段前复核根目录没有被替换。"""
+    actual = _capture_root_identity(root)
+    if actual != expected:
+        raise RootRejectedError(f"重建根在执行期间被替换，拒绝继续: {root}")
+
+
+def _has_meaningful_content(root: Path) -> bool:
+    """空的标准目录 scaffold 不视为已有 Vault 内容。"""
+    if not root.exists():
+        return False
+    try:
+        for child in root.iterdir():
+            if child.name not in _STANDARD_DIRS or not child.is_dir():
+                return True
+            if any(child.iterdir()):
+                return True
+    except OSError as exc:
+        raise RootRejectedError(f"无法检查重建根内容: {root} - {exc}") from exc
+    return False
 
 
 def resolve_rebuild_root(
@@ -235,18 +300,27 @@ def resolve_rebuild_root(
     return resolved
 
 
-def _cleanup_root(root: Path) -> None:
+def _cleanup_root(
+    root: Path,
+    *,
+    expected_identity: tuple[int, int, int, int],
+) -> None:
     """受控清理：删除根目录内容并重建，不删除根目录本身。"""
     if root.exists():
+        _assert_root_identity(root, expected_identity)
         _assert_no_unsafe_links_under(root)
         for child in root.iterdir():
             try:
+                _assert_root_identity(root, expected_identity)
+                if _is_unsafe_link(child, include_mount=True):
+                    raise RootRejectedError(f"清理目标被替换为链接或挂载点: {child}")
                 if child.is_dir() and not child.is_symlink():
                     shutil.rmtree(child)
                 else:
                     child.unlink()
             except OSError as exc:
                 raise RebuildError(f"受控清理失败: {child} - {exc}") from exc
+        _assert_root_identity(root, expected_identity)
     root.mkdir(parents=True, exist_ok=True)
 
 
@@ -333,22 +407,283 @@ def _latest_migration_version(migrations_dir: Path) -> str:
 
 def _safe_entry_count(db_path: Path) -> int | None:
     """只读统计条目数；数据库缺失/未初始化时返回 None（不创建任何文件）。"""
-    if not db_path.exists():
-        return None
-    store = SQLiteStore(db_path)
-    if not store.table_exists("knowledge_items"):
-        return None
     try:
-        return store.count_entries()
-    except Exception:
+        with closing(_connect_read_only(db_path)) as conn:
+            if not _table_exists(conn, "knowledge_items"):
+                return None
+            row = conn.execute("SELECT COUNT(*) FROM knowledge_items").fetchone()
+            return int(row[0]) if row else 0
+    except (OSError, sqlite3.Error):
         return None
+
+
+def _connect_read_only(db_path: Path) -> sqlite3.Connection:
+    """以 SQLite URI mode=ro 打开数据库，避免只读检查创建/修改文件。"""
+    if not db_path.is_file():
+        raise FileNotFoundError(db_path)
+    uri = f"{db_path.resolve().as_uri()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _read_schema_objects(db_path: Path) -> tuple[set[str], set[str]] | None:
+    try:
+        with closing(_connect_read_only(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE type IN ('table', 'trigger')"
+            ).fetchall()
+    except (OSError, sqlite3.Error):
+        return None
+    tables = {row["name"] for row in rows if row["type"] == "table"}
+    triggers = {row["name"] for row in rows if row["type"] == "trigger"}
+    return tables, triggers
+
+
+def _read_entry_records(db_path: Path) -> list[dict] | None:
+    try:
+        with closing(_connect_read_only(db_path)) as conn:
+            if not _table_exists(conn, "knowledge_items"):
+                return None
+            rows = conn.execute(
+                """
+                SELECT knowledge_id, file_path, title, content, source_type, source_url,
+                       event_time, published_at, archived_at, keywords, tags,
+                       summary_one_sentence, summary_100_words, search_strategy, word_count
+                FROM knowledge_items
+                ORDER BY knowledge_id
+                """
+            ).fetchall()
+    except (OSError, sqlite3.Error):
+        return None
+    return [dict(row) for row in rows]
+
+
+def _validate_fts_integrity(db_path: Path) -> list[str]:
+    """Compare the FTS index with its source table without mutating either."""
+    columns = ("title", "summary_100_words", "keywords", "tags")
+    try:
+        with closing(_connect_read_only(db_path)) as conn:
+            if not all(
+                _table_exists(conn, table)
+                for table in ("knowledge_items", "knowledge_items_fts")
+            ):
+                return []
+            source_rows = conn.execute(
+                """
+                SELECT knowledge_id AS rowid, title, summary_100_words, keywords, tags
+                FROM knowledge_items
+                ORDER BY knowledge_id
+                """
+            ).fetchall()
+            fts_rows = conn.execute(
+                """
+                SELECT rowid, title, summary_100_words, keywords, tags
+                FROM knowledge_items_fts
+                ORDER BY rowid
+                """
+            ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        return [f"FTS 索引完整性不可读取: {exc}"]
+
+    def indexed_values(row: sqlite3.Row) -> tuple[str, ...]:
+        return tuple("" if row[column] is None else str(row[column]) for column in columns)
+
+    source: dict[int, tuple[str, ...]] = {}
+    for row in source_rows:
+        expected = TextProcessor.prepare_fts5_data(
+            row["title"] or "",
+            row["summary_100_words"] or "",
+            row["keywords"] or "",
+            row["tags"] or "",
+        )
+        source[int(row["rowid"])] = tuple(str(expected[column]) for column in columns)
+    indexed = {int(row["rowid"]): indexed_values(row) for row in fts_rows}
+    issues: list[str] = []
+    missing = source.keys() - indexed.keys()
+    orphaned = indexed.keys() - source.keys()
+    mismatched = {
+        rowid for rowid in source.keys() & indexed.keys() if source[rowid] != indexed[rowid]
+    }
+    if missing:
+        issues.append(f"FTS 索引缺失 {len(missing)} 个 knowledge_items 条目")
+    if orphaned:
+        issues.append(f"FTS 索引存在 {len(orphaned)} 个孤儿条目")
+    if mismatched:
+        issues.append(f"FTS 索引有 {len(mismatched)} 个条目的检索字段不一致")
+    return issues
+
+
+def _validate_sqlite_integrity(db_path: Path) -> list[str]:
+    """Run read-only structural, foreign-key, and tag-count integrity checks."""
+    try:
+        with closing(_connect_read_only(db_path)) as conn:
+            quick_rows = conn.execute("PRAGMA quick_check").fetchall()
+            foreign_key_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
+            tag_count_drift = []
+            if all(
+                _table_exists(conn, table)
+                for table in ("tags", "knowledge_tags")
+            ):
+                tag_count_drift = conn.execute(
+                    """
+                    SELECT t.tag_id
+                    FROM tags AS t
+                    LEFT JOIN knowledge_tags AS kt ON kt.tag_id = t.tag_id
+                    GROUP BY t.tag_id, t.count
+                    HAVING t.count != COUNT(kt.knowledge_id)
+                    """
+                ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        return [f"SQLite 完整性不可读取: {exc}"]
+
+    issues: list[str] = []
+    quick_results = [str(row[0]) for row in quick_rows]
+    if quick_results != ["ok"]:
+        issues.append(f"SQLite quick_check 失败（{len(quick_results)} 项）")
+    if foreign_key_rows:
+        issues.append(f"SQLite 外键完整性失败（{len(foreign_key_rows)} 项）")
+    if tag_count_drift:
+        issues.append(f"标签计数与关联不一致（{len(tag_count_drift)} 项）")
+    return issues
+
+
+def _read_only_statistics(db_path: Path) -> dict:
+    """返回与 SQLiteStore.get_statistics 兼容的只读统计结果。"""
+    with closing(_connect_read_only(db_path)) as conn:
+        if not _table_exists(conn, "knowledge_items"):
+            return {}
+        total_entries = int(conn.execute("SELECT COUNT(*) FROM knowledge_items").fetchone()[0])
+        by_source_type = [
+            (row["source_type"], int(row["cnt"]))
+            for row in conn.execute(
+                "SELECT source_type, COUNT(*) AS cnt "
+                "FROM knowledge_items GROUP BY source_type"
+            ).fetchall()
+        ]
+        top_tags = [
+            {"name": row["name"], "count": int(row["count"])}
+            for row in conn.execute(
+                "SELECT name, count FROM tags ORDER BY count DESC LIMIT 20"
+            ).fetchall()
+        ]
+    return {
+        "total_entries": total_entries,
+        "by_source_type": by_source_type,
+        "top_tags": top_tags,
+    }
+
+
+def _validate_markdown_storage(
+    root: Path,
+    entry_records: list[dict],
+) -> list[str]:
+    """核对 SQLite 条目与 Markdown 路径、正文和核心元数据。"""
+    issues: list[str] = []
+    vault_dir = root / "vault"
+    if not vault_dir.is_dir():
+        return ["vault 目录缺失"]
+
+    expected_paths: set[str] = set()
+    for record in entry_records:
+        knowledge_id = int(record["knowledge_id"])
+        raw_path = record["file_path"]
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            issues.append(f"条目 {knowledge_id} 缺少 Markdown file_path")
+            continue
+        candidate = Path(os.path.abspath(raw_path))
+        if not _is_relative_to(candidate, vault_dir):
+            issues.append(f"条目 {knowledge_id} 的 Markdown 路径越过 vault 边界")
+            continue
+        normalized = os.path.normcase(str(candidate))
+        expected_paths.add(normalized)
+        if not candidate.is_file():
+            issues.append(f"条目 {knowledge_id} 的 Markdown 文件缺失")
+        elif candidate.suffix.casefold() != ".md":
+            issues.append(f"条目 {knowledge_id} 的主存储不是 Markdown 文件")
+        else:
+            try:
+                post = frontmatter.load(candidate)
+            except Exception as exc:
+                issues.append(f"条目 {knowledge_id} 的 Markdown 无法解析: {exc}")
+                continue
+
+            expected_content = record["content"] or ""
+            if not post.content.strip():
+                issues.append(f"条目 {knowledge_id} 的 Markdown 正文为空")
+            elif post.content != expected_content:
+                issues.append(f"条目 {knowledge_id} 的 Markdown 正文与数据库不一致")
+
+            def terms(value: object) -> list[str]:
+                if value is None or value == "":
+                    return []
+                if isinstance(value, (list, tuple)):
+                    return [str(item) for item in value]
+                return [item for item in str(value).split(",") if item]
+
+            expected_metadata = {
+                "title": record["title"],
+                "source_type": record["source_type"],
+                "source_url": record["source_url"],
+                "event_time": record["event_time"],
+                "published_at": record["published_at"],
+                "archived_at": record["archived_at"],
+                "keywords": terms(record["keywords"]),
+                "tags": terms(record["tags"]),
+                "summary_one_sentence": record["summary_one_sentence"] or "",
+                "summary_100_words": record["summary_100_words"] or "",
+                "search_strategy": record["search_strategy"],
+                "word_count": record["word_count"],
+            }
+            drifted: list[str] = []
+            for key, expected in expected_metadata.items():
+                actual = post.metadata.get(key)
+                if key in {"event_time", "published_at", "archived_at"}:
+                    actual = None if actual is None else str(actual)
+                    expected = None if expected is None else str(expected)
+                elif key in {"keywords", "tags"}:
+                    actual = terms(actual)
+                if actual != expected:
+                    drifted.append(key)
+            if drifted:
+                issues.append(
+                    f"条目 {knowledge_id} 的 Markdown 元数据与数据库不一致: "
+                    + ", ".join(drifted)
+                )
+
+    try:
+        actual_paths = {
+            os.path.normcase(str(path.absolute()))
+            for path in vault_dir.rglob("*.md")
+            if path.is_file()
+        }
+    except OSError as exc:
+        issues.append(f"无法完整枚举 Markdown 主存储: {exc}")
+        return issues
+
+    missing = expected_paths - actual_paths
+    orphaned = actual_paths - expected_paths
+    if missing:
+        issues.append(f"Markdown 主存储缺失 {len(missing)} 个数据库引用文件")
+    if orphaned:
+        issues.append(f"Markdown 主存储存在 {len(orphaned)} 个未索引文件")
+    return issues
 
 
 def _validate_rebuilt_root(root: Path, db_path: Path) -> dict:
     """fail-closed 结构校验：仅本脚本完整生成的 root 才算有效。
 
-    校验: manifest 存在且字段完整、数据库存在、schema 为最新、无 pending
-    migrations、条目数与 manifest 期望一致、vault 目录存在。
+    校验: manifest 严格字段、数据库核心对象、schema/pending、条目数、
+    Markdown 主存储一一对应，以及所有标准目录。
     """
     issues: list[str] = []
     manifest = _load_manifest(root)
@@ -359,21 +694,39 @@ def _validate_rebuilt_root(root: Path, db_path: Path) -> dict:
         missing = [key for key in _MANIFEST_KEYS if key not in manifest]
         if missing:
             manifest_issues.append(f"manifest 字段不完整: {', '.join(missing)}")
-        if manifest.get("manifest_version") != MANIFEST_VERSION:
+        if (
+            type(manifest.get("manifest_version")) is not int
+            or manifest.get("manifest_version") != MANIFEST_VERSION
+        ):
             manifest_issues.append(
                 f"manifest 版本不支持: {manifest.get('manifest_version')!r}"
             )
-        if manifest.get("tool") != TOOL_NAME:
+        if not isinstance(manifest.get("tool"), str) or manifest.get("tool") != TOOL_NAME:
             manifest_issues.append(f"manifest 工具标识不匹配: {manifest.get('tool')!r}")
+        if not isinstance(manifest.get("schema_version"), str) or not manifest.get(
+            "schema_version"
+        ):
+            manifest_issues.append("manifest schema_version 字段必须是非空字符串")
         if not isinstance(manifest.get("seeded"), bool):
             manifest_issues.append("manifest seeded 字段必须是布尔值")
+        if type(manifest.get("seed_count")) is not int or manifest.get("seed_count", -1) < 0:
+            manifest_issues.append("manifest seed_count 字段必须是非负整数")
+        if type(manifest.get("seed")) is not int:
+            manifest_issues.append("manifest seed 字段必须是整数")
+        if not isinstance(manifest.get("created_at"), str) or not manifest.get("created_at"):
+            manifest_issues.append("manifest created_at 字段必须是非空字符串")
+        if not manifest_issues:
+            if manifest["seeded"] and manifest["seed_count"] <= 0:
+                manifest_issues.append("seeded root 的 seed_count 必须大于 0")
+            if not manifest["seeded"] and manifest["seed_count"] != 0:
+                manifest_issues.append("no-seed root 的 seed_count 必须为 0")
     issues.extend(manifest_issues)
 
     schema_version = "0.0.0"
     if not db_path.exists():
         issues.append("数据库缺失: db/knowledge_vault.db")
     else:
-        manager = MigrationManager(db_path, MIGRATIONS_DIR)
+        manager = MigrationManager(db_path, MIGRATIONS_DIR, read_only=True)
         try:
             schema_version = manager.get_current_version()
             pending = manager.get_pending_migrations()
@@ -386,30 +739,43 @@ def _validate_rebuilt_root(root: Path, db_path: Path) -> dict:
         if pending:
             issues.append(f"存在 {len(pending)} 个待执行迁移，不能视为 up_to_date")
 
-        entry_count = _safe_entry_count(db_path)
-        if entry_count is None:
+        schema_objects = _read_schema_objects(db_path)
+        if schema_objects is None:
+            issues.append("数据库 schema 对象不可读取")
+        else:
+            tables, triggers = schema_objects
+            missing_tables = sorted(_REQUIRED_TABLES - tables)
+            missing_triggers = sorted(_REQUIRED_TRIGGERS - triggers)
+            if missing_tables:
+                issues.append(f"数据库缺少核心表: {', '.join(missing_tables)}")
+            if missing_triggers:
+                issues.append(f"数据库缺少 FTS 触发器: {', '.join(missing_triggers)}")
+        issues.extend(_validate_sqlite_integrity(db_path))
+        issues.extend(_validate_fts_integrity(db_path))
+
+        entry_records = _read_entry_records(db_path)
+        if entry_records is None:
             issues.append("数据库缺少 knowledge_items 表或不可统计")
         elif manifest is not None and not manifest_issues:
+            entry_count = len(entry_records)
             manifest_schema = manifest.get("schema_version")
-            if manifest_schema not in (None, schema_version):
+            if manifest_schema != schema_version:
                 issues.append(
                     f"manifest 记录版本 {manifest_schema} 与数据库 {schema_version} 不一致"
                 )
-            try:
-                expected = int(manifest.get("seed_count") or 0)
-            except (TypeError, ValueError):
-                issues.append("manifest seed_count 字段无效")
-                expected = None
+            expected = manifest["seed_count"]
             if manifest.get("seeded"):
-                if expected is not None and entry_count != expected:
+                if entry_count != expected:
                     issues.append(
                         f"条目数 {entry_count} 与 manifest 期望 {expected} 不一致"
                     )
             elif entry_count != 0:
                 issues.append(f"no-seed root 不应有条目（当前 {entry_count}）")
+            issues.extend(_validate_markdown_storage(root, entry_records))
 
-    if not (root / "vault").is_dir():
-        issues.append("vault 目录缺失")
+    for dirname in _STANDARD_DIRS:
+        if not (root / dirname).is_dir():
+            issues.append(f"标准目录缺失: {dirname}")
 
     return {
         "ok": not issues,
@@ -434,7 +800,7 @@ def _build_seed_entry(
 
     body = "\n\n".join(_SEED_BODIES)
     archived_at = (base_time + timedelta(minutes=index)).strftime("%Y-%m-%d %H:%M:%S")
-    tags = [_SEED_TAGS[index % len(_SEED_TAGS)], "重建"]
+    tags = list(dict.fromkeys([_SEED_TAGS[index % len(_SEED_TAGS)], "重建"]))
     keywords = ["rebuild", "seed", f"seed-{index + 1}"]
 
     return Entry(
@@ -500,18 +866,16 @@ def _current_version_if_exists(db_path: Path) -> str:
     """读取数据库版本；文件不存在时避免创建连接（只读路径）。"""
     if not db_path.exists():
         return "0.0.0"
-    return MigrationManager(db_path, MIGRATIONS_DIR).get_current_version()
+    return MigrationManager(db_path, MIGRATIONS_DIR, read_only=True).get_current_version()
 
 
 def _health_report(root: Path, db_path: Path) -> dict:
     """只读健康检查：迁移链健康 + 数据库统计。"""
-    manager = MigrationManager(db_path, MIGRATIONS_DIR)
+    manager = MigrationManager(db_path, MIGRATIONS_DIR, read_only=True)
     health = manager.run_health_check()
     stats: dict = {}
     if db_path.exists():
-        store = SQLiteStore(db_path)
-        if store.table_exists("knowledge_items"):
-            stats = store.get_statistics()
+        stats = _read_only_statistics(db_path)
     return {
         "root": str(root),
         "db_path": str(db_path),
@@ -542,12 +906,9 @@ def _check_only(root: Path, db_path: Path) -> dict:
             "error": "root 结构不完整或非本脚本生成，不能视为健康",
             "issues": validation["issues"],
         }
-    manager = MigrationManager(db_path, MIGRATIONS_DIR)
+    manager = MigrationManager(db_path, MIGRATIONS_DIR, read_only=True)
     health = manager.run_health_check()
-    stats: dict = {}
-    store = SQLiteStore(db_path)
-    if store.table_exists("knowledge_items"):
-        stats = store.get_statistics()
+    stats = _read_only_statistics(db_path)
     return {
         "ok": bool(health.get("healthy")),
         "root": str(root),
@@ -605,6 +966,43 @@ def _prepare_json_mode() -> None:
     logging.getLogger("jieba").disabled = True
 
 
+def _validate_arguments(args: argparse.Namespace) -> None:
+    """在任何文件系统访问之前拒绝无效参数。"""
+    if not args.no_seed and args.count <= 0:
+        raise RebuildError("count 必须大于 0（使用 --no-seed 可跳过种子）")
+
+
+def _requested_configuration_issues(
+    args: argparse.Namespace,
+    manifest: dict | None,
+) -> list[str]:
+    """避免把与调用参数不一致的既有 root 静默报告为 up_to_date。"""
+    if manifest is None:
+        return []
+    issues: list[str] = []
+    requested_seeded = not args.no_seed
+    if manifest.get("seeded") != requested_seeded:
+        issues.append("现有 root 的 seeded 配置与本次调用不一致；请使用匹配参数或 --force")
+    if requested_seeded:
+        if manifest.get("seed_count") != args.count:
+            issues.append("现有 root 的 seed_count 与 --count 不一致；如需变更请使用 --force")
+        if manifest.get("seed") != args.seed:
+            issues.append("现有 root 的 seed 与 --seed 不一致；如需变更请使用 --force")
+    return issues
+
+
+def _assert_root_stable_and_safe(
+    root: Path,
+    expected_identity: tuple[int, int, int, int],
+) -> None:
+    """在每个实际使用点前复核根身份并重新扫描内部链接/挂载点。"""
+    _assert_root_identity(root, expected_identity)
+    unsafe = _find_unsafe_link_under(root)
+    if unsafe is not None:
+        raise RootRejectedError(f"重建根内部出现链接或挂载点，拒绝继续: {unsafe}")
+    _assert_root_identity(root, expected_identity)
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="PKV 开发专用轻量重建（安全隔离根，禁止生产 .data）",
@@ -655,8 +1053,10 @@ def main(argv: list[str] | None = None) -> int:
         _prepare_json_mode()
 
     try:
+        _validate_arguments(args)
         root = resolve_rebuild_root(args.root)
         db_path = root / "db" / "knowledge_vault.db"
+        root_identity: tuple[int, int, int, int] | None = None
 
         # 链接安全门：已存在 root 在任何内容读取（iterdir/manifest/DB）之前
         # 做只读递归内部链接扫描，发现 symlink/junction/hardlink 立即拒绝。
@@ -664,10 +1064,14 @@ def main(argv: list[str] | None = None) -> int:
             unsafe = _find_unsafe_link_under(root)
             if unsafe is not None:
                 raise RootRejectedError(
-                    f"重建根内部存在链接（symlink/junction/hardlink），拒绝访问: {unsafe}"
+                    "重建根内部存在链接或挂载点"
+                    f"（symlink/junction/hardlink/mount），拒绝访问: {unsafe}"
                 )
+            root_identity = _capture_root_identity(root)
 
         if args.check_only:
+            if root_identity is not None:
+                _assert_root_stable_and_safe(root, root_identity)
             report = _check_only(root, db_path)
             report["phase"] = "checked" if report["ok"] else "invalid"
             if args.json:
@@ -675,11 +1079,19 @@ def main(argv: list[str] | None = None) -> int:
             _print_summary(report, quiet=args.quiet)
             return 0 if report["ok"] else 1
 
-        root_exists_nonempty = root.exists() and any(root.iterdir())
+        root_has_content = _has_meaningful_content(root)
+        if root_identity is not None:
+            _assert_root_identity(root, root_identity)
 
-        if root_exists_nonempty and not args.force:
+        if root_has_content and not args.force:
             # 幂等路径：只读校验本脚本完整生成的 root；不完整/未知则 fail-closed。
+            assert root_identity is not None
+            _assert_root_stable_and_safe(root, root_identity)
             validation = _validate_rebuilt_root(root, db_path)
+            validation["issues"].extend(
+                _requested_configuration_issues(args, validation.get("manifest"))
+            )
+            validation["ok"] = not validation["issues"]
             if not validation["ok"]:
                 report = {
                     "ok": False,
@@ -709,17 +1121,23 @@ def main(argv: list[str] | None = None) -> int:
             _print_summary(report, quiet=args.quiet)
             return 0 if report["ok"] else 1
 
-        if args.force and root_exists_nonempty:
-            _cleanup_root(root)
+        if args.force and root_has_content:
+            assert root_identity is not None
+            _cleanup_root(root, expected_identity=root_identity)
         else:
             root.mkdir(parents=True, exist_ok=True)
 
+        root_identity = _capture_root_identity(root)
+        _assert_root_stable_and_safe(root, root_identity)
         _ensure_standard_dirs(root)
+        _assert_root_stable_and_safe(root, root_identity)
         applied = _run_migrations(db_path)
+        _assert_root_stable_and_safe(root, root_identity)
         seeded = 0
         if not args.no_seed:
             seeded = _seed_entries(root, db_path, seed=args.seed, count=args.count)
 
+        _assert_root_stable_and_safe(root, root_identity)
         report = _health_report(root, db_path)
         report["phase"] = "rebuilt"
         report["migrations_applied"] = applied
@@ -727,6 +1145,7 @@ def main(argv: list[str] | None = None) -> int:
         report["ok"] = bool(report["health"].get("healthy"))
         if report["ok"]:
             # manifest 最后写入：标记完整成功生成；健康失败则不写（fail-closed）。
+            _assert_root_stable_and_safe(root, root_identity)
             _write_manifest(
                 root,
                 schema_version=report["schema_version"],
@@ -734,6 +1153,14 @@ def main(argv: list[str] | None = None) -> int:
                 seed_count=seeded,
                 seed=args.seed,
             )
+            _assert_root_stable_and_safe(root, root_identity)
+            validation = _validate_rebuilt_root(root, db_path)
+            if not validation["ok"]:
+                (root / MANIFEST_NAME).unlink(missing_ok=True)
+                report["ok"] = False
+                report["phase"] = "invalid"
+                report["error"] = "重建后完整性校验失败，未保留完成标记"
+                report["issues"] = validation["issues"]
         if args.json:
             _emit_json(report, 0 if report["ok"] else 1)
         _print_summary(report, quiet=args.quiet)

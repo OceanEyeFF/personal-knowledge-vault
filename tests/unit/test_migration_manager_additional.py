@@ -113,6 +113,45 @@ def test_apply_all_pending_returns_zero_when_no_pending(tmp_path: Path) -> None:
     assert manager.apply_all_pending(auto_backup=False) == 0
 
 
+def test_read_only_manager_does_not_create_missing_paths(tmp_path: Path) -> None:
+    db_path = tmp_path / "missing" / "test.db"
+    migrations_dir = tmp_path / "missing" / "migrations"
+
+    manager = MigrationManager(db_path, migrations_dir, read_only=True)
+
+    assert manager.read_only is True
+    assert not db_path.exists()
+    assert not migrations_dir.exists()
+    assert not (tmp_path / "missing").exists()
+    assert manager.get_current_version() == "0.0.0"
+    assert manager.get_pending_migrations() == []
+    assert not (tmp_path / "missing").exists()
+
+
+@pytest.mark.parametrize(
+    ("operation", "args"),
+    [
+        ("apply_migration", (Path("001_test.sql"),)),
+        ("apply_all_pending", ()),
+        ("_remove_applied_versions", (["1.0.0"],)),
+        ("_backup_database", ("001_test.sql",)),
+    ],
+)
+def test_read_only_manager_rejects_mutating_apis(
+    tmp_path: Path,
+    operation: str,
+    args: tuple,
+) -> None:
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    manager = MigrationManager(tmp_path / "test.db", migrations_dir, read_only=True)
+
+    with pytest.raises(RuntimeError, match="read-only"):
+        getattr(manager, operation)(*args)
+
+    assert not manager.db_path.exists()
+
+
 def test_apply_migration_warns_on_backup_failure_and_rolls_back_on_sql_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
