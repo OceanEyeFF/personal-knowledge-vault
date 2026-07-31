@@ -3,11 +3,19 @@
 > **AI-First Knowledge Workflow System**
 > 工作流驱动的个人知识管理系统
 
-**最后更新**: 2026-02-23 10:45:33
+**最后更新**: 2026-07-31
 
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-07-31 (P0 自动化 G0/FT7 收口)
+
+- 默认自动化统一经 `scripts/run-test.ps1`；pytest 在加载 pytest/plugin 前先经 `tests/offline_entrypoint.py pytest` 建立 G0，再由根 `tests/conftest.py` 维持逐用例隔离；CLI/MCP 也由 offline entrypoint 启动
+- Direct Python（FT7）只允许仓库 `python -m module` 或仓库 `.py`，拒绝 `-c`/stdin/解释器 flags；同进程 `runpy` 在产品导入前落实环境清理、base-only Config、网络及子进程 guard
+- Python guard 不是 OS sandbox；非 Python Direct 仍须经 wrapper 启动，但不属于 Python G0、不保证离线
+- `setup-test-db.py` 输出精确绑定所选 `DATA_DIR`；`rebuild-dev-vault.py` 同样要求 FT7 attestation 且 `--root` 只能位于所选 `DATA_DIR`；`migrate.py` 仍被测试包装器以 exit 2 拒绝
+- 真实迁移仍受 U1/G8/FT5 user-only gate 阻塞，尚未执行真实数据迁移
 
 ### 2026-07-31 (P1 扫描 fail-closed 收口)
 
@@ -38,7 +46,7 @@
 
 - 新增 `scripts/rebuild-dev-vault.py`：隔离根上的 清理→迁移→确定性最小种子→健康检查 重建入口
 - 默认根 `.data-test/rebuild-dev`；拒绝 `.data`、仓库外与危险目标；幂等可重复；`--json` 结果契约
-- 新增离线测试 `tests/unit/test_rebuild_dev_vault.py`（15 用例：临时根隔离/幂等/危险目标拒绝/结果契约）
+- 新增并持续加固离线测试 `tests/unit/test_rebuild_dev_vault.py`：覆盖临时根隔离、幂等、危险目标拒绝、完整性、只读检查与运行时 `tmp` 保留合同
 - 文档：`scripts/README.md`、`scripts/CLAUDE.md` 更新操作说明
 
 ### 2026-02-23 10:45
@@ -262,8 +270,8 @@ notepad config\local.yaml
 
 # 5. 使用 CLI（隔离测试数据）
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\quickstart -Command @("python", "-m", "src.cli.commands", "--help")
-.\scripts\run-test.ps1 -DataRoot .data-test\quickstart archive "https://example.com"
-.\scripts\run-test.ps1 -DataRoot .data-test\quickstart search "关键词"
+.\scripts\run-test.ps1 -DataRoot .data-test\quickstart stats
+.\scripts\run-test.ps1 -DataRoot .data-test\quickstart search "关键词" --strategy bm25
 
 # 6. 启动 MCP Server (Claude Code / Cursor 集成，隔离测试数据)
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\quickstart -Command @("python", "-m", "src.mcp.server")
@@ -289,26 +297,27 @@ conda activate py311-private
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\dev -Command @("python", "-m", "src.gui")
 
 # CLI 命令（测试数据）
-.\scripts\run-test.ps1 archive "https://..."
-.\scripts\run-test.ps1 search "AI 工作流"
+.\scripts\run-test.ps1 stats
+.\scripts\run-test.ps1 search "AI 工作流" --strategy bm25
 .\scripts\run-test.ps1 list --limit 10
 .\scripts\run-test.ps1 stats
 
 # MCP Server（隔离测试数据，stdio 模式）
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\dev -Command @("python", "-m", "src.mcp.server")
 
-# 数据库管理（migrate.py 为非 CLI 命令，必须使用 -Direct 与显式 -Command 数组）
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--version")
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--dry-run")
+# 数据库迁移
+# migrate.py 当前被 run-test.ps1 fail-closed 拒绝（exit 2）。
+# 真实迁移须等待 U1/G8/FT5 user-only gate，并仅由用户授权执行；尚未执行真实数据迁移。
 
 # 测试环境
-.\scripts\run-test.ps1 archive "https://example.com"
-.\scripts\run-test.ps1 -Direct -Command @("python", "scripts/setup-test-db.py", "--count", "20")
+.\scripts\run-test.ps1 stats
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\seed -Command @("python", "scripts/setup-test-db.py", "--seed", "42", "--count", "20", "--output", ".data-test/seed/db/knowledge_vault.db")
+# setup-test-db.py 的输出必须精确绑定上述 DataRoot
 
 # 运行测试
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-v")
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/e2e/", "-v")
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/", "--cov=src", "--cov-report=term-missing")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\root-unit -Command @("pytest", "tests/unit/", "-v")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\root-e2e -Command @("pytest", "tests/e2e/", "-v")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\root-cov -Command @("pytest", "tests/", "--cov=src", "--cov-report=term-missing")
 ```
 
 ---
@@ -317,13 +326,13 @@ conda activate py311-private
 
 ### 测试层次
 
-1. **单元测试** (`tests/unit/`) -- 35 个文件, 300+ 测试用例
-2. **集成测试** (`tests/integration/`) -- 5 个文件
-3. **E2E 测试** (`tests/e2e/`) -- 4 个文件 (含 MCP E2E 3 个)
-4. **黑盒测试** (`tests/blackbox/`) -- 4 个文件
-5. **手动测试** (`tests/manual_test_*.py` + `tests/manual_test_m12/`) -- 12 个文件
+1. **单元测试** (`tests/unit/`)
+2. **集成测试** (`tests/integration/`)
+3. **E2E 测试** (`tests/e2e/`，默认排除 `network/manual`)
+4. **黑盒测试** (`tests/blackbox/`)
+5. **手动测试** (`tests/manual_test_*.py` + `tests/manual_test_m12/`，用户手动、非默认自动化)
 
-### MCP 三层测试体系 (203 tests)
+### MCP 三层测试体系
 
 | 层级 | 文件 | 说明 |
 | ------ | ------ | ------ |
@@ -331,7 +340,10 @@ conda activate py311-private
 | **Layer 2** 进程内集成 | `test_mcp_functional/integration.py` | FastMCP 调用 |
 | **Layer 3** stdio 黑盒 | `test_mcp_blackbox.py` | JSON-RPC over stdio |
 
-### 覆盖率: 约 85% (核心模块)
+### 覆盖率
+
+不在索引文档中维护易漂移的静态百分比；以 [tests/CLAUDE.md](./tests/CLAUDE.md)
+记录的同一冻结工作树全量回归与 MCP 覆盖率门禁为准。
 
 ---
 
@@ -361,7 +373,9 @@ conda activate py311-private
 1. 禁止直接操作生产数据 (`.data/`)
 2. 强制使用测试环境 (`run-test.ps1`)
 3. 重要变更前必须备份 (`backup-data.ps1`)
-4. MCP: SSRF 防护 + 文本验证 + Bearer Token
+4. MCP: SSRF 防护 + 文本长度验证 + Bearer Token
+5. pytest 先经 offline pytest bootstrap，再使用根 conftest；CLI/MCP 使用 offline entrypoint
+6. Direct Python 仅允许仓库模块/脚本并由 FT7 同进程保护；不是 OS sandbox；非 Python Direct 仍须经 wrapper，但不属于 Python G0、不保证离线
 
 详见: [.ai-safety-rules.md](./.ai-safety-rules.md)
 
@@ -369,7 +383,7 @@ conda activate py311-private
 
 ## 当前开发状态
 
-### 当前版本: v0.8.0-alpha (2026-02-23)
+### 当前版本: v0.8.0-alpha (2026-07-31 事实核验)
 
 **已完成**: M1-M12 全部里程碑
 
@@ -389,8 +403,8 @@ conda activate py311-private
 
 ---
 
-**文档版本**: v5.0
-**生成时间**: 2026-02-23 10:45:33
+**文档版本**: v5.1
+**最近核验**: 2026-07-31
 **项目代号**: Personal Knowledge Vault
 **当前版本**: v0.8.0-alpha
 

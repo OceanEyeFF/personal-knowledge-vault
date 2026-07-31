@@ -16,9 +16,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import numpy as np
 import pytest
 
+import src.storage.vector_store as vector_store_module
 from src.storage.markdown_store import Entry
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.vector_store import VectorStore
+from src.utils.config import Config
 
 
 # ============================================================
@@ -51,8 +53,25 @@ def store_with_entry(store: SQLiteStore) -> tuple:
 
 
 @pytest.fixture
-def vector_store(tmp_path: Path) -> VectorStore:
+def vector_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> VectorStore:
     """Create a fresh VectorStore with dim=4 for testing."""
+    data_root = tmp_path / "runtime"
+    runtime_paths = {
+        "DATA_DIR": data_root,
+        "DB_PATH": data_root / "db" / "knowledge_vault.db",
+        "VAULT_DIR": data_root / "vault",
+        "VECTOR_DIR": data_root / "vectors",
+        "LOG_DIR": data_root / "logs",
+        "TMP_DIR": data_root / "tmp",
+    }
+    for key, path in runtime_paths.items():
+        monkeypatch.setenv(key, str(path))
+
+    config = Config(str(PROJECT_ROOT / "config" / "config.yaml"))
+    monkeypatch.setattr(vector_store_module, "get_config", lambda: config)
     return VectorStore(index_dir=tmp_path / "vectors", dim=4)
 
 
@@ -191,4 +210,4 @@ class TestVectorStoreDelete:
         results = vector_store.search_doc(vec1, k=2)
         result_ids = [r[0] for r in results]
         assert 1 not in result_ids
-        assert 2 in result_ids or 3 in result_ids
+        assert set(result_ids) == {2, 3}

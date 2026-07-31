@@ -8,20 +8,107 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import tempfile
 from typing import Any
 
-import yaml
+from tests.offline_runtime import require_offline_runtime_ready
 
-from .safety import reject_production_path, require_path_within
-from .scenario import OfflineMcpScenario
-from .scorer import CheckResult, TaskScore, score_assertion
+require_offline_runtime_ready()
+
+import yaml  # noqa: E402
+
+from .safety import reject_production_path, require_path_within  # noqa: E402
+from .scenario import OfflineMcpScenario  # noqa: E402
+from .scorer import (  # noqa: E402
+    SUPPORTED_ASSERTION_OPERATORS,
+    CheckResult,
+    TaskScore,
+    _strict_equal,
+    score_assertion,
+)
 
 
 DEFAULT_TASKSET = Path(__file__).with_name("tasks.v1.yaml")
 DEFAULT_PROPOSALS = Path(__file__).with_name("proposals.baseline.v1.yaml")
+REQUIRED_TARGET_DIMENSIONS = frozenset(
+    {
+        "overall",
+        "tool_selection",
+        "parameters",
+        "result",
+        "evidence_relevance",
+        "citability",
+        "degradation",
+    }
+)
+
+
+def _runtime_isolated_roots() -> list[Path]:
+    roots = [
+        Path(raw)
+        for raw in (os.environ.get("DATA_DIR", ""), os.environ.get("TMP_DIR", ""))
+        if raw
+    ]
+    if not roots:
+        raise RuntimeError(
+            "DATA_DIR/TMP_DIR 未设置；请通过 scripts/run-test.ps1 运行离线评测"
+        )
+    return roots
+
+
+def _same_lexical_path(left: Path, right: Path) -> bool:
+    left_key = os.path.normcase(os.path.abspath(os.path.normpath(left)))
+    right_key = os.path.normcase(os.path.abspath(os.path.normpath(right)))
+    return left_key == right_key
+
+
+def _require_isolated_input_path(
+    path: Path,
+    *,
+    default_path: Path,
+    purpose: str,
+) -> Path:
+    """Allow the fixed tracked asset or a custom fixture under runtime roots."""
+
+    if _same_lexical_path(path, default_path):
+        return require_path_within(
+            default_path,
+            allowed_roots=[default_path.parent],
+            purpose=purpose,
+        )
+    return require_path_within(
+        path,
+        allowed_roots=_runtime_isolated_roots(),
+        purpose=purpose,
+    )
+
+
+ASSERTIONS_WITH_EXPECTED_VALUE = frozenset(
+    {
+        "contains",
+        "contains_all",
+        "equals",
+        "gte",
+        "length_equals",
+        "lte",
+        "set_equals",
+    }
+)
+ALLOWED_PRIORITIES = frozenset({"P0", "P1", "P2"})
+ALLOWED_IMPACTS = frozenset({"low", "medium", "high"})
+OFFLINE_READ_ONLY_TOOL_ALLOWLIST = frozenset(
+    {
+        "collect_evidence",
+        "contrast",
+        "explain_relation",
+        "find_bridges",
+        "query_subgraph",
+        "timeline_of",
+    }
+)
 
 
 @dataclass
@@ -111,16 +198,19 @@ async def run_evaluation(
 ) -> EvaluationReport:
     """Execute the fixed task set against an isolated MCP scenario."""
 
-    safe_work_dir = reject_production_path(
+    safe_work_dir = require_path_within(
         work_dir,
+        allowed_roots=_runtime_isolated_roots(),
         purpose="离线 MCP 评测工作目录",
     )
-    safe_taskset_path = reject_production_path(
+    safe_taskset_path = _require_isolated_input_path(
         taskset_path,
+        default_path=DEFAULT_TASKSET,
         purpose="MCP 评测任务集",
     )
-    safe_proposals_path = reject_production_path(
+    safe_proposals_path = _require_isolated_input_path(
         proposals_path,
+        default_path=DEFAULT_PROPOSALS,
         purpose="MCP 评测 proposals",
     )
 
@@ -212,7 +302,10 @@ async def _run_task(
             CheckResult(
                 check_id="arguments_match",
                 dimension="parameters",
-                passed=proposed.get("arguments", {}) == expected.get("arguments", {}),
+                passed=_strict_equal(
+                    proposed.get("arguments", {}),
+                    expected.get("arguments", {}),
+                ),
                 weight=1.0,
                 expected=expected.get("arguments", {}),
                 actual=proposed.get("arguments", {}),
@@ -301,37 +394,91 @@ def _normalize_mcp_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
         "target_knowledge_id",
     }
     return {
-        key: str(value) if key in string_id_fields and isinstance(value, int) else value
+        key: (
+            str(value)
+            if (
+                key in string_id_fields
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+            )
+            else value
+        )
         for key, value in arguments.items()
     }
 
 
 def _validate_taskset(payload: dict[str, Any]) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("MCP quality taskset must be a mapping")
     if payload.get("schema_version") != "pkv.mcp_quality_tasks.v1":
         raise ValueError("unsupported MCP quality taskset schema")
-    policy = payload.get("policy", {})
+    policy = payload.get("policy")
+    if not isinstance(policy, dict):
+        raise ValueError("taskset policy must be a mapping")
     if policy.get("mode") != "threshold_enforced":
         raise ValueError("MCP quality policy must enforce thresholds")
     if policy.get("ci_contract") != "schema_all_checks_and_thresholds":
         raise ValueError("unsupported MCP quality CI contract")
     if policy.get("target_gate_activation") != "active":
         raise ValueError("MCP quality target gate must be active")
-    if "target_thresholds" not in payload:
-        raise ValueError("taskset must declare target_thresholds")
+    thresholds = payload.get("target_thresholds")
+    if not isinstance(thresholds, dict):
+        raise ValueError("taskset must declare target_thresholds as a mapping")
+    if set(thresholds) != REQUIRED_TARGET_DIMENSIONS:
+        raise ValueError(
+            "target_thresholds must declare the complete v1 dimension set"
+        )
+    for dimension, threshold in thresholds.items():
+        if (
+            not isinstance(threshold, (int, float))
+            or isinstance(threshold, bool)
+            or not math.isfinite(float(threshold))
+            or not 0.0 <= float(threshold) <= 1.0
+        ):
+            raise ValueError(
+                f"target threshold must be a finite number in [0, 1]: {dimension}"
+            )
+
     tasks = payload.get("tasks")
     if not isinstance(tasks, list) or not 10 <= len(tasks) <= 20:
         raise ValueError("MCP quality taskset must contain 10-20 tasks")
-    task_ids = [str(task.get("id", "")) for task in tasks]
-    if any(not task_id for task_id in task_ids) or len(task_ids) != len(set(task_ids)):
+
+    if any(not isinstance(task, dict) for task in tasks):
+        raise ValueError("each MCP quality task must be a mapping")
+    task_ids = [task.get("id") for task in tasks]
+    if (
+        any(not isinstance(task_id, str) or not task_id.strip() for task_id in task_ids)
+        or len(task_ids) != len(set(task_ids))
+    ):
         raise ValueError("task ids must be non-empty and unique")
     if any("proposed_call" in task for task in tasks):
         raise ValueError("gold taskset must not embed proposed_call")
+
+    assertion_ids: set[str] = set()
+    for task in tasks:
+        for field_name in ("category", "prompt"):
+            value = task.get(field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"task {task['id']} must contain non-empty {field_name}"
+                )
+        _validate_call(
+            task.get("expected_call"),
+            label=f"task {task['id']} expected_call",
+        )
+        assertions = task.get("assertions")
+        if not isinstance(assertions, list) or not assertions:
+            raise ValueError(f"task {task['id']} assertions must be a non-empty list")
+        for assertion in assertions:
+            _validate_assertion(assertion, assertion_ids, thresholds)
 
 
 def _validate_proposals(
     payload: dict[str, Any],
     taskset_payload: dict[str, Any],
 ) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("MCP quality proposals must be a mapping")
     if payload.get("schema_version") != "pkv.mcp_quality_proposals.v1":
         raise ValueError("unsupported MCP quality proposals schema")
     if payload.get("taskset_version") != taskset_payload.get("schema_version"):
@@ -339,8 +486,13 @@ def _validate_proposals(
     proposals = payload.get("proposals")
     if not isinstance(proposals, list):
         raise ValueError("proposals must be a list")
-    proposal_ids = [str(item.get("task_id", "")) for item in proposals]
-    if any(not task_id for task_id in proposal_ids):
+    if any(not isinstance(item, dict) for item in proposals):
+        raise ValueError("each proposal must be a mapping")
+    proposal_ids = [item.get("task_id") for item in proposals]
+    if any(
+        not isinstance(task_id, str) or not task_id.strip()
+        for task_id in proposal_ids
+    ):
         raise ValueError("proposal task ids must be non-empty")
     if len(proposal_ids) != len(set(proposal_ids)):
         raise ValueError("proposal task ids must be unique")
@@ -348,14 +500,99 @@ def _validate_proposals(
     if set(proposal_ids) != expected_ids:
         raise ValueError("proposals must cover exactly the taskset ids")
     for item in proposals:
-        proposed_call = item.get("proposed_call")
-        if not isinstance(proposed_call, dict):
-            raise ValueError("each proposal must contain proposed_call")
-        if not proposed_call.get("tool") or not isinstance(
-            proposed_call.get("arguments", {}),
-            dict,
-        ):
-            raise ValueError("proposed_call must contain tool and arguments")
+        _validate_call(
+            item.get("proposed_call"),
+            label=f"proposal {item['task_id']} proposed_call",
+        )
+
+
+def _validate_call(value: Any, *, label: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a mapping")
+    if set(value) != {"tool", "arguments"}:
+        raise ValueError(f"{label} must contain exactly tool and arguments")
+    tool = value.get("tool")
+    if not isinstance(tool, str) or not tool.strip():
+        raise ValueError(f"{label} must contain a non-empty string tool")
+    if tool not in OFFLINE_READ_ONLY_TOOL_ALLOWLIST:
+        raise ValueError(
+            f"{label} selects Tool outside fixed offline read-only allowlist: {tool}"
+        )
+    if "arguments" not in value or not isinstance(value["arguments"], dict):
+        raise ValueError(f"{label} must contain an arguments mapping")
+
+
+def _validate_assertion(
+    assertion: Any,
+    assertion_ids: set[str],
+    thresholds: dict[str, Any],
+) -> None:
+    if not isinstance(assertion, dict):
+        raise ValueError("each task assertion must be a mapping")
+
+    assertion_id = assertion.get("id")
+    if not isinstance(assertion_id, str) or not assertion_id.strip():
+        raise ValueError("assertion ids must be non-empty strings")
+    if assertion_id in assertion_ids:
+        raise ValueError(f"assertion ids must be globally unique: {assertion_id}")
+    assertion_ids.add(assertion_id)
+
+    dimension = assertion.get("dimension")
+    if (
+        not isinstance(dimension, str)
+        or dimension == "overall"
+        or dimension not in thresholds
+    ):
+        raise ValueError(f"assertion has unknown target dimension: {assertion_id}")
+
+    operator = assertion.get("op")
+    if (
+        not isinstance(operator, str)
+        or operator not in SUPPORTED_ASSERTION_OPERATORS
+    ):
+        raise ValueError(f"unsupported assertion operator: {operator}")
+
+    path = assertion.get("path", "$")
+    if not isinstance(path, str) or not path:
+        raise ValueError(f"assertion path must be a non-empty string: {assertion_id}")
+
+    weight = assertion.get("weight", 1.0)
+    if (
+        not isinstance(weight, (int, float))
+        or isinstance(weight, bool)
+        or not math.isfinite(float(weight))
+        or float(weight) <= 0.0
+    ):
+        raise ValueError(f"assertion weight must be finite and positive: {assertion_id}")
+
+    if operator in ASSERTIONS_WITH_EXPECTED_VALUE and "expected" not in assertion:
+        raise ValueError(
+            f"assertion operator requires expected value: {assertion_id}"
+        )
+    if operator == "contains_all" and (
+        not isinstance(assertion.get("expected"), list)
+        or not assertion["expected"]
+    ):
+        raise ValueError(
+            f"contains_all expected must be a non-empty list: {assertion_id}"
+        )
+
+    if (
+        "priority" in assertion
+        and (
+            not isinstance(assertion["priority"], str)
+            or assertion["priority"] not in ALLOWED_PRIORITIES
+        )
+    ):
+        raise ValueError(f"assertion priority is invalid: {assertion_id}")
+    if (
+        "impact" in assertion
+        and (
+            not isinstance(assertion["impact"], str)
+            or assertion["impact"] not in ALLOWED_IMPACTS
+        )
+    ):
+        raise ValueError(f"assertion impact is invalid: {assertion_id}")
 
 
 def _default_work_parent() -> Path:
@@ -413,12 +650,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    taskset_path = reject_production_path(
+    taskset_path = _require_isolated_input_path(
         args.taskset,
+        default_path=DEFAULT_TASKSET,
         purpose="MCP 评测任务集",
     )
-    proposals_path = reject_production_path(
+    proposals_path = _require_isolated_input_path(
         args.proposals,
+        default_path=DEFAULT_PROPOSALS,
         purpose="MCP 评测 proposals",
     )
     output = (
@@ -450,14 +689,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _require_isolated_output_path(output: Path) -> Path:
-    allowed_roots = [
-        Path(raw)
-        for raw in (os.environ.get("DATA_DIR", ""), os.environ.get("TMP_DIR", ""))
-        if raw
-    ]
     return require_path_within(
         output,
-        allowed_roots=allowed_roots,
+        allowed_roots=_runtime_isolated_roots(),
         purpose="MCP 评测 JSON 输出",
     )
 

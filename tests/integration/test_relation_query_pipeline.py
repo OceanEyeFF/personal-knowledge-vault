@@ -85,8 +85,7 @@ def _insert_entry(
     return knowledge_id
 
 
-@pytest.fixture
-def relation_pipeline_env(tmp_path: Path):
+def _create_relation_pipeline_env(tmp_path: Path):
     db_path = tmp_path / "test.db"
     vault_dir = tmp_path / "vault"
     vault_dir.mkdir(parents=True, exist_ok=True)
@@ -214,6 +213,11 @@ def relation_pipeline_env(tmp_path: Path):
         "version_base_id": version_base_id,
         "version_v2_id": version_v2_id,
     }
+
+
+@pytest.fixture
+def relation_pipeline_env(tmp_path: Path):
+    return _create_relation_pipeline_env(tmp_path)
 
 
 def test_relation_query_service_reads_grouped_results_from_backfill(relation_pipeline_env):
@@ -662,17 +666,28 @@ def test_exploration_service_can_build_partial_contrast(relation_pipeline_env):
     ]
 
 
-def test_phase_b_5_4_min_regression_dataset_is_executable(relation_pipeline_env):
-    backfill_service = RelationBackfillService(
-        db_path=relation_pipeline_env["db_path"],
-        vault_dir=relation_pipeline_env["vault_dir"],
-    )
-    relation_store = RelationStore(relation_pipeline_env["db_path"])
-    query_service = RelationQueryService(relation_store)
-
-    for case in _load_regression_cases():
+def _run_phase_b_5_4_regression_cases(
+    tmp_path: Path,
+    cases: list[dict],
+) -> None:
+    for case in cases:
+        # 每个 case 拥有全新的数据库与 Vault，不依赖 YAML 顺序或前序 case 副作用。
+        relation_pipeline_env = _create_relation_pipeline_env(
+            tmp_path / case["case_id"]
+        )
+        backfill_service = RelationBackfillService(
+            db_path=relation_pipeline_env["db_path"],
+            vault_dir=relation_pipeline_env["vault_dir"],
+        )
+        relation_store = RelationStore(relation_pipeline_env["db_path"])
+        query_service = RelationQueryService(relation_store)
         action = case["action"]
         expect = case["expect"]
+
+        # 查询、证据与探索 case 显式声明自身的关系图前置状态。
+        if action not in {"backfill", "rerun_cleanup"}:
+            setup_report = backfill_service.backfill(apply=True)
+            assert setup_report.applied_relations == 6, case["case_id"]
 
         if action == "backfill":
             result = backfill_service.backfill(apply=case["args"]["apply"])
@@ -941,3 +956,17 @@ def test_phase_b_5_4_min_regression_dataset_is_executable(relation_pipeline_env)
             continue
 
         raise AssertionError(f"未知回归样例 action: {action}")
+
+
+@pytest.mark.parametrize(
+    "case",
+    _load_regression_cases(),
+    ids=lambda case: case["case_id"],
+)
+def test_phase_b_5_4_min_regression_dataset_is_executable(
+    tmp_path: Path,
+    case: dict,
+) -> None:
+    """Run each YAML regression case as an independently reported pytest node."""
+
+    _run_phase_b_5_4_regression_cases(tmp_path, [case])

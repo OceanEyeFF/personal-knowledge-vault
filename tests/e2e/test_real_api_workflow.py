@@ -214,7 +214,3 @@ class TestRealAPIWorkflow:
 
         _assert_cli_success(show_result, "显示完整流程归档条目")
         assert "deepseek" in show_result.stdout.lower(), "详情未命中刚归档的 DeepSeek 条目"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-s", "--tb=short", "-m", "not slow"])

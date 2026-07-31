@@ -4,7 +4,6 @@ Workflow steps unit tests.
 
 import asyncio
 import sys
-import time
 from pathlib import Path
 
 # Add project root to Python path
@@ -17,6 +16,8 @@ import pytest
 from src.storage.markdown_store import Entry, MarkdownStore
 from src.storage.sqlite_store import SQLiteStore
 from src.workflow.models import WorkflowContext
+from src.utils.config import Config
+import src.workflow.steps as workflow_steps
 from src.workflow.steps import FetchStep, AnalyzeStep, IdeaSharpenStep, StoreStep
 
 
@@ -119,6 +120,30 @@ def prompt_stub(_prompt: str) -> str:
     """Return a static prompt answer."""
     return "answer"
 
+@pytest.fixture
+def isolated_steps_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Config:
+    """Inject base-only Config at the StoreStep/AnalyzeStep import site."""
+    data_root = tmp_path / "runtime"
+    runtime_paths = {
+        "DATA_DIR": data_root,
+        "DB_PATH": data_root / "db" / "knowledge_vault.db",
+        "VAULT_DIR": data_root / "vault",
+        "VECTOR_DIR": data_root / "vectors",
+        "LOG_DIR": data_root / "logs",
+        "TMP_DIR": data_root / "tmp",
+    }
+    for key, path in runtime_paths.items():
+        monkeypatch.setenv(key, str(path))
+
+    config = Config(str(project_root / "config" / "config.yaml"))
+    monkeypatch.setattr(workflow_steps, "get_config", lambda: config)
+    return config
+
+
+
 
 @pytest.mark.asyncio
 async def test_fetch_step_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,7 +189,9 @@ async def test_fetch_step_retry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_analyze_step_updates_entry() -> None:
+async def test_analyze_step_updates_entry(
+    isolated_steps_config: Config,
+) -> None:
     """AnalyzeStep should update entry summary and tags."""
     entry = Entry(
         title="Title",
@@ -184,7 +211,10 @@ async def test_analyze_step_updates_entry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_analyze_step_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_analyze_step_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_steps_config: Config,
+) -> None:
     """AnalyzeStep should report errors when AI calls fail."""
     entry = Entry(
         title="Title",
@@ -236,12 +266,11 @@ async def test_idea_sharpen_step_collects_answers(monkeypatch: pytest.MonkeyPatc
 @pytest.mark.asyncio
 async def test_idea_sharpen_step_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """IdeaSharpenStep should skip on timeout when configured."""
-    def slow_prompt(_prompt: str) -> str:
-        """Simulate slow prompt for timeout."""
-        time.sleep(0.1)
-        return "late"
+    async def never_complete(*_args, **_kwargs) -> str:
+        await asyncio.Future()
+        raise AssertionError("unreachable")
 
-    monkeypatch.setattr("src.workflow.steps.Prompt.ask", slow_prompt)
+    monkeypatch.setattr("src.workflow.steps.asyncio.to_thread", never_complete)
 
     context = WorkflowContext({"content_length": 10})
     step = IdeaSharpenStep(
@@ -286,12 +315,11 @@ async def test_idea_sharpen_step_condition_error(monkeypatch: pytest.MonkeyPatch
 @pytest.mark.asyncio
 async def test_idea_sharpen_step_timeout_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """IdeaSharpenStep should raise when skip_on_timeout is False."""
-    def slow_prompt(_prompt: str) -> str:
-        """Simulate slow prompt for timeout."""
-        time.sleep(0.1)
-        return "late"
+    async def never_complete(*_args, **_kwargs) -> str:
+        await asyncio.Future()
+        raise AssertionError("unreachable")
 
-    monkeypatch.setattr("src.workflow.steps.Prompt.ask", slow_prompt)
+    monkeypatch.setattr("src.workflow.steps.asyncio.to_thread", never_complete)
 
     context = WorkflowContext({"content_length": 10})
     step = IdeaSharpenStep(
@@ -309,7 +337,10 @@ async def test_idea_sharpen_step_timeout_raises(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
-async def test_store_step_with_dummy_vector(tmp_path: Path) -> None:
+async def test_store_step_with_dummy_vector(
+    tmp_path: Path,
+    isolated_steps_config: Config,
+) -> None:
     """StoreStep should store markdown/sqlite and call vector store."""
     vault_dir = tmp_path / "vault"
     db_path = tmp_path / "db" / "test.db"
@@ -358,7 +389,10 @@ async def test_store_step_missing_entry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_store_step_vector_without_sqlite(tmp_path: Path) -> None:
+async def test_store_step_vector_without_sqlite(
+    tmp_path: Path,
+    isolated_steps_config: Config,
+) -> None:
     """StoreStep should report missing knowledge_id for vector index."""
     entry = Entry(
         title="Entry",

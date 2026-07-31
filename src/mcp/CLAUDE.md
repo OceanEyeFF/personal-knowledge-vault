@@ -259,22 +259,22 @@ HTTP 传输
 | **Layer 2** | `tests/integration/test_mcp_integration.py` | ~15 | 真实 SQLiteStore 集成测试 |
 | **Layer 3** | `tests/blackbox/test_mcp_blackbox.py` | ~40 | stdio 子进程黑盒测试 (JSON-RPC) |
 
-**总计**: 约 203 个测试用例
+用例数以当前受控收集结果为准，不在模块文档中维护静态总数。
 
 ### 运行测试
 
-```bash
+```powershell
 # Layer 1: 单元测试 (最快)
-python -m pytest tests/unit/test_mcp_*.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-layer1 -Command @("pytest", "tests/unit", "-k", "mcp", "-v")
 
 # Layer 2: 进程内集成测试
-python -m pytest tests/integration/test_mcp_*.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-layer2 -Command @("pytest", "tests/integration", "-k", "mcp", "-v")
 
 # Layer 3: stdio 黑盒测试 (最慢,启动子进程)
-python -m pytest tests/blackbox/test_mcp_blackbox.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-layer3 -Command @("pytest", "tests/blackbox/test_mcp_blackbox.py", "-v")
 
 # 全部 MCP 测试
-python -m pytest tests/unit/test_mcp_*.py tests/integration/test_mcp_*.py tests/blackbox/test_mcp_blackbox.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-all -Command @("pytest", "tests/unit", "tests/integration", "tests/blackbox", "tests/e2e", "-k", "mcp", "-v")
 ```
 
 ---

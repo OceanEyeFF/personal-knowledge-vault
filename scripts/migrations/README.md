@@ -77,37 +77,35 @@ VALUES ('{版本号}', '{变更描述}');
 
 ## 使用方法
 
-未设置路径覆盖时，以下裸命令会读取或修改生产 `.data/`，仅供用户明确授权后的生产维护；AI 不执行。
+未设置路径覆盖时，以下裸命令会读取或修改生产 `.data/`，仅供用户明确授权后的生产维护；AI 不执行。这些命令只说明 `migrate.py` 的人工维护接口，不是可复制的 Agent/默认自动化流程。
+
+> **当前自动化边界**：`run-test.ps1` 会显式拒绝 `scripts/migrate.py` 并以 exit 2 结束；FT7 的 Direct Python 入口只覆盖仓库内 `-m`/`.py` 的 CAT-0 离线任务，不会绕过这条迁移 denylist，也不构成真实数据授权。默认自动化迁移验证仅运行使用临时 SQLite 的单元/集成测试。真实快照迁移尚未执行，仍需先完成 FT5，并同时满足 U1/G8 与用户明确授权；届时只能迁移一次性可写 clone，原始快照始终只读。
 
 ### 1. 检查待迁移脚本
 
 ```powershell
-# 查看当前数据库版本和待迁移脚本
+# 人工 API 示例（非 Agent/默认自动化流程）：查看当前数据库版本和待迁移脚本
 .\scripts\run-windows.ps1 python scripts/migrate.py --dry-run
 ```
 
 ### 2. 执行迁移
 
 ```powershell
-# 交互式迁移（推荐）
+# 人工 API 示例：交互式迁移
 .\scripts\run-windows.ps1 python scripts/migrate.py
 
-# 无交互生产迁移（仅限用户授权并受控的维护流程；普通 CI 禁止指向生产数据）
+# 人工 API 示例：无交互生产迁移（仅限完成门禁并获授权的用户维护流程）
 .\scripts\run-windows.ps1 python scripts/migrate.py --auto
 
-# 健康检查（只读）
+# 人工 API 示例：健康检查（只读）
 .\scripts\run-windows.ps1 python scripts/migrate.py --health-check
 ```
 
 ### 3. 在测试环境验证
 
 ```powershell
-# migrate.py 为非 CLI 命令，使用 -Direct 与显式 -Command 数组隔离全部路径。
-# 当前自动备份固定读取生产 .data/，可丢弃测试数据必须使用 --no-backup。
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
-
-# 验证结果
-.\scripts\run-test.ps1 -DataRoot .data-test\migration stats
+# 默认自动化只运行由 pytest 创建并回收临时 SQLite 的迁移测试。
+.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/test_migration_health_check.py", "tests/unit/test_migration_manager_additional.py", "tests/unit/test_migration_manager_runtime.py", "tests/unit/test_migration_manager_versions.py", "tests/integration/test_relations_migration.py", "tests/integration/test_review_migration.py")
 ```
 
 ---
@@ -155,23 +153,19 @@ VALUES ('{版本号}', '{变更描述}');
 
 ## 测试要求
 
-每个迁移脚本提交前必须使用一次性 `.data-test` 根目录。升级兼容验证必须先复制
-脱敏的旧版本 DB/Schema fixture；空目录只能证明 fresh install，不能证明历史库升级。
+每个迁移脚本提交前，默认自动化必须在 pytest 创建的一次性临时 SQLite 上验证。
+空库测试只能证明 fresh install，不能证明历史库升级。真实快照升级兼容验证当前尚未执行；
+只有完成 FT5、满足 U1/G8 且获得用户明确授权后，才可从只读快照制作一次性可写 clone 进行验证。
 
-1. **在旧版本 fixture 上验证升级**
+1. **验证迁移管理器与临时旧版 fixture**
 
    ```powershell
-   # 先将脱敏旧版 fixture 放到 .data-test\migration\db\knowledge_vault.db
-   .\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
+   .\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/test_migration_manager_additional.py", "tests/unit/test_migration_manager_runtime.py", "tests/unit/test_migration_manager_versions.py", "tests/integration/test_relations_migration.py", "tests/integration/test_review_migration.py")
    ```
 
 2. **验证迁移管理器重复启动安全**
 
-   第二次启动只验证“已登记版本不会再次执行”，不能作为 SQL 幂等性证据：
-
-   ```powershell
-   .\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
-   ```
+   在临时 SQLite 测试中第二次调用管理器；它只验证“已登记版本不会再次执行”，不能作为 SQL 幂等性证据。
 
    如果迁移声明 SQL 本身可重复执行，必须另写专门测试，在一次性临时数据库上
    直接执行目标迁移 SQL 两次，并断言第二次成功及 Schema/数据未重复；不能用
@@ -179,17 +173,16 @@ VALUES ('{版本号}', '{变更描述}');
 
 3. **验证数据完整性**
 
-   对比升级前后行数、关系、FTS、索引与 schema version，而不只是命令退出码：
+   在临时 SQLite 测试内对比升级前后行数、关系、FTS、索引与 schema version，而不只是命令退出码。
+
+4. **测试应用功能**
+
+   仅对已填充的普通 disposable 测试数据根运行纯离线 CLI 回归；这不等同于真实快照迁移验收：
 
    ```powershell
    .\scripts\run-test.ps1 -DataRoot .data-test\migration stats
    .\scripts\run-test.ps1 -DataRoot .data-test\migration list
-   ```
-
-4. **测试应用功能**
-   ```powershell
-   .\scripts\run-test.ps1 -DataRoot .data-test\migration archive "https://example.com"
-   .\scripts\run-test.ps1 -DataRoot .data-test\migration search "测试"
+   .\scripts\run-test.ps1 -DataRoot .data-test\migration search "测试" --strategy bm25
    ```
 
 ---

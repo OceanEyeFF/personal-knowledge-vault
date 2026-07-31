@@ -13,10 +13,27 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### P0 主线离线收口（2026-07-31）
+
+- Phase C 固定评测在受控入口下通过 16/16 tasks、119/119 checks，
+  `overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`；gold、
+  独立 proposals、检查项和阈值未降低。
+- Phase B 三个探索 Tool 按 `partial-v1` 最小可用口径交付，公开响应继续声明
+  `implementation_level=partial`；本次没有把受限实现改写为 full。
+- FT7 generic Direct Python 离线入口已交付：支持仓库模块 `-m` 与仓库 `.py`
+  脚本，拒绝 `-c`、stdin、解释器 flags 与仓库外目标；同进程安装 Python 级
+  网络/子进程 guard。该机制不是 OS sandbox，也不覆盖非 Python Direct 命令。
+- 开发 vault 重建脚本已完成合成 `rebuilt -> up_to_date -> checked` 演练，结果为
+  schema `1.2.3`、8 migrations、3 seed。
+- 冻结工作树默认离线全量为 `1684 passed, 1 skipped, 9 deselected`；MCP
+  门禁为 `364 passed, 1326 deselected`，`src.mcp` 覆盖率 `96.88%`（门槛 `95%`）。
+- 本轮未访问或执行真实数据；真实快照仍受 U1/G8 与迁移 FT5 阻塞。M13 是
+  离线基线之后的下一阶段，不等于真实数据验收。
+
 ### 真实数据验证 Runbook v1.3：执行入口与日志安全闭环（2026-07-31）
 
 - G0 收紧为按目标子进程验证的离线入口：5c14caa 成套机制覆盖 pytest 与 CLI/MCP，
-  任意 `-Direct` Python 子进程仍须 FT7 generic guard；单独路径预检或 wrapper 环境不再可替代。
+  FT7 generic guard 现已覆盖受支持的 `-Direct` Python 仓库模块/脚本；单独路径预检或 wrapper 环境不再可替代。
 - 新增 U1/G8 user-only launcher 硬前置，负责授权、`.data-test`/clone 边界、工作区文件日志
   禁用或源头脱敏；未交付前所有真实快照 CAT-U/CAT-C 步骤明确剔除，Runbook 不再给出可误执行命令。
 - archive 写入统一迁移到 writable clone，授权快照根保持只读；migration 明确依赖 FT5+U1，
@@ -57,7 +74,7 @@
 - delete 完整性指标默认从 P1/P2 剔除，FT3 工具为其硬前置；删除/可写迁移强制在每场景
   disposable clone 内执行，快照根只读（Runbook 9/10.1/14/15.4-15.5）。
 - #3 依赖统一为明确 OR 条件：（#3 dev vault 已就绪）或（合成样本预演降级）（Runbook 18.2）。
-- 新增后续任务 FT6（真实快照 MCP harness）与 FT7（base-only 隔离入口工具）。
+- 新增后续任务 FT6（真实快照 MCP harness）与 FT7（base-only 隔离入口工具）；FT7 后续已在本次 P0 主线离线收口中交付。
 
 ### 真实数据验证 Runbook 规划（2026-07-31）
 
@@ -71,8 +88,8 @@
   （G1–G7）、失败分流（F1–F5）、审计证据、留存清除与回滚。
 - 明确合成 fixture 与真实数据的边界及不可作为发布结论的指标（第 16 章）。
 - 覆盖 archive / search / MCP evidence & citation / delete / migration 五类验证。
-- 与 `codex/review-testcase-repair`（5c14caa，只读参考不合并）及 #3 开发 vault
-  轻量重建（仅定义接口与依赖，不等待不修改）的依赖顺序已记录（第 18 章）。
+- 与 `codex/review-testcase-repair`（5c14caa，当时按只读参考规划）及 #3 开发 vault
+  轻量重建（当时仅定义接口与依赖）的依赖顺序已记录（第 18 章）；两项后续均已纳入 P0 主线收口。
 - 未实现任何访问真实数据的脚本；安全工具/TestCase 扩展（FT1–FT5）登记为后续任务。
 - 本任务不读取、不复制、不导出真实数据，不访问 `.data/`，不做真实 API/网络测试。
 
@@ -87,8 +104,8 @@
   `comparison_dimensions.provenance` 候选—来源映射。
 - 三个探索 Tool 继续声明 `implementation_level=partial`，并保留原有
   `limitation_notes`、`evidence_sources` 与降级边界。
-- 固定离线评测达到 16/16 任务、119/119 检查、citability 100% 和
-  `targets_met=true`（兼容字段 `thresholds_met=true`）；gold、baseline
+- 固定离线评测达到 16/16 任务、119/119 检查、`overall=1.0`、
+  `citability=1.0`、0 failed、`targets_met=true`（兼容字段 `thresholds_met=true`）；gold、baseline
   proposals、断言、fixture 与阈值未弱化。
 - 评测策略升级为 `threshold_enforced`，CLI 新增
   `--enforce-thresholds` 退出码门禁。
@@ -181,7 +198,7 @@
 - `tests/integration/test_relation_query_pipeline.py` 当前补充 `backfill -> query_subgraph` 与 `backfill -> explain_relation` 联通验证，并把样例图扩展到 `Alpha -> Gamma -> Delta`
 - `tests/unit/test_relation_exploration_service.py` 与 `tests/integration/test_relation_query_pipeline.py` 当前补充探索能力增强后的断言，覆盖图桥接信号、真实时间优先级与关系图对比信号
 - 当前工作区文档同步范围已覆盖 `README.md`、`当前事实基线-2026-03.md`、`当前战略与路线收敛-2026-03.md`、`PhaseB-推理型MCP路线图-2026-03.md`、`docs/modules/relations/RELATION_LAYER_DESIGN.md`、`docs/specs/interfaces/Relations接口规范.md` 与 `docs/modules/mcp/` 下的相关文档
-- 当前语义上应理解为 `Phase A closeout with Phase B closeout pending`：主归属仍是 `Phase A` 收尾，Phase B 核心能力已到位，剩余项集中在 partial 收口与验收
+- 该 2026-03 增量在当时应理解为 `Phase A closeout with Phase B closeout pending`；2026-07-31 当前口径以本节顶部 P0 主线离线收口记录为准
 
 ### 🧪 测试
 
@@ -193,8 +210,15 @@
 - 新增 `tests/integration/test_relation_query_pipeline.py`
 - 新增 `tests/unit/test_migration_manager_versions.py`
 - 新增 `tests/unit/test_migration_health_check.py`
-- `Phase A` 收尾回归建议命令：
-  `pytest tests/integration/test_relations_migration.py tests/unit/test_relation_store.py tests/unit/test_relation_extractors.py tests/integration/test_relation_backfill.py tests/unit/test_relation_query_service.py tests/integration/test_relation_query_pipeline.py tests/unit/test_migration_manager_versions.py tests/unit/test_migration_health_check.py -q`
+- `Phase A` 当时记录了裸 pytest 命令；现行等价回归必须经
+  `scripts/run-test.ps1 -Direct -DataRoot .data-test\phase-a-regression -Command
+  @("pytest", "tests/integration/test_relations_migration.py",
+  "tests/unit/test_relation_store.py", "tests/unit/test_relation_extractors.py",
+  "tests/integration/test_relation_backfill.py",
+  "tests/unit/test_relation_query_service.py",
+  "tests/integration/test_relation_query_pipeline.py",
+  "tests/unit/test_migration_manager_versions.py",
+  "tests/unit/test_migration_health_check.py", "-q")` 执行。
 
 ## [v0.8.0-alpha] - 2026-03-06 (当前仓库基线对齐)
 

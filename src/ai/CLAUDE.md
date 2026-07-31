@@ -374,18 +374,18 @@ except Exception as e:
 
 ### 单元测试
 
-```bash
+```powershell
 # 运行 AI 服务测试
-python -m pytest tests/unit/test_ai_*.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\ai-unit -Command @("pytest", "tests/unit", "-k", "ai", "-v")
 
 # 测试 DeepSeek 客户端
-python -m pytest tests/unit/test_ai_deepseek.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\ai-deepseek -Command @("pytest", "tests/unit/test_ai_deepseek.py", "-v")
 
 # 测试 OpenAI 客户端
-python -m pytest tests/unit/test_ai_openai.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\ai-openai -Command @("pytest", "tests/unit/test_ai_openai.py", "-v")
 
 # 测试 Embedder
-python -m pytest tests/unit/test_ai_embedder.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\ai-embedder -Command @("pytest", "tests/unit/test_ai_embedder.py", "-v")
 ```
 
 ### Mock 策略
@@ -408,10 +408,8 @@ async def test_summarize(mock_client):
 
 ### 手动测试
 
-```bash
-# 真实 API 测试（需要 API Keys）
-python tests/manual_test_ai_services.py
-```
+真实 API 手动脚本会加载本机密钥并产生网络/费用，不属于 CAT-0。当前不提供可复制
+命令；必须等待 U1/G8 user-only launcher、明确授权和脱敏证据流程后由用户执行。
 
 ### 测试覆盖
 

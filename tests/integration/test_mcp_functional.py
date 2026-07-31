@@ -74,29 +74,34 @@ def parse_tool_result(result: Any) -> Dict[str, Any]:
     raise ValueError(f"无法解析 call_tool 结果: {type(result)}")
 
 
-# ============================================================
-# Fixtures
-# ============================================================
+def assert_stats_payload(payload: Dict[str, Any]) -> None:
+    """Assert the canonical public statistics schema."""
+
+    assert set(payload) == {"total_entries", "by_source_type", "top_tags"}
+    assert isinstance(payload["total_entries"], int)
+    assert not isinstance(payload["total_entries"], bool)
+    assert payload["total_entries"] >= 0
+    assert isinstance(payload["by_source_type"], list)
+    assert all(
+        isinstance(item, list)
+        and len(item) == 2
+        and isinstance(item[0], str)
+        and isinstance(item[1], int)
+        and not isinstance(item[1], bool)
+        for item in payload["by_source_type"]
+    )
+    assert isinstance(payload["top_tags"], list)
+    assert all(
+        set(item) == {"name", "count"}
+        and isinstance(item["name"], str)
+        and isinstance(item["count"], int)
+        and not isinstance(item["count"], bool)
+        for item in payload["top_tags"]
+    )
+
 
 @pytest.fixture
-def test_db(tmp_path: Path) -> SQLiteStore:
-    """创建临时测试数据库。"""
-    db_path = tmp_path / "test.db"
-    store = SQLiteStore(db_path)
-    store.initialize()
-    return store
-
-
-@pytest.fixture
-def test_vault(tmp_path: Path) -> Path:
-    """创建临时 Markdown vault 目录。"""
-    vault_dir = tmp_path / "vault"
-    vault_dir.mkdir()
-    return vault_dir
-
-
-@pytest.fixture
-def populated_db(test_db: SQLiteStore, test_vault: Path) -> tuple:
+def populated_db(mcp_test_db: SQLiteStore, mcp_test_vault: Path) -> tuple:
     """填充测试数据的数据库和 vault。
 
     Returns:
@@ -141,11 +146,11 @@ def populated_db(test_db: SQLiteStore, test_vault: Path) -> tuple:
         ),
     ]
 
-    md_store = MarkdownStore(test_vault)
+    md_store = MarkdownStore(mcp_test_vault)
     entry_ids = []
     for entry in entries:
         # 创建 Markdown 文件
-        md_dir = test_vault / entry.source_type
+        md_dir = mcp_test_vault / entry.source_type
         md_dir.mkdir(parents=True, exist_ok=True)
         safe_title = entry.title[:10].replace("：", "_")
         md_path = md_dir / f"{safe_title}.md"
@@ -155,10 +160,10 @@ def populated_db(test_db: SQLiteStore, test_vault: Path) -> tuple:
             encoding="utf-8",
         )
         # 插入数据库
-        kid = test_db.insert_entry(entry, str(md_path))
+        kid = mcp_test_db.insert_entry(entry, str(md_path))
         entry_ids.append(kid)
 
-    return test_db, md_store, test_vault, entry_ids
+    return mcp_test_db, md_store, mcp_test_vault, entry_ids
 
 
 def _patch_stores(store, md_store=None):
@@ -440,8 +445,8 @@ class TestResourceRegistration:
         """应返回静态 Resource（pkv://tags, pkv://stats）。"""
         resources = await mcp.list_resources()
         uris = {str(r.uri) for r in resources}
-        assert "pkv://tags" in uris or "pkv://tags/" in uris
-        assert "pkv://stats" in uris or "pkv://stats/" in uris
+        assert "pkv://tags" in uris
+        assert "pkv://stats" in uris
 
 
 # ============================================================
@@ -534,8 +539,7 @@ class TestToolCallReadonly:
             raw = await mcp.call_tool("get_stats", {})
 
         result = parse_tool_result(raw)
-        # get_statistics 返回的字典应包含条目信息
-        assert "total_entries" in result or "total" in result
+        assert_stats_payload(result)
 
 
 # ============================================================
@@ -591,7 +595,7 @@ class TestToolCallWriteSecurity:
         )
         result = parse_tool_result(raw)
         assert result["success"] is False
-        assert "scheme" in result["error"] or "http" in result["error"]
+        assert result["error"] == "URL scheme 必须是 http 或 https，当前: ftp"
 
     @pytest.mark.asyncio
     async def test_archive_url_rejects_empty(self):
@@ -629,7 +633,7 @@ class TestToolCallWriteSecurity:
         )
         result = parse_tool_result(raw)
         assert result["success"] is False
-        assert "超过" in result["error"] or "限制" in result["error"]
+        assert result["error"] == "文本长度 100001 超过限制 100000 字符"
 
     @pytest.mark.asyncio
     async def test_get_related_invalid_id(self):
@@ -1055,7 +1059,7 @@ class TestResourceRead:
 
         content = list(contents)[0]
         data = json.loads(content.content)
-        assert "total_entries" in data or "total" in data
+        assert_stats_payload(data)
 
     @pytest.mark.asyncio
     async def test_read_entry_content_resource(self, populated_db):
@@ -1071,8 +1075,7 @@ class TestResourceRead:
         content = list(contents)[0]
         text = content.content
         assert isinstance(text, str)
-        # 内容应来自 Markdown 文件
-        assert "AI 工程化" in text or "title" in text.lower()
+        assert "AI 工程化" in text
 
     @pytest.mark.asyncio
     async def test_read_entry_metadata_resource(self, populated_db):

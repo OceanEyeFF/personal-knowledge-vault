@@ -352,25 +352,25 @@ Storage 层为 MCP Server 提供核心数据访问:
 
 ### 单元测试
 
-```bash
+```powershell
 # 运行存储层测试
-python -m pytest tests/unit/test_storage_*.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\storage-unit -Command @("pytest", "tests/unit", "-k", "store or storage", "-v")
 
 # 测试 Markdown 存储
-python -m pytest tests/unit/test_markdown_store.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\storage-markdown -Command @("pytest", "tests/unit/test_markdown_store.py", "-v")
 
 # 测试 SQLite 存储
-python -m pytest tests/unit/test_sqlite_store.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\storage-sqlite -Command @("pytest", "tests/unit/test_sqlite_store.py", "-v")
 
 # 测试向量存储
-python -m pytest tests/unit/test_vector_store.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\storage-vector -Command @("pytest", "tests/unit/test_vector_store.py", "-v")
 ```
 
 ### 集成测试
 
-```bash
+```powershell
 # 测试三层存储协同
-python -m pytest tests/integration/test_storage_integration.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\storage-integration -Command @("pytest", "tests/integration/test_storage_integration.py", "-v")
 ```
 
 ### 数据一致性测试

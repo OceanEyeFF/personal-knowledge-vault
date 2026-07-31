@@ -1,22 +1,20 @@
 """
-CLI end-to-end integration tests.
+CLI in-process integration tests.
 
 These tests use a temporary SQLite database and Click's CliRunner to exercise
-the CLI as a user would. Network-dependent workflows are intentionally skipped
-by default.
+command wiring without starting an OS subprocess. Subprocess exit codes, stdout,
+stderr, and JSON boundaries are owned by tests/blackbox/test_cli_*.py.
 """
 
 # ruff: noqa: E402 - 该集成测试需先将项目根目录加入 sys.path
 
 from __future__ import annotations
 
-import copy
 import json
-import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, Tuple
 
 import pytest
 import yaml
@@ -40,31 +38,16 @@ def _strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text)
 
 
-def _extract_json_payload(output: str) -> Dict[str, Any]:
-    """Extract a JSON object from CLI output."""
+def _parse_json_payload(output: str) -> Dict[str, Any]:
+    """Parse CLI output as one canonical JSON object."""
     text = output.strip()
     if not text:
         raise AssertionError("CLI output is empty; expected JSON payload")
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise AssertionError(f"CLI output does not contain JSON: {output}")
-    payload = text[start : end + 1]
-    # strict=False 允许 JSON 字符串中含有控制字符（如未转义的换行符）
-    return json.loads(payload, strict=False)
-
-
-def _collect_result_ids(payload: Dict[str, Any]) -> List[int]:
-    """Collect result IDs from a JSON payload in a tolerant way."""
-    ids: List[int] = []
-    results = payload.get("results", [])
-    for item in results:
-        if not isinstance(item, dict):
-            continue
-        for key in ("entry_id", "knowledge_id", "id"):
-            if key in item and isinstance(item[key], int):
-                ids.append(item[key])
-    return ids
+    payload = json.loads(text)
+    assert isinstance(payload, dict), (
+        f"CLI JSON payload must be an object, got {type(payload).__name__}"
+    )
+    return payload
 
 
 def _configure_temp_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
@@ -100,20 +83,6 @@ def _patch_cli_config(monkeypatch: pytest.MonkeyPatch, config: Config) -> None:
     """Force CLI commands to use the provided Config instance."""
     monkeypatch.setattr(commands, "_load_config", lambda: config)
     monkeypatch.setattr(config_module, "get_config", lambda: config)
-
-
-def _load_live_provider_config(config: Config) -> Config:
-    """仅将本机 Provider 配置合并到已完成数据隔离的测试配置。"""
-    provider_source = Config(
-        str(PROJECT_ROOT / "config" / "config.yaml"),
-        str(PROJECT_ROOT / "config" / "local.yaml"),
-    )
-    ai_config = config._config.setdefault("ai", {})
-    for provider_name in ("llm", "embedding"):
-        provider_config = provider_source.get(f"ai.{provider_name}")
-        if isinstance(provider_config, dict):
-            ai_config[provider_name] = copy.deepcopy(provider_config)
-    return config
 
 
 def _seed_entry(
@@ -162,7 +131,7 @@ def temp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return config, sqlite_store, markdown_store, tmp_path
 
 
-def test_search_e2e(
+def test_search_inprocess(
     runner: CliRunner,
     temp_db,
     monkeypatch: pytest.MonkeyPatch,
@@ -196,12 +165,20 @@ def test_search_e2e(
     )
 
     assert result.exit_code == 0, result.output
-    payload = _extract_json_payload(result.output)
-    assert payload.get("total", 0) >= 1
-    assert entry_id in _collect_result_ids(payload)
+    payload = _parse_json_payload(result.output)
+    assert set(payload) == {"query", "strategy", "total", "results"}
+    assert payload["query"] == "python"
+    assert payload["strategy"] == "bm25"
+    assert payload["total"] == len(payload["results"])
+    assert payload["total"] >= 1
+    for item in payload["results"]:
+        assert set(item) == {"entry_id", "title", "snippet", "score", "metadata"}
+        assert isinstance(item["entry_id"], int)
+        assert not isinstance(item["entry_id"], bool)
+    assert entry_id in [item["entry_id"] for item in payload["results"]]
 
 
-def test_show_list_e2e(
+def test_show_list_inprocess(
     runner: CliRunner,
     temp_db,
     monkeypatch: pytest.MonkeyPatch,
@@ -241,7 +218,7 @@ def test_show_list_e2e(
     assert "alpha record" in show_output
 
 
-def test_config_e2e(
+def test_config_inprocess(
     runner: CliRunner,
     temp_db,
     monkeypatch: pytest.MonkeyPatch,
@@ -267,30 +244,3 @@ def test_config_e2e(
     assert local_config_path.exists()
     local_config = yaml.safe_load(local_config_path.read_text(encoding="utf-8"))
     assert local_config["ai"]["llm"]["model"] == "test-model"
-
-
-ARCHIVE_TEST_URL = os.getenv("PKV_E2E_ARCHIVE_URL")
-RUN_LIVE = os.getenv("PKV_RUN_LIVE") == "1"
-
-
-@pytest.mark.network
-@pytest.mark.skipif(
-    not RUN_LIVE or not ARCHIVE_TEST_URL,
-    reason="需要 PKV_RUN_LIVE=1 和 PKV_E2E_ARCHIVE_URL 才运行真实归档测试",
-)
-def test_archive_url_e2e(
-    runner: CliRunner,
-    temp_db,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Optional: archive a real URL end-to-end (requires network/API keys)."""
-    config, _, _, _ = temp_db
-    config = _load_live_provider_config(config)
-    _patch_cli_config(monkeypatch, config)
-
-    result = runner.invoke(
-        commands.cli,
-        ["archive", ARCHIVE_TEST_URL, "--skip-sharpen"],
-    )
-
-    assert result.exit_code == 0, result.output

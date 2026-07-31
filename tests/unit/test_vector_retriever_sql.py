@@ -1,9 +1,4 @@
-"""
-VectorRetriever SQL 语法测试
-
-验证 VectorRetriever 的 SQL 查询是否正确
-（不需要真实的 Embedder 和向量索引）
-"""
+"""VectorRetriever metadata, chunk mapping, and index safety contracts."""
 
 import sys
 from pathlib import Path
@@ -14,86 +9,39 @@ sys.path.insert(0, str(project_root))
 
 import pytest
 import numpy as np
+import src.storage.vector_store as vector_store_module
 from src.storage.markdown_store import MarkdownStore, Entry
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.vector_store import VectorStore
+from src.utils.config import Config
 
 
-def test_vector_retriever_metadata_query():
-    """
-    测试 VectorRetriever._get_metadata() 的 SQL 查询
+@pytest.fixture(autouse=True)
+def isolate_vector_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Config:
+    """Keep VectorStore configuration and every runtime path in pytest temp data."""
+    data_root = tmp_path / "runtime"
+    runtime_paths = {
+        "DATA_DIR": data_root,
+        "DB_PATH": data_root / "db" / "knowledge_vault.db",
+        "VAULT_DIR": data_root / "vault",
+        "VECTOR_DIR": data_root / "vectors",
+        "LOG_DIR": data_root / "logs",
+        "TMP_DIR": data_root / "tmp",
+    }
+    for key, path in runtime_paths.items():
+        monkeypatch.setenv(key, str(path))
 
-    验证：
-    1. SQL 列名使用 'id' 而非 'knowledge_id'
-    2. WHERE 子句使用 'id' 而非 'knowledge_id'
-    3. 元数据能够正确获取
-    """
-    # 创建临时测试环境
-    import tempfile
-
-    temp_dir = Path(tempfile.mkdtemp())
-    db_path = temp_dir / "test.db"
-    vault_dir = temp_dir / "vault"
-    vault_dir.mkdir()
-
-    # 初始化存储
-    md_store = MarkdownStore(vault_dir)
-    sql_store = SQLiteStore(db_path)
-    sql_store.initialize()
-
-    # 创建测试 Entry
-    entry = Entry(
-        title="测试标题",
-        content="# 测试标题\n\n测试内容",
-        abstract="测试摘要",
-        summary_one_sentence="测试一句话摘要",
-        summary_100_words="测试百字摘要",
-        tags=["测试", "单元测试"],
-        keywords="测试,单元测试",
-        source_type="generic",
-        source_url="https://example.com/test",
-    )
-
-    # 保存到数据库
-    file_path = md_store.save(entry)
-    knowledge_id = sql_store.insert_entry(entry, str(file_path))
-
-    # 测试元数据查询（直接执行 SQL，不依赖 VectorRetriever）
-    with sql_store.get_connection() as conn:
-        cursor = conn.execute(
-            """
-            SELECT
-                knowledge_id,
-                title,
-                summary_one_sentence,
-                summary_100_words,
-                source_type,
-                source_url,
-                tags,
-                keywords,
-                file_path,
-                archived_at,
-                updated_at
-            FROM knowledge_items
-            WHERE knowledge_id = ?
-            """,
-            (knowledge_id,),
-        )
-        row = cursor.fetchone()
-
-        # 验证结果
-        assert row is not None, "应该能查询到数据"
-        assert row[0] == knowledge_id, "ID 应该匹配"
-        assert row[1] == entry.title, "标题应该匹配"
-        assert row[2] == entry.summary_one_sentence, "一句话摘要应该匹配"
-        assert row[4] == entry.source_type, "source_type 应该匹配"
-
-    # Cleanup
-    import shutil
-    shutil.rmtree(temp_dir)
+    config = Config(str(project_root / "config" / "config.yaml"))
+    monkeypatch.setattr(vector_store_module, "get_config", lambda: config)
+    return config
 
 
-def test_vector_retriever_get_metadata():
+
+
+def test_vector_retriever_get_metadata(tmp_path: Path):
     """
     测试 VectorRetriever._get_metadata() 方法
 
@@ -102,9 +50,7 @@ def test_vector_retriever_get_metadata():
     2. 返回的字典包含所有必要字段
     """
     # 创建临时测试环境
-    import tempfile
-
-    temp_dir = Path(tempfile.mkdtemp())
+    temp_dir = tmp_path
     db_path = temp_dir / "test.db"
     vault_dir = temp_dir / "vault"
     vector_dir = temp_dir / "vectors"
@@ -155,18 +101,12 @@ def test_vector_retriever_get_metadata():
     assert metadata["source_type"] == entry.source_type, "source_type 应该匹配"
     assert metadata["tags"] == "向量检索,测试", "tags 应该匹配"
 
-    # Cleanup
-    import shutil
-    shutil.rmtree(temp_dir)
-
-
-def test_vector_retriever_search_chunks_returns_chunk_metadata():
+def test_vector_retriever_search_chunks_returns_chunk_metadata(tmp_path: Path):
     """search_chunks should map vector hits back to chunk rows."""
-    import tempfile
     from unittest.mock import Mock
     from src.retrieval.vector_retriever import VectorRetriever
 
-    temp_dir = Path(tempfile.mkdtemp())
+    temp_dir = tmp_path
     db_path = temp_dir / "test.db"
     vault_dir = temp_dir / "vault"
     vector_dir = temp_dir / "vectors"
@@ -208,9 +148,6 @@ def test_vector_retriever_search_chunks_returns_chunk_metadata():
     assert results[0].metadata["chunk_index"] == 0
     assert results[0].metadata["chunk_text"] == "第一段"
     assert results[0].highlight == "第一段"
-
-    import shutil
-    shutil.rmtree(temp_dir)
 
 
 def test_vector_store_rejects_chunk_index_overflow(tmp_path: Path):
