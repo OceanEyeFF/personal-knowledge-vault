@@ -6,8 +6,9 @@
 
 安全契约（禁止生产数据）:
 - 默认根目录为仓库内 ``.data-test/rebuild-dev``，绝不隐式指向 ``.data``。
-- 重建根严格只能是仓库 ``.data-test`` 的专用子目录；``.data``、仓库其他
-  目录、仓库外路径、文件系统根、用户主目录等危险目标一律拒绝，无任何旁路开关。
+- 重建根严格只能位于本次离线入口选定的 ``DATA_DIR`` 内；``.data``、其他
+  测试场景、仓库其他目录、仓库外路径、文件系统根、用户主目录等危险目标
+  一律拒绝，无任何旁路开关。
 - 危险目标拒绝为纯字符串判断，不解析、不 stat 被拒绝的路径。
 - 清理前检查路径上的 junction / 符号链接 / 硬链接，拒绝绕过边界。
 - 迁移始终以 ``auto_backup=False`` 执行（自动备份脚本会读取生产 ``.data``）。
@@ -20,12 +21,10 @@
   或扫描无法完整遍历（权限/IO 错误）立即拒绝（exit 2），扫描本身不跟随
   子项链接。
 
-用法:
-  python scripts/rebuild-dev-vault.py                  # 重建或检查默认根
-  python scripts/rebuild-dev-vault.py --root .data-test/rebuild-dev
-  python scripts/rebuild-dev-vault.py --force          # 受控清理后完整重建
-  python scripts/rebuild-dev-vault.py --check-only     # 仅健康检查，绝不写入
-  python scripts/rebuild-dev-vault.py --json           # 机器可读结果契约
+用法（必须通过 ``scripts/run-test.ps1 -Direct``）:
+  python scripts/rebuild-dev-vault.py --root <DATA_DIR> --json
+  python scripts/rebuild-dev-vault.py --root <DATA_DIR> --force --json
+  python scripts/rebuild-dev-vault.py --root <DATA_DIR> --check-only --json
 
 退出码:
   0  成功（重建 / 本脚本完整生成且结构校验通过的 root 已是最新 / 健康检查通过）
@@ -48,11 +47,20 @@ from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import frontmatter
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from tests.offline_runtime import (  # noqa: E402
+    OFFLINE_SENTINEL,
+    require_offline_runtime_ready,
+)
+
+if __name__ == "__main__":
+    # Fail before third-party or product imports when the script is started naked.
+    require_offline_runtime_ready(process_guarded=True)
+
+import frontmatter  # noqa: E402
 
 from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
 from src.storage.migration_manager import MigrationManager  # noqa: E402
@@ -91,6 +99,11 @@ _MANIFEST_KEYS = (
     "created_at",
 )
 _STANDARD_DIRS = ("db", "vault", "vectors", "logs", "tmp")
+_WRAPPER_SCAFFOLD_DIRS = frozenset((*_STANDARD_DIRS, "reports", "runtime"))
+# The wrapper/Conda launcher keeps live command payloads and batch files here.
+# Removing this directory while the child is running turns a successful rebuild
+# into a launcher failure, so force cleanup preserves its already-scanned contents.
+_RUNTIME_PRESERVED_DIRS = frozenset({"tmp"})
 _REQUIRED_TABLES = {
     "schema_version",
     "knowledge_items",
@@ -224,7 +237,7 @@ def _has_meaningful_content(root: Path) -> bool:
         return False
     try:
         for child in root.iterdir():
-            if child.name not in _STANDARD_DIRS or not child.is_dir():
+            if child.name not in _WRAPPER_SCAFFOLD_DIRS or not child.is_dir():
                 return True
             if any(child.iterdir()):
                 return True
@@ -237,6 +250,7 @@ def resolve_rebuild_root(
     root_arg: str,
     *,
     project_root: Path = PROJECT_ROOT,
+    selected_data_root: Path | None = None,
 ) -> Path:
     """解析并校验重建根目录（危险拒绝为纯字符串判断，不 resolve/stat）。
 
@@ -286,7 +300,17 @@ def resolve_rebuild_root(
         if Path(part).name.casefold() in _TEST_ROOT_NAMES:
             raise RootRejectedError(f"重建根路径不得嵌套测试根目录名: {part}")
 
-    # 4. 仅对候选根执行链接检查与解析后边界复核。
+    # 4. 其他测试场景必须在任何候选路径探测前按纯字符串拒绝。
+    if selected_data_root is not None:
+        selected_lexical = Path(
+            os.path.abspath(os.path.normpath(selected_data_root))
+        )
+        if not _is_relative_to(selected_lexical, test_root):
+            raise RootRejectedError("离线入口 DATA_DIR 不在仓库 .data-test 内")
+        if not _is_relative_to(lexical, selected_lexical):
+            raise RootRejectedError("重建根必须位于当前 Direct Python DATA_DIR")
+
+    # 5. 仅对已通过全部词法边界的候选根执行链接检查与解析后复核。
     link = _has_unsafe_link_on_path(test_root)
     if link is not None:
         raise RootRejectedError(f"测试数据路径不得经过 junction 或符号链接: {link}")
@@ -297,7 +321,21 @@ def resolve_rebuild_root(
     resolved_test_root = test_root.resolve(strict=False)
     if not _is_relative_to(resolved, resolved_test_root):
         raise RootRejectedError("测试数据路径解析后越过仓库 .data-test 边界")
+    if selected_data_root is not None:
+        resolved_selected = selected_lexical.resolve(strict=False)
+        if not _is_relative_to(resolved, resolved_selected):
+            raise RootRejectedError("重建根解析后越过当前 Direct Python DATA_DIR")
     return resolved
+
+
+def _selected_data_root_lexical() -> Path:
+    """Return the launcher-selected DATA_DIR without probing it."""
+    if os.environ.get(OFFLINE_SENTINEL) != "1":
+        raise RootRejectedError("开发重建必须通过离线测试入口执行")
+    selected_value = os.environ.get("DATA_DIR")
+    if not selected_value:
+        raise RootRejectedError("离线测试入口未提供 DATA_DIR")
+    return Path(os.path.abspath(os.path.normpath(selected_value)))
 
 
 def _cleanup_root(
@@ -305,7 +343,7 @@ def _cleanup_root(
     *,
     expected_identity: tuple[int, int, int, int],
 ) -> None:
-    """受控清理：删除根目录内容并重建，不删除根目录本身。"""
+    """受控清理：保留运行时 tmp，删除其余根内容且不删除根本身。"""
     if root.exists():
         _assert_root_identity(root, expected_identity)
         _assert_no_unsafe_links_under(root)
@@ -314,6 +352,10 @@ def _cleanup_root(
                 _assert_root_identity(root, expected_identity)
                 if _is_unsafe_link(child, include_mount=True):
                     raise RootRejectedError(f"清理目标被替换为链接或挂载点: {child}")
+                if child.name.casefold() in _RUNTIME_PRESERVED_DIRS:
+                    if not child.is_dir():
+                        raise RootRejectedError(f"运行时保留路径必须是目录: {child}")
+                    continue
                 if child.is_dir() and not child.is_symlink():
                     shutil.rmtree(child)
                 else:
@@ -1048,13 +1090,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    require_offline_runtime_ready()
     args = _parse_args(argv)
     if args.json:
         _prepare_json_mode()
 
     try:
         _validate_arguments(args)
-        root = resolve_rebuild_root(args.root)
+        root = resolve_rebuild_root(
+            args.root,
+            selected_data_root=_selected_data_root_lexical(),
+        )
         db_path = root / "db" / "knowledge_vault.db"
         root_identity: tuple[int, int, int, int] | None = None
 

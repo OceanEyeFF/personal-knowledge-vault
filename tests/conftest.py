@@ -17,7 +17,9 @@ from tests.offline_runtime import (
     PROJECT_ROOT_SENTINEL,
     RUNTIME_PATH_ENV_KEYS,
     assert_config_runtime_paths,
+    clear_offline_runtime_ready,
     install_offline_network_guard,
+    mark_offline_runtime_ready,
     scrub_child_process_env,
     validate_test_runtime_paths,
 )
@@ -120,6 +122,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
     install_offline_network_guard(block_raw_sockets=False)
     _install_base_only_config()
+    mark_offline_runtime_ready(process_guarded=False)
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
@@ -133,6 +136,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         _OFFLINE_CONFIG = None
         _PREVIOUS_CONFIG = None
         _OFFLINE_CONFIG_INSTALLED = False
+    clear_offline_runtime_ready()
     for key, (existed, value) in _SCRUBBED_PARENT_ENV.items():
         if existed and value is not None:
             os.environ[key] = value

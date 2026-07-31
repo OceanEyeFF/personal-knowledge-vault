@@ -14,11 +14,15 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
-import yaml
+from tests.offline_runtime import require_offline_runtime_ready
 
-from .safety import reject_production_path, require_path_within
-from .scenario import OfflineMcpScenario
-from .scorer import (
+require_offline_runtime_ready()
+
+import yaml  # noqa: E402
+
+from .safety import reject_production_path, require_path_within  # noqa: E402
+from .scenario import OfflineMcpScenario  # noqa: E402
+from .scorer import (  # noqa: E402
     SUPPORTED_ASSERTION_OPERATORS,
     CheckResult,
     TaskScore,
@@ -40,6 +44,48 @@ REQUIRED_TARGET_DIMENSIONS = frozenset(
         "degradation",
     }
 )
+
+
+def _runtime_isolated_roots() -> list[Path]:
+    roots = [
+        Path(raw)
+        for raw in (os.environ.get("DATA_DIR", ""), os.environ.get("TMP_DIR", ""))
+        if raw
+    ]
+    if not roots:
+        raise RuntimeError(
+            "DATA_DIR/TMP_DIR 未设置；请通过 scripts/run-test.ps1 运行离线评测"
+        )
+    return roots
+
+
+def _same_lexical_path(left: Path, right: Path) -> bool:
+    left_key = os.path.normcase(os.path.abspath(os.path.normpath(left)))
+    right_key = os.path.normcase(os.path.abspath(os.path.normpath(right)))
+    return left_key == right_key
+
+
+def _require_isolated_input_path(
+    path: Path,
+    *,
+    default_path: Path,
+    purpose: str,
+) -> Path:
+    """Allow the fixed tracked asset or a custom fixture under runtime roots."""
+
+    if _same_lexical_path(path, default_path):
+        return require_path_within(
+            default_path,
+            allowed_roots=[default_path.parent],
+            purpose=purpose,
+        )
+    return require_path_within(
+        path,
+        allowed_roots=_runtime_isolated_roots(),
+        purpose=purpose,
+    )
+
+
 ASSERTIONS_WITH_EXPECTED_VALUE = frozenset(
     {
         "contains",
@@ -152,16 +198,19 @@ async def run_evaluation(
 ) -> EvaluationReport:
     """Execute the fixed task set against an isolated MCP scenario."""
 
-    safe_work_dir = reject_production_path(
+    safe_work_dir = require_path_within(
         work_dir,
+        allowed_roots=_runtime_isolated_roots(),
         purpose="离线 MCP 评测工作目录",
     )
-    safe_taskset_path = reject_production_path(
+    safe_taskset_path = _require_isolated_input_path(
         taskset_path,
+        default_path=DEFAULT_TASKSET,
         purpose="MCP 评测任务集",
     )
-    safe_proposals_path = reject_production_path(
+    safe_proposals_path = _require_isolated_input_path(
         proposals_path,
+        default_path=DEFAULT_PROPOSALS,
         purpose="MCP 评测 proposals",
     )
 
@@ -601,12 +650,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    taskset_path = reject_production_path(
+    taskset_path = _require_isolated_input_path(
         args.taskset,
+        default_path=DEFAULT_TASKSET,
         purpose="MCP 评测任务集",
     )
-    proposals_path = reject_production_path(
+    proposals_path = _require_isolated_input_path(
         args.proposals,
+        default_path=DEFAULT_PROPOSALS,
         purpose="MCP 评测 proposals",
     )
     output = (
@@ -638,14 +689,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _require_isolated_output_path(output: Path) -> Path:
-    allowed_roots = [
-        Path(raw)
-        for raw in (os.environ.get("DATA_DIR", ""), os.environ.get("TMP_DIR", ""))
-        if raw
-    ]
     return require_path_within(
         output,
-        allowed_roots=allowed_roots,
+        allowed_roots=_runtime_isolated_roots(),
         purpose="MCP 评测 JSON 输出",
     )
 

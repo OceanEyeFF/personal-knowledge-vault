@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""
+r"""
 Generate a reproducible test SQLite database for MCP tests.
 
 Usage examples:
-  python scripts/setup-test-db.py --count 20
-  python scripts/setup-test-db.py --seed 42 --count 50 --output /tmp/test.db --allow-outside-test-root
-  python scripts/setup-test-db.py --count 30 --wechat-count 5 --zhihu-count 10
+  .\scripts\run-test.ps1 -Direct -DataRoot .data-test\seed -Command `
+    @("python", "scripts/setup-test-db.py", "--seed", "42", "--count", "20")
 """
 
 from __future__ import annotations
@@ -22,13 +21,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List
 
-from bs4 import BeautifulSoup
-import frontmatter
-
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from tests.offline_runtime import require_offline_runtime_ready  # noqa: E402
+
+require_offline_runtime_ready(process_guarded=True)
+
+from bs4 import BeautifulSoup  # noqa: E402
+import frontmatter  # noqa: E402
 
 from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
 from src.storage.sqlite_store import SQLiteStore  # noqa: E402
@@ -87,7 +89,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=str,
-        default=".data-test/db/knowledge_vault.db",
+        default=os.environ["DB_PATH"],
         help="Output database path.",
     )
     parser.add_argument("--wechat-count", type=int, default=3, help="Wechat entries count.")
@@ -102,14 +104,6 @@ def _parse_args() -> argparse.Namespace:
             "is accessed."
         ),
     )
-    parser.add_argument(
-        "--allow-outside-test-root",
-        action="store_true",
-        help=(
-            "Allow an output outside the repository .data-test directory. "
-            "Repository paths outside .data-test remain forbidden."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -121,18 +115,44 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     return True
 
 
+def _resolve_selected_data_root() -> Path:
+    """Return the attested DataRoot after containment and no-link checks."""
+
+    lexical_test_root = PROJECT_ROOT / ".data-test"
+    lexical_data_root = Path(
+        os.path.abspath(os.path.normpath(os.environ["DATA_DIR"]))
+    )
+    if not _is_relative_to(lexical_data_root, lexical_test_root):
+        raise ValueError("Direct Python DATA_DIR 必须位于仓库 .data-test")
+
+    current = lexical_test_root
+    relative = lexical_data_root.relative_to(lexical_test_root)
+    for part in (Path(), *relative.parts):
+        if part != Path():
+            current /= part
+        if _is_unsafe_link(current):
+            raise ValueError(f"测试数据路径不得经过符号链接或 junction: {current}")
+
+    resolved_test_root = lexical_test_root.resolve(strict=False)
+    resolved_data_root = lexical_data_root.resolve(strict=False)
+    if not _is_relative_to(resolved_data_root, resolved_test_root):
+        raise ValueError("Direct Python DATA_DIR 解析后越过仓库 .data-test")
+    return resolved_data_root
+
+
 def _resolve_output_path(
     path_str: str,
-    *,
-    allow_outside_test_root: bool,
-) -> tuple[Path, bool]:
-    """Resolve output and enforce the non-production test-data boundary."""
+) -> Path:
+    """Resolve output and enforce the selected Direct Python DATA_DIR."""
     path = Path(path_str).expanduser()
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     lexical_path = Path(os.path.abspath(path))
-    project_root = PROJECT_ROOT.resolve()
     lexical_test_root = PROJECT_ROOT / ".data-test"
+    lexical_data_root = _resolve_selected_data_root()
+
+    if not _is_relative_to(lexical_path, lexical_data_root):
+        raise ValueError("测试数据库必须位于当前 Direct Python DATA_DIR")
 
     if _is_relative_to(lexical_path, lexical_test_root):
         current = lexical_test_root
@@ -149,26 +169,44 @@ def _resolve_output_path(
         test_root = lexical_test_root.resolve(strict=False)
         if not _is_relative_to(resolved, test_root):
             raise ValueError("测试数据路径解析后越过仓库 .data-test 边界")
-        return resolved, True
-    if _is_relative_to(lexical_path, project_root):
-        raise ValueError(
-            "仓库内测试数据库只能写入 .data-test；禁止覆盖 .data 或其他项目文件"
-        )
-    resolved = lexical_path.resolve(strict=False)
-    if _is_relative_to(resolved, project_root):
-        raise ValueError("外部输出路径不得通过链接指向仓库内部")
-    if not allow_outside_test_root:
-        raise ValueError(
-            "输出路径必须位于仓库 .data-test；外部临时目录需显式传入 "
-            "--allow-outside-test-root"
-        )
-    return resolved, False
+        data_root = lexical_data_root.resolve(strict=False)
+        if not _is_relative_to(resolved, data_root):
+            raise ValueError("测试数据库解析后越过当前 Direct Python DATA_DIR")
+        return resolved
+    raise AssertionError("validated output path did not resolve under .data-test")
 
 
-def _derive_base_dir(db_path: Path) -> Path:
-    if db_path.parent.name == "db":
-        return db_path.parent.parent
-    return db_path.parent
+def _resolve_managed_directory(path: Path, *, data_root: Path) -> Path:
+    """Keep every derived cleanup target inside the selected DataRoot."""
+
+    lexical = Path(os.path.abspath(os.path.normpath(path)))
+    if not _is_relative_to(lexical, data_root):
+        raise ValueError("派生测试目录必须位于当前 Direct Python DATA_DIR")
+
+    current = data_root
+    for part in lexical.relative_to(data_root).parts:
+        current /= part
+        if _is_unsafe_link(current):
+            raise ValueError(f"测试数据路径不得经过符号链接或 junction: {current}")
+
+    resolved = lexical.resolve(strict=False)
+    if not _is_relative_to(resolved, data_root):
+        raise ValueError("派生测试目录解析后越过当前 Direct Python DATA_DIR")
+    return resolved
+
+
+def _derive_managed_dirs(db_path: Path) -> tuple[Path, Path]:
+    """Derive vault/vector roots without escaping a DataRoot named ``db``."""
+
+    data_root = _resolve_selected_data_root()
+    if db_path.parent.name.casefold() == "db" and db_path.parent != data_root:
+        base_candidate = db_path.parent.parent
+    else:
+        base_candidate = db_path.parent
+    base_dir = _resolve_managed_directory(base_candidate, data_root=data_root)
+    vault_dir = _resolve_managed_directory(base_dir / "vault", data_root=data_root)
+    vector_dir = _resolve_managed_directory(base_dir / "vectors", data_root=data_root)
+    return vault_dir, vector_dir
 
 
 def _is_unsafe_link(path: Path) -> bool:
@@ -187,8 +225,6 @@ def _safe_prepare_dirs(
     db_path: Path,
     vault_dir: Path,
     vector_dir: Path,
-    *,
-    managed_test_root: bool,
 ) -> None:
     for target in (vault_dir, vector_dir):
         if target.exists():
@@ -197,21 +233,24 @@ def _safe_prepare_dirs(
             for child in target.rglob("*"):
                 if _is_unsafe_link(child):
                     raise ValueError(f"拒绝清理包含链接的测试目录: {child}")
-            if managed_test_root:
-                continue
-            elif any(target.iterdir()):
-                raise ValueError(
-                    "外部测试目录已存在且非空，拒绝递归清理；"
-                    "请改用新的空目录或仓库 .data-test"
-                )
+    database_artifacts = [
+        db_path,
+        *(Path(f"{db_path}{suffix}") for suffix in ("-journal", "-wal", "-shm")),
+    ]
+    existing_artifacts: list[Path] = []
+    for artifact in database_artifacts:
+        if not os.path.lexists(artifact):
+            continue
+        artifact_stat = os.lstat(artifact)
+        if _is_unsafe_link(artifact) or not stat.S_ISREG(artifact_stat.st_mode):
+            raise ValueError(f"拒绝覆盖链接或非普通文件形式的测试数据库: {artifact}")
+        existing_artifacts.append(artifact)
 
-    if db_path.exists():
-        if _is_unsafe_link(db_path):
-            raise ValueError(f"拒绝覆盖链接形式的测试数据库: {db_path}")
-        db_path.unlink()
+    for artifact in existing_artifacts:
+        artifact.unlink()
 
     for target in (vault_dir, vector_dir):
-        if target.exists() and managed_test_root:
+        if target.exists():
             shutil.rmtree(target)
         if not target.exists():
             target.mkdir(parents=True, exist_ok=True)
@@ -452,7 +491,6 @@ def build_database(
     wechat_count: int,
     zhihu_count: int,
     embedding_dim: int | None = None,
-    allow_outside_test_root: bool = False,
 ) -> Path:
     if count <= 0:
         raise ValueError("count 必须大于 0")
@@ -465,19 +503,13 @@ def build_database(
 
     rng = random.Random(seed)
 
-    db_path, managed_test_root = _resolve_output_path(
-        str(output),
-        allow_outside_test_root=allow_outside_test_root,
-    )
-    base_dir = _derive_base_dir(db_path)
-    vault_dir = base_dir / "vault"
-    vector_dir = base_dir / "vectors"
+    db_path = _resolve_output_path(str(output))
+    vault_dir, vector_dir = _derive_managed_dirs(db_path)
 
     _safe_prepare_dirs(
         db_path,
         vault_dir,
         vector_dir,
-        managed_test_root=managed_test_root,
     )
 
     store = SQLiteStore(db_path)
@@ -538,7 +570,6 @@ def main() -> int:
             wechat_count=args.wechat_count,
             zhihu_count=args.zhihu_count,
             embedding_dim=args.embedding_dim,
-            allow_outside_test_root=args.allow_outside_test_root,
         )
     except Exception as exc:
         print(f"[error] {exc}")

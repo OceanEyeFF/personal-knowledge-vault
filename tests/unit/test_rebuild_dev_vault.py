@@ -37,6 +37,8 @@ from pathlib import Path
 import frontmatter
 import pytest
 
+from tests.offline_runtime import RUNTIME_PATH_ENV_KEYS, prepare_offline_child_env
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # 仅字符串构造，绝不用于任何文件系统访问。
 _REPO_DATA_PREFIX = os.path.normcase(str(PROJECT_ROOT / ".data"))
@@ -55,10 +57,22 @@ def _load_script_module():
 
 
 def _run_script(args: list[str]) -> subprocess.CompletedProcess[str]:
-    cmd = [sys.executable, "scripts/rebuild-dev-vault.py", *args]
+    runtime = {key: os.environ[key] for key in RUNTIME_PATH_ENV_KEYS}
+    env = prepare_offline_child_env(
+        project_root=PROJECT_ROOT,
+        runtime_overrides=runtime,
+    )
+    cmd = [
+        sys.executable,
+        "tests/offline_entrypoint.py",
+        "python",
+        "scripts/rebuild-dev-vault.py",
+        *args,
+    ]
     return subprocess.run(
         cmd,
         cwd=PROJECT_ROOT,
+        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -93,7 +107,7 @@ def _assert_not_production_path(path: str) -> None:
 @pytest.fixture
 def managed_root() -> Iterator[Path]:
     """仓库 .data-test 下的受控临时根；测试后清理（先校验链接）。"""
-    root = PROJECT_ROOT / ".data-test" / f"rebuild-test-{uuid.uuid4().hex[:12]}"
+    root = Path(os.environ["DATA_DIR"]) / f"rebuild-test-{uuid.uuid4().hex[:12]}"
     yield root
     if root.exists():
         stack = [root]
@@ -174,13 +188,16 @@ class TestRootRejection:
         with pytest.raises(module.RootRejectedError):
             module.resolve_rebuild_root(str(Path.home()))
 
-    def test_reject_outside_repo_always(self, tmp_path: Path) -> None:
+    def test_reject_outside_repo_always(self) -> None:
         """仓库外路径一律拒绝（无任何旁路开关）。"""
         module = _load_script_module()
+        outside = PROJECT_ROOT.parent / f"pkv-rebuild-outside-{uuid.uuid4().hex}"
+        assert not outside.exists()
         with pytest.raises(module.RootRejectedError):
-            module.resolve_rebuild_root(str(tmp_path))
+            module.resolve_rebuild_root(str(outside))
         with pytest.raises(module.RootRejectedError):
-            module.resolve_rebuild_root(str(tmp_path / "sub"))
+            module.resolve_rebuild_root(str(outside / "sub"))
+        assert not outside.exists()
 
     def test_reject_nested_test_root_and_data_components(self) -> None:
         module = _load_script_module()
@@ -210,6 +227,28 @@ class TestRootRejection:
         ):
             with pytest.raises(module.RootRejectedError):
                 module.resolve_rebuild_root(bad)
+
+    def test_sibling_data_root_rejected_without_filesystem_probe(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        module = _load_script_module()
+        selected = PROJECT_ROOT / ".data-test" / "selected-sentinel"
+        sibling = PROJECT_ROOT / ".data-test" / "sibling-sentinel"
+
+        def boom(*args, **kwargs):
+            raise AssertionError("其他测试场景必须在文件系统探测前拒绝")
+
+        monkeypatch.setattr(Path, "resolve", boom)
+        monkeypatch.setattr(Path, "exists", boom)
+        monkeypatch.setattr(Path, "stat", boom)
+        monkeypatch.setattr(os, "lstat", boom)
+
+        with pytest.raises(module.RootRejectedError, match="当前 Direct Python DATA_DIR"):
+            module.resolve_rebuild_root(
+                str(sibling),
+                selected_data_root=selected,
+            )
 
     def test_reject_symlink_under_test_root(self, tmp_path: Path) -> None:
         module = _load_script_module()
@@ -332,6 +371,26 @@ def test_force_rebuilds_incomplete_root(managed_root: Path) -> None:
     assert manifest["schema_version"] == "1.2.3"
 
 
+def test_force_cleanup_preserves_active_runtime_tmp(managed_root: Path) -> None:
+    module = _load_script_module()
+    managed_root.mkdir(parents=True)
+    runtime_tmp = managed_root / "tmp"
+    runtime_tmp.mkdir()
+    command_payload = runtime_tmp / "pkv-command-active.json"
+    command_payload.write_text("[]", encoding="utf-8")
+    stale = managed_root / "stale"
+    stale.mkdir()
+    (stale / "sentinel.txt").write_text("remove", encoding="utf-8")
+
+    module._cleanup_root(
+        managed_root,
+        expected_identity=module._capture_root_identity(managed_root),
+    )
+
+    assert command_payload.read_text(encoding="utf-8") == "[]"
+    assert not stale.exists()
+
+
 def test_invalid_count_is_rejected_before_force_cleanup(managed_root: Path) -> None:
     root = _make_sentinel_root(managed_root)
     result = _run_script(
@@ -346,7 +405,15 @@ def test_invalid_count_is_rejected_before_force_cleanup(managed_root: Path) -> N
 
 
 def test_empty_standard_scaffold_is_valid_first_run(managed_root: Path) -> None:
-    for dirname in ("db", "vault", "vectors", "logs", "tmp"):
+    for dirname in (
+        "db",
+        "vault",
+        "vectors",
+        "logs",
+        "tmp",
+        "reports",
+        "runtime",
+    ):
         (managed_root / dirname).mkdir(parents=True, exist_ok=True)
     result = _run_script(["--root", str(managed_root), "--count", "2", "--json"])
     assert result.returncode == 0, result.stdout + result.stderr
@@ -782,21 +849,21 @@ class TestUnsafeInternalLinks:
         def raise_oserror(*args, **kwargs):
             raise OSError("模拟扫描权限/IO 错误")
 
-        monkeypatch.setattr(os, "scandir", raise_oserror)
-
         def boom(*args, **kwargs):
             raise AssertionError("扫描失败后不得读取 manifest/数据库")
 
-        monkeypatch.setattr(module, "_load_manifest", boom)
-        monkeypatch.setattr(module, "_health_report", boom)
-        monkeypatch.setattr(module, "_validate_rebuilt_root", boom)
-        monkeypatch.setattr(module.MigrationManager, "get_current_version", boom)
-        monkeypatch.setattr(module.MigrationManager, "get_pending_migrations", boom)
-        monkeypatch.setattr(module, "SQLiteStore", boom)
+        with monkeypatch.context() as guard:
+            guard.setattr(os, "scandir", raise_oserror)
+            guard.setattr(module, "_load_manifest", boom)
+            guard.setattr(module, "_health_report", boom)
+            guard.setattr(module, "_validate_rebuilt_root", boom)
+            guard.setattr(module.MigrationManager, "get_current_version", boom)
+            guard.setattr(module.MigrationManager, "get_pending_migrations", boom)
+            guard.setattr(module, "SQLiteStore", boom)
 
-        # check-only 与非 force 两条路径都必须拒绝（exit 2）
-        assert module.main(["--root", str(managed_root), "--check-only"]) == 2
-        assert module.main(["--root", str(managed_root)]) == 2
+            # check-only 与非 force 两条路径都必须拒绝（exit 2）
+            assert module.main(["--root", str(managed_root), "--check-only"]) == 2
+            assert module.main(["--root", str(managed_root)]) == 2
 
     def test_scan_is_dir_failure_fails_closed(
         self, managed_root: Path, monkeypatch
@@ -816,9 +883,10 @@ class TestUnsafeInternalLinks:
         def _fake_scandir(root: Path):
             yield [_FakeEntry(str(root / "db"))]
 
-        monkeypatch.setattr(os, "scandir", _fake_scandir)
-        with pytest.raises(module.RootRejectedError):
-            module._find_unsafe_link_under(managed_root)
+        with monkeypatch.context() as guard:
+            guard.setattr(os, "scandir", _fake_scandir)
+            with pytest.raises(module.RootRejectedError):
+                module._find_unsafe_link_under(managed_root)
 
 
 # ============================================================
@@ -1020,7 +1088,7 @@ def test_resolution_never_touches_production_data_path(
         _assert_not_production_path(touched_path)
 
 
-def test_dangerous_root_rejected_in_subprocess(tmp_path: Path) -> None:
+def test_dangerous_root_rejected_in_subprocess() -> None:
     # .data → exit 2（纯字符串拒绝）
     result = _run_script(["--root", ".data", "--json"])
     assert result.returncode == 2
@@ -1032,11 +1100,17 @@ def test_dangerous_root_rejected_in_subprocess(tmp_path: Path) -> None:
     result = _run_script(["--root", "src", "--json"])
     assert result.returncode == 2
 
-    # 仓库外（外部 tmp_path）→ exit 2
-    result = _run_script(["--root", str(tmp_path)])
+    # selected DATA_DIR 的 sibling → exit 2；回归产物也只可能落在 .data-test。
+    sibling = (
+        Path(os.environ["DATA_DIR"]).parent
+        / f"rebuild-sibling-reject-{uuid.uuid4().hex}"
+    )
+    assert not sibling.exists()
+    result = _run_script(["--root", str(sibling)])
     assert result.returncode == 2
-    assert "仓库外" in result.stderr
+    assert "当前 Direct Python DATA_DIR" in result.stderr
+    assert not sibling.exists()
 
     # 已移除的旁路开关必须被 CLI 拒绝（未知参数 → exit 2）
-    result = _run_script(["--root", str(tmp_path), "--allow-outside-repo"])
+    result = _run_script(["--root", str(sibling), "--allow-outside-repo"])
     assert result.returncode == 2

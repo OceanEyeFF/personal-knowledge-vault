@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import socket
+import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,9 +19,14 @@ from tests.offline_runtime import (
     OFFLINE_SENTINEL,
     PROJECT_ROOT_SENTINEL,
     OfflineNetworkError,
+    OfflineProcessError,
+    clear_offline_runtime_ready,
     install_offline_network_guard,
+    install_offline_process_guard,
+    mark_offline_runtime_ready,
     prepare_live_child_env,
     prepare_offline_child_env,
+    require_offline_runtime_ready,
     validate_test_runtime_paths,
 )
 
@@ -259,6 +266,72 @@ def test_entrypoint_rejects_unknown_target_before_config_install(
     install_config.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("target", "arguments"),
+    [
+        ("python", ["scripts/setup-test-db.py"]),
+        ("pytest", ["tests/unit"]),
+    ],
+)
+def test_generic_entrypoint_rejects_live_mode_before_product_config(
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    arguments: list[str],
+) -> None:
+    install_config = MagicMock(side_effect=AssertionError("must not install config"))
+    monkeypatch.setattr(offline_entrypoint, "_validate_child_environment", lambda: None)
+    monkeypatch.setattr(offline_entrypoint, "_install_test_config", install_config)
+    monkeypatch.setenv("PKV_RUN_LIVE", "1")
+    monkeypatch.setenv(OFFLINE_SENTINEL, "0")
+    monkeypatch.setenv(LOAD_LOCAL_SENTINEL, "1")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(offline_entrypoint.__file__),
+            target,
+            *arguments,
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="only in offline mode"):
+        offline_entrypoint.main()
+    install_config.assert_not_called()
+
+
+def test_pytest_entrypoint_preserves_real_config_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_factory = MagicMock(name="validated_config_factory")
+    bind_factory = MagicMock(
+        side_effect=AssertionError("pytest must retain the real Config class")
+    )
+    run_pytest = MagicMock(side_effect=SystemExit(0))
+
+    monkeypatch.setattr(offline_entrypoint, "_validate_child_environment", lambda: None)
+    monkeypatch.setattr(offline_entrypoint, "_live_mode_enabled", lambda: False)
+    monkeypatch.setattr(offline_entrypoint, "scrub_child_process_env", lambda _env: None)
+    monkeypatch.setattr(offline_entrypoint, "install_offline_network_guard", lambda **_kwargs: None)
+    monkeypatch.setattr(offline_entrypoint, "_install_test_config", lambda **_kwargs: config_factory)
+    monkeypatch.setattr(offline_entrypoint, "_bind_test_config_factory", bind_factory)
+    monkeypatch.setattr(offline_entrypoint, "mark_offline_runtime_ready", lambda **_kwargs: None)
+    monkeypatch.setattr(offline_entrypoint, "_run_pytest", run_pytest)
+    for key in offline_entrypoint.LIVE_ENV_KEYS:
+        monkeypatch.setenv(key, "parent-sentinel")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(offline_entrypoint.__file__), "pytest", "tests/unit"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        offline_entrypoint.main()
+
+    assert exc_info.value.code == 0
+    bind_factory.assert_not_called()
+    run_pytest.assert_called_once_with()
+
+
 def test_entrypoint_base_config_does_not_load_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -285,6 +358,287 @@ def test_entrypoint_base_config_does_not_load_local(
     assert config_module._config_instance is config
     assert installed_factory() is config
     factory.assert_called_once()
+
+
+def test_entrypoint_binds_direct_config_imports_to_validated_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.utils import config as config_module
+
+    factory = MagicMock(name="validated_config_factory")
+    monkeypatch.setattr(config_module, "Config", MagicMock(name="original_config"))
+
+    offline_entrypoint._bind_test_config_factory(factory)
+
+    assert config_module.Config is factory
+
+
+def test_direct_python_module_forwards_arguments_without_new_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_module = MagicMock()
+    monkeypatch.setattr(offline_entrypoint.runpy, "run_module", run_module)
+    monkeypatch.setattr(sys, "argv", ["pytest-sentinel"])
+
+    offline_entrypoint._run_python(
+        ["-m", "src.utils.verify_setup", "--flag", "value"]
+    )
+
+    assert sys.argv == ["src.utils.verify_setup", "--flag", "value"]
+    run_module.assert_called_once_with(
+        "src.utils.verify_setup",
+        run_name="__main__",
+        alter_sys=True,
+    )
+
+
+def test_direct_module_validation_matches_package_precedence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_script = tmp_path / "collision.py"
+    package = tmp_path / "collision"
+    package.mkdir()
+    module_script.write_text("raise AssertionError('wrong target')\n", encoding="utf-8")
+    package_init = package / "__init__.py"
+    package_main = package / "__main__.py"
+    package_init.write_text("", encoding="utf-8")
+    package_main.write_text("", encoding="utf-8")
+    validate_script = MagicMock(side_effect=lambda value: Path(value))
+    monkeypatch.setattr(offline_entrypoint, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        offline_entrypoint,
+        "_try_validated_direct_script",
+        validate_script,
+    )
+
+    assert offline_entrypoint._validated_direct_module("collision") == "collision"
+    assert [Path(item.args[0]) for item in validate_script.call_args_list] == [
+        package_init,
+        package_main,
+    ]
+
+
+def test_direct_module_does_not_fall_back_when_package_has_no_main(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_script = tmp_path / "collision.py"
+    package = tmp_path / "collision"
+    package.mkdir()
+    module_script.write_text("", encoding="utf-8")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(offline_entrypoint, "PROJECT_ROOT", tmp_path)
+
+    with pytest.raises(SystemExit, match="repository target"):
+        offline_entrypoint._validated_direct_module("collision")
+
+
+@pytest.mark.parametrize("as_module", [False, True])
+def test_direct_target_rejects_reparse_component_before_resolve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    as_module: bool,
+) -> None:
+    project_root = tmp_path / "project"
+    scripts = project_root / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "__init__.py").write_text("", encoding="utf-8")
+    link = scripts / "linked"
+    candidate = link / ("__init__.py" if as_module else "probe.py")
+    real_lstat = os.lstat
+    real_resolve = Path.resolve
+    reparse_stat = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o755,
+        st_file_attributes=0x400,
+        st_nlink=1,
+    )
+
+    def guarded_lstat(value):
+        if Path(value) == link:
+            return reparse_stat
+        if Path(value) == candidate:
+            raise AssertionError("child behind reparse point must not be probed")
+        return real_lstat(value)
+
+    def guarded_resolve(path: Path, *args, **kwargs):
+        if path == candidate or link in path.parents:
+            raise AssertionError("rejected Direct target must not be resolved")
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(offline_entrypoint, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(offline_entrypoint.os, "lstat", guarded_lstat)
+    monkeypatch.setattr(Path, "resolve", guarded_resolve)
+
+    with pytest.raises(SystemExit, match="symlink or reparse point"):
+        if as_module:
+            offline_entrypoint._validated_direct_module("scripts.linked.probe")
+        else:
+            offline_entrypoint._validated_direct_script(str(candidate))
+
+
+def test_direct_script_rechecks_prohibited_root_after_resolve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    candidate = project_root / "scripts" / "alias.py"
+    protected = project_root / ".data" / "private.py"
+    candidate.parent.mkdir(parents=True)
+    protected.parent.mkdir(parents=True)
+    candidate.write_text("", encoding="utf-8")
+    protected.write_text("", encoding="utf-8")
+    real_resolve = Path.resolve
+    real_is_file = Path.is_file
+
+    def redirected_resolve(path: Path, *args, **kwargs):
+        if path == candidate:
+            return protected
+        return real_resolve(path, *args, **kwargs)
+
+    def guarded_is_file(path: Path) -> bool:
+        if path == protected:
+            raise AssertionError("prohibited resolved target must not be probed")
+        return real_is_file(path)
+
+    monkeypatch.setattr(offline_entrypoint, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(Path, "resolve", redirected_resolve)
+    monkeypatch.setattr(Path, "is_file", guarded_is_file)
+
+    with pytest.raises(SystemExit, match="prohibited project root"):
+        offline_entrypoint._validated_direct_script(str(candidate))
+
+
+def test_direct_script_rejects_hardlink_to_prohibited_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    protected = project_root / "config" / "private.py"
+    candidate = project_root / "scripts" / "alias.py"
+    protected.parent.mkdir(parents=True)
+    candidate.parent.mkdir(parents=True)
+    protected.write_text("raise AssertionError('must not execute')\n", encoding="utf-8")
+    try:
+        os.link(protected, candidate)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+    monkeypatch.setattr(offline_entrypoint, "PROJECT_ROOT", project_root)
+
+    with pytest.raises(SystemExit, match="hard-linked"):
+        offline_entrypoint._validated_direct_script(str(candidate))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["src", "--collect-only"],
+        ["@outside-args.txt"],
+        ["tests/unit", "--cov-report=xml:outside.xml"],
+        ["tests/unit", "-p", "unsafe_plugin"],
+    ],
+)
+def test_pytest_validator_rejects_collection_or_output_escape(
+    arguments: list[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        offline_entrypoint._validate_pytest_arguments(arguments)
+
+
+def test_pytest_validator_accepts_repository_suite_and_terminal_coverage() -> None:
+    offline_entrypoint._validate_pytest_arguments(
+        [
+            "tests/unit/test_offline_runtime.py",
+            "-k",
+            "offline",
+            "-m",
+            "not network and not manual",
+            "--cov=src.mcp",
+            "--cov-report=term-missing",
+            "--cov-fail-under=95",
+            f"--basetemp={Path(os.environ['TMP_DIR']) / 'pytest'}",
+            "-o",
+            f"cache_dir={Path(os.environ['TMP_DIR']) / 'pytest-cache'}",
+        ]
+    )
+
+
+def test_direct_module_execution_prefers_validated_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    shadow_root = tmp_path / "shadow"
+    for root, marker in ((project_root, "validated"), (shadow_root, "shadow")):
+        package = root / "collision"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "__main__.py").write_text(f"MARKER = {marker!r}\n", encoding="utf-8")
+    run_module = MagicMock()
+    monkeypatch.setattr(offline_entrypoint, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(offline_entrypoint.runpy, "run_module", run_module)
+    monkeypatch.setattr(sys, "path", [str(shadow_root), str(project_root)])
+    monkeypatch.setattr(sys, "argv", ["pytest-sentinel"])
+
+    offline_entrypoint._run_python(["-m", "collision"])
+
+    assert Path(sys.path[0]).resolve() == project_root.resolve()
+    run_module.assert_called_once_with(
+        "collision",
+        run_name="__main__",
+        alter_sys=True,
+    )
+
+
+def test_direct_script_execution_prefers_validated_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    shadow_root = tmp_path / "shadow"
+    script = project_root / "scripts" / "probe.py"
+    script.parent.mkdir(parents=True)
+    shadow_root.mkdir()
+    script.write_text("", encoding="utf-8")
+    run_path = MagicMock()
+    monkeypatch.setattr(offline_entrypoint, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(offline_entrypoint.runpy, "run_path", run_path)
+    monkeypatch.setattr(sys, "path", [str(shadow_root), str(project_root)])
+    monkeypatch.setattr(sys, "argv", ["pytest-sentinel"])
+
+    offline_entrypoint._run_python([str(script), "--flag"])
+
+    assert Path(sys.path[0]).resolve() == project_root.resolve()
+    run_path.assert_called_once_with(str(script.resolve()), run_name="__main__")
+
+
+def test_direct_python_rejects_outside_script_before_resolve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outside = tmp_path / "outside-direct.py"
+    real_resolve = Path.resolve
+
+    def guarded_resolve(path: Path, *args, **kwargs):
+        if path == outside:
+            raise AssertionError("outside direct target must not be resolved")
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", guarded_resolve)
+
+    with pytest.raises(SystemExit, match="repository target"):
+        offline_entrypoint._validated_direct_script(str(outside))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [[], ["-m"], ["-c"], ["-I", "-c", "pass"]],
+)
+def test_direct_python_rejects_incomplete_or_unsupported_invocations(
+    arguments: list[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        offline_entrypoint._run_python(arguments)
 
 
 def test_pytest_session_uses_base_only_config_for_processor_construction(
@@ -380,6 +734,86 @@ def test_network_guard_allows_internal_socketpair_but_blocks_raw_external_ip(
     left, right = socket.socketpair()
     left.close()
     right.close()
+
+
+def test_direct_process_guard_and_runtime_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_offline_runtime_ready()
+    with pytest.raises(RuntimeError, match="offline target"):
+        require_offline_runtime_ready()
+
+    install_offline_network_guard(monkeypatch.setattr, block_raw_sockets=False)
+    install_offline_process_guard(monkeypatch.setattr)
+    mark_offline_runtime_ready(process_guarded=True)
+    require_offline_runtime_ready(process_guarded=True)
+
+    with pytest.raises(OfflineProcessError, match="child-process creation"):
+        subprocess.Popen.__init__(object())
+    with pytest.raises(OfflineProcessError, match="child-process creation"):
+        os.system("must-not-run")
+    for name in ("fork", "forkpty", "posix_spawn", "posix_spawnp"):
+        if hasattr(os, name):
+            with pytest.raises(OfflineProcessError, match="child-process creation"):
+                getattr(os, name)()
+
+    clear_offline_runtime_ready()
+    mark_offline_runtime_ready(process_guarded=False)
+
+
+def test_process_guard_covers_posix_direct_spawn_apis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    names = ("fork", "forkpty", "posix_spawn", "posix_spawnp")
+    for name in names:
+        monkeypatch.setattr(os, name, MagicMock(name=name), raising=False)
+
+    install_offline_process_guard(monkeypatch.setattr)
+
+    for name in names:
+        with pytest.raises(OfflineProcessError, match="child-process creation"):
+            getattr(os, name)()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        [sys.executable, "-m", "evals.mcp_quality", "--help"],
+        [sys.executable, "scripts/setup-test-db.py", "--help"],
+        [sys.executable, "scripts/rebuild-dev-vault.py", "--help"],
+    ],
+)
+def test_guarded_direct_targets_reject_naked_processes(
+    command: list[str],
+) -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    runtime = {key: os.environ[key] for key in (
+        "DATA_DIR",
+        "DB_PATH",
+        "LOG_DIR",
+        "TMP_DIR",
+        "VAULT_DIR",
+        "VECTOR_DIR",
+    )}
+    env = prepare_offline_child_env(
+        project_root=project_root,
+        runtime_overrides=runtime,
+    )
+
+    result = subprocess.run(
+        command,
+        cwd=project_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "offline target must run through scripts/run-test.ps1" in (
+        result.stdout + result.stderr
+    )
 
 
 def test_project_tests_package_wins_over_shadow_package(tmp_path: Path) -> None:

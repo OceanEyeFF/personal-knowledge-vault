@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import os
 from pathlib import Path
 import re
 
@@ -14,6 +15,7 @@ from evals.mcp_quality.runner import (
     OFFLINE_READ_ONLY_TOOL_ALLOWLIST,
     _default_work_parent,
     _normalize_mcp_arguments,
+    _require_isolated_input_path,
     _require_isolated_output_path,
     _run_task,
     _validate_proposals,
@@ -407,6 +409,57 @@ def test_output_guard_rejects_production_before_create(
         _require_isolated_output_path(output)
 
     assert not fake_production.exists()
+
+
+def test_input_guard_rejects_config_path_before_resolve(
+    monkeypatch,
+) -> None:
+    requested = DEFAULT_TASKSET.parents[2] / "config" / "local.yaml"
+    real_resolve = Path.resolve
+
+    def guarded_resolve(path: Path, *args, **kwargs):
+        if path == requested:
+            raise AssertionError("rejected config input must not be resolved")
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", guarded_resolve)
+
+    with pytest.raises(RuntimeError, match="显式隔离目录"):
+        _require_isolated_input_path(
+            requested,
+            default_path=DEFAULT_TASKSET,
+            purpose="MCP 评测任务集",
+        )
+
+
+def test_input_guard_rejects_hardlinked_runtime_fixture(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.yaml"
+    linked = tmp_path / "linked.yaml"
+    source.write_text("schema_version: sentinel\n", encoding="utf-8")
+    try:
+        os.link(source, linked)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+
+    with pytest.raises(RuntimeError, match="硬链接"):
+        _require_isolated_input_path(
+            linked,
+            default_path=DEFAULT_TASKSET,
+            purpose="MCP 评测任务集",
+        )
+
+
+def test_input_guard_accepts_regular_runtime_fixture(tmp_path: Path) -> None:
+    custom = tmp_path / "custom.yaml"
+    custom.write_text("schema_version: sentinel\n", encoding="utf-8")
+
+    assert _require_isolated_input_path(
+        custom,
+        default_path=DEFAULT_TASKSET,
+        purpose="MCP 评测任务集",
+    ) == custom.resolve()
 
 
 @pytest.mark.parametrize("path_flag", ["--taskset", "--proposals", "--output"])

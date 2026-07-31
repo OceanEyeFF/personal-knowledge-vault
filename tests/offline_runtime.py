@@ -8,8 +8,10 @@ proxy settings, and live-test switches cannot affect the default test path.
 from __future__ import annotations
 
 import ipaddress
+import multiprocessing.process
 import os
 import socket
+import subprocess
 from pathlib import Path
 from typing import Callable, Mapping, MutableMapping
 
@@ -94,6 +96,14 @@ _SECRET_NAME_PARTS = frozenset(
 
 class OfflineNetworkError(RuntimeError):
     """Raised when an automated offline test attempts network I/O."""
+
+
+class OfflineProcessError(RuntimeError):
+    """Raised when guarded Direct Python attempts to create another process."""
+
+
+_OFFLINE_RUNTIME_READY = False
+_OFFLINE_PROCESS_GUARDED = False
 
 
 def _normalise_env_name(name: str) -> str:
@@ -357,6 +367,12 @@ def _blocked_network_call(*_args, **_kwargs):
     )
 
 
+def _blocked_process_call(*_args, **_kwargs):
+    raise OfflineProcessError(
+        "child-process creation is disabled for guarded Direct Python"
+    )
+
+
 _ORIGINAL_RAW_SOCKET_METHODS = {
     name: getattr(socket.socket, name)
     for name in ("connect", "connect_ex", "sendto")
@@ -429,3 +445,81 @@ def install_offline_network_guard(
 
     if hasattr(socket.socket, "sendmsg"):
         set_attr(socket.socket, "sendmsg", _blocked_network_call)
+
+
+def install_offline_process_guard(
+    patch: Callable[[object, str, object], None] | None = None,
+) -> None:
+    """Block common child-process APIs in a guarded Direct Python target."""
+
+    def set_attr(target: object, name: str, value: object) -> None:
+        if patch is None:
+            setattr(target, name, value)
+        else:
+            patch(target, name, value)
+
+    # Preserve ``subprocess.Popen`` as a class so imports that reference its
+    # type remain valid; construction itself is fail-closed.
+    set_attr(subprocess.Popen, "__init__", _blocked_process_call)
+    set_attr(multiprocessing.process.BaseProcess, "start", _blocked_process_call)
+    for name in (
+        "execl",
+        "execle",
+        "execlp",
+        "execlpe",
+        "execv",
+        "execve",
+        "execvp",
+        "execvpe",
+        "fork",
+        "forkpty",
+        "popen",
+        "posix_spawn",
+        "posix_spawnp",
+        "spawnl",
+        "spawnle",
+        "spawnlp",
+        "spawnlpe",
+        "spawnv",
+        "spawnve",
+        "spawnvp",
+        "spawnvpe",
+        "startfile",
+        "system",
+    ):
+        if hasattr(os, name):
+            set_attr(os, name, _blocked_process_call)
+
+
+def mark_offline_runtime_ready(*, process_guarded: bool) -> None:
+    """Record that the caller installed Config and I/O guards in this process."""
+
+    global _OFFLINE_PROCESS_GUARDED, _OFFLINE_RUNTIME_READY
+
+    if socket.getaddrinfo is not _blocked_network_call:
+        raise RuntimeError("offline network guard is not installed")
+    if process_guarded and subprocess.Popen.__init__ is not _blocked_process_call:
+        raise RuntimeError("offline process guard is not installed")
+    _OFFLINE_PROCESS_GUARDED = process_guarded
+    _OFFLINE_RUNTIME_READY = True
+
+
+def require_offline_runtime_ready(*, process_guarded: bool = False) -> None:
+    """Fail a guarded target that was started without its offline bootstrap."""
+
+    if not _OFFLINE_RUNTIME_READY:
+        raise RuntimeError(
+            "offline target must run through scripts/run-test.ps1 and "
+            "tests/offline_entrypoint.py"
+        )
+    if process_guarded and not _OFFLINE_PROCESS_GUARDED:
+        raise RuntimeError("offline target requires the Direct Python process guard")
+
+
+def clear_offline_runtime_ready() -> None:
+    """Reset process-local attestation for pytest shutdown and unit tests."""
+
+    global _OFFLINE_PROCESS_GUARDED, _OFFLINE_RUNTIME_READY
+
+    _OFFLINE_PROCESS_GUARDED = False
+    _OFFLINE_RUNTIME_READY = False

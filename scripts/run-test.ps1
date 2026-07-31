@@ -93,19 +93,30 @@ function Test-CommandMentionsText {
     return $false
 }
 
+function Get-InvocationCommandName {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $name = [System.IO.Path]::GetFileName($Value).ToLowerInvariant()
+    foreach ($extension in @(".exe", ".cmd", ".bat", ".com")) {
+        if ($name.EndsWith($extension, [System.StringComparison]::Ordinal)) {
+            return $name.Substring(0, $name.Length - $extension.Length)
+        }
+    }
+    return $name
+}
+
 function Test-IsPytestInvocation {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     if ($Arguments.Count -eq 0) {
         return $false
     }
-    $commandName = [System.IO.Path]::GetFileNameWithoutExtension(
-        $Arguments[0]
-    ).ToLowerInvariant()
+    $commandName = Get-InvocationCommandName $Arguments[0]
+    $isPythonLauncher = $commandName -match '^(?:pyw?|python[0-9.w]*|pypy[0-9.w]*)$'
     return (
         $commandName -in @("pytest", "py.test") -or
         (
-            $commandName -in @("python", "python3", "py") -and
+            $isPythonLauncher -and
             $Arguments.Count -ge 3 -and
             $Arguments[1] -eq "-m" -and
             $Arguments[2] -eq "pytest"
@@ -113,15 +124,73 @@ function Test-IsPytestInvocation {
     )
 }
 
+function Test-IsPythonInvocation {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    if ($Arguments.Count -eq 0) {
+        return $false
+    }
+    $commandName = Get-InvocationCommandName $Arguments[0]
+    return $commandName -match '^(?:pyw?|python[0-9.w]*|pypy[0-9.w]*)$'
+}
+
 function Test-HasPytestConfigBypass {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     foreach ($argument in $Arguments) {
-        if ($argument -in @("--noconftest", "--confcutdir", "--rootdir", "-c", "--config-file")) {
+        $lower = $argument.ToLowerInvariant()
+        if ($lower -in @(
+            "--noconftest",
+            "--confcutdir",
+            "--rootdir",
+            "-c",
+            "--config-file",
+            "-o",
+            "--override-ini",
+            "--pyargs",
+            "--doctest-modules",
+            "--doctest-glob",
+            "--collect-in-virtualenv",
+            "-p",
+            "--plugins",
+            "--basetemp",
+            "--junitxml",
+            "--junit-xml",
+            "--log-file",
+            "--result-log",
+            "--html",
+            "--json-report-file",
+            "--ignore",
+            "--ignore-glob",
+            "--deselect",
+            "--cov-config"
+        )) {
             return $true
         }
-        foreach ($prefix in @("--confcutdir=", "--rootdir=", "--config-file=")) {
-            if ($argument.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($lower -match '^-c(?:=|.+)$' -or $lower -match '^-o(?:=|.+)$') {
+            return $true
+        }
+        foreach ($prefix in @(
+            "--confcutdir=",
+            "--rootdir=",
+            "--config-file=",
+            "--override-ini=",
+            "--pyargs=",
+            "--doctest-glob=",
+            "--plugins=",
+            "--basetemp=",
+            "--junitxml=",
+            "--junit-xml=",
+            "--log-file=",
+            "--result-log=",
+            "--html=",
+            "--json-report-file=",
+            "--ignore=",
+            "--ignore-glob=",
+            "--deselect=",
+            "--cov-config="
+        )) {
+            if ($lower.StartsWith($prefix, [System.StringComparison]::Ordinal)) {
                 return $true
             }
         }
@@ -381,6 +450,32 @@ if ($Direct -and $isMigrationCommand) {
 $isDirectPytest = $Direct -and (
     Test-IsPytestInvocation -Arguments $normalizedCommand
 )
+$isDirectPython = $Direct -and (
+    Test-IsPythonInvocation -Arguments $normalizedCommand
+)
+if ($isDirectPython -and -not $isDirectPytest -and $normalizedCommand.Count -lt 2) {
+    [Console]::Error.WriteLine(
+        "错误: Direct Python 必须提供仓库内的 -m module 或 script.py 目标"
+    )
+    exit 2
+}
+if ($isDirectPython -and -not $isDirectPytest) {
+    $directPythonMode = $normalizedCommand[1]
+    if (
+        $directPythonMode -eq "-c" -or
+        $directPythonMode -eq "-" -or
+        ($directPythonMode.StartsWith("-") -and $directPythonMode -ne "-m")
+    ) {
+        [Console]::Error.WriteLine(
+            "错误: Direct Python 仅允许仓库内的 -m module 或 script.py 目标"
+        )
+        exit 2
+    }
+    if ($directPythonMode -eq "-m" -and $normalizedCommand.Count -lt 3) {
+        [Console]::Error.WriteLine("错误: Direct Python -m 必须提供模块名")
+        exit 2
+    }
+}
 if ($isDirectPytest -and (Test-HasPytestConfigBypass -Arguments $normalizedCommand)) {
     [Console]::Error.WriteLine(
         "测试包装器禁止改变 pytest 的 root conftest/config 边界"
@@ -430,12 +525,42 @@ foreach ($key in $runtimePaths.Keys) {
     $managedEnvironment[$key] = $runtimePaths[$key]
 }
 $managedEnvironment["COVERAGE_FILE"] = Join-Path $RequestedDataRoot "reports\.coverage"
+$managedEnvironment["TEMP"] = $runtimePaths.TMP_DIR
+$managedEnvironment["TMP"] = $runtimePaths.TMP_DIR
+$managedEnvironment["TMPDIR"] = $runtimePaths.TMP_DIR
 $managedEnvironment["PYTHONDONTWRITEBYTECODE"] = "1"
+$managedEnvironment["PYTHONNOUSERSITE"] = "1"
 $managedEnvironment["PYTEST_ADDOPTS"] = "--strict-markers"
+$managedEnvironment["PYTEST_PLUGINS"] = ""
+$managedEnvironment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = ""
 $managedEnvironment["PKV_RUN_LIVE"] = "0"
 $managedEnvironment["PKV_TEST_OFFLINE"] = "1"
 $managedEnvironment["PKV_TEST_LOAD_LOCAL"] = "0"
 $managedEnvironment["PKV_TEST_PROJECT_ROOT"] = $ProjectRoot
+
+# Python can execute .pth/sitecustom and coverage startup hooks before the
+# offline entrypoint gets control.  Remove every inherited path/config knob
+# that can redirect those hooks or their output before conda starts Python.
+foreach ($key in @(
+    "COVERAGE_PROCESS_START",
+    "COVERAGE_PROCESS_CONFIG",
+    "COVERAGE_RCFILE",
+    "COVERAGE_FORCE_CONFIG",
+    "COVERAGE_DEBUG",
+    "COVERAGE_DEBUG_FILE",
+    "COV_CORE_SOURCE",
+    "COV_CORE_CONFIG",
+    "COV_CORE_DATAFILE",
+    "COV_CORE_BRANCH",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "PYTHONINSPECT",
+    "PYTHONWARNINGS",
+    "PYTHONUSERBASE"
+)) {
+    $managedEnvironment[$key] = $null
+}
 
 $previousValues = @{}
 foreach ($key in $managedEnvironment.Keys) {
@@ -465,7 +590,20 @@ try {
     }
     Assert-NoUnsafeLinksUnderPath -Path $RequestedDataRoot
 
-    $invocation = if ($Direct) {
+    $invocation = if ($isDirectPytest) {
+        $commandName = Get-InvocationCommandName $Command[0]
+        $argumentStart = if ($commandName -in @("pytest", "py.test")) { 1 } else { 3 }
+        $pytestArguments = if ($Command.Count -gt $argumentStart) {
+            @($Command[$argumentStart..($Command.Count - 1)])
+        } else {
+            @()
+        }
+        @("python", "-m", "pytest") + $pytestArguments
+    } elseif ($Direct -and $isDirectPython) {
+        @("python", "tests/offline_entrypoint.py", "python") + @(
+            $Command[1..($Command.Count - 1)]
+        )
+    } elseif ($Direct) {
         [string[]]$Command.Clone()
     } else {
         @("python", "tests/offline_entrypoint.py", "cli") + $Command
@@ -493,6 +631,15 @@ try {
         } else {
             $invocation += $trustedPytestArguments
         }
+    }
+
+    if ($isDirectPytest) {
+        $pytestArguments = @($invocation[3..($invocation.Count - 1)])
+        $invocation = @(
+            "python",
+            "tests/offline_entrypoint.py",
+            "pytest"
+        ) + $pytestArguments
     }
 
     $loggedInvocation = @(Get-RedactedInvocationForLog -Arguments $invocation)
