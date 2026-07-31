@@ -2,8 +2,8 @@
 
 > 文档类型：运维 / 验证 Runbook（**规划优先，授权后执行**）
 > 创建日期：2026-07-31
-> 状态：**规划完成，等待授权执行**（本文件不含任何真实数据）
-> 分支：`codex/pi-real-data-test-runbook`
+> 状态：**CAT-0 已验证；真实数据尚未执行，等待 U1/G8 与用户授权**（migration 另需 FT5；本文件不含任何真实数据）
+> 集成线：P0 主线收口
 > 适用范围：archive / search / MCP evidence & citation / delete / migration 的小样本真实数据验证
 
 ---
@@ -44,7 +44,7 @@
 5. **不自动执行生产迁移、删除、恢复**：`scripts/backup-data.ps1`、`restore-data.ps1`、生产 `migrate.py --auto` 均为用户手动命令，AI 不代为执行（详见命令类别 CAT-D，第 8 章）。
 6. **Agent 可读或位于工作区内的**报告、文件日志、模板、证据包和 commit 中不得出现真实数据原文、真实 URL、个人标识符或密钥；只允许出现样本清单中的**假名/占位标识**。用户终端中的原始运行输出不得复制给 Agent；如确需保存，只能进入第 12 章定义的工作区外 E9。当前产品会记录 query/URL/title，故 U1 user-only launcher 未交付前，任何真实快照命令均不得执行。
 7. **双通道执行模型**：执行分两个通道（第 2、8 章）。**Agent-safe 通道**仅限不接触授权快照、不加载 `config/local.yaml` 的静态/合成验证，且必须经过**完整离线 launcher**；**user-only 通道**覆盖所有会读取真实快照、或可能加载 local.yaml 的实际 CLI/MCP/migrate 命令——**无论离线还是 live**，一律由用户在其受控本机终端手动执行，并在 U1 交付后通过专用 launcher 禁用/净化工作区文件日志。Agent 不执行、不读取原始输出，只接收脱敏摘要（第 12 章）。
-8. **G0 是按目标子进程核验的离线入口，不是全局保护**：G0 必须覆盖 launcher、base-only Config、凭据/代理清除，并由目标子进程在导入产品代码前安装网络 fail-closed。5c14caa 只为 pytest（root conftest）及 CLI/MCP（`offline_entrypoint.py`）提供该保护；仅由 `run-test.ps1 -Direct` 设置环境的任意 Python 模块/脚本**没有**网络门禁。单独的路径预检或环境变量不构成 G0。它也不改变 user-only CLI/MCP/migrate 的 `Config()` 行为。不得以"预检通过"为由让 Agent 执行真实快照命令。
+8. **G0 是按目标子进程核验的离线入口，不是全局保护**：CAT-0 G0 已交付并逐入口核验。pytest 先经 `tests/offline_entrypoint.py pytest` 在 pytest/plugin 导入前建立 G0，root `tests/conftest.py` 再维持逐用例隔离；CLI/MCP 由 `tests/offline_entrypoint.py` 保护；FT7 generic Direct Python 只接受仓库内 `python -m <module>` 或 `python <script.py>`，在同一进程内以 `runpy` 执行，并在导入产品代码前清理 live/secret/proxy 环境、绑定 base-only Config、安装网络与子进程 fail-closed guard。FT7 明确拒绝 `-c`、stdin 与解释器 flags；非 Python `-Direct` 不属于 Python G0；该机制是进程内防护，**不是 OS sandbox**。它也不改变 user-only CLI/MCP/migrate 的执行通道。不得以“G0 通过”为由让 Agent 执行真实快照命令。
 9. **绝不以"默认离线"为由让 Agent 执行真实快照命令**：离线只说明该命令不联网；是否读取快照、是否加载 local.yaml 这两个事实单独决定执行通道（0.2-7）。`PKV_RUN_LIVE` 绝不是网络开关（7.3）。
 
 > 违反 0.2 的任何一条，立即暂停流程并按第 11 章失败分流处理。
@@ -64,7 +64,7 @@
 | 判读（interpretation） | 人工对照预期结果与实际结果，给出通过/不通过/需复查结论的动作（第 10.2 章） |
 | Agent-safe 通道 | 不接触授权快照、不加载 `config/local.yaml` 的静态/合成验证（离线 pytest / 16-task 闭环、合成种子脚本、已交付的 base-only 工具）；Agent 可执行（2/8 章） |
 | user-only 通道 | 所有会读取真实快照、或可能加载 local.yaml 的实际命令（离线或 live）；只能由用户在其受控本机终端手动执行，Agent 不执行也不读取原始输出（2/8 章） |
-| 完整离线入口 | 为**目标命令类型**安装 fail-closed 的受控入口：5c14caa 覆盖 pytest 与经 `offline_entrypoint.py` 启动的 CLI/MCP；任意 `-Direct` Python 任务还需 FT7 generic Direct guard。单独路径预检或 wrapper 环境不构成 G0（7.1/10.3） |
+| 完整离线入口 | CAT-0 已交付的按入口 fail-closed 机制：pytest=offline pytest bootstrap + root conftest；CLI/MCP=`offline_entrypoint.py`；Direct Python=FT7 generic guard（仅仓库 `python -m` / `.py`，同进程 `runpy`）。拒绝 `-c`/stdin/flags；非 Python Direct 不在 Python G0 内；不是 OS sandbox（7.1/10.3） |
 | user-only launcher（U1） | 第 19 章待交付的真实数据用户入口：验证授权/路径/只读快照与 writable clone，禁用或净化工作区文件日志；对应 G8，不进入 CI |
 | 模板指纹（template fingerprint） | 记录所用模板的 ID 与版本（如 T-D v1.3），用于审计追溯；不含任何命令实参（12 章） |
 | 历史 schema baseline | 用户准备的旧版本数据库/Schema 夹具（仅记录版本号与哈希），用于 migration 兼容性验证（15.5） |
@@ -273,7 +273,7 @@ P0/P1 报告产出前必须运行脱敏检查（后续任务 FT1 提供工具，
 
 ### 7.1 隔离强制规则（双通道）
 
-1. **执行通道是硬边界**：当前分支的 `scripts/run-test.ps1` 本身不是完整离线 launcher。5c14caa 成套机制只使 pytest（root `tests/conftest.py`）及经 `offline_entrypoint.py` 启动的 CLI/MCP 成为受保护 CAT-0；任意 `-Direct` Python 模块/脚本仍须 FT7 增加 generic Direct guard。`scripts/migrate.py`、CLI/MCP 等真实快照命令一律 user-only，并在 U1 交付前保持阻塞。
+1. **执行通道是硬边界**：CAT-0 的 Python G0 已交付并逐入口核验：pytest 先经 `tests/offline_entrypoint.py pytest` bootstrap，再由 root `tests/conftest.py` 维持逐用例隔离，CLI/MCP 由 `offline_entrypoint.py` 保护，FT7 generic Direct Python 经 wrapper 路由到同一入口。Direct Python 只接受仓库模块/脚本并用同进程 `runpy` 执行；`-c`、stdin、解释器 flags 与仓库外目标均拒绝。非 Python `-Direct` 不属于 Python G0。`scripts/migrate.py` 和所有真实快照命令仍一律 user-only，并在 U1/G8（迁移另加 FT5）交付前保持阻塞。
 2. **`-DataRoot` 只能指向仓库内 `.data-test/` 下的路径**（run-test.ps1 自带校验：拒绝 junction/symlink/硬链接、拒绝生产 `.data` 路径，并遮蔽敏感参数）。该校验只约束命令指向，**不使命令变为 Agent 可执行**。
 3. 快照与 clone 布局：
 
@@ -288,7 +288,7 @@ CLONE_ID   -> .data-test/<scenario>/clones/<clone-id>    # 破坏性演练唯一
 ```
 
 4. 每个阶段使用**独立场景名**（`real-sample-p0` / `real-eval-p1` / `real-regression-p2`），互不复用数据根；破坏性演练的 `clone-id` 由用户生成（如 `c-<yyyyMMdd>-<序号>`）并在 T-G/T-H 记录。
-5. **G0 按目标命令核验**：5c14caa 的 wrapper、root `tests/conftest.py`、`offline_runtime.py` 与 `offline_entrypoint.py` 必须成套合入，才能覆盖 pytest 与 CLI/MCP。FT7 还必须为 16-task、合成 seed 等任意 `-Direct` Python 子进程提供导入前 base-only Config/网络门禁；仅继承 wrapper 环境并不 fail-closed。路径预检单独通过不构成 G0。预检不得用 `config show`（其加载 local.yaml，7.2）。
+5. **G0 按目标命令核验**：wrapper、root `tests/conftest.py`、`offline_runtime.py` 与 `offline_entrypoint.py` 已成套集成；pytest、CLI/MCP、16-task、合成 seed 与 dev-vault 重建/`--check-only` 已按各自入口核验。generic Direct Python 在导入产品代码前清理 live/secret/proxy、绑定 base-only Config 并安装网络/子进程 guard；它是 Python 进程内防护而非 OS sandbox。路径预检单独通过不构成 G0，非 Python Direct 也不自动获得 Python G0。预检不得用 `config show`（其加载 local.yaml，7.2）。
 6. **破坏性演练只能在 disposable clone 内执行**：删除/可写迁移前，用户从授权快照制作独立副本 `.data-test/<scenario>/clones/<clone-id>/`（见 15.5 制备步骤）；演练失败直接丢弃 clone 重建，快照根保持只读，不做"事后回滚"（第 14 章）。
 7. **clone 制备与验证（仅用户，可审计步骤）**：① 用户复制快照根到 `.data-test/<scenario>/clones/<clone-id>/`（db/vault/vectors 齐全）；② 用户以只读命令验证 clone 可打开且条目数与快照一致，并记录条目数哈希；③ 用户记录 `clone-id`、制备时间、源快照与目录哈希（T-G/T-H）；④ 制备后快照根恢复只读，clone 成为破坏性演练的唯一操作对象。
 
@@ -303,7 +303,7 @@ CLONE_ID   -> .data-test/<scenario>/clones/<clone-id>    # 破坏性演练唯一
 
 | 模式 | 默认 | 说明 |
 | --- | --- | --- |
-| 纯离线 | ✅ 默认 | pytest 可经 5c14caa 的 conftest 门禁执行；16-task、合成种子须等待 FT7 generic Direct guard 后才满足 G0。`stats/list/show/bm25` 与 migration 虽不联网，仍因接触快照而等待 U1、仅用户执行 |
+| 纯离线 | ✅ 默认 | pytest、CLI/MCP 与受支持的 Direct Python 已分别接入 G0；16-task、合成 seed、dev-vault 重建/`--check-only` 已逐入口核验。`stats/list/show/bm25` 与 migration 虽不联网，仍因接触真实快照而等待 U1/G8、仅用户执行；migration 另需 FT5 |
 | live/数据出境 | 单独授权 | `archive`（URL 或文本，触发抓取 + DeepSeek 摘要）、`search --strategy vector/hybrid` 与 MCP 非 bm25 会联网；`auto` **可能**路由至 Embedding，因此保守按 live 管理。必须由授权单单列范围/预算，并等待 U1 |
 
 补充说明（勿混淆开关语义）：
@@ -320,7 +320,7 @@ CLONE_ID   -> .data-test/<scenario>/clones/<clone-id>    # 破坏性演练唯一
 
 | 类别 | 内容 | 数据接触 | 执行通道 |
 | --- | --- | --- | --- |
-| **CAT-0 Agent-safe 静态/合成** | 静态文档/交叉引用检查；经目标子进程 fail-closed 入口运行的 pytest；FT7 generic Direct guard 交付后运行的 16-task 闭环（`OfflineMcpScenario`）及固定 `--seed/--count/--output` 合成种子脚本；已交付的 base-only 工具 | 无真实快照 | Agent + 用户 |
+| **CAT-0 Agent-safe 静态/合成** | 静态文档/交叉引用检查；经各自 G0 入口运行的 pytest、CLI/MCP；经 FT7 generic Direct guard 运行的 16-task、固定参数合成 seed、dev-vault 重建与 `--check-only`；已交付的 base-only 工具 | 无真实快照 | Agent + 用户 |
 | **CAT-U 用户手动·快照命令** | 会读取真实快照或可能加载 local.yaml 的实际命令，离线与 live 均含：`stats` / `list` / `show` / BM25、MCP 只读 Tool、vector/hybrid/auto、archive；**U1 user-only launcher 未交付前全部阻塞** | 快照只读；archive 仅 writable clone | **仅用户**（Agent 只接收脱敏摘要，12 章） |
 | **CAT-C 迁移演练** | `scripts/migrate.py --version` / `--health-check` / `--dry-run`；可写演练 `--auto --no-backup` | 仅 `.data-test/<scenario>/clones/<clone-id>` 内 | **仅用户**（需 FT5 + U1 + 授权；G0 不适用，15.5） |
 | **CAT-D 生产触碰** | `backup-data.ps1`、`restore-data.ps1`、生产库 `migrate.py --auto`、生产 `.data/` 任何操作 | 生产 | **仅用户** |
@@ -340,16 +340,16 @@ CLONE_ID   -> .data-test/<scenario>/clones/<clone-id>    # 破坏性演练唯一
 
 ### 8.3 命令书写约定
 
-**Agent-safe（CAT-0）示例**（当前分支不可直接执行；每条命令须满足其下所列入口前置）：
+**Agent-safe（CAT-0）示例**（CAT-0 G0 已交付；仍须通过 wrapper 使用对应入口）：
 
 ```powershell
-# 离线 16-task 闭环：仅 FT7 generic Direct guard 交付后可执行；5c14caa 本身不保护此 Direct 子进程
+# 离线 16-task 闭环：wrapper 将仓库模块路由到 FT7 generic Direct guard
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-quality -Command @(
   "python", "-m", "evals.mcp_quality", "--enforce-thresholds",
   "--output", ".data-test/mcp-quality/result.json"
 )
 
-# 离线 pytest 套件：5c14caa 成套合入或 FT7 等价实现后可执行；root conftest 在 collection 前 fail-closed
+# 离线 pytest 套件：offline bootstrap 在 pytest/plugin 导入前 fail-closed，root conftest 维持逐用例隔离
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\contract -Command @("python", "-m", "pytest", "-q", "-m", "not network and not manual")
 ```
 
@@ -370,9 +370,9 @@ writable-clone:    python scripts/migrate.py --health-check | --dry-run
 
 ### 9.0 公共前置（三阶段共用）
 
-- [ ] **G0 硬前置**：目标命令已有导入前网络门禁。pytest/CLI/MCP 需 5c14caa 成套机制或 FT7 等价入口；16-task/seed 等任意 Direct Python 任务必须另有 FT7 generic Direct guard（见 10.3-G0 与 18.1）。单独路径预检或 wrapper 环境不满足 G0。
+- [x] **G0 硬前置（CAT-0 已交付）**：pytest、CLI/MCP 与受支持的 Direct Python 均已有匹配入口，并已逐入口核验（见 10.3-G0 与 18.1）。Direct Python 仅仓库 `python -m` / `.py`，拒绝 `-c`/stdin/flags；非 Python Direct 不计入 Python G0。
 - [ ] **G8 条件前置**：只要阶段包含 CAT-U/CAT-C，就必须先交付 U1 user-only launcher；未交付时只能运行 CAT-0 合成部分，真实快照步骤统一记为“剔除待前置”，不得给出可执行命令。
-- [ ] G1/G2 离线门禁绿（第 10.3 章：pytest 使用匹配入口；MCP 16-task 必须等待 FT7 generic Direct guard；均为合成，CAT-0）。
+- [ ] G1/G2 离线门禁绿（第 10.3 章：pytest 与 MCP 16-task 使用各自已交付入口；均为合成，CAT-0）。
 - [ ] 授权单已签核（4.1），样本清单已定稿（5.3）。
 - [ ] P0 排练基底就绪：**（#3 dev vault 已就绪）或（合成样本预演降级）**，二选一，并明确写入执行记录（18.2）。
 - [ ] 隔离核验通过（G4）：用户先核对授权单、场景/clone 路径与快照只读状态；CAT-U/C 还必须由 U1/G8 再次验证。FT7/G0 仅负责合成 CAT-0 入口。
@@ -383,18 +383,18 @@ writable-clone:    python scripts/migrate.py --health-check | --dry-run
 
 **进入条件**：G1/G2 均在各自匹配的 G0 入口下为绿；P0 授权单 + P0 样本清单（3–10 条）已签核；场景名 `real-sample-p0`。
 
-> **P0 的两种模式（OR）**：① **dev vault 排练**（#3 已就绪，纯合成，无需真实数据）：S1 改为准备 dev vault 快照（合成），其余步骤不变；② **合成样本预演降级**（#3 未交付）：S1 以最小合成样本替代授权快照跑通流程。两种模式共用同一套步骤与模板，差别只在 S1 的数据来源（18.2）。
+> **P0 的两种模式（OR）**：① **dev vault 排练**（#3 已就绪，纯合成，无需真实数据）：S1 改为准备 dev vault 快照（合成），其余步骤不变；② **最小合成样本预演降级**（仅在 dev vault 暂时不可用时）：S1 以最小合成样本跑通流程。两种模式共用同一套步骤与模板，差别只在 S1 的数据来源（18.2）。
 
 **步骤**（每步都要有产出物；执行通道见第 2/8 章）：
 
 | # | 步骤 | 执行人/通道 | 产出物 |
 | --- | --- | --- | --- |
 | S0 | 记录 P0 授权单与样本清单 ID | 用户 | 授权单/清单归档 |
-| S1 | 创建授权快照（选择→脱敏→落盘 `.data-test/real-sample-p0/`）或准备 dev vault 快照（合成） | **仅用户** | 快照 + 假名映射（Git 忽略） |
+| S1 | 创建授权快照（选择→脱敏→落盘 `.data-test/real-sample-p0/`）或经 FT7 wrapper Direct Python 准备 dev vault（合成） | 真实快照仅用户；dev vault 为 Agent-safe CAT-0 | 快照 + 假名映射（真实）或 dev-vault 健康摘要（合成） |
 | S2 | 核验隔离（G4）与脱敏（6.3）；CAT-0 launcher 另由 G0 验证 | 仅用户（路径预检工具可辅助） | 核验记录 |
 | S3 | U1 交付后，用户执行 CAT-U 只读·离线冒烟：`stats` / `list --limit 20` / 每个分层的 `show` 1 条；只向 Agent 交付脱敏摘要 | 仅用户 | 脱敏摘要 + 退出码/计数/哈希（E3）；U1 未交付则剔除 |
 | S4 | U1 交付后，用户执行 CAT-U 检索冒烟：每语言 ≥1 个查询 × `search --strategy bm25` | 仅用户 | 脱敏摘要（E3）；U1 未交付则剔除 |
-| S5 | 合成基底替代验证（CAT-0）：FT7/G0 就绪后，在 `.data-test/real-sample-p0/seed/` 通过第 15.1 章的固定 seed/count/output 命令生成合成条目并核对读路径一致性 | Agent（CAT-0） | 种子输出 + 一致性记录；FT7 未交付则剔除 |
+| S5 | 合成基底替代验证（CAT-0）：经已交付 FT7/G0，在 `.data-test/real-sample-p0/seed/` 通过第 15.1 章的固定 seed/count/output 命令生成合成条目并核对读路径一致性；`--output` 必须精确位于本次所选 `DATA_DIR` | Agent（CAT-0） | 种子输出 + 一致性记录 |
 | S6 | FT5（迁移 DataRoot/断言工具）与 U1 前置齐备且有历史 baseline/pending 时，用户在 clone 内执行迁移冒烟；否则记“不适用/未覆盖 + 原因” | 仅用户 | 脱敏摘要 + 退出码，或未覆盖声明（E3） |
 | S7 | 用户判读（10.2 判读表，P0 版） | 用户 | 判读表 |
 | S8 | 记录门禁结果与失败（10.3 / 11 章）：G1/G2 由 Agent 直接记录，G3/G4 依据用户脱敏摘要 | Agent + 用户 | 门禁记录 |
@@ -497,7 +497,7 @@ delete 完整性（FT3 工具）。未纳入指标必须在报告中以"剔除�
 
 | 门禁 | 命令/机制 | 阈值/判定 | 生效阶段 |
 | --- | --- | --- | --- |
-| **G0 目标子进程离线入口** | 目标进程必须在导入产品代码前安装 base-only Config、路径断言、凭据/代理清除和网络 fail-closed。5c14caa 覆盖 pytest 与 `offline_entrypoint.py` 的 CLI/MCP；16-task/seed 等任意 Direct Python 必须等待 FT7 generic Direct guard | 目标进程自身已安装门禁；仅 wrapper 环境或路径预检不算通过 | **CAT-0 逐命令硬前置** |
+| **G0 目标子进程离线入口** | 已交付：pytest=offline pytest bootstrap + root conftest；CLI/MCP=`offline_entrypoint.py`；FT7 Direct Python=仅仓库 `python -m` / `.py`，同进程 `runpy`。入口在产品导入前清理 live/secret/proxy、绑定 base-only Config，并安装网络 guard；Direct Python 另安装子进程 guard | 已逐入口核验；拒绝 `-c`/stdin/flags/仓库外目标；非 Python Direct 不属于 Python G0；进程内 guard 不是 OS sandbox | **CAT-0 逐命令硬前置** |
 | G1 离线套件 | 默认 pytest（`-m "not network and not manual"`），合成 fixture（CAT-0） | 全绿 | P0/P1/P2 前置 |
 | G2 MCP 16-task | `evals.mcp_quality --enforce-thresholds`（合成 `OfflineMcpScenario`，CAT-0） | 退出码 0（含 citability 100%） | P0/P1/P2 前置 |
 | G3 快照一致性 | 快照条目数与 manifest 一致；`stats` 由用户执行，Agent 只核对用户交付的脱敏摘要/计数/哈希 | 相等 | P0/P1/P2 |
@@ -622,7 +622,7 @@ U1 launcher -> DataRoot=.data-test/real-eval-p1/clones/<archive-clone-id>
 
 `<archive-clone-id>` 是从只读授权快照制备的独立 writable clone；archive 后直接核对 clone 的 Markdown/SQLite/vector，不把结果回写快照。U1 未交付前，上述仅是接口契约，不是可执行命令。
 
-**离线替代验证（Agent-safe，CAT-0）**：脚本依赖项目 requirements（bs4/frontmatter/存储模块），但不构造 `Config()`、设计上不联网。它是任意 Direct Python 脚本，故 **5c14caa 的 wrapper 环境不足以提供网络 fail-closed**；以下命令仅在 FT7 generic Direct guard 交付并经 G0 验证后可执行，同时须显式固定所有可变参数：
+**离线替代验证（Agent-safe，CAT-0）**：脚本依赖项目 requirements（bs4/frontmatter/存储模块）。它已要求 FT7 运行时 attestation，必须经 wrapper 路由到 generic Direct Python 入口；入口在同一进程内通过 `runpy` 执行并安装 base-only Config、网络/子进程 guard。以下命令已按 G0 核验，同时仍须显式固定所有可变参数：
 
 ```powershell
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\real-sample-p0\seed -Command @(
@@ -633,7 +633,7 @@ U1 launcher -> DataRoot=.data-test/real-eval-p1/clones/<archive-clone-id>
 )
 ```
 
-该命令只允许清理 `.data-test/real-sample-p0/seed/` 派生的 db/vault/vectors；不得省略 `--seed` 或 `--output`。它只验证**读路径与存储一致性**，不能证明 archive 写入路径或真实抓取/LLM 行为。
+`setup-test-db.py` 的 `--output` 已精确锁定到本次 wrapper 选定的 `DATA_DIR`，不能写入其他 `.data-test` 场景或仓库外路径。该命令只允许清理 `.data-test/real-sample-p0/seed/` 派生的 db/vault/vectors；不得省略 `--seed` 或 `--output`。它只验证**读路径与存储一致性**，不能证明 archive 写入路径或真实抓取/LLM 行为。
 
 **判读点**：标题/正文/来源/时间字段与样本一致；`list` 中出现新条目；`show <id>` 可回读（以上均为 live 授权后、用户执行并交付脱敏摘要的判读；离线替代只判读一致性）。
 
@@ -660,7 +660,7 @@ U1 launcher -> readonly snapshot -> search "<占位查询>" --strategy hybrid --
 
 **现状**：16-task 评测 runner（`evals/mcp_quality/runner.py`）固定 `OfflineMcpScenario`（`evals/mcp_quality/scenario.py`），只能跑确定性离线 fixture，**不能**挂接真实快照库；stdio MCP server 绑定启动进程的 stdin/stdout，**无法**被另一会话附着调用。因此"在真实快照上经 MCP 验证 evidence/citation"目前**不可执行**，属**待实现前置**（FT6 受控 harness，参照 `tests/e2e/conftest.py` 的 `TestEnv` 子进程模式与 16-task runner 的 scenario 模式）。
 
-**目标离线能力（满足各自 G0 后）**：G2 16-task 闭环须等待 FT7 generic Direct guard（证据契约门禁，CAT-0）；MCP 只读 bm25 工具冒烟须经受保护的 `offline_entrypoint.py`，可覆盖 `search_knowledge` strategy=bm25 / `get_entry` / `query_subgraph` / `explain_relation` / `collect_evidence`(文档级) / `find_bridges` / `timeline_of` / `contrast`。后者只要作用于真实快照即 user-only。
+**目标离线能力（已逐入口核验）**：G2 16-task 闭环经 FT7 generic Direct guard 运行（证据契约门禁，CAT-0）；MCP 只读 bm25 工具冒烟经受保护的 `offline_entrypoint.py` 运行，可覆盖 `search_knowledge` strategy=bm25 / `get_entry` / `query_subgraph` / `explain_relation` / `collect_evidence`(文档级) / `find_bridges` / `timeline_of` / `contrast`。后者只要作用于真实快照即 user-only，仍需 U1/G8。
 
 **FT6 交付后的验证内容**：`collect_evidence` / `explain_relation` / `query_subgraph` / `timeline_of` / `contrast` 在真实样本上的证据质量与 citation 可解析性；`pkv://entries/{id}/chunks/{chunk_id}` 等 locator 可经 MCP Resource 读取。FT6 交付后仅当其以 base-only 方式实现（不加载 local.yaml、不联网、输出仅脱敏摘要）才可归 CAT-0；否则仍 user-only（8.1、10.3-G7）。
 
@@ -680,7 +680,7 @@ U1 launcher -> readonly snapshot -> search "<占位查询>" --strategy hybrid --
 
 **验证内容**：快照库在 disposable clone 上从历史 schema baseline 迁移到目标版本成功；条目数/字段值在迁移前后一致；`schema_version` 更新。
 
-**执行通道**：**user-only**（CAT-C）：`scripts/migrate.py` 用 `Config()`（默认加载 local.yaml）读取 DB 路径，且未接入 base-only 受控入口；`--auto` 不带 `--no-backup` 时还会把备份写入 `.data-backup/`。因此迁移命令只能由用户手动执行，Agent 不执行、不读取原始输出（0.2-7、8.1）。
+**执行通道**：**user-only**（CAT-C）：`scripts/migrate.py` 用 `Config()`（默认加载 local.yaml）读取 DB 路径，且未接入 base-only 受控入口；`--auto` 不带 `--no-backup` 时还会把备份写入 `.data-backup/`。`scripts/run-test.ps1` 当前会明确拒绝 `migrate.py` 并返回 exit 2，因此不得提供或使用任何 wrapper migrate 命令。迁移只能在 FT5 + U1/G8 + 用户授权齐备后由专用 user-only launcher 执行；Agent 不执行、不读取原始输出（0.2-7、8.1）。
 
 **可审计步骤（全部由用户执行）**：
 
@@ -760,7 +760,7 @@ U1 launcher -> DataRoot=.data-test/<scenario>/clones/<clone-id>
 | 样本偏置（代表性不足） | 中 | 5.1 分层 + 5.4 代表性声明 |
 | 迁移演练破坏快照库 | 中 | 仅 clone 内可写迁移 + `--no-backup` + 丢弃重建 |
 | live 数据出境（archive/vector 误当默认步骤执行） | 中 | 7.3 边界 + 授权单单列 + U1/G8 + CAT-U 仅用户 |
-| #3 dev vault 未按期交付 | 低 | P0 走合成样本预演降级（OR 条件，18.2） |
+| dev vault 暂时不可用或健康检查失败 | 低 | P0 走最小合成样本预演降级，并记录 dev-vault 修复任务（18.2） |
 
 ### 17.3 成本估计
 
@@ -775,52 +775,52 @@ U1 launcher -> DataRoot=.data-test/<scenario>/clones/<clone-id>
 ### 17.4 总完成定义（Runbook 级 DoD）
 
 - [ ] 三阶段文档与模板齐备（本文件 + T-A…T-H）。
-- [ ] 每个 CAT-0 命令均有匹配的 G0 入口：pytest/CLI/MCP 可由 5c14caa 成套机制覆盖；16-task/seed 等任意 Direct Python 另需 FT7 generic Direct guard；单独预检或 wrapper 环境不能替代。
+- [x] 每个当前 CAT-0 Python 命令均有匹配的 G0 入口：pytest=offline pytest bootstrap + root conftest；CLI/MCP=`offline_entrypoint.py`；16-task/seed/dev-vault=`FT7 generic Direct Python`。Direct Python 只支持仓库 `python -m` / `.py` 并同进程 `runpy`；非 Python Direct 不属于 Python G0。
 - [ ] G8/U1 被所有真实快照步骤引用；U1 未交付时这些步骤明确剔除，不存在当前可复制执行的真实数据命令。
 - [ ] 双通道表述一致：无"Agent 可执行离线真实快照命令"的表述（0.2-7/9、2、8）。
 - [ ] P0 已实际执行一次并验证流程（**待用户授权后执行**；本任务只交付文档）。
-- [ ] 后续任务清单（第 19 章）已登记，FT1–FT7、U1 与 #3 依赖关系已明确；阶段步骤继续使用 S0–S11，两套编号无冲突。
+- [ ] 交付状态与后续任务清单（第 19 章）已登记：FT7/#3 为已交付，FT1–FT6/U1 为后续；阶段步骤继续使用 S0–S11，两套编号无冲突。
 - [ ] 文档一致性检查通过（第 20 章 + `git diff --check`）。
 
 ---
 
 ## 18. 与其他任务/分支的接口与依赖
 
-### 18.1 `5c14caa`（分支 `codex/review-testcase-repair`）—— 只读参考；按目标进程提供部分 G0
+### 18.1 CAT-0 G0（已交付并逐入口核验）
 
-- 现状：`5c14caa` 不在 master，位于 `codex/review-testcase-repair`；本分支只以 `git show` 只读参考其 `tests/offline_runtime.py` / `tests/offline_entrypoint.py` / `tests/conftest.py` 的 fail-closed 隔离设计。
-- **实际覆盖**：5c14caa 的 `run-test.ps1` 负责路径/环境约束；root `tests/conftest.py` 在 pytest collection 前安装 base-only Config/网络门禁；`offline_entrypoint.py` 为 CLI/MCP 子进程安装同类门禁。它们成套存在时，只能证明这两类入口。
-- **明确缺口**：wrapper 对任意 `-Direct` 命令只设置/清理环境后启动进程，并不会在目标 Python 进程内调用 `install_offline_network_guard`。因此 16-task runner、`setup-test-db.py` 等 Direct 任务即使经 5c14caa wrapper 启动，也**尚未满足 G0**。
-- 执行约束：本分支不合并、不修改 5c14caa。pytest/CLI/MCP 可在完整合入该提交或 FT7 等价实现后执行；任意 Direct Python CAT-0 必须等待 FT7 generic Direct guard。真实快照 user-only 命令不复用 G0，另依赖 U1/G8。
-- 依赖顺序：5c14caa 成套机制 → pytest/CLI/MCP 的 G0；FT7 generic Direct guard → 16-task/seed 的 G0；U1 → G8 → CAT-U/CAT-C。任一前置缺失时，对应命令不得“先跑再补”。
+- `codex/review-testcase-repair@5c14caa` 的安全/测试修复已成套集成到当前 P0 收口线，当前实现基线如下。
+- **pytest**：`tests/offline_entrypoint.py pytest` 在 pytest/plugin 导入前安装 base-only Config 与网络 fail-closed，root `tests/conftest.py` 再维持逐用例隔离。
+- **CLI/MCP**：`tests/offline_entrypoint.py` 在产品导入前安装同类门禁。
+- **FT7 generic Direct Python**：wrapper 只接受仓库内 `python -m <module>` 或 `python <script.py>`，转交 `offline_entrypoint.py` 后在同一进程以 `runpy` 执行；入口清理 live/secret/proxy 环境、绑定 base-only Config，并安装网络与子进程 guard。`-c`、stdin、解释器 flags、仓库外模块/脚本均 fail-closed。
+- **边界**：非 Python `-Direct` 不属于 Python G0；上述 guard 是 Python 进程内防护，不是 OS sandbox。真实快照仍是 user-only，另依赖 U1/G8；migration 还依赖 FT5，且 wrapper 对 `scripts/migrate.py` 明确返回 exit 2。
 
-### 18.2 #3 开发 vault 轻量重建（独立进行中）—— 仅定义接口与依赖（OR 条件）
+### 18.2 #3 开发 vault 轻量重建（已交付）—— P0 合成排练基底
 
 | 接口 | 定义 |
 | --- | --- |
-| 交付物 | 轻量开发 vault：合成但结构代表性（内容类型/时间/体量分层），可重复种子化 |
+| 交付物 | 已交付的轻量开发 vault：合成但结构代表性（内容类型/时间/体量分层），可重复重建 |
 | 消费方 | 本 Runbook P0 的排练基底之一；`tests/` 离线用例的补充 fixture |
-| 契约 | dev vault 必须是**合成数据**（不得含任何真实数据）；提供种子脚本与重建命令；路径约定 `.data-test/dev-vault/` 或等价隔离根 |
-| 依赖方向 | **OR 条件**：P0 基底 = ①（#3 dev vault 已就绪 → dev vault 排练）**或** ②（#3 未交付 → 合成样本预演降级）。两种选项都必须满足 G0/G1 前置；选项②不阻塞流程验证，但真实样本预演仍待 #3 或用户显式选择 |
+| 契约 | dev vault 必须是**合成数据**（不得含任何真实数据）；`rebuild-dev-vault.py` 要求 FT7 runtime attestation（`process_guarded=True`），且 `--root` 必须位于本次 wrapper 选定的 `DATA_DIR` 内 |
+| 依赖方向 | P0 默认使用已交付 dev vault；必要时仍可使用最小合成样本预演。两者都只属于 CAT-0，不代表真实数据验证 |
 
-执行纪律：本任务**不等待 #3 完成、不修改 #3 的工作树**；只在此定义接口与依赖。P0 的流程验证优先于数据真实性：无论走选项①还是②，P0 都能以合成数据跑通流程。
+重建与健康检查均必须经 FT7 Direct Python 入口运行，例如 `run-test.ps1 -Direct -DataRoot <selected> -Command @("python", "scripts/rebuild-dev-vault.py", "--root", "<selected>", "--json")`，以及同一 selected `DATA_DIR` 下的 `--check-only --json`。脚本要求 `process_guarded=True` 的 runtime attestation；裸 Python 会在产品 import 前失败，`--root` 指向任意 `.data-test` sibling 或 selected `DATA_DIR` 之外也会被拒绝。两条受保护路径已核验。dev vault 完全由合成数据构成，不改变“真实数据尚未执行”的状态。
 
 ### 18.3 依赖顺序图
 
 ```text
-master (e771ba0)
-├─ codex/review-testcase-repair (5c14caa 整套) ──▶ G0(pytest / CLI / MCP) ──▶ 对应 CAT-0
-├─ FT7 generic Direct guard ────────────────────▶ G0(16-task / seed) ──▶ 对应 CAT-0
-├─ U1 user-only launcher ───────────────────────────────────────▶ G8 ──▶ CAT-U/CAT-C
-├─ #3 dev vault 轻量重建 ──(独立进行)────▶ P0 基底 = (#3 就绪) OR (合成样本预演降级)
-└─ codex/pi-real-data-test-runbook (本分支) ──▶ 交付文档 → G0/CAT-0；U1/G8 → 授权真实数据阶段
+当前 P0 收口线
+├─ CAT-0 G0（pytest / CLI / MCP / FT7 Direct Python）──▶ 已交付、已逐入口核验
+├─ dev vault 重建 + --check-only ─────────────────────▶ 已经 FT7 wrapper Direct Python 核验
+├─ U1 user-only launcher ─────────────────────────────▶ 未交付；G8 阻塞 CAT-U/CAT-C
+├─ FT5 migration DataRoot/断言 ───────────────────────▶ 未交付；额外阻塞 migration
+└─ 真实数据验证 ──────────────────────────────────────▶ 尚未执行，等待用户授权 + U1/G8（migration 再加 FT5）
 ```
 
 ---
 
-## 19. 后续任务清单（本任务不实现，仅登记）
+## 19. 交付状态与后续任务清单
 
-> 本任务**不实现任何访问真实数据的脚本**。以下工具/扩展列为后续任务，交付后回填本 Runbook 对应步骤。
+> CAT-0 FT7 已交付；本次仍**未执行真实数据验证，也未实现 U1/真实数据专用 launcher**。其余工具/扩展继续作为后续任务，完成时回填本 Runbook 对应步骤。
 
 | ID | 任务 | 类型 | 解除的阻塞 | 依赖 |
 | --- | --- | --- | --- | --- |
@@ -830,10 +830,10 @@ master (e771ba0)
 | FT4 | 授权快照制备向导（用户侧脚本，非 AI 执行）：选择→脱敏→落盘的引导式帮助 | 用户工具 | 降低人工准备成本 | 需用户审阅 |
 | FT5 | 迁移前后一致性断言扩展（条目数/字段抽样，clone 内）+ 显式 `--db-path`/DataRoot 支持 | TestCase 扩展 | **15.5 迁移指标自动断言 + DataRoot 支持前置**（未交付则迁移命令不可执行，登记前置） | 无 |
 | FT6 | 真实快照 MCP 证据 harness：参照 `tests/e2e/conftest.py` 的 `TestEnv` 子进程模式与 16-task runner 的 scenario 模式，在受控 harness 内对真实快照执行 evidence/citation 验证 | 测试工具 | **G7 / 15.3 硬前置**（未交付则 P1/P2 剔除 MCP evidence/citation 指标；G2 离线闭环不受影响） | 无 |
-| FT7 | 完整离线 launcher 扩展：保留 5c14caa 的 wrapper、pytest collection、CLI/MCP child 保护，并新增 generic Direct Python entrypoint，使 16-task/seed 等目标进程在导入产品代码前安装 base-only Config 与网络门禁；单独路径预检或 wrapper 环境不算完成 | 安全工具 | **任意 Direct Python 的 G0 / CAT-0 硬前置**；5c14caa 已覆盖的 pytest/CLI/MCP 可不等待此扩展 | 无 |
+| FT7（已交付） | 完整离线 launcher 扩展：pytest、CLI/MCP 与 generic Direct Python 均有匹配入口；Direct Python 仅仓库 `python -m` / `.py`、同进程 `runpy`，清理 live/secret/proxy、绑定 base-only Config、安装网络/子进程 guard，拒绝 `-c`/stdin/flags | 安全工具 | **已解除受支持 Direct Python 的 G0 / CAT-0 阻塞**；非 Python Direct 不在 Python G0 内，guard 不是 OS sandbox | 已完成逐入口核验 |
 | U1 | user-only 真实数据 launcher：验证授权令牌与 `.data-test` 边界、快照只读/clone 可写策略、live 授权与预算；不回显原始 argv，禁用工作区文件日志或源头脱敏，捕获输出后只生成退出码/计数/哈希/假名摘要 | 用户安全工具 | **G8；所有 CAT-U/CAT-C 硬前置**，解决 raw query/URL/title/argv 落盘与 G0 强制离线不适用于 live 的问题 | FT1 脱敏规则；用户审阅 |
 
-所有后续任务必须满足：只在 `.data-test/` 下运行；不得读取 `.data/`；除 U1 明确授权的 live 命令外不得联网。FT1–FT7 只有以 base-only、无网络、仅脱敏输出交付才可进入 CAT-0；U1 明确为 user-only，可加载用户凭据但不得把凭据或原始数据写入工作区/交给 Agent。进入默认 CI 前先过 F1–F5 分流（U1 不进入 CI）。
+所有后续任务必须满足：只在 `.data-test/` 下运行；不得读取 `.data/`；除 U1 明确授权的 live 命令外不得联网。FT1–FT6 只有以 base-only、无网络、**不读取真实快照**、仅脱敏输出交付才可进入 CAT-0；任何读取真实快照的实现仍为 user-only。已交付 FT7 维持同一合同。U1 明确为 user-only，可加载用户凭据但不得把凭据或原始数据写入工作区/交给 Agent。进入默认 CI 前先过 F1–F5 分流（U1 不进入 CI）。
 
 ---
 
@@ -842,7 +842,7 @@ master (e771ba0)
 ### 20.1 一致性检查（本任务已完成并记录）
 
 - [x] 双通道模型一致：CAT-0（Agent-safe）vs CAT-U/CAT-C/CAT-D（user-only）；全文无"Agent 可执行离线真实快照命令"的表述（0.2-7/9、2、8、9）。
-- [x] G0 语义正确：按目标子进程验证 fail-closed；5c14caa 只覆盖 pytest/CLI/MCP，任意 Direct Python 仍依赖 FT7；单独预检或 wrapper 环境不等价；user-only 命令另由 U1/G8 保护。
+- [x] G0 语义正确：pytest、CLI/MCP 与 FT7 Direct Python 已按目标子进程逐入口验证；FT7 只支持仓库 `python -m` / `.py`，拒绝 `-c`/stdin/flags，非 Python Direct 不属于 Python G0，且进程内 guard 不是 OS sandbox；user-only 命令另由 U1/G8 保护。
 - [x] 证据契约统一：T-D/E3 无"原样记录"；版本化/Agent 可读记录仅含脱敏摘要、退出码、计数、哈希、假名 ID、时间、命令类别与模板指纹；无 raw stdout/stderr、实际 URL、真实命令实参、正文、姓名、绝对路径、密钥（6.3、10.2、12 章、模板）。
 - [x] 原始证据仅存于**工作区之外、用户 ACL 隔离、Agent 不可读**的位置；未将 `.data-backup/` 或任何工作区内目录称为 Agent 不可读（12/13 章、T-G）。
 - [x] clone/migration 步骤可审计：`clones/<clone-id>` 路径、制备与验证（7.1-7）、历史 schema baseline 与 pending migration 要求（15.5）。
@@ -864,7 +864,7 @@ master (e771ba0)
 
 ---
 
-**文档版本**: v1.3（2026-07-31 复审修订：完整离线 G0、user-only G8/U1、日志与 writable clone 契约）
+**文档版本**: v1.4（2026-07-31 P0 收口：CAT-0 G0/FT7 已交付，dev-vault 已核验，真实数据门禁不变）
 **创建日期**: 2026-07-31
-**状态**: 规划完成；CAT-0 按命令类型等待匹配的 G0（任意 Direct Python 另需 FT7），真实快照阶段等待 U1/G8 与用户授权，任一前置缺失均不可执行
+**状态**: CAT-0 G0 已按 pytest、CLI/MCP、FT7 Direct Python 逐入口交付并核验；真实数据尚未执行，CAT-U/CAT-C 仍等待 U1/G8 与用户授权，migration 另需 FT5
 **作者**: AI Agent（P2 任务）

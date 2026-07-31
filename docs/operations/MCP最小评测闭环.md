@@ -1,6 +1,6 @@
 # MCP 最小评测闭环
 
-> 状态：Phase B citation 合同完成 / threshold-enforced 离线闭环
+> 状态：Phase B citation 合同完成 / threshold-enforced 离线闭环；16/16 tasks、119/119 checks、`overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`
 >
 > 任务集：`pkv.mcp_quality_tasks.v1`
 > 基线：见 [MCP最小评测基线-2026-07-29.md](./MCP最小评测基线-2026-07-29.md)
@@ -12,7 +12,7 @@
 - `query_subgraph`：多跳节点/边、关系类型过滤、参数上限
 - `explain_relation`：直接关系、两跳路径、不可达关系
 - `collect_evidence`：文档证据、chunk 相关性与可引用性、无命中/路径不可用/检索异常降级
-- `find_bridges`、`timeline_of`、`contrast`：partial 标记、限制说明、证据来源与逐项 provenance
+- `find_bridges`、`timeline_of`、`contrast`：`partial-v1` 最小交付、`implementation_level=partial` 标记、限制说明、证据来源与逐项 provenance
 - Tool 发现/选择、gold 参数一致性、FastMCP schema 接受性和输入验证
 
 评测经过真实的 FastMCP `list_tools` / `call_tool` / `read_resource`
@@ -31,6 +31,9 @@ Tool、错误参数或未来 Agent 预测不会与 gold 共用 YAML anchor/对�
 - 不访问网络；固定来源使用保留域名 `example.test`
 - 不读取或写入生产 `.data/`
 - CLI 必须经 `scripts/run-test.ps1` 执行
+- FT7 将 `-Direct` Python 路由到同进程离线入口，只接受仓库内 `-m <module>` 或仓库 `.py` 脚本；`-c`、stdin、解释器 flags 和仓库外目标会 fail-closed
+- FT7 清理 live/secret/proxy 环境并安装 Python 级网络与子进程 guard；它不是 OS sandbox，也不覆盖非 Python Direct 命令
+- runner 与合成 seed 脚本要求离线 runtime attestation，裸 Python 启动不能绕过入口
 - runner 在包装器提供的 `TMP_DIR` 下创建并自动清理临时数据库/Vault
 - 可选 JSON 结果应写入 `.data-test/<scenario>/`，该临时产物不纳入 Git
 - `taskset_path`、`proposals_path`、公共 `work_dir`、CLI 临时目录和 JSON
@@ -83,7 +86,9 @@ Tool、错误参数或未来 Agent 预测不会与 gold 共用 YAML anchor/对�
   timeline 物理字段及 legacy 持久性，contrast provenance 完整性，并递归
   拒绝 Phase B 新公开响应中的绝对本机路径
 - CLI 通过 `--enforce-thresholds` 把任务集内的目标阈值升级为退出码门禁
-- 2026-07-29 基线快照为 119/119、`citability=100%`、`targets_met=true`，兼容字段 `thresholds_met=true`；2026-07-31 的当前 TestCase dirty tree 已通过 S4c 定向、integration、全量和 MCP coverage 复验
+- 2026-07-31 受控运行结果为 16/16 tasks、119/119 checks、`overall=1.0`、`citability=1.0`、0 failed、`targets_met=true`，兼容字段 `thresholds_met=true`
+- 同一冻结工作树的 MCP 测试门禁为 `364 passed, 1326 deselected`，`src.mcp`
+  覆盖率 `96.88%`，满足 `--cov-fail-under=95`
 - gold call、baseline proposals、119 项断言及各维度阈值均未因本次收口降低或改写
 
 ## 5. 版本化资产
@@ -99,6 +104,9 @@ Tool、错误参数或未来 Agent 预测不会与 gold 共用 YAML anchor/对�
 
 后续变更必须保持 16 条任务、独立 proposals、119 项检查和现有阈值；
 不得通过修改 gold/proposal、删除断言或改写离线 fixture 掩盖回归。
+
+该结果只覆盖固定离线合成场景，不是对真实快照的质量结论。真实快照验证仍受
+U1/G8 与迁移 FT5 阻塞，本轮未读取或执行真实数据；M13 也不会自动解除这些前置。
 
 当前精确引用 URI 规范：
 

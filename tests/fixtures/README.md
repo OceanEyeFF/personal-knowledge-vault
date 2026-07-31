@@ -83,17 +83,19 @@ code tests/fixtures/test_urls.json
 
 ### 4. 运行集成测试
 
-#### 默认模式（仅测试聊天记录处理器）
+#### 默认离线模式（仅测试聊天记录处理器）
 
-```bash
-python tests/manual_test_processors.py
+```powershell
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\processor-manual-offline -Command @(
+  "python", "tests/manual_test_processors.py"
+)
 ```
 
-#### 使用配置文件模式（测试所有处理器）
+#### 使用配置文件模式（真实服务，当前阻塞）
 
-```bash
-python tests/manual_test_processors.py --use-config
-```
+`--use-config` 会加载本机 Provider 配置并可能抓取真实 URL，不属于 CAT-0
+离线自动化。当前不得通过 wrapper 或裸 Python 执行；必须等待 U1/G8 user-only
+launcher、明确授权和脱敏证据流程后，由用户在 disposable 场景中手动运行。
 
 **输出示例**：
 

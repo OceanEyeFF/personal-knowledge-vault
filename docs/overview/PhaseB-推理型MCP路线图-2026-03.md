@@ -3,7 +3,7 @@
 > 文档类型：执行路线 / Roadmap  
 > 创建日期：2026-03-27  
 > 目的：把 Phase B 的目标、边界、任务分解、交付物与退出条件固化为可执行清单
-> 当前状态：`closeout pending`（已完成核心闭环，剩余收口与验收项）
+> 当前状态：citation 合同与 `partial-v1` 最小交付已收口；三个探索 Tool 仍为 `implementation_level=partial`，不表述为 full implementation
 
 ---
 
@@ -24,36 +24,35 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 基于 `docs/overview/当前事实基线-2026-03.md` 与 `docs/operations/CHANGELOG.md`：
 
 - `query_subgraph`、`explain_relation`、`collect_evidence` 已实现并暴露 MCP Tool
-- `find_bridges`、`timeline_of`、`contrast` 已暴露 MCP Tool，但标注为 partial
+- `find_bridges`、`timeline_of`、`contrast` 已暴露 MCP Tool，并按 `partial-v1` 口径交付，但公开合同继续标注 `implementation_level=partial`
 - 关系层具备模型、存储、显式抽取、回填、一跳查询与最小验证闭环
 - 关系层当前已固定正式关系类型 / 来源合同，并把结构化 Front Matter 关系字段扩展到 `children` / `version_of`
 - `collect_evidence` 已支持 chunk-aware 路径（`include_chunks=True`），并保留默认文档级兼容行为
 - `collect_evidence` 当前已固定 `chunk_retrieval_status`：`not_requested` / `success` / `no_hits` / `path_unavailable` / `search_error`
+- Phase C 固定离线评测已达到 16/16 tasks、119/119 checks、`overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`
 
 ---
 
-## 3. 未完成任务与上游缺口（确认版）
+## 3. 已交付边界与剩余缺口（2026-07-31）
 
-> 说明：以下为 Phase B 未完成项，以及对应“上游未完成/不足”的实际阻塞点。
+> 说明：以下区分已经验收的最小合同与仍未实现的 full/真实数据能力，避免把 `partial-v1` 写成 full。
 
-1. **chunk-aware 证据包收口仍未完成**
-   - 当前状态：`collect_evidence` 已支持 chunk-aware 路径与文档级兼容路径
-   - 未完成项：chunk 证据质量门禁与更完整的可观测性验收仍待收口
-2. **`find_bridges/timeline_of/contrast` 仍是 partial**  
-   - 未完成项：工具仍是弱语义/启发式版本  
-   - 上游缺口：语义桥接评分、事件时间字段与对比维度规则未稳定
-3. **真实库回填演练未完成**  
-   - 当前状态：测试副本库上的 `--apply` 演练、`backfill_quality_report.v1` 与质量门禁参数已具备
-   - 未完成项：真实库正式 `--apply` 演练与结果沉淀仍未完成
-   - 上游缺口：真实库级质量报告样本与人工验收流程未固化
+1. **chunk-aware citation 合同已经收口**
+   - 当前状态：`collect_evidence` 已支持 chunk-aware 路径、稳定 locator、去重/排序和文档级兼容路径
+   - 剩余边界：真实样本覆盖尚未执行，离线合成通过不代表真实库质量结论
+2. **`find_bridges/timeline_of/contrast` 已交付 `partial-v1`**
+   - 当前状态：三个 Tool 具备明确结构、limitation、citation/provenance 与降级合同
+   - 剩余边界：仍为弱语义/启发式版本；全局语义桥接、正文事件抽取与高级对比建模属于未来 full 增强
+3. **真实库回填/快照验证仍未执行**
+   - 当前状态：测试副本库能力与合成开发 vault 重建演练已具备；后者完成 `rebuilt -> up_to_date -> checked`，schema `1.2.3`、8 migrations、3 seed
+   - 阻塞项：user-only launcher U1/G8 与迁移受控入口 FT5 尚未交付，不得执行真实快照
 4. **关系来源扩展仍未完成**
    - 当前状态：已从 Markdown 显式链接 / `related_docs` 扩展到 Front Matter 关系字段 `children` / `version_of`
    - 未完成项：高阶推理输入仍以显式链接与结构化 Front Matter 为主
    - 上游缺口：更稳定的语义关系来源未形成可复用抽取策略
-5. **推理评测闭环未完成（Phase C 入口阻塞）**  
-   - 当前状态：最小评测样例集、关系回填质量门禁与最小回归命令已建立
-   - 未完成项：代表性样例规模、自动评分规则与高阶推理评测闭环仍未完成
-   - 上游缺口：更完整的样例覆盖面与稳定自动化评测规则未固化
+5. **Phase C 最小推理评测闭环已经完成**
+   - 当前状态：16 tasks / 119 checks 固定资产与 threshold gate 已建立，当前 `overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`
+   - 剩余边界：该闭环使用离线合成场景，不替代真实数据验收
 
 ---
 
@@ -63,7 +62,7 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 
 具体目标：
 
-1. **推理型 Tool 稳定化**：统一输入约束与输出结构，消除“partial”语义的模糊边界。
+1. **推理型 Tool 稳定化**：统一输入约束与输出结构，明确 `partial` 的能力边界，而不是通过改名把它伪装成 full。
 2. **证据与解释链闭环**：每个推理输出都可追溯到“关系路径 + 证据片段 + 置信度”。
 3. **可验证与可回归**：具备最小评测集与稳定回归指标，支持 Phase C 接手。
 
@@ -141,7 +140,7 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 - `timeline_of` 当前已明确时间来源优先级：`event_time > published_at > archived_at`，并把 `structured_time_fields` 作为证据来源
 - `timeline_of` 当前在多时间源并列主导时会返回 `inferred_time_field=mixed`，避免整体时间源判断偏乐观
 - `contrast` 当前已补入稳定的 `comparison_dimensions` 与 `evidence_sources` 输出结构，并新增 `relation_graph_signal` 与候选级 `relation_signal_score` / `relation_types`
-- 三个 Tool 当前仍属于 `partial`，但边界与限制已更明确
+- 三个 Tool 已按 `partial-v1` 口径完成最小交付，公开响应继续声明 `implementation_level=partial`；边界与限制已固定，不代表 full 语义能力
 
 ### 5.4 关系回填与质量验证（优先级 P1）
 
@@ -164,18 +163,23 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 - 当前 `scripts/backfill_relations.py` 已支持可选质量门禁参数：`--min-coverage`、`--max-noise`、`--max-conflict`、`--fail-on-gate`
 - 当前已补入最小关系推理回归样例集：`tests/fixtures/phase_b_5_4_min_regression.yaml`
 - 当前已新增 `docs/operations/关系回填质量验证指南.md`，用于规范测试副本库的 dry-run / apply 演练与回归命令
+- 合成开发 vault 已完成 `rebuilt -> up_to_date -> checked` 演练（schema `1.2.3`、8 migrations、3 seed）；这不是正式真实库回填
+- 真实快照执行仍受 U1/G8 与迁移 FT5 阻塞，本轮未执行真实数据
 
 ---
 
 ## 6. 退出条件（Exit Criteria）
 
-满足以下条件即可视为 Phase B 结束、可交接 Phase C：
+当前采用 `partial-v1` 的诚实交付口径，Phase C 最小闭环已可接手并完成：
 
 1. Phase B MCP Tool 有统一、稳定、版本化的输出结构
-2. `collect_evidence` 具备 chunk 级证据，且能给出可追溯链路
-3. `find_bridges/timeline_of/contrast` 均达到“最小可用”并解除 partial 标记
-4. 有最小推理评测集与回归指标（≥10 个样例）
-5. 文档与代码一致性已同步（`docs/overview`、`docs/operations/CHANGELOG.md`）
+2. `collect_evidence` 具备 chunk 级证据与可追溯链路
+3. `find_bridges/timeline_of/contrast` 达到受限最小可用，并继续标注 `implementation_level=partial`
+4. 固定推理评测为 16 tasks / 119 checks，当前所有阈值通过
+5. 文档与代码一致性同步到当前真相源
+
+这组条件只表示 citation/`partial-v1` 最小交付完成；原先“解除 partial 标记”所代表的
+full 语义能力并未实现，不能据此宣称完整 Phase B 高阶推理能力已经完成。
 
 ---
 

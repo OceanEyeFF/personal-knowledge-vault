@@ -19,8 +19,10 @@
 
 ## 入口与启动
 
+GUI 进程会加载正常本机配置、初始化数据库，并可能连接真实 Provider。下列启动命令仅供用户在本机手动使用；AI/Agent 不执行。自动化验证使用本文测试章节中的 `run-test.ps1` 命令。
+
 ```bash
-# 启动方式
+# 用户本机启动方式（Agent 不执行）
 python -m src.gui           # 通过 __main__.py
 python -m src.gui.app       # 直接运行 app.py
 python src/gui/app.py       # 脚本方式
@@ -217,26 +219,19 @@ class KnowledgeReference:
 
 ### 运行测试
 
-```bash
+```powershell
 # GUI 单元测试
-python -m pytest tests/unit/test_gui_*.py -v
-python -m pytest tests/unit/test_chat_viewmodel.py -v
-python -m pytest tests/unit/test_knowledge_ref.py -v
-python -m pytest tests/unit/test_autocomplete_popup.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\gui-unit -Command @(
+  "pytest", "tests/unit", "-k",
+  "gui or chat_viewmodel or knowledge_ref or autocomplete_popup", "-v"
+)
 ```
 
 ### 手动测试 (M12)
 
-```bash
-# DeepSeek 流式 API 测试
-python tests/manual_test_m12/test_deepseek_stream.py
-
-# QThread + asyncio 集成测试
-python tests/manual_test_m12/test_qthread_asyncio.py
-
-# qasync 集成测试
-python tests/manual_test_m12/test_qasync_integration.py
-```
+M12 手动脚本不是默认自动化。DeepSeek 流式脚本涉及真实 Provider，必须等待
+U1/G8 user-only launcher 与明确授权；QThread/qasync 交互脚本也只由用户按文件
+说明手动运行，不得用裸 Python 作为 Agent 流程。
 
 ---
 

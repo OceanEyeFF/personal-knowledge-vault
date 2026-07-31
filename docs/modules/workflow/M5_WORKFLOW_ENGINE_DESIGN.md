@@ -1,5 +1,7 @@
 # Milestone 5: 工作流引擎最小变更实现方案
 
+> **历史设计稿，不可作为当前执行 Runbook**：本文保留 M5 当时的设计与命令快照，其中的裸 `pytest`、`python -c`、GUI/人工命令均不适用于当前 Agent 自动化。当前测试入口与安全边界以 [`tests/CLAUDE.md`](../../../tests/CLAUDE.md) 与 [`.ai-safety-rules.md`](../../../.ai-safety-rules.md) 为准。
+
 ## 设计原则
 
 - **KISS 原则**: 复用现有抽象，最小化新文件

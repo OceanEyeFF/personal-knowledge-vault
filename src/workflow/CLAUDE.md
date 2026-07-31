@@ -377,39 +377,31 @@ class State(dict):
 
 ### 单元测试
 
-```bash
+```powershell
 # 运行所有工作流测试
-python -m pytest tests/unit/test_workflow_*.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\workflow-unit -Command @("pytest", "tests/unit", "-k", "workflow", "-v")
 
 # 测试工作流引擎
-python -m pytest tests/unit/test_workflow_engine.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\workflow-engine -Command @("pytest", "tests/unit/test_workflow_engine.py", "-v")
 
 # 测试数据模型
-python -m pytest tests/unit/test_workflow_models.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\workflow-models -Command @("pytest", "tests/unit/test_workflow_models.py", "-v")
 
 # 测试步骤
-python -m pytest tests/unit/test_workflow_steps.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\workflow-steps -Command @("pytest", "tests/unit/test_workflow_steps.py", "-v")
 ```
 
 ### 集成测试
 
-```bash
+```powershell
 # 端到端工作流测试
-python -m pytest tests/integration/test_workflow_integration.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\workflow-integration -Command @("pytest", "tests/integration/test_workflow_integration.py", "-v")
 ```
 
 ### 手动测试
 
-```bash
-# 真实环境 E2E 测试
-python tests/manual_test_e2e_workflow.py
-
-# 简化版工作流测试
-python tests/manual_test_simplified.py
-
-# 工作流配置测试
-python tests/manual_test_workflow_config.py
-```
+手动工作流脚本不属于默认自动化；其中真实环境 E2E 会加载 Provider/网络，当前受
+U1/G8 阻塞。其余交互脚本也只由用户按文件说明手动执行，不提供 Agent 裸跑命令。
 
 ### 测试覆盖
 

@@ -12,7 +12,7 @@
 
 - **自动化优先**: 一键完成环境搭建和数据管理
 - **安全第一**: 备份/恢复/迁移前强制确认
-- **测试隔离**: 测试环境与生产环境完全隔离
+- **测试隔离**: 自动化运行路径锁定到 `.data-test`；Python guard 不是文件系统或 OS sandbox
 - **增量升级**: 数据库版本化管理,支持增量迁移
 
 ---
@@ -72,15 +72,15 @@
 
 #### run-test.ps1 (重要!)
 
-**用途**: 使用隔离的测试数据路径运行 PKV CLI；pytest、Python 等非 CLI 命令必须使用 `-Direct -Command @(...)`（不影响生产数据）
+**用途**: 默认自动化入口。使用隔离路径运行 PKV CLI、pytest，或经 FT7 运行受保护的仓库 Direct Python。
 
 **运行方式**:
 ```powershell
-# 在测试环境归档网页
-.\scripts\run-test.ps1 archive "https://example.com"
+# 查看测试环境统计
+.\scripts\run-test.ps1 stats
 
-# 在测试环境搜索
-.\scripts\run-test.ps1 search "AI"
+# 在测试环境离线搜索
+.\scripts\run-test.ps1 search "AI" --strategy bm25
 
 # 查看测试环境统计
 .\scripts\run-test.ps1 stats
@@ -91,28 +91,45 @@
 # 直接运行 pytest（仍使用同一套测试路径隔离）
 .\scripts\run-test.ps1 -Direct -Command @("pytest", "tests\unit", "-q")
 
-# 直接运行迁移工具并指定独立测试场景
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--dry-run")
+# 运行仓库 Direct Python（只允许仓库 -m module 或 .py）
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--root", ".data-test/rebuild-dev", "--check-only", "--json")
 ```
 
 **功能**:
 - 在当前进程直接设置完整测试路径覆盖，不读取 `.env.test`
 - 支持 `-DataRoot` 创建彼此隔离的测试场景
-- 默认模式将参数传给 `python -m src.cli.commands`；非 CLI 命令必须显式使用 `-Direct -Command @(...)`
+- 默认 CLI、MCP 离线子进程由 `tests/offline_entrypoint.py` 启动；pytest 由同一入口的 `pytest` 目标在 pytest/plugin 导入前建立 G0，根 `tests/conftest.py` 再维持逐用例隔离
+- Direct Python（FT7）仅允许仓库 `python -m <module>` 或仓库 `.py`，拒绝 `-c`、stdin 和解释器 flags；同进程 `runpy` 在产品导入前清理 live/secret/proxy，并安装 base-only Config、网络及子进程 guard
 - 隔离测试数据到 `.data-test/` 目录
 - 自动创建测试目录结构
 - 显示测试环境状态(绿色提示)
 
 **关键特性**:
-- 完全隔离生产数据(`.data/`)
-- 可以安全测试新功能
-- 支持所有 CLI 命令
+- 默认运行路径不指向生产数据 (`.data/`)，并 fail-closed 拒绝危险目标
+- 可验证受支持的离线 CAT-0 功能
+- 支持离线 CLI 子命令；需要网络或真实数据的命令仍受 user-only gate 阻塞
+- FT7 是 Python 进程内 guard，不是 OS sandbox；非 Python Direct 仍须经 wrapper 启动，但不属于 Python G0、不保证离线，需单独审查
+- `setup-test-db.py` 的输出必须精确位于所选 `DATA_DIR`（默认 `DB_PATH`）
+- `migrate.py` 被包装器 fail-closed 拒绝并返回 exit 2；真实迁移仍受 U1/G8/FT5 user-only gate 阻塞，尚未执行真实数据迁移
 
 **AI 安全规范**:
 - 所有 AI 协作测试**必须**使用此脚本
 - 禁止直接操作生产数据
 
 详见: [.ai-safety-rules.md](../.ai-safety-rules.md)
+
+---
+
+#### rebuild-dev-vault.py
+
+**用途**: 只在本次 wrapper `-DataRoot` 选中的 `DATA_DIR` 内执行合成开发 Vault 的重建或只读健康检查；不得指向其他 `.data-test` 场景。脚本在第三方/产品 import 前要求 FT7 runtime attestation，裸 Python 启动会 fail-closed。两种模式都必须经 `run-test.ps1` 的 Direct Python/FT7 入口：
+
+```powershell
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--root", ".data-test/rebuild-dev", "--json")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--root", ".data-test/rebuild-dev", "--check-only", "--json")
+```
+
+这只是合成开发库演练，不替代旧版真实快照迁移或生产迁移验证。
 
 ---
 
@@ -248,26 +265,11 @@
 
 **用途**: 数据库 Schema 增量迁移工具
 
-**运行方式**:
-```bash
-# 以下裸命令使用当前配置；未设置路径覆盖时会读取或修改生产 .data/。
-# 仅供用户明确授权后的生产维护，AI 不执行。
+**当前门禁**:
 
-# 查看当前数据库版本
-python scripts/migrate.py --version
-
-# 检查待迁移脚本(不执行)
-python scripts/migrate.py --dry-run
-
-# 交互式升级(推荐)
-python scripts/migrate.py
-
-# 自动升级(无需确认)
-python scripts/migrate.py --auto
-
-# 跳过自动备份(不推荐)
-python scripts/migrate.py --no-backup
-```
+- `run-test.ps1` 明确拒绝 `migrate.py`（exit 2），不得把它包装成当前自动化命令。
+- 真实旧库/生产迁移仍受 U1/G8/FT5 user-only gate 阻塞；截至当前尚未执行任何真实数据迁移。
+- 门禁交付后也只能由用户在明确授权、备份和脱敏旧版夹具验证完成后，按专用迁移 Runbook 操作；AI/自动化不执行。
 
 **功能**:
 - 获取当前数据库版本(从 `schema_version` 表)
@@ -370,7 +372,7 @@ CREATE TABLE IF NOT EXISTS cli_stats (
 
 #### config/local.yaml
 
-应用服务、模型和密钥统一配置在 Git 忽略的 `config/local.yaml`。测试数据路径由 `run-test.ps1` 在进程内覆盖，与本机服务配置相互独立。
+用户/生产运行的服务、模型和密钥配置在 Git 忽略的 `config/local.yaml`。默认自动化不读取该文件，由 `run-test.ps1` 与 offline entrypoint 安装 base-only Config。
 
 ---
 
@@ -451,8 +453,7 @@ notepad config\local.yaml
 # 4. 验证安装
 .\scripts\test-conda.ps1
 
-# 4. 初始化默认数据库（生产操作；仅由用户明确授权后执行，AI 不执行）
-.\scripts\run-windows.ps1 python scripts/migrate.py
+# 4. 初始化/迁移默认数据库当前受 U1/G8/FT5 user-only gate 阻塞；此处不提供现行命令
 ```
 
 ---
@@ -464,8 +465,8 @@ notepad config\local.yaml
 .\scripts\run-test.ps1 config show
 
 # 2. 在测试环境测试
-.\scripts\run-test.ps1 archive "https://example.com"
-.\scripts\run-test.ps1 search "测试"
+.\scripts\run-test.ps1 stats
+.\scripts\run-test.ps1 search "测试" --strategy bm25
 
 # 3. 再次确认命令仍指向测试路径；AI 不读取生产 .data/ 作对比
 .\scripts\run-test.ps1 config show
@@ -476,25 +477,9 @@ git status --short
 
 ### 场景 3: 数据库升级
 
-空的 `.data-test\migration` 只验证 **fresh install**，不能证明旧库升级兼容，也不能作为生产升级门禁。验证升级兼容性前，先将已脱敏的旧版本 DB/Schema 夹具放到 `.data-test\migration\db\knowledge_vault.db`；迁移依赖 Vault 或向量数据时，也要把对应测试夹具放入同一数据根目录。不要让测试命令直接指向生产 `.data/`。
+空的 `.data-test\migration` 只能证明 fresh install，不能证明旧库升级兼容，也不能作为生产升级门禁。当前 `run-test.ps1` 会对 `migrate.py` 返回 exit 2，因此不存在可由 AI/自动化执行的迁移命令。
 
-```powershell
-# 1. 在测试环境验证迁移
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--dry-run")
-
-# 2. 执行测试环境迁移；当前自动备份脚本固定读取生产 .data/，测试时必须禁用
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
-
-# 3. 验证测试环境
-.\scripts\run-test.ps1 -DataRoot .data-test\migration stats
-
-# 4. 以下均为生产操作：必须由用户明确授权并执行，AI 到此停止
-.\scripts\backup-data.ps1 -Message "升级到 v1.2.0 前备份"
-.\scripts\run-windows.ps1 python scripts/migrate.py
-
-# 5. 生产验证同样由用户执行；AI 不读取 .data/
-.\scripts\run-windows.ps1 python -m src.cli.commands stats
-```
+真实旧库/生产迁移须等待 U1/G8/FT5 user-only gate 完整交付；届时也必须由用户在明确授权、备份和脱敏旧版夹具验证后按专用 Runbook 执行。当前尚未执行真实数据迁移，AI 不读取 `.data/` 验证。
 
 ---
 
@@ -527,11 +512,12 @@ git status --short
     ↓
 创建 .data-test/ 目录结构
     ↓
-默认模式：通过 run-windows.ps1 执行 python -m src.cli.commands <CLI-subcommand>
-Direct 模式：.\scripts\run-test.ps1 -Direct -Command @("<executable>", "<arg>", "...")
-             通过 run-windows.ps1 原样执行 <executable> <args>
+默认 CLI：通过 run-windows.ps1 执行 tests/offline_entrypoint.py cli <CLI-subcommand>
+pytest Direct：转交 tests/offline_entrypoint.py pytest，在 pytest/plugin 导入前建立 G0，再加载根 tests/conftest.py
+Python Direct：执行 tests/offline_entrypoint.py python，再由同进程 runpy 运行仓库目标
+非 Python Direct：仍经 wrapper，但原样执行且不属于 Python G0、不保证离线
     ↓
-Config 合并 YAML 应用配置与当前进程的隔离路径覆盖；输出不得泄露密钥
+离线路径使用 base-only Config；产品导入前清理 live/secret/proxy 并安装相应 guard
     ↓
 操作 .data-test/ 数据(隔离)
     ↓
@@ -541,26 +527,17 @@ Config 合并 YAML 应用配置与当前进程的隔离路径覆盖；输出不�
 ### 数据库迁移数据流
 
 ```
-测试路径（AI/自动化默认）：
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
+AI/自动化
     ↓
-读取并迁移 .data-test\migration\db；禁用当前会读取生产 .data/ 的自动备份
+run-test.ps1 识别 migrate.py
     ↓
-使用同一 DataRoot 运行 stats/list 验证
+fail-closed，exit 2（不读取、不迁移）
 
-生产路径（必须由用户明确授权并执行，AI 不执行）：
-.\scripts\run-windows.ps1 python scripts/migrate.py
+真实旧库/生产路径
     ↓
-MigrationManager.get_pending_migrations()
-  → 读取生产 schema_version 并扫描 scripts/migrations/*.sql
+U1/G8/FT5 user-only gate 尚未交付
     ↓
-自动备份 .data/ → .data-backup/{timestamp}/
-    ↓
-逐个执行迁移脚本
-  → 执行 SQL
-  → 记录到 schema_version 表
-    ↓
-生产 stats/list 验证同样只由用户执行
+保持阻塞；当前尚未执行真实数据迁移
 ```
 
 ---

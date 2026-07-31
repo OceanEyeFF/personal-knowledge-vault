@@ -5,6 +5,8 @@
 **Author**: Sarah (Product Owner) & 浮浮酱
 **Quality Score**: 98/100
 
+> **历史 PRD / 里程碑标签已废弃**：本文保留审核系统的需求候选，但文末原“M13”编号不再代表当前主线里程。当前 M13 统一指 v0.8.1 离线发布准备（打包/E2E/用户文档）；本 PRD 若重启，必须重新编号并单独确认 DoD。
+
 ---
 
 ## Executive Summary
@@ -549,6 +551,6 @@
 
 **This PRD was created through interactive requirements gathering with quality scoring (98/100) to ensure comprehensive coverage of business, functional, UX, and technical dimensions.**
 
-**MileStone**: M13 - AI 生成内容审核系统
+**历史 MileStone 标签**: M13 - AI 生成内容审核系统（已废弃；当前 M13 为 v0.8.1 离线发布准备）
 **预期完成时间**: 2 周（CLI 版本）
 **优先级**: 🔴 High（核心工作流必经步骤）

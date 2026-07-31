@@ -231,12 +231,12 @@ class Entry:
 
 ### 单元测试
 
-```bash
+```powershell
 # 运行所有处理器测试
-python -m pytest tests/unit/test_processors_*.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\processors-unit -Command @("pytest", "tests/unit", "-k", "processors", "-v")
 
 # 运行特定处理器测试
-python -m pytest tests/unit/test_processors_ai_chat.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\processors-ai-chat -Command @("pytest", "tests/unit/test_processors_ai_chat.py", "-v")
 ```
 
 ### 测试覆盖

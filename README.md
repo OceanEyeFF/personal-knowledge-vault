@@ -6,11 +6,12 @@
 [![Version](https://img.shields.io/badge/version-0.8.0--alpha-blue.svg)](./docs/operations/CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.11+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](./LICENSE)
-[![Status](https://img.shields.io/badge/status-production_ready-brightgreen.svg)](./docs/history/milestones/)
+[![Status](https://img.shields.io/badge/status-alpha_development-yellow.svg)](./docs/history/milestones/)
 
 > 当前仓库基线：`v0.8.0-alpha`
 > 说明：`v0.6.0` 是 CLI 首次稳定引入版本，`v0.7.0` 是 MCP 首次稳定引入版本；当前仓库在此基础上继续合入后续 GUI 与文档收敛工作。
 > 命名说明：当前路线里提到的“当前开发 Phase 1”实际对应 `Phase A：Relation Foundation`；历史文档中的旧 `Phase 1` 已归档完成，两者不是同一时间轴。
+> 2026-07-31 离线收口：Phase C 固定评测为 16 tasks / 119 checks，`overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`；三个探索 Tool 按 `partial-v1` 口径交付，公开合同仍诚实声明 `implementation_level=partial`。
 
 ## ✨ 核心特点
 
@@ -88,9 +89,9 @@ AI Agent（Claude Code、Cursor 等）通过 MCP 协议直接操作知识库：
 - `query_subgraph` — 关系子图查询
 - `explain_relation` — 关系解释
 - `collect_evidence` — 证据包聚合
-- `find_bridges` — 桥接候选发现（partial）
-- `timeline_of` — 弱时间线重建（partial）
-- `contrast` — 主题对比（partial）
+- `find_bridges` — 桥接候选发现（partial-v1）
+- `timeline_of` — 弱时间线重建（partial-v1）
+- `contrast` — 主题对比（partial-v1）
 
 **3 个 Prompt 模板**: `search_and_summarize` / `knowledge_qa` / `idea_sharpen`
 
@@ -109,7 +110,7 @@ AI Agent（Claude Code、Cursor 等）通过 MCP 协议直接操作知识库：
 - 已新增 `src/relations/evidence_service.py`，当前提供文档级 `collect_evidence` 证据包聚合 v1
 - 已新增 `src/relations/exploration_service.py`，当前提供 `find_bridges`、`timeline_of`、`contrast` 的受限版本
 - 当前已把 `query_subgraph`、`explain_relation` 与 `collect_evidence` 暴露为只读 MCP Tool；其中 `collect_evidence` 默认保持文档级证据包兼容行为，显式传入 `include_chunks=true` 时可返回 chunk 级证据字段，并执行近重复去重与多因子排序
-- 当前已把 `find_bridges`、`timeline_of`、`contrast` 暴露为只读 MCP Tool，但它们仍是 partial implementation：`find_bridges` 当前结合显式关系子图、局部图桥接信号与轻量文本重合；`timeline_of` 当前优先使用 `event_time > published_at > archived_at` 的结构化真实时间字段；`contrast` 当前在稳定对比维度之外补入跨主题显式关系路径信号与候选级 `relation_signal_score` / `relation_types`
+- 当前已把 `find_bridges`、`timeline_of`、`contrast` 暴露为只读 MCP Tool，并按 `partial-v1` 口径完成最小可用交付；公开响应仍声明 `implementation_level=partial`，不等同于 full implementation：`find_bridges` 当前结合显式关系子图、局部图桥接信号与轻量文本重合；`timeline_of` 当前优先使用 `event_time > published_at > archived_at` 的结构化真实时间字段；`contrast` 当前在稳定对比维度之外补入跨主题显式关系路径信号与候选级 `relation_signal_score` / `relation_types`
 
 ## 📂 项目结构
 
@@ -397,7 +398,11 @@ steps:
 
 **版本化 Schema 管理**:
 
-以下裸命令面向用户维护，未设置路径覆盖时会读取或修改生产 `.data/`；AI 不执行。AI/自动化应使用 `run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("<executable>", "<arg1>", "<arg2>")`，测试迁移追加 `--no-backup`，避免当前备份脚本读取生产目录。
+以下裸命令仅作为用户维护 API 说明；未设置路径覆盖时会读取或修改生产
+`.data/`，AI/自动化不执行。当前 `run-test.ps1` 会明确拒绝
+`scripts/migrate.py` / `scripts.migrate` 并返回 exit 2；自动化只运行使用临时
+SQLite 的迁移单元/集成测试。真实快照迁移必须等待 FT5、U1/G8 和用户明确授权，
+并且只能在 disposable writable clone 中执行。
 
 ```bash
 # 迁移工具
@@ -418,7 +423,7 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 
 ### 🎉 当前仓库基线: v0.8.0-alpha
 
-**发布状态**: ✅ M1-M9 稳定能力已完成，仓库当前基线继续包含后续 GUI / 聊天相关工件与文档收敛结果
+**发布状态**: 🧪 M1-M9 能力已实现，当前仍为 alpha 开发基线；M13 发布准备与真实数据验收尚未完成
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
@@ -451,14 +456,14 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 
 | 能力 | 状态 | 说明 |
 |------|------|------|
-| **内容归档** | ✅ 生产就绪 | 6 种处理器（微信/知乎/网页/聊天/AI 对话/文本） |
-| **智能检索** | ✅ 生产就绪 | BM25/向量/混合，自动路由 |
-| **AI 分析** | ✅ 生产就绪 | 三层摘要、标签提取、成本优化 |
-| **CLI 交互** | ✅ 生产就绪 | 6 个核心命令，Rich Console 界面 |
-| **工作流引擎** | ✅ 生产就绪 | YAML 配置，可编排/可观测 |
-| **数据迁移** | ✅ 生产就绪 | 版本化 Schema，增量迁移 |
-| **AI 安全** | ✅ 生产就绪 | 安全规范、测试隔离、自动备份 |
-| **MCP 服务** | ✅ 生产就绪 | 8 Tool + 4 Resource + 3 Prompt，SSRF 防护 |
+| **内容归档** | 🧪 已实现（alpha） | 6 种处理器；真实数据验收尚未执行 |
+| **智能检索** | 🧪 已实现（alpha） | BM25/向量/混合，自动路由 |
+| **AI 分析** | 🧪 已实现（alpha） | 三层摘要、标签提取、成本优化 |
+| **CLI 交互** | 🧪 已实现（alpha） | 6 个核心命令，Rich Console 界面 |
+| **工作流引擎** | 🧪 已实现（alpha） | YAML 配置，可编排/可观测 |
+| **数据迁移** | ⚠️ 临时库验证 | 版本化 Schema；真实升级仍受 FT5、U1/G8 阻塞 |
+| **AI 安全** | 🧪 CAT-0 已验证 | 离线入口与测试隔离；不等同于 OS sandbox |
+| **MCP 服务** | 🧪 离线基线通过 | 固定评测 16/16、119/119；真实快照未验收 |
 
 ### 📈 技术债务与改进方向
 
@@ -490,12 +495,12 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 
 | 测试类型 | 文件数 | 覆盖范围 | 运行方式 |
 |---------|--------|----------|----------|
-| **单元测试** | 40 个 | 核心业务逻辑、GUI、MCP、处理器、存储层 | `pytest tests/unit/ -v` |
-| **集成测试** | 8 个 | 跨模块集成、MCP 功能、工作流、审核链路 | `pytest tests/integration/ -v` |
-| **E2E 测试** | 6 个 | 端到端流程、MCP 服务与真实工作流验证 | `pytest tests/e2e/ -v` |
-| **黑盒测试** | 5 个 | CLI + MCP stdio 协议 | `pytest tests/blackbox/ -v` |
-| **根目录测试/辅助文件** | 9 个 | 基础语法、手动验证脚本、测试说明 | 按文件说明执行 |
-| **M12 专项手动验证** | 7 个 | qasync、流式输出、线程/异步集成 | `python tests/manual_test_m12/<file>.py` |
+| **单元测试** | 40 个 | 核心业务逻辑、GUI、MCP、处理器、存储层 | `run-test.ps1 -Direct ... pytest tests/unit/` |
+| **集成测试** | 8 个 | 跨模块集成、MCP 功能、工作流、审核链路 | `run-test.ps1 -Direct ... pytest tests/integration/` |
+| **E2E 测试** | 6 个 | 默认离线端到端与 MCP 服务；network/manual 排除 | `run-test.ps1 -Direct ... pytest tests/e2e/` |
+| **黑盒测试** | 5 个 | CLI + MCP stdio 协议 | `run-test.ps1 -Direct ... pytest tests/blackbox/` |
+| **根目录测试/辅助文件** | 9 个 | 基础语法、手动验证脚本、测试说明 | 自动化经 wrapper；manual 由用户按说明执行 |
+| **M12 专项手动验证** | 7 个 | qasync、流式输出、线程/异步集成 | 用户手动、非默认自动化；按文件说明执行 |
 
 **MCP 多层测试结构**:
 
@@ -508,33 +513,46 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 **快速测试**:
 
 ```powershell
-# 无数据访问的帮助命令可直接通过 Windows 运行器进入 py311-private
-.\scripts\run-windows.ps1 python -m src.cli.commands --help
+# CLI 帮助也经受控入口，使用独立场景 DataRoot
+.\scripts\run-test.ps1 -DataRoot .data-test\readme-help -Command @("--help")
 
 # 运行所有单元测试；pytest 为非 CLI 命令，使用 -Direct 与显式 -Command 数组
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-v")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\readme-unit -Command @("pytest", "tests/unit/", "-v")
 
 # 运行特定模块测试
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "-k", "processors", "-v")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\readme-unit-filter -Command @("pytest", "tests/unit/", "-k", "processors", "-v")
 
 # 代码覆盖率
-.\scripts\run-test.ps1 -Direct -Command @("pytest", "tests/unit/", "--cov=src", "--cov-report=term-missing")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\readme-coverage -Command @("pytest", "tests/unit/", "--cov=src", "--cov-report=term-missing")
 
 # 验证环境；Python 脚本同样使用 -Direct 与显式 -Command 数组
-.\scripts\run-test.ps1 -Direct -Command @("python", "src/utils/verify_setup.py")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\readme-verify -Command @("python", "src/utils/verify_setup.py")
 ```
+
+`-Direct` Python 当前经 FT7 通用离线入口执行，只接受仓库内 `python -m <module>`
+或仓库内 `.py` 脚本；`-c`、stdin 与解释器 flags 会 fail-closed。入口清理
+live/secret/proxy 环境并安装 Python 级网络与子进程 guard，但它不是 OS sandbox，
+也不覆盖非 Python 的 `-Direct` 命令。
 
 **Phase C MCP 最小离线评测**:
 
 ```powershell
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-quality -Command @(
   "python", "-m", "evals.mcp_quality",
+  "--enforce-thresholds",
   "--output", ".data-test/mcp-quality/result.json"
 )
 ```
 
-固定任务、评分维度、隔离边界和当前失败矩阵见
+当前固定结果为 16/16 tasks、119/119 checks、`overall=1.0`、
+`citability=1.0`、0 failed 且 `thresholds_met=true`。固定任务、评分维度与
+隔离边界见
 [MCP 最小评测闭环](docs/operations/MCP最小评测闭环.md)。
+
+开发 vault 重建入口 `scripts/rebuild-dev-vault.py` 已完成合成演练：
+`rebuilt -> up_to_date -> checked`，目标 schema `1.2.3`、8 个迁移、3 条 seed。
+这只证明离线合成开发基线可重建；真实快照仍受 U1/G8 与迁移 FT5 阻塞，
+本轮未读取或执行真实数据。M13 是该离线基线之后的下一阶段，不等于真实数据验收。
 
 详细说明：[tests/CLAUDE.md](tests/CLAUDE.md)
 
@@ -587,8 +605,8 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 **项目代号**: Personal Knowledge Vault
 **当前版本**: v0.8.0-alpha
 **创建日期**: 2026-01-27
-**文档版本**: v4.0
-**最后更新**: 2026-03-06
+**文档版本**: v4.1
+**最后更新**: 2026-07-31
 
 ---
 

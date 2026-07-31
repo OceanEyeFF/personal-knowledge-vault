@@ -3,10 +3,12 @@
 > Personal Knowledge Vault - API Reference
 > 核心模块接口定义与数据流转协议
 
-**文档版本**: v2.1
+**文档版本**: v2.2
 **创建日期**: 2026-02-14
-**最后更新**: 2026-02-16 17:35
-**目标读者**: AI Agent / 开发者
+**最后更新**: 2026-07-31
+**目标读者**: 开发者（AI Agent 仅作接口参考）
+
+> **执行边界**：本文 Python/CLI 片段主要说明公开接口，不是 Agent 可直接执行的 Runbook。AI 自动化只能使用 `scripts/run-test.ps1` 与合成 CAT-0 数据；会加载 `config/local.yaml` 的 config 命令、真实 URL archive、vector/hybrid 检索以及真实迁移均为 user-only，当前受 U1/G8（迁移另需 FT5）阻塞。当前可执行合同以 [`tests/CLAUDE.md`](../../tests/CLAUDE.md) 与 [`testing/真实数据验证Runbook.md`](./testing/真实数据验证Runbook.md) 为准。
 
 ---
 
@@ -615,6 +617,8 @@ if __name__ == "__main__":
 
 > **新增于 v0.6.1**: 数据库增量升级系统
 
+> **P0 安全边界**：真实迁移尚未执行。默认自动化必须从 `run-test.ps1` 启动，并且迁移逻辑只在 pytest 创建的临时 SQLite 中验证；包装器对 `scripts/migrate.py` / `scripts.migrate` 明确返回退出码 `2`。pytest 先经 `tests/offline_entrypoint.py pytest` 在 pytest/plugin 导入前建立离线基线，根 `tests/conftest.py` 再维持逐用例隔离；CLI/MCP 使用 offline entrypoint，FT7 Direct Python 只允许仓库内 `-m module` 或 `.py` 并在同进程安装 guard，拒绝 `-c`、stdin 和解释器 flags。这些 Python guard 不是 OS sandbox，只覆盖合成 CAT-0，不授权读取真实快照。
+
 ### MigrationManager
 
 **职责**: 管理数据库 Schema 的版本升级和回滚
@@ -633,10 +637,12 @@ if __name__ == "__main__":
 from pathlib import Path
 from src.storage.migration_manager import MigrationManager
 
-manager = MigrationManager(
-    db_path=Path(".data/db/knowledge_vault.db"),
-    migrations_dir=Path("scripts/migrations")
-)
+def test_migration_contract(tmp_path):
+    # 仅在由 pytest/tmp_path 创建的临时 SQLite 上使用
+    manager = MigrationManager(
+        db_path=tmp_path / "knowledge_vault.db",
+        migrations_dir=Path("scripts/migrations"),
+    )
 ```
 
 ---
@@ -687,7 +693,7 @@ for version, migration_file in pending:
 
 **示例**:
 
-以下示例只用于隔离测试库。测试迁移一律设置 `auto_backup=False`；生产备份与迁移只由用户明确授权后执行。
+以下示例只用于 pytest 创建的临时 SQLite。测试迁移一律设置 `auto_backup=False`；不得对快照或真实数据库调用。
 
 ```python
 migration_file = Path("scripts/migrations/002_add_cli_tables.sql")
@@ -712,7 +718,7 @@ manager.apply_migration(migration_file, auto_backup=False)
 **示例**:
 
 ```python
-# 仅用于隔离测试库；测试迁移一律禁用自动备份
+# 仅用于 pytest 创建的临时 SQLite；测试迁移一律禁用自动备份
 success_count = manager.apply_all_pending(auto_backup=False)
 print(f"成功执行 {success_count} 个迁移脚本")
 ```
@@ -725,54 +731,23 @@ print(f"成功执行 {success_count} 个迁移脚本")
 
 **位置**: [scripts/migrate.py](../scripts/migrate.py)
 
-**用法**:
+`migrate.py` 提供版本查询、待迁移检查、健康检查和执行迁移等接口，但当前 P0 不提供可复制执行的 CLI 命令。原因是它尚未接入 base-only 配置入口；无论是只读参数还是写入参数，默认自动化都不得绕过包装器裸跑。
 
-未设置路径覆盖时，下面的裸命令会读取或修改生产 `.data/`，仅作为用户明确授权后的生产运维接口参考；AI 不执行。AI/自动化验证必须使用 `run-test.ps1 -Direct -Command @("executable", "arg", ...)` 的显式命令数组。
-
-```bash
-# 交互式升级
-python scripts/migrate.py
-
-# 自动升级（无需确认）
-python scripts/migrate.py --auto
-
-# 仅检查待迁移脚本（不执行）
-python scripts/migrate.py --dry-run
-
-# 查看当前版本
-python scripts/migrate.py --version
-
-# 跳过自动备份（不推荐）
-python scripts/migrate.py --auto --no-backup
-```
-
-**完整升级流程示例**:
-
-先确定测试目标：空的 `.data-test\migration` 只适合验证 **fresh install**，不能证明旧库升级兼容。升级兼容门禁必须先把经审核、已脱敏的旧版 DB 夹具复制（或把旧版 Schema fixture 导入）到 `.data-test\migration\db\knowledge_vault.db`；若场景依赖 Markdown Vault 或向量索引，还必须把对应夹具复制到同一数据根目录下的 `vault\`、`vectors\`。不得直接从生产 `.data\` 取样。
-
-复制前应记录夹具的源版本、关键表行数、关系边与 FTS/索引基线。下面所有测试期 `migrate.py` 调用都显式携带 `--no-backup`，包括只读检查，以免示例被改写后意外启用备份：
+自动化只运行 MigrationManager 的临时 SQLite 测试：
 
 ```powershell
-# 1. 先完成上述夹具准备；只有 fresh-install 冒烟测试才允许使用空目录
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--version", "--no-backup")
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--dry-run", "--no-backup")
-
-# 2. 在同一旧版夹具副本上执行迁移
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--version", "--no-backup")
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--dry-run", "--no-backup")
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration -Command @("python", "scripts\migrate.py", "--health-check", "--no-backup")
-.\scripts\run-test.ps1 -DataRoot .data-test\migration stats
-
-# 3. 以下步骤操作生产 .data/：必须取得用户明确授权，只由用户执行，AI 不执行
-.\scripts\backup-data.ps1 -Message "v1.1.0 升级前备份"
-
-# 4. 用户执行生产迁移并验证结果
-.\scripts\run-windows.ps1 python scripts/migrate.py  # 输入 YES 确认
-.\scripts\run-windows.ps1 python -m src.cli.commands stats
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\migration-unit -Command @(
+  "pytest",
+  "tests\unit\test_migration_manager_versions.py",
+  "tests\unit\test_migration_manager_runtime.py",
+  "tests\unit\test_migration_health_check.py",
+  "-q"
+)
 ```
 
-升级兼容门禁不能只看 `stats` 是否成功。迁移后必须对照迁移前基线验证：目标 Schema 版本已生效且无待迁移脚本；关键业务表行数符合预期；标签、分块和 `knowledge_relations` 等关系没有丢失或悬空；FTS 行数、同步触发器及代表性 `MATCH` 查询正常；预期 SQLite 索引存在且完整性检查通过。若复制了向量夹具，还必须验证同根 `vectors\` 索引可加载、维度/模型契约匹配并能完成代表性检索；若复制了 Vault，也要验证数据库记录与 Markdown 文件对应。任何一项失败都不得进入生产升级。
+该结果只证明合成 fresh-install、迁移顺序、幂等性和健康检查代码契约，不证明任何真实旧库可升级。
+
+真实迁移由 FT5、U1/G8 与用户明确授权共同阻塞。在门禁完成前，真实快照保持只读，不对其运行 version、dry-run、health-check 或迁移，不执行备份/恢复，也不将其复制进默认 CAT-0 自动化。获批后的迁移验证必须以只读快照为来源制作 **disposable writable clone**，仅在该克隆上执行，并对照迁移前后的 Schema 版本、关键表行数、关系边、FTS、索引和完整性基线；任何一项无法解释都停止。正式命令必须在获批 Runbook 中固定并由用户逐项确认，而不是从本文复制。
 
 ---
 
@@ -1032,7 +1007,7 @@ python -m src.main config set logging.level DEBUG
 
 LLM、Embedding 和处理器配置统一写入 Git 忽略的 `config/local.yaml`，使用 `ai.llm.*`、`ai.embedding.*` 等点号路径键。不要再使用 `.env` 或旧的 `PKV_LLM_*` / `PKV_EMBD_*` 键。凭据建议直接在本机编辑 `config/local.yaml`，不要作为命令行参数传入，以免进入终端历史。
 
-测试隔离由 `scripts/run-test.ps1` 自动设置 `.data-test/` 路径，不创建或加载 `.env.test`。只有真实服务测试才使用进程级开关 `PKV_RUN_LIVE=1`。
+默认自动化由 `scripts/run-test.ps1` 锁定 `.data-test/` 路径，不创建或加载 `.env.test`，并固定 `PKV_RUN_LIVE=0`。`PKV_RUN_LIVE` 只是 pytest 收集开关，不授权应用联网；真实服务验证仍受 U1/G8 与用户授权阻塞。
 
 **集成接口**:
 - 读取 `Config` 对象属性

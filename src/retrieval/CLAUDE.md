@@ -304,29 +304,27 @@ def _select_strategy(self, query: str) -> str:
 
 ### 单元测试
 
-```bash
+```powershell
 # 运行所有检索测试
-python -m pytest tests/unit/test_*retrieval*.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\retrieval-unit -Command @("pytest", "tests/unit", "-k", "retriev or query_router", "-v")
 
 # 测试 BM25 检索器
-python -m pytest tests/unit/test_bm25_retriever.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\retrieval-bm25 -Command @("pytest", "tests/unit/test_bm25_retriever.py", "-v")
 
 # 测试向量检索器
-python -m pytest tests/unit/test_vector_retriever.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\retrieval-vector -Command @("pytest", "tests/unit/test_vector_retriever.py", "-v")
 
 # 测试混合检索器
-python -m pytest tests/unit/test_hybrid_retriever.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\retrieval-hybrid -Command @("pytest", "tests/unit/test_hybrid_retriever.py", "-v")
 
 # 测试查询路由器
-python -m pytest tests/unit/test_query_router.py -v
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\retrieval-router -Command @("pytest", "tests/unit/test_query_router.py", "-v")
 ```
 
 ### 集成测试
 
-```bash
-# 端到端检索测试（需要真实数据）
-python -m pytest tests/integration/test_retrieval_integration.py -v
-```
+真实数据端到端检索不属于 CAT-0，当前受 U1/G8 阻塞，不提供可复制命令。默认
+集成回归只使用 wrapper 下的合成 fixture，并显式排除 `network/manual`。
 
 ### 测试覆盖
 

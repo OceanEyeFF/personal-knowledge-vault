@@ -18,12 +18,19 @@
 
 ### 默认安全契约
 
-- 本地 pytest 只能作为 `scripts/run-test.ps1 -Direct -Command @("python", "-m", "pytest", ...)` 的子命令运行；包装器把继承的 `PYTEST_ADDOPTS` 收敛为可跨 Conda 传播的安全值 `--strict-markers`；默认只选择离线自动化；不得用 `--noconftest`、`--confcutdir`、`-c` 或 `--rootdir` 截断根安全 hook。
+- 默认自动化只经 `scripts/run-test.ps1` 启动。本地 pytest 作为其 Direct 子命令运行，包装器把调用路由到 `tests/offline_entrypoint.py pytest`，并把继承的 `PYTEST_ADDOPTS` 收敛为 `--strict-markers`；bootstrap 在 pytest/plugin 导入前建立 G0，根 `tests/conftest.py` 再维持逐用例隔离。`--noconftest`、`--confcutdir`、`-c`、`--rootdir`、外部 collection target 和前置 plugin 都会被拒绝。
+- CLI/MCP 离线子进程由 `tests/offline_entrypoint.py` 启动。
+- Direct Python（FT7）只允许仓库 `python -m <module>` 或仓库 `.py`，拒绝 `-c`、stdin 与解释器 flags；入口用同进程 `runpy`，在产品导入前清理 live/secret/proxy、安装 base-only Config、网络 guard 与子进程 guard。
+- FT7 是 Python 进程内 guard，不是 OS sandbox。非 Python Direct 仍须经过 wrapper，但不属于 Python G0、也不保证离线，必须单独审查。
+- `scripts/setup-test-db.py` 只能经 FT7 运行，输出必须精确位于本次所选 `DATA_DIR`（默认 `DB_PATH`）。
+- `scripts/rebuild-dev-vault.py` 同样要求 FT7 runtime attestation，且 `--root` 必须位于本次所选 `DATA_DIR`；裸启动在产品 import 前 fail-closed。
+- `run-test.ps1` 对 `migrate.py` fail-closed 并返回 exit 2；真实迁移仍受 U1/G8/FT5 user-only gate 阻塞，尚未执行真实数据迁移。
 - `network` 表示会访问外部网络、真实 API 或可能产生费用；默认排除。
 - `manual` 表示需要人工、GUI、凭据或主观判断；默认排除。
 - `slow` 只表示耗时，不授予联网权限。
 - 测试模块在收集/import 阶段不得联网。
-- 仓库 `tests/` 默认 lane 的 pytest 父进程在 collection 前安装经过路径验证的 base-only Config；`tests/` 外显式 target、第三方 plugin autoload、direct migration/运维脚本尚无等价边界，不得纳入默认自动 lane。
+- 仓库 `tests/` 默认 lane 的 pytest 父进程在 pytest/plugin 导入前安装经过路径验证的 base-only Config 与网络 guard；父环境的 plugin 注入被清除，但 Conda 环境内已安装的 autoload plugin 属于受信运行时边界。非 Python Direct 无等价 Python G0，不得据此宣称安全。
+- wrapper 在启动 Conda/Python 前清除可引发 Python/coverage 预启动注入的父环境变量，并把 `TEMP`/`TMP`/`TMPDIR` 与 `COVERAGE_FILE` 固定到 selected DataRoot。Conda 环境本身及仓库根（包括其 Python startup 文件）是受信工具链/工作树边界，不是 G0 对抗对象。
 - CI 显式设置 `PKV_RUN_LIVE=0`；运行数据与 pytest temp/cache 位于 checkout 的 `.data-test/ci/*`，报告可位于 runner 临时目录。
 
 ### Phase B/Phase C MCP 最小评测闭环
@@ -184,13 +191,7 @@ Layer 3: stdio 黑盒 (最慢, 子进程)
 
 ### 显式真实联网测试
 
-真实联网测试可能访问第三方站点、消耗 API 配额或产生费用，绝不进入默认 CI。运行前必须确认 `DataRoot` 位于 `.data-test` 下：
-
-```powershell
-$env:PKV_RUN_LIVE = "1"
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\live -Command @("python", "-m", "pytest", "tests/e2e", "-m", "network", "-v")
-Remove-Item Env:PKV_RUN_LIVE
-```
+真实联网测试可能访问第三方站点、消耗 API 配额或产生费用，绝不进入默认 CI/G0。当前包装器固定离线，本节不提供可复制的 live 命令；后续只能在用户专属门禁与授权流程交付后由用户执行。截至当前未执行真实数据或 live 验证。
 
 ### 手动测试脚本
 
@@ -247,6 +248,7 @@ Remove-Item Env:PKV_RUN_LIVE
 - [真实数据验证 Runbook](../docs/operations/testing/真实数据验证Runbook.md) 定义未来在
   用户明确授权后的小样本真实数据验证流程（P0 预演 / P1 受控评测 / P2 定期回归）；
   CAT-0 依赖完整离线 G0，真实快照 CAT-U/CAT-C 在 U1/G8 交付前保持阻塞。
+- 截至当前只完成合成数据/离线预演，尚未执行真实数据验证或真实迁移。
 - 真实数据进入测试环境的唯一通道是用户手动执行的"授权快照"（脱敏/假名化后放入
   `.data-test/<scenario>/`）；AI/自动化永不直接访问 `.data/` 或 `config/local.yaml`。
 - **双通道执行模型**：Agent-safe 通道只做不接触快照、不加载 local.yaml 的静态/合成验证；
@@ -382,9 +384,16 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 
 ## 变更记录 (Changelog)
 
+### 2026-07-31 (P0 主线离线收口最终证据)
+
+- 冻结工作树的默认离线全量经 `scripts/run-test.ps1` 通过：`1684 passed, 1 skipped, 9 deselected`。
+- MCP 门禁经同一受控入口通过：`364 passed, 1326 deselected`，`src.mcp` 覆盖率 `96.88%`（门槛 `95%`）。
+- Phase C 固定评测通过 `16/16 tasks`、`119/119 checks`，`overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`。
+- 合成 seed 与 dev-vault 演练均位于独立 `.data-test` DataRoot；未选择 `network/manual`，未读取或执行真实数据。
+
 ### 2026-07-31 (Review TestCase S4c)
 - 包装器使用可跨 Conda 传播的安全 `PYTEST_ADDOPTS`，根 fixture 在每个离线用例前后恢复 base-only Config singleton。
-- 当前 dirty tree 默认离线全量为 `1560 passed, 1 skipped, 9 deselected`；MCP 覆盖率为 `96.88%`。
+- 当时 dirty tree 默认离线全量为 `1560 passed, 1 skipped, 9 deselected`；MCP 覆盖率为 `96.88%`。
 - 全部验证经 `scripts/run-test.ps1`，未选择 live/network。
 
 ### 2026-07-28 (P0 CI 与测试契约)

@@ -1,6 +1,8 @@
 # PKV GUI 全面 UI 翻新方案
 
 > 本文档供后续 Gemini 执行 UI 改动时使用，包含完整的分析和实施指引。
+>
+> **当前执行边界**：GUI 启动会加载正常本机配置并可能初始化数据库，只由用户在本机手动执行；Agent 只通过 `scripts/run-test.ps1` 运行离线单元测试。
 
 ## 1. 问题诊断
 
@@ -157,7 +159,7 @@ QLabel[status="success/error/muted"] — 动态状态
 
 ## 5. 验证清单
 
-- [ ] 启动 `python -m src.gui`
+- [ ] 用户在本机手动启动 `python -m src.gui`（Agent 不执行）
 - [ ] Light 主题下检查全部 6 个视图
 - [ ] Dark 主题下检查全部 6 个视图
 - [ ] Chat 消息气泡双主题可读性
@@ -166,4 +168,4 @@ QLabel[status="success/error/muted"] — 动态状态
 - [ ] 自动补全弹窗双主题效果
 - [ ] Token 警告面板双主题效果
 - [ ] 导航栏 emoji + 选中/hover 效果
-- [ ] `python -m pytest tests/unit/test_chat_viewmodel.py tests/unit/test_knowledge_ref.py -v` 全部通过
+- [ ] `.\scripts\run-test.ps1 -Direct -DataRoot .data-test\gui-ui -Command @("pytest", "tests/unit/test_chat_viewmodel.py", "tests/unit/test_knowledge_ref.py", "-v")` 全部通过

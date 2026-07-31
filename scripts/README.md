@@ -126,16 +126,16 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 
 #### `run-test.ps1` - 测试环境运行脚本
 
-**用途**: 使用隔离的测试数据路径运行 PKV CLI，或通过 `-Direct -Command @(...)` 运行 pytest、Python 等直接命令（不影响生产数据）
+**用途**: 默认自动化入口。使用隔离路径运行 PKV CLI、pytest，或经 FT7 运行受保护的仓库 Direct Python。
 
 **运行方式**:
 
 ```powershell
-# 在测试环境归档网页
-.\scripts\run-test.ps1 archive "https://example.com"
+# 查看测试环境统计
+.\scripts\run-test.ps1 stats
 
-# 在测试环境搜索
-.\scripts\run-test.ps1 search "AI"
+# 在测试环境离线搜索
+.\scripts\run-test.ps1 search "AI" --strategy bm25
 
 # 查看测试环境统计
 .\scripts\run-test.ps1 stats
@@ -146,8 +146,10 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 
 **功能**:
 
-- ✅ 由脚本直接设置进程级测试路径，不读取额外配置文件
-- ✅ `-Direct` 模式通过显式 `-Command` 数组安全运行 pytest、Python 诊断等非 CLI 命令
+- ✅ 由脚本直接设置进程级测试路径，不读取 `config/local.yaml`
+- ✅ pytest 先由 `tests/offline_entrypoint.py pytest` 在 pytest/plugin 导入前建立 G0，再由根 `tests/conftest.py` 维持逐用例隔离，CLI/MCP 离线子进程由 `tests/offline_entrypoint.py` 启动
+- ✅ Direct Python（FT7）仅接受仓库 `python -m <module>` 或仓库 `.py`；拒绝 `-c`、stdin 与解释器 flags
+- ✅ FT7 通过同进程 `runpy` 在产品导入前清理 live/secret/proxy、安装 base-only Config、网络 guard 与子进程 guard
 - ✅ 隔离测试数据到 `.data-test/` 目录
 - ✅ 自动创建测试目录结构
 - ✅ 拒绝将测试数据目录指向生产 `.data/`
@@ -156,13 +158,17 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 
 **命令分派**:
 
-- 默认模式会执行 `python -m src.cli.commands <参数>`，只用于 `archive`、`search`、`stats` 等 PKV CLI 子命令。
-- `-Direct` 模式原样执行显式 `-Command @(...)` 数组中的元素，例如 pytest 或 Python 脚本及其参数。
+- 默认模式经 `tests/offline_entrypoint.py cli` 启动 PKV CLI；联网型 `archive` 不属于默认离线示例。
+- pytest Direct 会规范化为 `tests/offline_entrypoint.py pytest`，在 pytest/plugin 导入前建立 G0，再加载根 conftest。
+- Python Direct 会改写为 `tests/offline_entrypoint.py python ...`，并按 FT7 规则在同一解释器中执行。
+- 非 Python Direct 仍须经 wrapper 启动，但属于原样命令、不在 Python G0 内，也不保证离线；使用前必须单独审查边界与副作用。
 - 两种模式都会先设置 `DATA_DIR`、`DB_PATH`、`VAULT_DIR`、`VECTOR_DIR`、`LOG_DIR`、`TMP_DIR`，并拒绝 `.data/`、junction 与符号链接目标。
+
+FT7 是 Python 进程内 guard，不是 OS sandbox。`scripts/setup-test-db.py` 只能通过该入口运行，输出必须精确位于本次 `-DataRoot` 对应的 `DATA_DIR`（默认 `DB_PATH`）。`migrate.py` 尚未接入等价边界，包装器会 fail-closed 并返回 exit 2；真实迁移仍受 U1/G8/FT5 user-only gate 阻塞，且尚未执行真实数据迁移。
 
 **使用场景**:
 
-- 测试新功能而不影响生产数据
+- 在受控 `.data-test` 路径内验证离线新功能（不是 OS sandbox）
 - 验证数据库变更
 - 开发调试
 
@@ -175,7 +181,8 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 **安全契约**:
 
 - 默认根目录为仓库内 `.data-test/rebuild-dev`，绝不隐式指向生产 `.data/`。
-- 重建根严格只能是仓库 `.data-test` 的专用子目录；`.data`、仓库其他目录、仓库外路径、文件系统根、用户主目录等危险目标一律拒绝，无任何旁路开关。
+- 脚本在导入第三方/产品代码前要求 FT7 runtime attestation；裸 Python 启动会 fail-closed。
+- `--root` 必须位于本次 wrapper `-DataRoot` 选中的 `DATA_DIR` 内，不能指向其他 `.data-test` 场景；`.data`、仓库其他目录、仓库外路径、文件系统根、用户主目录等危险目标一律拒绝，无任何旁路开关。
 - 危险目标拒绝为纯字符串判断（不解析、不 stat 被拒绝路径）。
 - 清理前递归检查 junction / 符号链接 / 硬链接 / 内部挂载点；迁移始终 `--no-backup` 语义（`auto_backup=False`），不会调用读取生产 `.data` 的备份脚本。
 - **内部链接安全门**：对已通过边界校验的已存在 root，在任何内容读取（iterdir / manifest / DB）之前执行只读递归内部链接扫描；各读取、清理、迁移、seed 与 manifest 阶段还会复核根目录身份并重新扫描。发现链接/挂载点、根身份变化或扫描无法完整遍历（权限/IO 错误）立即拒绝（exit 2）。执行期间必须由本脚本独占该 root，不支持其他进程并发改名或替换目录。
@@ -185,24 +192,26 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 
 ```powershell
 # 首次重建或按相同参数检查默认根（wrapper 预建的空标准目录可直接使用）
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--root", ".data-test/rebuild-dev")
 
 # 指定隔离根并强制完整重建（受控清理）
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--force")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--root", ".data-test/rebuild-dev", "--force")
 
-# 仅健康检查（直接调用以避免 run-test.ps1 预建标准目录；绝不写入）
-python scripts\rebuild-dev-vault.py --root .data-test\rebuild-dev --check-only
+# 仅健康检查；脚本只读，wrapper 可能预建受控空 scaffold
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--root", ".data-test/rebuild-dev", "--check-only", "--json")
 
 # 机器可读结果契约（exit 0/1/2）
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--json")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--root", ".data-test/rebuild-dev", "--json")
 ```
 
 **行为**（同一根重复执行）:
 
+- `--force` 保留已经过链接扫描的 `tmp/` 运行时内容，避免删除当前 wrapper/Conda 正在使用的命令载荷；其余受管内容仍按合同清理重建。
+
 1. 根目录已有内容、未传 `--force` → 先做完整 fail-closed 校验；本次 `--seed` / `--count` / `--no-seed` 还必须与 manifest 一致，通过才报告 `up_to_date`。自定义参数重跑时必须重复传入；如需变更则使用 `--force`。
-2. 根目录为空、不存在，或仅含 wrapper 预建的五个空标准目录 → 迁移 8 个脚本至 v1.2.3 + 生成默认 3 条确定性种子 + 健康检查 + 写入 manifest。
+2. 根目录为空、不存在，或仅含 wrapper 预建的空 scaffold（五个标准目录及 `reports`/`runtime`）→ 迁移 8 个脚本至 v1.2.3 + 生成默认 3 条确定性种子 + 健康检查 + 写入 manifest。
 3. 传 `--force` → 受控清理（先校验链接）后完整重建（仅限已通过边界校验的 `.data-test` 专用子目录）。
-4. `--check-only` → 必须直接调用脚本（wrapper 会预建测试标准目录）；SQLite `mode=ro` 只读，对不存在或不完整的 DB/root 必须失败（exit 1），绝不创建目录或数据库，也不把迁移脚本合法误当 vault 健康。
+4. `--check-only` → 必须同样经 `run-test.ps1` 的 Direct Python/FT7 入口；SQLite `mode=ro` 只读，对不存在或不完整的 DB 必须失败（exit 1），不会创建数据库，也不把迁移脚本合法误当 vault 健康。包装器只会预建受控空 scaffold。
 5. `--no-seed` → 可验证：manifest 记录 `seeded=false, seed_count=0`，重复运行仍 `up_to_date`。
 
 **离线测试**: `tests/unit/test_rebuild_dev_vault.py`（受控根隔离 / 幂等 / 危险目标拒绝 / 结果契约 / 候选根解析路径监控 / 主存储与 schema 完整性）。测试重建均使用 `.data-test` 下受控临时子目录，外部临时目录仅用于验证“必须被拒绝”。
@@ -269,7 +278,7 @@ python scripts\rebuild-dev-vault.py --root .data-test\rebuild-dev --check-only
 .\scripts\run-test.ps1 -DataRoot .data-test\feature-a stats
 ```
 
-应用服务、模型和密钥仍统一从 Git 忽略的 `config/local.yaml` 读取；测试路径只作为当前进程的运行隔离覆盖。
+用户/生产运行的服务、模型和密钥来自 Git 忽略的 `config/local.yaml`；默认自动化不会读取该文件，而由 offline entrypoint 安装 base-only Config。
 
 ---
 
