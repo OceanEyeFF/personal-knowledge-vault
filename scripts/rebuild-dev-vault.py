@@ -17,7 +17,8 @@
   必须显式 ``--force`` 才能重建。
 - 对已通过边界校验的已存在 root，在任何内容读取（iterdir / manifest /
   DB）之前执行只读递归内部链接扫描；发现 symlink / junction / hardlink
-  立即拒绝（exit 2），扫描本身不跟随子项链接。
+  或扫描无法完整遍历（权限/IO 错误）立即拒绝（exit 2），扫描本身不跟随
+  子项链接。
 
 用法:
   python scripts/rebuild-dev-vault.py                  # 重建或检查默认根
@@ -141,7 +142,9 @@ def _find_unsafe_link_under(root: Path) -> Path | None:
     """只读递归扫描 root 内部是否存在 symlink / junction / hardlink。
 
     不跟随子项链接：每个子项先 lstat 判定，命中立即返回；目录仅在确认
-    非链接后才递归。仅对已通过 resolve_rebuild_root 字符串/边界校验的
+    非链接后才递归。扫描必须完整遍历既有 root 内部：任何权限/IO 错误都
+    视为无法证明安全，fail-closed 立即以 RootRejectedError 拒绝，绝不
+    吞掉错误继续。仅对已通过 resolve_rebuild_root 字符串/边界校验的
     候选根调用，任何内容读取之前执行。
     """
     if not root.exists():
@@ -154,15 +157,14 @@ def _find_unsafe_link_under(root: Path) -> Path | None:
                 child = Path(entry.path)
                 if _is_unsafe_link(child):
                     return child
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        found = _find_unsafe_link_under(child)
-                        if found is not None:
-                            return found
-                except OSError:
-                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    found = _find_unsafe_link_under(child)
+                    if found is not None:
+                        return found
     except OSError as exc:
-        raise RebuildError(f"无法扫描重建根内部链接: {root} - {exc}") from exc
+        raise RootRejectedError(
+            f"无法完整扫描重建根内部（扫描失败即拒绝）: {root} - {exc}"
+        ) from exc
     return None
 
 

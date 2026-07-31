@@ -9,6 +9,12 @@
 
 ## 变更记录 (Changelog)
 
+### 2026-07-31 (P1 扫描 fail-closed 收口)
+
+- 内部链接扫描失败处理收紧：`entry.is_dir` 的 OSError 不再 continue 吞掉，任何扫描权限/IO 错误一律 fail-closed 以 RootRejectedError（exit 2）拒绝，绝不继续读取 manifest/db/SQLite
+- 新增 scoped 测试：模拟 scandir 失败与 is_dir 失败（monkeypatch），验证拒绝且不进入后续校验/读取
+- 测试增至 34 例
+
 ### 2026-07-31 (P1 内部链接安全门)
 
 - 修复 Blocker：root 内 rebuild-manifest.json / db 目录 / db 文件若为 symlink/junction/hardlink 指向 .data，非 force 与 check-only 路径可能在递归链接校验前跟随并读取生产路径

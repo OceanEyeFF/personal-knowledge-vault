@@ -29,6 +29,7 @@ import subprocess
 import sys
 import uuid
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -479,13 +480,13 @@ class TestUnsafeInternalLinks:
             marker.unlink(missing_ok=True)
         assert exit_code == 2
 
-    def test_unsafe_db_file_link_rejected_end_to_end(
-        self, managed_root: Path
-    ) -> None:
+    def test_unsafe_db_file_link_rejected_end_to_end(self, managed_root: Path) -> None:
         _build_root(managed_root)
         marker = _make_db_file_hardlink(managed_root)
         try:
-            result = _run_script(["--root", str(managed_root), "--check-only", "--json"])
+            result = _run_script(
+                ["--root", str(managed_root), "--check-only", "--json"]
+            )
             assert result.returncode == 2, result.stdout + result.stderr
             report = _parse_json_output(result)
             assert not report["ok"]
@@ -502,7 +503,9 @@ class TestUnsafeInternalLinks:
         try:
             shutil.rmtree(managed_root / "db")
         except OSError as exc:
-            raise AssertionError(f"移除真实 db 目录失败: {managed_root / 'db'}") from exc
+            raise AssertionError(
+                f"移除真实 db 目录失败: {managed_root / 'db'}"
+            ) from exc
         junction = managed_root / "db"
         try:
             try:
@@ -514,7 +517,9 @@ class TestUnsafeInternalLinks:
                 )
             except (subprocess.CalledProcessError, OSError):
                 pytest.skip("无法创建 junction（需目录联接权限）")
-            result = _run_script(["--root", str(managed_root), "--check-only", "--json"])
+            result = _run_script(
+                ["--root", str(managed_root), "--check-only", "--json"]
+            )
             assert result.returncode == 2, result.stdout + result.stderr
             report = _parse_json_output(result)
             assert not report["ok"]
@@ -522,6 +527,54 @@ class TestUnsafeInternalLinks:
         finally:
             subprocess.run(["cmd", "/c", "rmdir", str(junction)], check=False)
             target.rmdir()
+
+    def test_scan_io_failure_rejects_before_any_read(
+        self, managed_root: Path, monkeypatch
+    ) -> None:
+        """扫描 IO/权限错误必须 fail-closed：exit 2，且不进入后续读取。"""
+        _build_root(managed_root)
+        module = _load_script_module()
+
+        def raise_oserror(*args, **kwargs):
+            raise OSError("模拟扫描权限/IO 错误")
+
+        monkeypatch.setattr(os, "scandir", raise_oserror)
+
+        def boom(*args, **kwargs):
+            raise AssertionError("扫描失败后不得读取 manifest/数据库")
+
+        monkeypatch.setattr(module, "_load_manifest", boom)
+        monkeypatch.setattr(module, "_health_report", boom)
+        monkeypatch.setattr(module, "_validate_rebuilt_root", boom)
+        monkeypatch.setattr(module.MigrationManager, "get_current_version", boom)
+        monkeypatch.setattr(module.MigrationManager, "get_pending_migrations", boom)
+        monkeypatch.setattr(module, "SQLiteStore", boom)
+
+        # check-only 与非 force 两条路径都必须拒绝（exit 2）
+        assert module.main(["--root", str(managed_root), "--check-only"]) == 2
+        assert module.main(["--root", str(managed_root)]) == 2
+
+    def test_scan_is_dir_failure_fails_closed(
+        self, managed_root: Path, monkeypatch
+    ) -> None:
+        """遍历子项时 is_dir IO 错误不得 continue，必须拒绝。"""
+        _build_root(managed_root)
+        module = _load_script_module()
+
+        class _FakeEntry:
+            def __init__(self, path: str):
+                self.path = path
+
+            def is_dir(self, follow_symlinks=True):
+                raise OSError("模拟 is_dir 扫描失败")
+
+        @contextmanager
+        def _fake_scandir(root: Path):
+            yield [_FakeEntry(str(root / "db"))]
+
+        monkeypatch.setattr(os, "scandir", _fake_scandir)
+        with pytest.raises(module.RootRejectedError):
+            module._find_unsafe_link_under(managed_root)
 
 
 # ============================================================
