@@ -582,6 +582,7 @@ MigrationManager.get_pending_migrations()
 
 | 文件 | 用途 |
 |------|------|
+| `rebuild-dev-vault.py` | 开发专用轻量重建（隔离根清理/迁移/确定性种子/健康检查，P1） |
 | `migrate.py` | 数据库迁移工具 |
 | `init_db.py` | 数据库初始化(Legacy) |
 

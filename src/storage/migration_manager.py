@@ -10,6 +10,7 @@ from typing import List, Tuple, Optional, Dict, Any
 import logging
 import subprocess
 import re
+from contextlib import contextmanager
 
 from src.storage.sqlite_store import SQLiteStore
 
@@ -27,21 +28,56 @@ FTS_REBUILD_VERSIONS = {"1.2.2", "1.2.3"}
 class MigrationManager:
     """数据库迁移管理器"""
 
-    def __init__(self, db_path: Path, migrations_dir: Path):
+    def __init__(
+        self,
+        db_path: Path,
+        migrations_dir: Path,
+        *,
+        read_only: bool = False,
+    ):
         """
         初始化迁移管理器
 
         Args:
             db_path: 数据库文件路径
             migrations_dir: 迁移脚本目录路径
+            read_only: 仅允许检查数据库和迁移链，不创建目录或执行写入操作
         """
         self.db_path = Path(db_path)
         self.migrations_dir = Path(migrations_dir)
+        self.read_only = read_only
 
-        # 确保迁移目录存在
+        # 写模式保留原有的初始化行为；只读模式不得改变文件系统。
         if not self.migrations_dir.exists():
             logger.warning(f"迁移目录不存在: {self.migrations_dir}")
-            self.migrations_dir.mkdir(parents=True, exist_ok=True)
+            if not self.read_only:
+                self.migrations_dir.mkdir(parents=True, exist_ok=True)
+
+    def _require_writable(self, operation: str) -> None:
+        """Reject mutating operations when this manager is read-only."""
+        if self.read_only:
+            raise RuntimeError(
+                f"MigrationManager is read-only; cannot perform {operation}"
+            )
+
+    def _connect(self) -> sqlite3.Connection:
+        """Open the database, optionally enforcing SQLite read-only mode."""
+        if self.read_only:
+            uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
+            conn = sqlite3.connect(uri, uri=True)
+            conn.execute("PRAGMA query_only = ON")
+            return conn
+        return sqlite3.connect(self.db_path)
+
+    @contextmanager
+    def _connection(self):
+        """Transaction-aware connection context that always closes the handle."""
+        conn = self._connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def get_current_version(self) -> str:
         """
@@ -50,7 +86,11 @@ class MigrationManager:
         Returns:
             版本号字符串（如 "1.0.0"），如果数据库未初始化返回 "0.0.0"
         """
-        conn = sqlite3.connect(self.db_path)
+        if self.read_only and not self.db_path.is_file():
+            logger.info("数据库不存在，只读检查返回版本: 0.0.0")
+            return "0.0.0"
+
+        conn = self._connect()
         try:
             cursor = conn.cursor()
 
@@ -177,7 +217,7 @@ class MigrationManager:
         }
 
         if db_info["db_exists"]:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connection() as conn:
                 cursor = conn.execute(
                     """
                     SELECT name FROM sqlite_master
@@ -257,13 +297,14 @@ class MigrationManager:
         Raises:
             Exception: 迁移执行失败
         """
+        self._require_writable("apply_migration")
         logger.info(f"开始迁移: {migration_file.name}")
         metadata = self._read_migration_metadata(migration_file)
         version = metadata.get("version")
         description = metadata.get("description") or migration_file.name
 
         if version == "1.2.1" and self._knowledge_items_has_timeline_columns():
-            conn = sqlite3.connect(self.db_path)
+            conn = self._connect()
             try:
                 self._ensure_timeline_indexes(conn)
                 self._record_schema_version(conn, version, description)
@@ -282,7 +323,7 @@ class MigrationManager:
                 # 继续执行迁移（备份失败不应阻止迁移）
 
         # 执行 SQL 脚本
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             with open(migration_file, 'r', encoding='utf-8') as f:
                 sql = f.read()
@@ -314,6 +355,7 @@ class MigrationManager:
         Raises:
             Exception: 迁移执行失败
         """
+        self._require_writable("apply_all_pending")
         pending = self.get_pending_migrations()
 
         if not pending:
@@ -346,11 +388,12 @@ class MigrationManager:
 
     def _remove_applied_versions(self, versions: List[str]) -> None:
         """移除已记录的迁移版本，用于后置校验失败后的可重试回滚。"""
+        self._require_writable("_remove_applied_versions")
         if not versions:
             return
 
         placeholders = ", ".join("?" for _ in versions)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 f"DELETE FROM schema_version WHERE version IN ({placeholders})",
                 tuple(versions),
@@ -399,6 +442,7 @@ class MigrationManager:
         Args:
             migration_name: 迁移脚本名称（用于备份说明）
         """
+        self._require_writable("_backup_database")
         message = f"自动备份 - Schema 迁移前 ({migration_name})"
 
         logger.info(f"自动备份数据库: {message}")
@@ -501,7 +545,7 @@ class MigrationManager:
         if not self.db_path.exists():
             return False
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             cursor = conn.execute(
                 """
                 SELECT name FROM sqlite_master
@@ -518,6 +562,7 @@ class MigrationManager:
 
     def _ensure_timeline_indexes(self, conn: sqlite3.Connection) -> None:
         """补齐 timeline 时间字段索引。"""
+        self._require_writable("_ensure_timeline_indexes")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_knowledge_event_time ON knowledge_items(event_time)"
         )
@@ -532,6 +577,7 @@ class MigrationManager:
         description: str,
     ) -> None:
         """写入 schema_version 记录。"""
+        self._require_writable("_record_schema_version")
         if not version:
             return
         conn.execute(

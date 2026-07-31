@@ -9,7 +9,40 @@
 
 ## 变更记录 (Changelog)
 
+### 2026-07-31 (P1 扫描 fail-closed 收口)
+
+- 内部链接扫描失败处理收紧：`entry.is_dir` 的 OSError 不再 continue 吞掉，任何扫描权限/IO 错误一律 fail-closed 以 RootRejectedError（exit 2）拒绝，绝不继续读取 manifest/db/SQLite
+- 新增 scoped 测试：模拟 scandir 失败与 is_dir 失败（monkeypatch），验证拒绝且不进入后续校验/读取
+- 测试增至 34 例
+
+### 2026-07-31 (P1 内部链接安全门)
+
+- 修复 Blocker：root 内 rebuild-manifest.json / db 目录 / db 文件若为 symlink/junction/hardlink 指向 .data，非 force 与 check-only 路径可能在递归链接校验前跟随并读取生产路径
+- 新增只读递归内部链接扫描 `_find_unsafe_link_under`：在任何内容读取（iterdir/manifest/DB）之前执行并立即拒绝（exit 2），不跟随子项链接；覆盖 check-only / 非 force 幂等 / force 三条路径
+- 测试增至 32 例（manifest/db 硬链接识别、check-only 与幂等路径的顺序拒绝、junction db 目录拒绝等）
+
+### 2026-07-31 (P1 fail-closed 修订)
+
+- 修复 fail-open：非空但不完整/未知的 root（如仅 sentinel.txt、无 db）不再被 health check 误判为 up_to_date
+- 新增版本化 `rebuild-manifest.json`（合成重建元数据）：校验 DB、vault、schema/迁移状态（pending 不算最新）、seed 条目数或 no-seed 情况；缺失/损坏/漂移一律拒绝
+- 非空且未通过结构校验的 root 不带 `--force` 一律拒绝（exit 1，JSON 带 error/phase），不写入、不清理；`--check-only` 对缺失/不完整 DB 必须失败且绝不创建文件
+- 测试增至 26 例（sentinel-only、缺失 DB check-only、无效 manifest、seed 漂移、pending migrations、no-seed 可验证等）
+
+### 2026-07-31 (P1 安全收紧修订)
+
+- 移除 `--allow-outside-repo` 旁路：重建根严格限定为仓库 `.data-test` 专用子目录，仓库外路径一律拒绝
+- 危险目标拒绝改为纯字符串判断（不 resolve/stat）；测试删除所有对仓库 `.data` 的路径访问，改为字符串级 + monkeypatch/监控契约
+- 测试重建改用 `.data-test` 下受控临时子目录（测后清理），外部临时目录仅用于验证拒绝行为
+
+### 2026-07-31 (P1 开发专用轻量重建)
+
+- 新增 `scripts/rebuild-dev-vault.py`：隔离根上的 清理→迁移→确定性最小种子→健康检查 重建入口
+- 默认根 `.data-test/rebuild-dev`；拒绝 `.data`、仓库外与危险目标；幂等可重复；`--json` 结果契约
+- 新增离线测试 `tests/unit/test_rebuild_dev_vault.py`（15 用例：临时根隔离/幂等/危险目标拒绝/结果契约）
+- 文档：`scripts/README.md`、`scripts/CLAUDE.md` 更新操作说明
+
 ### 2026-02-23 10:45
+
 - M12 完成：AI 对话完整实现 -- 流式输出 + 知识引用 + URL 归档 + 会话管理
 - 新增 `src/gui/` 模块扩展：ChatView、ChatViewModel、AutocompletePopup、knowledge_ref、theme_colors
 - 新增 `scripts/migrations/004_add_chat_sessions.sql` 数据库迁移
@@ -21,6 +54,7 @@
 - 版本号升级至 v0.8.0-alpha
 
 ### 2026-02-19 00:58
+
 - M8 + M9 完成：MCP 服务层（只读 + 写入 + Prompt + 安全加固）
 - 新增 `src/mcp/` 模块（server.py, tools.py, resources.py, prompts.py, utils.py, __main__.py）
 - 新增三层 MCP 测试体系：单元 4 文件 + 集成 2 文件 + 黑盒 1 文件（共 203 tests）
@@ -29,12 +63,14 @@
 - 版本号升级至 v0.7.0
 
 ### 2026-02-16 18:51
+
 - 基于 v0.6.1 和 M6+M7 完成情况全面更新索引体系
 - 新增 CLI 模块、Scripts 运维脚本、数据库迁移管理器的完整文档
 - 更新模块结构图,体现 AI 安全测试和数据库迁移系统
 - 补充测试覆盖率统计和最新的项目规模数据
 
 ### 2026-02-16 01:53
+
 - 生成完整的 CLAUDE.md 索引文档体系
 - 添加模块结构图和导航面包屑
 - 为每个核心模块生成独立的 CLAUDE.md 文档
@@ -188,7 +224,7 @@ graph TD
 ## 模块索引
 
 | 模块 | 路径 | 职责 | 文档 |
-|------|------|------|------|
+| ------ | ------ | ------ | ------ |
 | **GUI 桌面应用** | `src/gui/` | PySide6 桌面界面 -- 浏览/搜索/归档/AI对话/统计/设置 | [CLAUDE.md](./src/gui/CLAUDE.md) |
 | **CLI 交互层** | `src/cli/` | Click 命令行界面、Rich 终端 UI | [CLAUDE.md](./src/cli/CLAUDE.md) |
 | **MCP 服务层** | `src/mcp/` | MCP Server -- 8 Tool + 4 Resource + 3 Prompt + 安全加固 | [CLAUDE.md](./src/mcp/CLAUDE.md) |
@@ -290,7 +326,7 @@ conda activate py311-private
 ### MCP 三层测试体系 (203 tests)
 
 | 层级 | 文件 | 说明 |
-|------|------|------|
+| ------ | ------ | ------ |
 | **Layer 1** 单元测试 | `test_mcp_tools/resources/prompts/security.py` | Mock 隔离 |
 | **Layer 2** 进程内集成 | `test_mcp_functional/integration.py` | FastMCP 调用 |
 | **Layer 3** stdio 黑盒 | `test_mcp_blackbox.py` | JSON-RPC over stdio |
@@ -338,7 +374,7 @@ conda activate py311-private
 **已完成**: M1-M12 全部里程碑
 
 | 里程碑 | 内容 | 日期 |
-|--------|------|------|
+| -------- | ------ | ------ |
 | M1-M5 | 核心后端 (存储/AI/处理器/检索/工作流) | 2026-02-10~15 |
 | M6-M7 | CLI + 文档 | 2026-02-16 |
 | M8-M9 | MCP Server (8T+4R+3P+安全) | 2026-02-19 |
