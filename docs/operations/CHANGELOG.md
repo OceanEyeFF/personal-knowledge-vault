@@ -5,12 +5,76 @@
 ---
 
 > 版本口径说明（2026-03-06）：
+>
 > - 当前仓库基线版本：`v0.8.0-alpha`
 > - `v0.6.0` 表示 CLI 入口首次稳定引入
 > - `v0.7.0` 表示 MCP 能力层首次稳定引入
 > - `history/` 下的 `v0.8.0-beta / v0.8.0` 里程碑文档保留阶段性背景，不直接作为当前仓库发布标签
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
+
+### 真实数据验证 Runbook v1.3：执行入口与日志安全闭环（2026-07-31）
+
+- G0 收紧为按目标子进程验证的离线入口：5c14caa 成套机制覆盖 pytest 与 CLI/MCP，
+  任意 `-Direct` Python 子进程仍须 FT7 generic guard；单独路径预检或 wrapper 环境不再可替代。
+- 新增 U1/G8 user-only launcher 硬前置，负责授权、`.data-test`/clone 边界、工作区文件日志
+  禁用或源头脱敏；未交付前所有真实快照 CAT-U/CAT-C 步骤明确剔除，Runbook 不再给出可误执行命令。
+- archive 写入统一迁移到 writable clone，授权快照根保持只读；migration 明确依赖 FT5+U1，
+  不再错误声称 G0/FT7 base-only 预检能够保护 user-only migration。
+- 合成种子命令固定 `--seed/--count/--output`，并纠正“纯 stdlib”描述；pytest 示例显式排除
+  `network/manual`；判读模板新增“不适用 + 原因”。
+
+### 真实数据验证 Runbook 复审修订：双通道执行模型与证据契约统一（2026-07-31）
+
+- 建立**双通道执行模型**：Agent-safe 通道仅限不接触授权快照、不加载 `config/local.yaml`
+  的静态/合成验证与已交付 base-only 工具（CAT-0）；所有读取真实快照或可能加载 local.yaml
+  的实际 CLI/MCP/migrate/run-test 命令（离线与 live）一律由用户手动执行（CAT-U/CAT-C），
+  Agent 不执行、不读取原始输出，只接收脱敏摘要（Runbook 0.2/2/7.1/8）。
+- G0 明确为**受控入口语义**：只证明 base-only 入口本身，不改变后续子进程 `Config()` 行为；
+  未接入入口的命令保持 user-only，预检不是全局保护（Runbook 7.1-5/10.3-G0/18.1）。
+- 证据契约统一：T-D/E3 禁止"原样记录"；版本化记录仅含脱敏摘要、退出码、计数、哈希、
+  假名 ID、时间、命令类别与模板指纹；原始证据只能存于**工作区之外、用户 ACL 隔离、
+  Agent 不可读**位置，不再称 `.data-backup/` 或工作区内目录为 Agent 不可读（Runbook 12/13，模板 T-D/T-F/T-G）。
+- live 阶段执行人明确为**用户**（或未来不向 Agent 暴露凭据/输出的 launcher，本次不实现）；
+  离线真实快照命令同样按双通道处理（Runbook 8/15.1-15.4）。
+- disposable clone 与 migration 落到可审计步骤：`clones/<clone-id>` 专属数据根、用户制备/验证
+  流程（7.1-7）、历史 schema baseline（版本号/哈希）、pending migration 要求（pending=0 标记
+  "未覆盖"）；migrate.py 无 `--db-path`/受控入口时对应命令不得执行，登记 FT5/FT7 前置（Runbook 15.5）。
+- 校正 20.1 一致性 checklist、风险/成本表与文档版本（v1.2）。
+
+### 真实数据验证 Runbook P0 安全/可执行性修订（2026-07-31）
+
+- archive（URL/文本）与 `search --strategy vector/hybrid/auto` 确认会触发真实抓取/LLM/
+  Embedding HTTP（数据出境），已从默认步骤移入 **live/数据出境阶段**（单独授权）；
+  `PKV_RUN_LIVE` 明确为 pytest 收集开关而非应用层网络开关（Runbook 7.3/8/15.1-15.2）。
+- 隔离预检不再使用 `config show`（其默认加载 `config/local.yaml`）；改为 base-only/
+  fail-closed 机制（5c14caa 的 `offline_entrypoint`/`offline_runtime` 或等价实现 FT7）并
+  提升为 **G0 硬前置**——未就绪则 P0/P1/P2 不可执行（Runbook 7.1/10.3/18.1）。
+- 证据留存改为仅退出码、计数、哈希、假名 ID 与人工脱敏摘要；原始证据只能由用户保存在
+  Agent 不可读受控位置（Runbook 12/13，模板 T-F/T-G）。
+- MCP 真实快照证据验证改为待实现前置（FT6 受控 harness）：stdio 无法跨会话附着，16-task
+  runner 固定 `OfflineMcpScenario`；G7 在 FT6 交付前不可执行（Runbook 10.3/15.3）。
+- delete 完整性指标默认从 P1/P2 剔除，FT3 工具为其硬前置；删除/可写迁移强制在每场景
+  disposable clone 内执行，快照根只读（Runbook 9/10.1/14/15.4-15.5）。
+- #3 依赖统一为明确 OR 条件：（#3 dev vault 已就绪）或（合成样本预演降级）（Runbook 18.2）。
+- 新增后续任务 FT6（真实快照 MCP harness）与 FT7（base-only 隔离入口工具）。
+
+### 真实数据验证 Runbook 规划（2026-07-31）
+
+- 新增 `docs/operations/testing/真实数据验证Runbook.md`：规划优先、授权后执行的小样本
+  真实数据验证流程，定义 P0 小样本预演 / P1 受控评测 / P2 定期回归三阶段。
+- 新增空白记录模板 `docs/operations/testing/templates/真实数据验证记录模板.md`
+  （T-A 授权单 / T-B 样本清单 / T-C 人工判读表 / T-D 自动门禁 / T-E 失败分流 /
+  T-F 审计证据 / T-G 留存清除 / T-H 阶段执行记录）。
+- 覆盖样本选择与代表性、数据分级最小化（D1–D4）、授权快照唯一取数通道、脱敏/
+  假名化、环境与凭据隔离、命令类别（CAT-A/B/C/D）、人工判读表、自动门禁
+  （G1–G7）、失败分流（F1–F5）、审计证据、留存清除与回滚。
+- 明确合成 fixture 与真实数据的边界及不可作为发布结论的指标（第 16 章）。
+- 覆盖 archive / search / MCP evidence & citation / delete / migration 五类验证。
+- 与 `codex/review-testcase-repair`（5c14caa，只读参考不合并）及 #3 开发 vault
+  轻量重建（仅定义接口与依赖，不等待不修改）的依赖顺序已记录（第 18 章）。
+- 未实现任何访问真实数据的脚本；安全工具/TestCase 扩展（FT1–FT5）登记为后续任务。
+- 本任务不读取、不复制、不导出真实数据，不访问 `.data/`，不做真实 API/网络测试。
 
 ### Phase B citation 合同收口（2026-07-29）
 
@@ -348,6 +412,7 @@
 #### Milestone 1: 基础设施层 ✅
 
 **核心模块**:
+
 - ✅ **配置系统** ([src/utils/config.py](src/utils/config.py))
   - YAML 配置文件支持
   - 环境变量支持
@@ -377,12 +442,14 @@
   - 字数统计
 
 **开发工具**:
+
 - ✅ **验证脚本** ([src/utils/verify_setup.py](src/utils/verify_setup.py))
   - 全面的系统验证
   - 模块测试
   - 详细日志记录
 
 **安装脚本** ([scripts/](scripts/)):
+
 - ✅ **Conda 方案** (推荐) ⭐
   - `setup-conda.ps1` - 自动创建 Python 3.11 环境
   - `test-conda.ps1` - Conda 环境测试
@@ -394,6 +461,7 @@
   - 详见 `scripts/legacy/README.md`
 
 **文档**:
+
 - ✅ [RUN_ME_FIRST.md](../../RUN_ME_FIRST.md) - 快速开始指南
 - ✅ [scripts/README.md](../../scripts/README.md) - 脚本详细说明
 - ✅ [QUICKSTART.md](QUICKSTART.md) - 安装教程
@@ -414,6 +482,7 @@
 ### 📝 技术栈
 
 **核心依赖**:
+
 - Python 3.11
 - SQLite 3.35+ (FTS5)
 - hnswlib 0.8.0
@@ -422,10 +491,12 @@
 - pyyaml 6.0.1
 
 **AI 服务** (Milestone 2):
+
 - DeepSeek API (摘要生成)
 - OpenAI API (Embedding)
 
 **开发工具**:
+
 - pytest 7.4.4
 - black 24.1.1
 - mypy 1.8.0
@@ -433,12 +504,14 @@
 ### 🎯 下一步计划
 
 **Milestone 2: AI 服务层** (计划中):
+
 - [ ] DeepSeek 客户端封装
 - [ ] OpenAI 客户端封装
 - [ ] Embedder 向量化服务
 - [ ] Prompt 模板管理
 
 **Milestone 3: 内容处理器** (计划中):
+
 - [ ] 微信文章处理器
 - [ ] 知乎内容处理器
 - [ ] 通用网页处理器
