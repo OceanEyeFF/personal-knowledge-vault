@@ -12,6 +12,23 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### 真实数据验证 Runbook 规划（2026-07-31）
+
+- 新增 `docs/operations/testing/真实数据验证Runbook.md`：规划优先、授权后执行的小样本
+  真实数据验证流程，定义 P0 小样本预演 / P1 受控评测 / P2 定期回归三阶段。
+- 新增空白记录模板 `docs/operations/testing/templates/真实数据验证记录模板.md`
+  （T-A 授权单 / T-B 样本清单 / T-C 人工判读表 / T-D 自动门禁 / T-E 失败分流 /
+  T-F 审计证据 / T-G 留存清除 / T-H 阶段执行记录）。
+- 覆盖样本选择与代表性、数据分级最小化（D1–D4）、授权快照唯一取数通道、脱敏/
+  假名化、环境与凭据隔离、命令类别（CAT-A/B/C/D）、人工判读表、自动门禁
+  （G1–G7）、失败分流（F1–F5）、审计证据、留存清除与回滚。
+- 明确合成 fixture 与真实数据的边界及不可作为发布结论的指标（第 16 章）。
+- 覆盖 archive / search / MCP evidence & citation / delete / migration 五类验证。
+- 与 `codex/review-testcase-repair`（5c14caa，只读参考不合并）及 #3 开发 vault
+  轻量重建（仅定义接口与依赖，不等待不修改）的依赖顺序已记录（第 18 章）。
+- 未实现任何访问真实数据的脚本；安全工具/TestCase 扩展（S1–S5）登记为后续任务。
+- 本任务不读取、不复制、不导出真实数据，不访问 `.data/`，不做真实 API/网络测试。
+
 ### Phase B citation 合同收口（2026-07-29）
 
 - `collect_evidence` 为每条 chunk 证据新增稳定唯一的

@@ -232,6 +232,15 @@ Remove-Item Env:PKV_RUN_LIVE
 
 详见: [测试环境隔离指南](../docs/operations/testing/测试环境隔离指南.md)
 
+### 真实数据验证（规划中，授权后执行）
+
+- [真实数据验证 Runbook](../docs/operations/testing/真实数据验证Runbook.md) 定义未来在
+  用户明确授权后的小样本真实数据验证流程（P0 预演 / P1 受控评测 / P2 定期回归）。
+- 真实数据进入测试环境的唯一通道是用户手动执行的"授权快照"（脱敏/假名化后放入
+  `.data-test/<scenario>/`）；AI/自动化永不直接访问 `.data/` 或 `config/local.yaml`。
+- 空白记录模板见
+  [真实数据验证记录模板](../docs/operations/testing/templates/真实数据验证记录模板.md)。
+
 ---
 
 ## 关键配置
