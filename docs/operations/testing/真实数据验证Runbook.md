@@ -365,11 +365,11 @@ CLONE_ID   -> .data-test/<scenario>/clones/<clone-id>    # 破坏性演练唯一
 .\scripts\run-test.ps1 -DataRoot .data-test\real-eval-p1 archive "<占位 URL>"
 
 # CAT-C 迁移演练（用户手动，仅 clone 路径；需 G0/实现前置与授权，15.5）
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\real-eval-p1\clones\<clone-id> -Command @("python", "scripts\migrate.py", "--health-check")
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\real-eval-p1\clones\<clone-id> -Command @("python", "scripts\migrate.py", "--dry-run")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\<scenario>\clones\<clone-id> -Command @("python", "scripts\migrate.py", "--health-check")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\<scenario>\clones\<clone-id> -Command @("python", "scripts\migrate.py", "--dry-run")
 ```
 
-> 本节所有命令的参数均为占位符。CAT-U/CAT-C 的命令由用户在其受控终端执行，Agent 只处理用户交付的脱敏摘要；DataRoot 只能指向 `.data-test/` 下的快照根（CAT-U 只读）或 `clones/<clone-id>`（CAT-C）。
+> 本节所有命令的参数均为占位符。CAT-U/CAT-C 的命令由用户在其受控终端执行，Agent 只处理用户交付的脱敏摘要；DataRoot 只能指向 `.data-test/` 下的快照根（CAT-U 只读）或 `clones/<clone-id>`（CAT-C）。**`<scenario>` 必须替换为当前阶段（P0=`real-sample-p0`，P1=`real-eval-p1`，P2=`real-regression-p2`，见 15.5 场景绑定），不得跨场景使用其他阶段的数据根。**
 
 ---
 
@@ -680,13 +680,15 @@ delete 完整性（S3 工具）。未纳入指标必须在报告中以"剔除待
 
 **命令（用户手动，DataRoot 必须指向 clone 而非快照根）**：
 
+> **场景绑定（7.1-4）**：`<scenario>` 必须替换为当前阶段——P0=`real-sample-p0`、P1=`real-eval-p1`、P2=`real-regression-p2`；clone 命令只允许在当前阶段的 `clones/<clone-id>` 下执行，**不得跨场景**使用其他阶段的数据根。§8.3 的 CAT-C 示例同样适用此绑定。
+
 ```powershell
 # 前置检查：若实际脚本不支持对应 DataRoot/受控入口，不能执行，登记 S5/S7 前置（见下）
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\real-eval-p1\clones\<clone-id> -Command @("python", "scripts\migrate.py", "--version")
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\real-eval-p1\clones\<clone-id> -Command @("python", "scripts\migrate.py", "--health-check")
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\real-eval-p1\clones\<clone-id> -Command @("python", "scripts\migrate.py", "--dry-run")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\<scenario>\clones\<clone-id> -Command @("python", "scripts\migrate.py", "--version")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\<scenario>\clones\<clone-id> -Command @("python", "scripts\migrate.py", "--health-check")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\<scenario>\clones\<clone-id> -Command @("python", "scripts\migrate.py", "--dry-run")
 # 破坏性迁移：仅 clone 内、--no-backup、明确授权（步骤 4）
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\real-eval-p1\clones\<clone-id> -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\<scenario>\clones\<clone-id> -Command @("python", "scripts\migrate.py", "--auto", "--no-backup")
 ```
 
 > **DataRoot 支持前置**：`migrate.py` 当前通过 `Config()` 读取 `DB_PATH`（run-test.ps1 的 env 覆盖可将其指向 clone），但它仍加载 local.yaml 且没有 base-only 受控入口；同时它没有显式的 `--db-path` 参数。若实际脚本不满足"clone 路径可寻址 + base-only 受控入口"，对应命令**不得执行**，改为登记前置（S5 迁移断言扩展、S7 base-only 预检，第 19 章）。
