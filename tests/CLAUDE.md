@@ -238,7 +238,8 @@ Remove-Item Env:PKV_RUN_LIVE
 ### 真实数据验证（规划中，授权后执行）
 
 - [真实数据验证 Runbook](../docs/operations/testing/真实数据验证Runbook.md) 定义未来在
-  用户明确授权后的小样本真实数据验证流程（P0 预演 / P1 受控评测 / P2 定期回归）。
+  用户明确授权后的小样本真实数据验证流程（P0 预演 / P1 受控评测 / P2 定期回归）；
+  CAT-0 依赖完整离线 G0，真实快照 CAT-U/CAT-C 在 U1/G8 交付前保持阻塞。
 - 真实数据进入测试环境的唯一通道是用户手动执行的"授权快照"（脱敏/假名化后放入
   `.data-test/<scenario>/`）；AI/自动化永不直接访问 `.data/` 或 `config/local.yaml`。
 - **双通道执行模型**：Agent-safe 通道只做不接触快照、不加载 local.yaml 的静态/合成验证；

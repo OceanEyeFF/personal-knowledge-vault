@@ -13,6 +13,17 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### 真实数据验证 Runbook v1.3：执行入口与日志安全闭环（2026-07-31）
+
+- G0 收紧为按目标子进程验证的离线入口：5c14caa 成套机制覆盖 pytest 与 CLI/MCP，
+  任意 `-Direct` Python 子进程仍须 FT7 generic guard；单独路径预检或 wrapper 环境不再可替代。
+- 新增 U1/G8 user-only launcher 硬前置，负责授权、`.data-test`/clone 边界、工作区文件日志
+  禁用或源头脱敏；未交付前所有真实快照 CAT-U/CAT-C 步骤明确剔除，Runbook 不再给出可误执行命令。
+- archive 写入统一迁移到 writable clone，授权快照根保持只读；migration 明确依赖 FT5+U1，
+  不再错误声称 G0/FT7 base-only 预检能够保护 user-only migration。
+- 合成种子命令固定 `--seed/--count/--output`，并纠正“纯 stdlib”描述；pytest 示例显式排除
+  `network/manual`；判读模板新增“不适用 + 原因”。
+
 ### 真实数据验证 Runbook 复审修订：双通道执行模型与证据契约统一（2026-07-31）
 
 - 建立**双通道执行模型**：Agent-safe 通道仅限不接触授权快照、不加载 `config/local.yaml`
@@ -28,7 +39,7 @@
   离线真实快照命令同样按双通道处理（Runbook 8/15.1-15.4）。
 - disposable clone 与 migration 落到可审计步骤：`clones/<clone-id>` 专属数据根、用户制备/验证
   流程（7.1-7）、历史 schema baseline（版本号/哈希）、pending migration 要求（pending=0 标记
-  "未覆盖"）；migrate.py 无 `--db-path`/受控入口时对应命令不得执行，登记 S5/S7 前置（Runbook 15.5）。
+  "未覆盖"）；migrate.py 无 `--db-path`/受控入口时对应命令不得执行，登记 FT5/FT7 前置（Runbook 15.5）。
 - 校正 20.1 一致性 checklist、风险/成本表与文档版本（v1.2）。
 
 ### 真实数据验证 Runbook P0 安全/可执行性修订（2026-07-31）
@@ -37,16 +48,16 @@
   Embedding HTTP（数据出境），已从默认步骤移入 **live/数据出境阶段**（单独授权）；
   `PKV_RUN_LIVE` 明确为 pytest 收集开关而非应用层网络开关（Runbook 7.3/8/15.1-15.2）。
 - 隔离预检不再使用 `config show`（其默认加载 `config/local.yaml`）；改为 base-only/
-  fail-closed 机制（5c14caa 的 `offline_entrypoint`/`offline_runtime` 或等价实现 S7）并
+  fail-closed 机制（5c14caa 的 `offline_entrypoint`/`offline_runtime` 或等价实现 FT7）并
   提升为 **G0 硬前置**——未就绪则 P0/P1/P2 不可执行（Runbook 7.1/10.3/18.1）。
 - 证据留存改为仅退出码、计数、哈希、假名 ID 与人工脱敏摘要；原始证据只能由用户保存在
   Agent 不可读受控位置（Runbook 12/13，模板 T-F/T-G）。
-- MCP 真实快照证据验证改为待实现前置（S6 受控 harness）：stdio 无法跨会话附着，16-task
-  runner 固定 `OfflineMcpScenario`；G7 在 S6 交付前不可执行（Runbook 10.3/15.3）。
-- delete 完整性指标默认从 P1/P2 剔除，S3 工具为其硬前置；删除/可写迁移强制在每场景
+- MCP 真实快照证据验证改为待实现前置（FT6 受控 harness）：stdio 无法跨会话附着，16-task
+  runner 固定 `OfflineMcpScenario`；G7 在 FT6 交付前不可执行（Runbook 10.3/15.3）。
+- delete 完整性指标默认从 P1/P2 剔除，FT3 工具为其硬前置；删除/可写迁移强制在每场景
   disposable clone 内执行，快照根只读（Runbook 9/10.1/14/15.4-15.5）。
 - #3 依赖统一为明确 OR 条件：（#3 dev vault 已就绪）或（合成样本预演降级）（Runbook 18.2）。
-- 新增后续任务 S6（真实快照 MCP harness）与 S7（base-only 隔离预检工具）。
+- 新增后续任务 FT6（真实快照 MCP harness）与 FT7（base-only 隔离入口工具）。
 
 ### 真实数据验证 Runbook 规划（2026-07-31）
 
@@ -62,7 +73,7 @@
 - 覆盖 archive / search / MCP evidence & citation / delete / migration 五类验证。
 - 与 `codex/review-testcase-repair`（5c14caa，只读参考不合并）及 #3 开发 vault
   轻量重建（仅定义接口与依赖，不等待不修改）的依赖顺序已记录（第 18 章）。
-- 未实现任何访问真实数据的脚本；安全工具/TestCase 扩展（S1–S5）登记为后续任务。
+- 未实现任何访问真实数据的脚本；安全工具/TestCase 扩展（FT1–FT5）登记为后续任务。
 - 本任务不读取、不复制、不导出真实数据，不访问 `.data/`，不做真实 API/网络测试。
 
 ### Phase B citation 合同收口（2026-07-29）
