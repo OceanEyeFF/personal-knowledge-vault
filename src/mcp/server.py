@@ -18,7 +18,9 @@ import logging
 
 from mcp.server.fastmcp import FastMCP
 
+from src.runtime.bootstrap import bootstrap_runtime
 from src.utils.config import get_config
+from src.utils.logger import LoggerSetup
 
 logger = logging.getLogger("pkv.mcp")
 
@@ -182,7 +184,6 @@ def main():
     """CLI 入口：启动 MCP 服务。"""
     import argparse
     import sys
-    from logging.handlers import RotatingFileHandler
 
     parser = argparse.ArgumentParser(description="PKV MCP Server")
     parser.add_argument(
@@ -205,8 +206,10 @@ def main():
     )
     args = parser.parse_args()
 
-    # ── 日志级别优先级: --log-level > LOG_LEVEL 环境变量 > config.yaml > INFO ──
+    # 所有 adapter 共用同一个路径/数据库启动门禁。
     config = get_config()
+    bootstrap_runtime(config)
+    # ── 日志级别优先级: --log-level > LOG_LEVEL 环境变量 > config.yaml > INFO ──
     if args.log_level:
         level_str = args.log_level
     else:
@@ -230,21 +233,17 @@ def main():
     root_logger.addHandler(console_handler)
 
     # ── 文件 handler（读取 config.yaml 的 logging.file 配置）──
+    # 日志叶子和 CLI/GUI 一样走统一可写叶子合同；失败不阻止服务启动。
     file_enabled = config.get("logging.file.enabled", True)
     if file_enabled:
-        log_dir = config.log_dir
-        log_file = log_dir / "pkv.log"
+        log_file = config.log_dir / "pkv.log"
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
-            file_handler = RotatingFileHandler(
+            LoggerSetup.add_file_handler(
                 log_file,
-                maxBytes=int(config.get("logging.file.max_bytes", 10 * 1024 * 1024)),
-                backupCount=int(config.get("logging.file.backup_count", 5)),
-                encoding="utf-8",
+                path_validator=config.layout.writable_user_path,
+                level=log_level,
+                log_format=log_format,
             )
-            file_handler.setLevel(log_level)
-            file_handler.setFormatter(formatter)
-            root_logger.addHandler(file_handler)
             logger.info(f"日志文件: {log_file}")
         except Exception as e:
             # 文件日志初始化失败不应阻止服务启动

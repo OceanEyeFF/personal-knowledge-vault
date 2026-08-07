@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 import src.utils.config as config_module
+from src.runtime import ErrorCode, PKVRuntimeError
 from src.utils.config import (
     Config,
     endpoint_contract_sha256,
@@ -122,10 +123,10 @@ def test_local_data_dir_rebases_copied_default_storage_paths(
     assert config.tmp_dir == local_data_dir / "tmp"
 
 
-def test_local_data_dir_preserves_explicit_storage_path_overrides(
+def test_local_data_dir_rejects_explicit_storage_path_escape(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """修改数据根时，本机配置中不同于基础值的子路径仍应优先。"""
+    """本机配置不得把数据库或 Vault 指到唯一数据根之外。"""
     base_path = tmp_path / "config.yaml"
     local_path = tmp_path / "local.yaml"
     base_data_dir = tmp_path / "base-data"
@@ -150,14 +151,11 @@ def test_local_data_dir_preserves_explicit_storage_path_overrides(
     for key in ("DATA_DIR", "DB_PATH", "VAULT_DIR", "VECTOR_DIR", "LOG_DIR", "TMP_DIR"):
         monkeypatch.delenv(key, raising=False)
 
-    config = Config(str(base_path), str(local_path))
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        Config(str(base_path), str(local_path))
 
-    assert config.data_dir == local_data_dir
-    assert config.db_path == custom_db
-    assert config.vault_dir == custom_vault
-    assert config.vector_index_dir == local_data_dir / "vectors"
-    assert config.log_dir == local_data_dir / "logs"
-    assert config.tmp_dir == local_data_dir / "tmp"
+    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+    assert not local_data_dir.exists()
 
 
 def test_legacy_provider_environment_variables_are_ignored(
@@ -198,8 +196,10 @@ def test_data_dir_derives_all_runtime_storage_paths(
     assert config.tmp_dir == runtime_data_dir / "tmp"
 
 
-def test_explicit_runtime_paths_override_data_dir(tmp_path: Path, monkeypatch) -> None:
-    """细粒度运行隔离路径应优先于 DATA_DIR 派生路径。"""
+def test_runtime_child_paths_must_remain_inside_data_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """细粒度运行路径越过 DATA_DIR 时必须在任何写入前拒绝。"""
     base_path = tmp_path / "config.yaml"
     _write_config(base_path, tmp_path / "yaml-data")
     runtime_data_dir = tmp_path / "runtime-data"
@@ -209,6 +209,31 @@ def test_explicit_runtime_paths_override_data_dir(tmp_path: Path, monkeypatch) -
         "VECTOR_DIR": tmp_path / "custom-vectors",
         "LOG_DIR": tmp_path / "custom-logs",
         "TMP_DIR": tmp_path / "custom-tmp",
+    }
+    monkeypatch.setenv("DATA_DIR", str(runtime_data_dir))
+    for key, path in overrides.items():
+        monkeypatch.setenv(key, str(path))
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        Config(str(base_path))
+
+    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+    assert not runtime_data_dir.exists()
+
+
+def test_contained_runtime_child_paths_override_derived_defaults(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """DATA_DIR 内部的细粒度路径仍可用于测试与运维隔离。"""
+    base_path = tmp_path / "config.yaml"
+    _write_config(base_path, tmp_path / "yaml-data")
+    runtime_data_dir = tmp_path / "runtime-data"
+    overrides = {
+        "DB_PATH": runtime_data_dir / "custom" / "vault.db",
+        "VAULT_DIR": runtime_data_dir / "custom-vault",
+        "VECTOR_DIR": runtime_data_dir / "custom-vectors",
+        "LOG_DIR": runtime_data_dir / "custom-logs",
+        "TMP_DIR": runtime_data_dir / "custom-tmp",
     }
     monkeypatch.setenv("DATA_DIR", str(runtime_data_dir))
     for key, path in overrides.items():
@@ -231,7 +256,8 @@ def test_legacy_vector_store_path_environment_variable_is_ignored(
     _write_config(base_path, tmp_path / "yaml-data")
     runtime_data_dir = tmp_path / "runtime-data"
     monkeypatch.setenv("DATA_DIR", str(runtime_data_dir))
-    monkeypatch.delenv("VECTOR_DIR", raising=False)
+    for key in ("DB_PATH", "VAULT_DIR", "VECTOR_DIR", "LOG_DIR", "TMP_DIR"):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("VECTOR_STORE_PATH", str(tmp_path / "legacy-vectors"))
 
     config = Config(str(base_path))
@@ -280,6 +306,31 @@ def test_set_yaml_config_value_replace_failure_preserves_original(
 
     assert local_path.read_bytes() == original
     assert list(tmp_path.iterdir()) == [local_path]
+
+
+def test_product_local_config_update_rejects_hardlink(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DATA_DIR", raising=False)
+    base_path = tmp_path / "config.yaml"
+    data_dir = tmp_path / "data"
+    _write_config(base_path, data_dir)
+    config = Config(str(base_path))
+    config.ensure_dirs()
+
+    outside = tmp_path / "outside-local.yaml"
+    outside.write_text("service:\n  mode: outside\n", encoding="utf-8")
+    try:
+        os.link(outside, config.local_config_path)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        config.update_local_config({"service.mode": "changed"})
+
+    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+    assert "outside" in outside.read_text(encoding="utf-8")
 
 
 def test_set_yaml_config_values_uses_one_atomic_replace(
@@ -402,6 +453,30 @@ def test_config_persists_runtime_embedding_dim(tmp_path: Path, monkeypatch) -> N
     reloaded_config = Config(str(base_path))
     assert reloaded_config.embedding_dim == 2560
     assert reloaded_config.runtime_embedding_dim_path == data_dir / "runtime" / "embedding_dim.json"
+
+
+def test_config_rejects_hardlinked_runtime_embedding_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DATA_DIR", raising=False)
+    base_path = tmp_path / "config.yaml"
+    data_dir = tmp_path / "data"
+    _write_config(base_path, data_dir, embd_dim="auto")
+    config = Config(str(base_path))
+    config.ensure_dirs()
+
+    outside = tmp_path / "outside-runtime.json"
+    outside.write_text('{"embedding_dim": 2560}\n', encoding="utf-8")
+    try:
+        os.link(outside, config.runtime_embedding_dim_path)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        Config(str(base_path))
+
+    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
 
 
 def test_embedding_fingerprints_hash_credential_bearing_base_url(
@@ -584,10 +659,39 @@ def test_legacy_plaintext_runtime_fingerprint_is_safely_invalidated(
         encoding="utf-8",
     )
 
-    assert Config(str(base_path)).embedding_dim is None
+    original = runtime_path.read_bytes()
+    config = Config(str(base_path))
+
+    assert config.embedding_dim is None
+    assert runtime_path.read_bytes() == original
+
+    config.ensure_dirs()
+    config.sanitize_runtime_state()
     assert not runtime_path.exists() or "legacy-password" not in runtime_path.read_text(
         encoding="utf-8"
     )
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["[]\n", '["a"]\n', '"text"\n', "42\n", "null\n", "true\n"],
+)
+def test_non_object_runtime_embedding_cache_is_safely_invalidated(
+    tmp_path: Path, monkeypatch, content: str
+) -> None:
+    """embedding_dim.json 是合法 JSON 但非 object 时按失效缓存处理，绝不崩溃。"""
+    monkeypatch.delenv("DATA_DIR", raising=False)
+    base_path = tmp_path / "config.yaml"
+    data_dir = tmp_path / "data"
+    _write_config(base_path, data_dir, embd_dim="auto")
+    runtime_path = data_dir / "runtime" / "embedding_dim.json"
+    runtime_path.parent.mkdir(parents=True)
+    runtime_path.write_text(content, encoding="utf-8")
+
+    config = Config(str(base_path))
+
+    assert config.embedding_dim is None
+    assert runtime_path.read_text(encoding="utf-8") == content
 
 
 def test_config_invalidates_runtime_dim_when_model_changes(

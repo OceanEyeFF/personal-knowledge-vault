@@ -53,6 +53,44 @@ def _public_entry_locator(knowledge_id: object) -> str:
     return build_entry_locator(parsed_id) if parsed_id > 0 else ""
 
 
+def _public_storage_terminal(data: object) -> dict:
+    """Expose stable W1 terminal codes without leaking local paths/messages."""
+
+    if not isinstance(data, dict):
+        return {}
+    payload: dict = {}
+    status = data.get("status")
+    if isinstance(status, str) and status:
+        payload["storage_status"] = status
+    operation_id = data.get("operation_id")
+    if isinstance(operation_id, str) and operation_id:
+        payload["operation_id"] = operation_id
+    repair_actions = data.get("repair_actions")
+    if isinstance(repair_actions, list):
+        payload["repair_actions"] = [
+            action for action in repair_actions if isinstance(action, str)
+        ]
+    stable_errors = data.get("storage_errors")
+    if isinstance(stable_errors, list):
+        payload["storage_error_codes"] = [
+            item["code"]
+            for item in stable_errors
+            if isinstance(item, dict) and isinstance(item.get("code"), str)
+        ]
+    core_committed = data.get("core_committed")
+    if isinstance(core_committed, bool):
+        payload["core_committed"] = core_committed
+    do_not_retry = data.get("do_not_retry")
+    if isinstance(do_not_retry, bool):
+        payload["do_not_retry"] = do_not_retry
+        if do_not_retry and status not in {"ready", "deleted"}:
+            payload["storage_warning"] = (
+                "核心存储可能已提交或需先修复，请勿盲目重试归档；"
+                "请按 repair_actions 处理"
+            )
+    return payload
+
+
 # ============================================================
 # Tool 1: search_knowledge — 搜索知识库
 # ============================================================
@@ -345,13 +383,22 @@ async def archive_url(url: str) -> dict:
                 ),
                 "tags": result.data.get("tags", []),
                 "abstract": result.data.get("summary_one_sentence", ""),
+                **_public_storage_terminal(result.data),
             })
         else:
             logger.warning(f"archive_url: 归档失败 url={url!r}, errors={result.errors}")
-            return {
+            failure_data = getattr(result, "data", None) or {}
+            payload: dict = {
                 "success": False,
                 "error": "归档失败",
+                **_public_storage_terminal(failure_data),
             }
+            if failure_data.get("knowledge_id") is not None:
+                payload["knowledge_id"] = failure_data.get("knowledge_id")
+                payload["entry_locator"] = _public_entry_locator(
+                    failure_data.get("knowledge_id")
+                )
+            return sanitize_public_evidence(payload)
     except Exception:
         logger.exception("archive_url 执行异常")
         return {"success": False, "error": "归档异常"}
@@ -421,13 +468,22 @@ async def archive_text(text: str, title: str = "") -> dict:
                     result.data.get("knowledge_id")
                 ),
                 "tags": result.data.get("tags", entry.tags),
+                **_public_storage_terminal(result.data),
             })
         else:
             logger.warning(f"archive_text: 归档失败 errors={result.errors}")
-            return {
+            failure_data = getattr(result, "data", None) or {}
+            payload = {
                 "success": False,
                 "error": "归档失败",
+                **_public_storage_terminal(failure_data),
             }
+            if failure_data.get("knowledge_id") is not None:
+                payload["knowledge_id"] = failure_data.get("knowledge_id")
+                payload["entry_locator"] = _public_entry_locator(
+                    failure_data.get("knowledge_id")
+                )
+            return sanitize_public_evidence(payload)
     except Exception:
         logger.exception("archive_text 执行异常")
         return {"success": False, "error": "归档异常"}

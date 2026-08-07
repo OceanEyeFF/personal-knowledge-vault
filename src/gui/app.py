@@ -24,65 +24,27 @@ if str(_PROJECT_ROOT) not in sys.path:
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from src.gui.main_window import MainWindow  # noqa: E402
-from src.storage.migration_manager import MigrationManager  # noqa: E402
+from src.runtime.bootstrap import bootstrap_runtime  # noqa: E402
 from src.utils.config import Config  # noqa: E402
 
 logger = logging.getLogger("pkv.gui.app")
 
 
 def ensure_database_initialized() -> bool:
-    """确保数据库已初始化（首次运行时自动迁移）。
-
-    检查数据库版本，如果为 "0.0.0"（未初始化），则自动执行所有迁移脚本。
+    """通过唯一 runtime bootstrap 建立 fresh-install 数据库。
 
     Returns:
         True: 数据库已就绪，False: 初始化失败
     """
     try:
-        # 加载配置
         config = Config()
-        db_path = config.db_path
-        migrations_dir = _PROJECT_ROOT / "scripts" / "migrations"
-
-        # 创建迁移管理器
-        manager = MigrationManager(db_path, migrations_dir)
-
-        # 检查当前版本
-        current_version = manager.get_current_version()
-
-        if current_version == "0.0.0":
-            logger.info("检测到首次运行，正在初始化数据库...")
-            logger.info(f"数据库路径: {db_path}")
-            logger.info(f"迁移脚本目录: {migrations_dir}")
-
-            # 获取待执行的迁移
-            pending = manager.get_pending_migrations()
-            if not pending:
-                logger.error("未找到迁移脚本，无法初始化数据库")
-                return False
-
-            logger.info(f"找到 {len(pending)} 个迁移脚本，开始初始化...")
-
-            # 执行所有迁移（首次初始化无需备份）
-            success_count = manager.apply_all_pending(auto_backup=False)
-
-            if success_count > 0:
-                logger.info(f"✅ 数据库初始化成功！已执行 {success_count} 个迁移脚本")
-                logger.info(f"新版本: {manager.get_current_version()}")
-                return True
-            else:
-                logger.error("数据库初始化失败：没有成功执行任何迁移")
-                return False
-        else:
-            # 数据库已存在，检查是否有待升级的迁移
-            pending = manager.get_pending_migrations()
-            if pending:
-                logger.info(f"检测到 {len(pending)} 个待升级的迁移脚本")
-                logger.info("提示：请运行 'python scripts/migrate.py' 手动升级数据库")
-            else:
-                logger.info(f"数据库版本: {current_version} (已是最新)")
-
-            return True
+        context = bootstrap_runtime(config)
+        logger.info(
+            "数据库已就绪: %s (%s)",
+            context.database.current_version,
+            context.database.state.value,
+        )
+        return True
 
     except Exception as e:
         logger.error(f"数据库初始化检查失败: {e}", exc_info=True)
@@ -147,9 +109,9 @@ def main() -> int:
             (
                 "数据库初始化失败，应用无法启动。\n\n"
                 "可能原因：\n"
-                "1. 迁移脚本缺失（请检查 scripts/migrations/ 目录）\n"
-                "2. 数据库文件权限不足\n"
-                "3. 磁盘空间不足\n\n"
+                "1. 发布资源不完整\n"
+                "2. 数据库损坏、版本不受支持或需要升级\n"
+                "3. 用户数据目录权限/路径不安全或磁盘空间不足\n\n"
                 "请查看日志获取详细错误信息。"
             ),
         )

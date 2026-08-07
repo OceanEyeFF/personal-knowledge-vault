@@ -77,15 +77,16 @@ class ZhihuProcessor(BaseProcessor):
             if self._cookie_str:
                 logger.warning(
                     "⚠️ 知乎登录墙检测：已配置 Cookie 但仍被拦截，Cookie 可能已过期。"
-                    "请重新从浏览器复制 Cookie 到 config/local.yaml 的 processors.zhihu.cookie"
+                    "请重新从浏览器复制 Cookie 到用户数据目录中 config/local.yaml 的 "
+                    "processors.zhihu.cookie"
                 )
             else:
                 logger.warning(
                     "⚠️ 知乎登录墙检测：该页面需要登录才能查看完整内容。\n"
                     "解决方法：\n"
-                    "  1. 在 config/local.yaml 中配置 processors.zhihu.cookie\n"
+                    "  1. 在用户数据目录的 config/local.yaml 中配置 processors.zhihu.cookie\n"
                     "  2. 或者直接复制页面文本，使用「文本归档」功能\n"
-                    "可先复制 config/config.yaml 为 config/local.yaml"
+                    "请仅在用户数据目录中创建或编辑 config/local.yaml"
                 )
             raise ValueError(
                 "知乎登录墙：该页面需要登录才能查看完整内容。"

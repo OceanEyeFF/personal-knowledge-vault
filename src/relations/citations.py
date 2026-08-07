@@ -178,31 +178,20 @@ def serialize_relation_evidence(record: Any) -> dict[str, Any]:
 
 
 def resolve_vault_file_path(file_path: Any, vault_dir: Any) -> Path:
-    """Resolve one regular file and prove that it remains inside the vault."""
+    """Resolve through the single W1 Vault containment implementation."""
     raw_path = str(file_path or "").strip()
     if not raw_path or not vault_dir:
         raise ValueError("条目文件不可用")
-    if raw_path.startswith(("\\\\", "//")):
-        raise ValueError("条目文件不可用")
-
     try:
-        resolved_vault = Path(vault_dir).resolve(strict=True)
-        candidate = Path(raw_path)
-        if not candidate.is_absolute():
-            candidate = resolved_vault / candidate
-        resolved_file = candidate.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
-        raise ValueError("条目文件不可用") from None
+        from src.storage.vault_paths import VaultPathGateway
 
-    if not resolved_vault.is_dir():
-        raise ValueError("条目文件不可用")
-    try:
-        resolved_file.relative_to(resolved_vault)
-    except ValueError:
+        return VaultPathGateway(Path(vault_dir), create=False).resolve(
+            raw_path,
+            must_exist=True,
+            require_file=True,
+        )
+    except Exception:
         raise ValueError("条目文件不可用") from None
-    if resolved_file == resolved_vault or not resolved_file.is_file():
-        raise ValueError("条目文件不可用")
-    return resolved_file
 
 
 def read_persisted_metadata_field(
@@ -226,7 +215,10 @@ def read_persisted_metadata_field(
 
     if resolved_path is not None:
         try:
-            post = frontmatter.load(resolved_path)
+            from src.storage.vault_paths import VaultPathGateway
+
+            gateway = VaultPathGateway(Path(vault_dir), create=False)
+            post = frontmatter.loads(gateway.read_text(resolved_path))
             value = post.metadata.get(field_name)
             if value not in (None, ""):
                 return True, value, "markdown_frontmatter"

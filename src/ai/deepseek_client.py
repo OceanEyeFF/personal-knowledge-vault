@@ -8,11 +8,11 @@ OpenAI-compatible LLM API 客户端
 
 import json
 import time
-from pathlib import Path
 from typing import List, Optional, Dict
 from urllib.parse import urlsplit, urlunsplit
 import httpx
 
+from src.runtime.layout import open_user_file_nofollow
 from src.utils.config import (
     get_config,
     redact_url_credentials,
@@ -69,7 +69,7 @@ class DeepSeekClient:
 
         self.api_key = api_key or config.llm_api_key
         if not self.api_key:
-            raise ValueError("LLM API Key 未配置，请检查 config/local.yaml")
+            raise ValueError("LLM API Key 未配置，请检查用户数据目录中的 config/local.yaml")
 
         self.base_url = _strip_trailing_url_path_slashes(
             base_url or config.llm_base_url
@@ -80,7 +80,8 @@ class DeepSeekClient:
         suppress_unsafe_http_transport_logs()
 
         # 加载 Prompt 模板
-        self._prompts_dir = Path(__file__).parent / "prompts"
+        self._layout = config.layout
+        self._prompts_dir = self._layout.prompts_dir
         self._summarize_prompt = self._load_prompt("summarize.txt")
         self._extract_tags_prompt = self._load_prompt("extract_tags.txt")
 
@@ -103,11 +104,19 @@ class DeepSeekClient:
         Raises:
             FileNotFoundError: Prompt 文件不存在
         """
-        prompt_path = self._prompts_dir / filename
-        if not prompt_path.exists():
-            raise FileNotFoundError(f"Prompt 模板不存在: {prompt_path}")
+        if not filename or filename != filename.replace("\\", "/").split("/")[-1]:
+            raise ValueError("Prompt 文件名非法")
+        prompt_path = self._layout.validate_bundled_path(
+            self._prompts_dir / filename,
+            label="Prompt 模板",
+        )
 
-        with open(prompt_path, "r", encoding="utf-8") as f:
+        with open_user_file_nofollow(
+            prompt_path,
+            "r",
+            label="Prompt 模板",
+            encoding="utf-8",
+        ) as f:
             return f.read().strip()
 
     def _call_api(

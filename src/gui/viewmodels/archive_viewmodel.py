@@ -110,7 +110,16 @@ class ArchiveWorker(QThread):
                 self.progress_text.emit("归档完成!")
                 self.finished_ok.emit(result.data)
             else:
-                error_msg = result.errors[0] if result.errors else "归档失败"
+                data = result.data or {}
+                error_msg = "; ".join(result.errors) if result.errors else "归档失败"
+                if data.get("core_committed") or data.get("do_not_retry"):
+                    error_msg = (
+                        f"{error_msg} [核心存储已提交或需先修复: "
+                        f"status={data.get('status')}, "
+                        f"operation_id={data.get('operation_id', '')}, "
+                        f"repair={data.get('repair_actions') or []}] "
+                        f"请勿盲目重试！"
+                    )
                 logger.warning(f"URL 归档失败: url={url!r}, errors={result.errors}")
                 self.finished_err.emit(error_msg)
         except Exception as exc:
@@ -164,7 +173,16 @@ class ArchiveWorker(QThread):
                 self.progress_text.emit("归档完成!")
                 self.finished_ok.emit(result.data)
             else:
-                error_msg = result.errors[0] if result.errors else "归档失败"
+                data = result.data or {}
+                error_msg = "; ".join(result.errors) if result.errors else "归档失败"
+                if data.get("core_committed") or data.get("do_not_retry"):
+                    error_msg = (
+                        f"{error_msg} [核心存储已提交或需先修复: "
+                        f"status={data.get('status')}, "
+                        f"operation_id={data.get('operation_id', '')}, "
+                        f"repair={data.get('repair_actions') or []}] "
+                        f"请勿盲目重试！"
+                    )
                 logger.warning(f"文本归档失败: errors={result.errors}")
                 self.finished_err.emit(error_msg)
         except Exception as exc:

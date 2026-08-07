@@ -16,6 +16,7 @@ import httpx
 import requests
 
 from src.processors.base import BaseProcessor
+from src.runtime.layout import atomic_publish_file, validate_directory_components
 from src.storage.markdown_store import Entry
 from src.utils.config import get_config
 from src.utils.logger import get_logger
@@ -35,6 +36,7 @@ class WechatProcessor(BaseProcessor):
             user_agent: Optional custom User-Agent.
         """
         config = get_config()
+        self._config = config
         self.timeout = timeout
         self.user_agent = user_agent or config.get(
             "processors.wechat.user_agent",
@@ -172,7 +174,7 @@ class WechatProcessor(BaseProcessor):
         if content_tag is None:
             return
 
-        self.tmp_dir.mkdir(parents=True, exist_ok=True)
+        self._prepare_tmp_dir()
         headers = {"User-Agent": self.user_agent}
 
         async with httpx.AsyncClient(timeout=self.timeout, headers=headers) as client:
@@ -198,11 +200,40 @@ class WechatProcessor(BaseProcessor):
             filename = f"wechat_{digest}{ext}"
 
             target_path = self.tmp_dir / filename
-            with open(target_path, "wb") as file:
-                file.write(response.content)
+            self._write_image_file(target_path, response.content)
 
-            relative_path = Path(".data/tmp") / filename
-            return str(relative_path)
+            return target_path.as_uri()
         except httpx.HTTPError as exc:
             logger.warning("Failed to download image url=%s error=%s", url, exc)
             return None
+
+    def _prepare_tmp_dir(self) -> None:
+        """通过统一目录合同准备微信图片临时目录。"""
+        layout = getattr(self._config, "layout", None)
+        if layout is not None:
+            layout.ensure_user_directories()
+            layout.validate_user_directory(self.tmp_dir, label="临时目录")
+        else:
+            validate_directory_components(self.tmp_dir, label="临时目录")
+            self.tmp_dir.mkdir(parents=True, exist_ok=True)
+            validate_directory_components(self.tmp_dir, label="临时目录")
+
+    def _write_image_file(self, target_path: Path, content: bytes) -> None:
+        """写完整临时文件后原子发布；链接/硬链接叶子在任何写入前拒绝。"""
+        # Keep this leaf operation safe when called directly as well as through
+        # ``_download_images``; the atomic publisher deliberately requires an
+        # already-created, validated parent directory.
+        self._prepare_tmp_dir()
+        layout = getattr(self._config, "layout", None)
+        if layout is not None:
+            layout.atomic_publish_user_file(
+                target_path,
+                label="微信图片临时文件",
+                data=content,
+            )
+        else:
+            atomic_publish_file(
+                target_path,
+                label="微信图片临时文件",
+                data=content,
+            )

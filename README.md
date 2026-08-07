@@ -12,6 +12,7 @@
 > 说明：`v0.6.0` 是 CLI 首次稳定引入版本，`v0.7.0` 是 MCP 首次稳定引入版本；当前仓库在此基础上继续合入后续 GUI 与文档收敛工作。
 > 命名说明：当前路线里提到的“当前开发 Phase 1”实际对应 `Phase A：Relation Foundation`；历史文档中的旧 `Phase 1` 已归档完成，两者不是同一时间轴。
 > 2026-07-31 离线收口：Phase C 固定评测为 16 tasks / 119 checks，`overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`；三个探索 Tool 按 `partial-v1` 口径交付，公开合同仍诚实声明 `implementation_level=partial`。
+> 2026-08-07 M13 W1 安全复审：统一 runtime layout/bootstrap、Vault containment、跨存储补偿/repair 终态及 fail-closed migration 已完成；SQLite 事务提交凭据、Markdown identity + SHA-256 和 Vector 持久 pair marker 已补齐。冻结后离线验收为 unit `1583 passed, 19 skipped`、integration/blackbox/e2e `277 passed, 9 deselected`；W2-W4 与最终 Artifact 发布仍待完成。
 
 ## ✨ 核心特点
 
@@ -423,13 +424,13 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 
 ### 🎉 当前仓库基线: v0.8.0-alpha
 
-**发布状态**: 🧪 M1-M9 能力已实现，当前仍为 alpha 开发基线；M13 发布准备与真实数据验收尚未完成
+**发布状态**: 🧪 M13 W1 已完成，当前仍为 alpha 开发基线；W2-W4、Artifact 发布与真实数据验收尚未完成
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
 | **项目版本** | v0.8.0-alpha | 当前仓库基线 |
 | **稳定能力基线** | v0.7.0 | MCP 服务 (8 Tool + 4 Resource + 3 Prompt) |
-| **开发进度** | M1-M9 | Phase 1 + Phase 2A 完成 |
+| **开发进度** | M13 W1 | 运行时布局与数据安全底座完成，W2-W4 待完成 |
 | **源代码文件** | 40+ 个 | Python 模块 |
 | **测试文件** | 96 个 | 2026-03-06 仓库快照（tracked files） |
 | **测试覆盖率** | 待重新统计 | README 不再保留未经重新验证的旧覆盖率数字 |
@@ -451,6 +452,7 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 | **v0.6.1** | ✅ | AI 安全 + 数据库迁移 + 文档整理 | 2026-02-16 |
 | **M8** | ✅ | MCP 只读服务（5 Tool + 4 Resource） | 2026-02-18 |
 | **M9** | ✅ | MCP 写入 + Prompts + 安全加固 (v0.7.0) | 2026-02-19 |
+| **M13 W1** | ✅ | Runtime layout、Vault containment、跨存储终态与 fail-closed migration | 2026-08-02 |
 
 ### 🚀 核心能力矩阵
 
@@ -461,7 +463,7 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 | **AI 分析** | 🧪 已实现（alpha） | 三层摘要、标签提取、成本优化 |
 | **CLI 交互** | 🧪 已实现（alpha） | 6 个核心命令，Rich Console 界面 |
 | **工作流引擎** | 🧪 已实现（alpha） | YAML 配置，可编排/可观测 |
-| **数据迁移** | ⚠️ 临时库验证 | 版本化 Schema；真实升级仍受 FT5、U1/G8 阻塞 |
+| **数据迁移** | 🧪 W1 安全合同通过 | fresh/off-path 初始化与升级拒绝已验证；历史原地升级仍不在 M13 默认范围 |
 | **AI 安全** | 🧪 CAT-0 已验证 | 离线入口与测试隔离；不等同于 OS sandbox |
 | **MCP 服务** | 🧪 离线基线通过 | 固定评测 16/16、119/119；真实快照未验收 |
 
@@ -550,9 +552,9 @@ live/secret/proxy 环境并安装 Python 级网络与子进程 guard，但它不
 [MCP 最小评测闭环](docs/operations/MCP最小评测闭环.md)。
 
 开发 vault 重建入口 `scripts/rebuild-dev-vault.py` 已完成合成演练：
-`rebuilt -> up_to_date -> checked`，目标 schema `1.2.3`、8 个迁移、3 条 seed。
+`rebuilt -> up_to_date -> checked`，目标 schema `1.2.4`、9 个迁移、3 条 seed。
 这只证明离线合成开发基线可重建；真实快照仍受 U1/G8 与迁移 FT5 阻塞，
-本轮未读取或执行真实数据。M13 是该离线基线之后的下一阶段，不等于真实数据验收。
+本轮未读取或执行真实数据。M13 W1 已在该离线基线上完成，当前进入 W2；这仍不等于真实数据验收。
 
 详细说明：[tests/CLAUDE.md](tests/CLAUDE.md)
 
@@ -605,8 +607,8 @@ live/secret/proxy 环境并安装 Python 级网络与子进程 guard，但它不
 **项目代号**: Personal Knowledge Vault
 **当前版本**: v0.8.0-alpha
 **创建日期**: 2026-01-27
-**文档版本**: v4.1
-**最后更新**: 2026-07-31
+**文档版本**: v4.2
+**最后更新**: 2026-08-02
 
 ---
 

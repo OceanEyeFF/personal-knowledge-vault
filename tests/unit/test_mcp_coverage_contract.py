@@ -180,10 +180,12 @@ def test_server_main_runs_http_with_configured_log_level(
             ],
         ),
         patch.object(server, "get_config", return_value=config),
+        patch.object(server, "bootstrap_runtime") as bootstrap,
         patch.object(server.mcp, "run") as run_server,
     ):
         server.main()
 
+    bootstrap.assert_called_once_with(config)
     run_server.assert_called_once_with(
         transport="streamable-http",
         port=4321,
@@ -202,15 +204,47 @@ def test_server_main_degrades_when_file_logging_cannot_start(
     with (
         patch.object(sys, "argv", ["pkv-mcp", "--log-level", "ERROR"]),
         patch.object(server, "get_config", return_value=config),
+        patch.object(server, "bootstrap_runtime") as bootstrap,
         patch(
-            "logging.handlers.RotatingFileHandler",
+            "src.utils.logger.LoggerSetup.add_file_handler",
             side_effect=OSError("read-only log target"),
         ),
         patch.object(server.mcp, "run") as run_server,
     ):
         server.main()
 
+    bootstrap.assert_called_once_with(config)
     run_server.assert_called_once_with(transport="stdio")
+
+
+def test_server_main_registers_validated_file_logger(
+    tmp_path,
+    preserve_root_logger,
+):
+    """MCP 文件日志通过统一可写叶子合同注册（validator 来自 runtime layout）。"""
+    config = MagicMock()
+    config.log_level = "INFO"
+    config.log_dir = tmp_path / "logs"
+    config.get.side_effect = lambda _key, default=None: default
+
+    with (
+        patch.object(sys, "argv", ["pkv-mcp", "--log-level", "ERROR"]),
+        patch.object(server, "get_config", return_value=config),
+        patch.object(server, "bootstrap_runtime"),
+        patch(
+            "src.utils.logger.LoggerSetup.add_file_handler"
+        ) as add_file_handler,
+        patch.object(server.mcp, "run"),
+    ):
+        server.main()
+
+    add_file_handler.assert_called_once()
+    assert add_file_handler.call_args.args[0] == config.log_dir / "pkv.log"
+    assert (
+        add_file_handler.call_args.kwargs["path_validator"]
+        is config.layout.writable_user_path
+    )
+    assert add_file_handler.call_args.kwargs["level"] == logging.ERROR
 
 
 @pytest.mark.parametrize(
@@ -314,6 +348,111 @@ def _archive_entry():
         content="Offline content",
         tags=["offline"],
     )
+
+
+def test_public_storage_terminal_exposes_codes_but_not_local_messages():
+    payload = tools._public_storage_terminal(
+        {
+            "status": "degraded",
+            "repair_actions": ["rebuild_vectors_for_entry"],
+            "storage_errors": [
+                {
+                    "code": "storage_vector_failed",
+                    "message": r"C:\\Users\\private\\vectors.idx",
+                }
+            ],
+        }
+    )
+
+    assert payload == {
+        "storage_status": "degraded",
+        "repair_actions": ["rebuild_vectors_for_entry"],
+        "storage_error_codes": ["storage_vector_failed"],
+    }
+
+
+def test_public_storage_terminal_exposes_committed_needs_repair_semantics():
+    """operation_id / core_committed / do_not_retry must reach MCP clients."""
+    payload = tools._public_storage_terminal(
+        {
+            "status": "repair_required",
+            "operation_id": "abc123",
+            "repair_actions": ["repair_operation_journal"],
+            "storage_errors": [
+                {"code": "storage_repair_required", "message": "core committed"}
+            ],
+            "core_committed": True,
+            "do_not_retry": True,
+        }
+    )
+
+    assert payload["storage_status"] == "repair_required"
+    assert payload["operation_id"] == "abc123"
+    assert payload["core_committed"] is True
+    assert payload["do_not_retry"] is True
+    assert "请勿盲目重试" in payload["storage_warning"]
+    assert payload["storage_error_codes"] == ["storage_repair_required"]
+
+
+def test_public_storage_terminal_does_not_label_ready_as_needing_repair():
+    payload = tools._public_storage_terminal(
+        {
+            "status": "ready",
+            "core_committed": True,
+            "do_not_retry": True,
+            "repair_actions": [],
+        }
+    )
+
+    assert payload["storage_status"] == "ready"
+    assert payload["do_not_retry"] is True
+    assert "storage_warning" not in payload
+
+
+@pytest.mark.asyncio
+async def test_archive_text_committed_repair_failure_exposes_id_and_do_not_retry():
+    """A committed-needs-repair workflow failure still exposes ID/locator/status."""
+    processor = MagicMock()
+    processor.process = AsyncMock(return_value=_archive_entry())
+    workflow = MagicMock()
+    workflow.execute_async = AsyncMock(
+        return_value=SimpleNamespace(
+            success=False,
+            errors=["storage_repair_required: 核心存储已提交但操作日志更新失败"],
+            data={
+                "knowledge_id": 42,
+                "status": "repair_required",
+                "operation_id": "op-1",
+                "core_committed": True,
+                "do_not_retry": True,
+                "repair_actions": ["repair_operation_journal"],
+                "storage_errors": [
+                    {"code": "storage_repair_required", "message": "x"}
+                ],
+            },
+        )
+    )
+
+    with (
+        patch(
+            "src.processors.text_fallback_processor.TextFallbackProcessor",
+            return_value=processor,
+        ),
+        patch(
+            "src.workflow.engine.WorkflowEngine",
+            return_value=workflow,
+        ),
+    ):
+        result = await tools.archive_text("Offline content")
+
+    assert result["success"] is False
+    assert result["knowledge_id"] == 42
+    assert result["entry_locator"] == "pkv://entries/42"
+    assert result["storage_status"] == "repair_required"
+    assert result["operation_id"] == "op-1"
+    assert result["core_committed"] is True
+    assert result["do_not_retry"] is True
+    assert result["storage_error_codes"] == ["storage_repair_required"]
 
 
 @pytest.mark.asyncio

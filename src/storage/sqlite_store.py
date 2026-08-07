@@ -4,16 +4,23 @@ SQLite 存储层
 负责 SQLite 数据库的初始化、索引管理和 CRUD 操作
 """
 
-import sqlite3
+from __future__ import annotations
+
+import hashlib
 import json
 import re
-from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
+import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
+from src.storage.markdown_store import Entry
+from src.storage.sqlite_connection import connect_existing_sqlite
 from src.utils.logger import get_logger
 from src.utils.text_utils import TextProcessor
-from src.storage.markdown_store import Entry
+
+if TYPE_CHECKING:
+    from src.runtime.layout import RuntimeLayout
 
 logger = get_logger(__name__)
 
@@ -41,6 +48,99 @@ OBSOLETE_INDEX_NAMES = (
     "idx_vt_knowledge_id",
 )
 
+_CORE_PROJECTION_FIELDS = (
+    "title",
+    "content",
+    "summary_one_sentence",
+    "summary_100_words",
+    "keywords",
+    "tags",
+    "source_type",
+    "source_url",
+    "search_strategy",
+    "file_path",
+    "word_count",
+    "event_time",
+    "published_at",
+    "archived_at",
+)
+
+
+def _normalized_chunk_projection(chunks: list[str]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for chunk_index, chunk_text in enumerate(chunks):
+        chunk_text_clean = (chunk_text or "").strip()
+        if not chunk_text_clean:
+            continue
+        normalized.append(
+            {"chunk_index": chunk_index, "chunk_text": chunk_text_clean}
+        )
+    return normalized
+
+
+def _projection_digest(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def entry_projection_sha256(
+    entry: Entry,
+    file_path: str,
+    chunks: list[str],
+) -> str:
+    """Hash the exact SQLite-facing archive projection, excluding generated IDs."""
+
+    keywords = ",".join(entry.keywords) if isinstance(entry.keywords, list) else entry.keywords
+    tags = ",".join(entry.tags) if isinstance(entry.tags, list) else entry.tags
+    values = {
+        "title": entry.title,
+        "content": entry.content,
+        "summary_one_sentence": entry.summary_one_sentence,
+        "summary_100_words": entry.summary_100_words,
+        "keywords": keywords,
+        "tags": tags,
+        "source_type": entry.source_type,
+        "source_url": entry.source_url,
+        "search_strategy": entry.search_strategy,
+        "file_path": file_path,
+        "word_count": entry.word_count,
+        "event_time": entry.event_time,
+        "published_at": entry.published_at,
+        "archived_at": entry.archived_at,
+    }
+    return _projection_digest(
+        {
+            "entry": {field: values[field] for field in _CORE_PROJECTION_FIELDS},
+            "chunks": _normalized_chunk_projection(chunks),
+        }
+    )
+
+
+def row_projection_sha256(
+    row: dict[str, Any],
+    chunks: list[dict[str, Any]],
+) -> str:
+    """Hash an observed SQLite row/chunk projection using the same contract."""
+
+    normalized_chunks = [
+        {
+            "chunk_index": int(chunk["chunk_index"]),
+            "chunk_text": str(chunk["chunk_text"]),
+        }
+        for chunk in sorted(chunks, key=lambda item: int(item["chunk_index"]))
+    ]
+    return _projection_digest(
+        {
+            "entry": {field: row.get(field) for field in _CORE_PROJECTION_FIELDS},
+            "chunks": normalized_chunks,
+        }
+    )
+
 
 class SQLiteStore:
     """SQLite 数据库存储管理器"""
@@ -56,8 +156,7 @@ class SQLiteStore:
             db_path: 数据库文件路径
         """
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
         self.text_processor = TextProcessor()  # 用于 FTS5 分词
         logger.info(f"SQLite 存储初始化: {self.db_path}")
 
@@ -69,10 +168,11 @@ class SQLiteStore:
         Yields:
             sqlite3.Connection
         """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # 使用字典模式访问列
-        conn.execute("PRAGMA foreign_keys = ON")  # 启用外键约束
+        conn = connect_existing_sqlite(self.db_path)
         try:
+            # 初始化必须在 try 内: 任何 PRAGMA/配置失败时连接仍要关闭。
+            conn.row_factory = sqlite3.Row  # 使用字典模式访问列
+            conn.execute("PRAGMA foreign_keys = ON")  # 启用外键约束
             yield conn
             conn.commit()
         except Exception as e:
@@ -82,27 +182,54 @@ class SQLiteStore:
         finally:
             conn.close()
 
-    def initialize(self):
-        """初始化数据库 Schema"""
-        logger.info("开始初始化数据库...")
+    def initialize(self, *, layout: RuntimeLayout | None = None):
+        """Compatibility entrypoint routed through the migration authority.
 
-        with self.get_connection() as conn:
-            # 1. 创建主表
-            self._create_tables(conn)
-            self._ensure_timeline_time_columns(conn)
+        Two modes:
 
-            # 2. 创建索引
-            self._create_indexes(conn)
+        * ``layout=...`` (preferred, production-shaped): the explicit
+          :class:`RuntimeLayout` is the containment authority.  ``db_path`` is
+          validated against the layout's user-data root and the layout's
+          bundled migrations/backup directories are used.
+        * no argument (tests/maintenance compatibility): the store's explicit
+          ``db_path`` is honored as-is and no ambient user-data-root
+          validation is applied; bundled migration scripts are still required
+          and the schema is created exclusively through the migration chain.
+          Product startup containment is enforced by ``bootstrap_runtime()``,
+          not by this low-level wrapper.
 
-            # 3. 创建 FTS5 虚拟表和触发器
-            rebuild_fts = self._ensure_fts5_contract(conn)
-            if rebuild_fts:
-                self._rebuild_fts5_index(conn)
+        Existing databases are never repaired ad-hoc: drift, upgrade-required
+        and future-version states keep their fail-closed rejections.
+        """
 
-            # 4. 验证完整性
-            self._verify_integrity(conn)
+        from src.runtime.layout import RuntimeLayout
+        from src.storage.migration_manager import DatabaseState, MigrationManager
 
-        logger.info("✅ 数据库初始化完成！")
+        if layout is None:
+            # Compatibility mode: resolve only the bundled resources
+            # (read-only); never validate the explicit db_path against an
+            # ambient user-data root (that would reject tmp_path callers).
+            resolved = RuntimeLayout.resolve()
+            migrations_dir = resolved.migrations_dir
+            backup_dir = None
+        else:
+            layout.validate_user_file(
+                self.db_path,
+                label="SQLite 数据库",
+                allow_missing=True,
+            )
+            migrations_dir = layout.migrations_dir
+            backup_dir = layout.backup_dir
+
+        manager = MigrationManager(
+            self.db_path,
+            migrations_dir,
+            backup_dir=backup_dir,
+        )
+        inspection = manager.require_ready()
+        if inspection.state is DatabaseState.FRESH:
+            manager.initialize_fresh()
+        logger.info("✅ 数据库 migration contract 已就绪")
 
     def _create_tables(self, conn: sqlite3.Connection):
         """创建所有表"""
@@ -429,64 +556,167 @@ class SQLiteStore:
             插入的条目 ID
         """
         with self.get_connection() as conn:
-            # 插入主表（使用原始数据，不分词）
-            # FTS5 虚拟表会通过触发器自动同步并分词
-            cursor = conn.execute("""
+            return self._insert_entry(conn, entry, file_path)
+
+    def insert_entry_with_chunks(
+        self,
+        entry: Entry,
+        file_path: str,
+        chunks: list[str],
+        *,
+        operation_id: str | None = None,
+        projection_sha256: str | None = None,
+    ) -> int:
+        """Atomically insert the core projection and optional commit proof.
+
+        ``storage_operation_commits`` is written in the same SQLite transaction
+        as the knowledge row, tags, FTS projection and chunks.  A caller that
+        sees an exception after ``commit()`` can therefore distinguish a
+        committed transaction from a failed one without guessing from
+        ``file_path`` or another mutable business field.
+        """
+
+        self._validate_operation_proof(operation_id, projection_sha256)
+        if operation_id is not None and projection_sha256 != entry_projection_sha256(
+            entry, file_path, chunks
+        ):
+            raise ValueError("archive projection_sha256 与待提交内容不一致")
+
+        with self.get_connection() as conn:
+            knowledge_id = self._insert_entry(conn, entry, file_path)
+            self._insert_chunks(conn, knowledge_id, chunks)
+            if operation_id is not None and projection_sha256 is not None:
+                self._record_storage_operation(
+                    conn,
+                    operation_id=operation_id,
+                    action="archive",
+                    knowledge_id=knowledge_id,
+                    relative_file_path=file_path,
+                    projection_sha256=projection_sha256,
+                )
+            return knowledge_id
+
+    @staticmethod
+    def _validate_operation_proof(
+        operation_id: str | None,
+        projection_sha256: str | None,
+    ) -> None:
+        if (operation_id is None) != (projection_sha256 is None):
+            raise ValueError("operation_id 与 projection_sha256 必须同时提供")
+        if operation_id is None:
+            return
+        if not operation_id or any(
+            character not in "0123456789abcdef-" for character in operation_id
+        ):
+            raise ValueError("operation_id 非法")
+        if (
+            projection_sha256 is None
+            or len(projection_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in projection_sha256)
+        ):
+            raise ValueError("projection_sha256 非法")
+
+    @staticmethod
+    def _record_storage_operation(
+        conn: sqlite3.Connection,
+        *,
+        operation_id: str,
+        action: str,
+        knowledge_id: int,
+        relative_file_path: str,
+        projection_sha256: str,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO storage_operation_commits (
+                operation_id, action, knowledge_id,
+                relative_file_path, projection_sha256
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                operation_id,
+                action,
+                knowledge_id,
+                relative_file_path,
+                projection_sha256,
+            ),
+        )
+
+    def _insert_entry(
+        self,
+        conn: sqlite3.Connection,
+        entry: Entry,
+        file_path: str,
+    ) -> int:
+        """Insert one entry using the caller's transaction."""
+
+        # 插入主表（使用原始数据，不分词）
+        # FTS5 虚拟表会通过触发器自动同步并分词
+        cursor = conn.execute("""
                 INSERT INTO knowledge_items (
                     title, content, summary_one_sentence, summary_100_words,
                     keywords, tags, source_type, source_url, search_strategy,
                     file_path, word_count, event_time, published_at, archived_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                entry.title,  # 使用原始标题（修复：不再分词）
-                entry.content,
-                entry.summary_one_sentence,
-                entry.summary_100_words,  # 使用原始摘要（修复：不再分词）
-                ",".join(entry.keywords) if isinstance(entry.keywords, list) else entry.keywords,  # 转换列表为字符串
-                ",".join(entry.tags) if isinstance(entry.tags, list) else entry.tags,  # 转换列表为字符串
-                entry.source_type,
-                entry.source_url,
-                entry.search_strategy,
-                file_path,
-                entry.word_count,
-                entry.event_time,
-                entry.published_at,
-                entry.archived_at
-            ))
+        """, (
+            entry.title,
+            entry.content,
+            entry.summary_one_sentence,
+            entry.summary_100_words,
+            ",".join(entry.keywords) if isinstance(entry.keywords, list) else entry.keywords,
+            ",".join(entry.tags) if isinstance(entry.tags, list) else entry.tags,
+            entry.source_type,
+            entry.source_url,
+            entry.search_strategy,
+            file_path,
+            entry.word_count,
+            entry.event_time,
+            entry.published_at,
+            entry.archived_at,
+        ))
 
-            knowledge_id = cursor.lastrowid
+        lastrowid = cursor.lastrowid
+        if lastrowid is None:
+            raise sqlite3.IntegrityError("插入失败: lastrowid 为空")
+        try:
+            knowledge_id = int(lastrowid)
+        except (TypeError, ValueError) as exc:
+            raise sqlite3.IntegrityError("插入失败: lastrowid 非法") from exc
+        keywords = (
+            ",".join(entry.keywords)
+            if isinstance(entry.keywords, list)
+            else (entry.keywords or "")
+        )
+        tags = (
+            ",".join(entry.tags)
+            if isinstance(entry.tags, list)
+            else (entry.tags or "")
+        )
+        fts5_data = self.text_processor.prepare_fts5_data(
+            entry.title,
+            entry.summary_100_words or "",
+            keywords,
+            tags,
+        )
+        conn.execute(f"DELETE FROM {FTS_TABLE_NAME} WHERE rowid = ?", (knowledge_id,))
+        conn.execute(f"""
+            INSERT INTO {FTS_TABLE_NAME}(rowid, title, summary_100_words, keywords, tags)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            knowledge_id,
+            fts5_data["title"],
+            fts5_data["summary_100_words"],
+            fts5_data["keywords"],
+            fts5_data["tags"],
+        ))
+        tag_values = entry.tags if isinstance(entry.tags, list) else [
+            value.strip() for value in str(entry.tags or "").split(",") if value.strip()
+        ]
+        self._insert_tags(conn, knowledge_id, tag_values)
+        logger.info(f"插入知识条目: ID={knowledge_id}, title={entry.title}")
+        return knowledge_id
 
-            # 手动更新 FTS5 表（使用分词后的数据）
-            # 注意：触发器会自动插入原始数据，我们需要用分词后的数据覆盖
-            fts5_data = self.text_processor.prepare_fts5_data(
-                entry.title,
-                entry.summary_100_words or "",
-                entry.keywords or "",
-                ",".join(entry.tags) if isinstance(entry.tags, list) else (entry.tags or "")
-            )
-
-            # 删除触发器自动插入的原始数据
-            conn.execute(f"DELETE FROM {FTS_TABLE_NAME} WHERE rowid = ?", (knowledge_id,))
-
-            # 插入分词后的数据
-            conn.execute(f"""
-                INSERT INTO {FTS_TABLE_NAME}(rowid, title, summary_100_words, keywords, tags)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                knowledge_id,
-                fts5_data["title"],
-                fts5_data["summary_100_words"],
-                fts5_data["keywords"],
-                fts5_data["tags"]
-            ))
-
-            # 插入标签关联
-            self._insert_tags(conn, knowledge_id, entry.tags)
-
-            logger.info(f"插入知识条目: ID={knowledge_id}, title={entry.title}")
-            return knowledge_id
-
-    def _insert_tags(self, conn: sqlite3.Connection, knowledge_id: int, tags: List[str]):
+    def _insert_tags(self, conn: sqlite3.Connection, knowledge_id: int, tags: list[str]):
         """插入标签关联"""
         for tag_name in tags:
             # 获取或创建标签
@@ -508,7 +738,7 @@ class SQLiteStore:
                 (knowledge_id, tag_id)
             )
 
-    def insert_chunks(self, knowledge_id: int, chunks: List[str]) -> int:
+    def insert_chunks(self, knowledge_id: int, chunks: list[str]) -> int:
         """为知识条目插入分块文本。
 
         Args:
@@ -523,6 +753,17 @@ class SQLiteStore:
         if not chunks:
             return 0
 
+        with self.get_connection() as conn:
+            return self._insert_chunks(conn, knowledge_id, chunks)
+
+    def _insert_chunks(
+        self,
+        conn: sqlite3.Connection,
+        knowledge_id: int,
+        chunks: list[str],
+    ) -> int:
+        """Insert chunks using the caller's transaction."""
+
         chunk_rows = []
         for chunk_index, chunk_text in enumerate(chunks):
             chunk_text_clean = (chunk_text or "").strip()
@@ -533,24 +774,23 @@ class SQLiteStore:
         if not chunk_rows:
             return 0
 
-        with self.get_connection() as conn:
-            conn.executemany(
-                """
-                INSERT INTO content_chunks (
-                    knowledge_id, chunk_index, chunk_text
-                ) VALUES (?, ?, ?)
-                ON CONFLICT(knowledge_id, chunk_index) DO UPDATE SET
-                    chunk_text = excluded.chunk_text
-                """,
-                chunk_rows,
-            )
+        conn.executemany(
+            """
+            INSERT INTO content_chunks (
+                knowledge_id, chunk_index, chunk_text
+            ) VALUES (?, ?, ?)
+            ON CONFLICT(knowledge_id, chunk_index) DO UPDATE SET
+                chunk_text = excluded.chunk_text
+            """,
+            chunk_rows,
+        )
 
         logger.info(
             f"插入内容分块: knowledge_id={knowledge_id}, count={len(chunk_rows)}"
         )
         return len(chunk_rows)
 
-    def get_chunks_by_knowledge_id(self, knowledge_id: int) -> List[Dict[str, Any]]:
+    def get_chunks_by_knowledge_id(self, knowledge_id: int) -> list[dict[str, Any]]:
         """获取条目对应的全部分块。"""
         if knowledge_id <= 0:
             raise ValueError("knowledge_id 必须为正整数")
@@ -571,7 +811,7 @@ class SQLiteStore:
 
     def get_chunk_by_index(
         self, knowledge_id: int, chunk_index: int
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """按 knowledge_id 与 chunk_index 查询单个分块。"""
         if knowledge_id <= 0:
             raise ValueError("knowledge_id 必须为正整数")
@@ -591,7 +831,7 @@ class SQLiteStore:
             row = cursor.fetchone()
             return dict(row) if row else None
 
-    def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict[str, Any]]:
+    def get_chunk_by_id(self, chunk_id: int) -> dict[str, Any] | None:
         """按持久化 chunk_id 查询单个分块。"""
         if chunk_id <= 0:
             raise ValueError("chunk_id 必须为正整数")
@@ -624,7 +864,7 @@ class SQLiteStore:
         logger.info(f"删除内容分块: knowledge_id={knowledge_id}, count={deleted_count}")
         return deleted_count
 
-    def count_chunks(self, knowledge_id: Optional[int] = None) -> int:
+    def count_chunks(self, knowledge_id: int | None = None) -> int:
         """统计分块数量。"""
         with self.get_connection() as conn:
             if knowledge_id is None:
@@ -637,9 +877,9 @@ class SQLiteStore:
                     (knowledge_id,),
                 )
             row = cursor.fetchone()
-            return int(row["cnt"]) if row else 0
+            return row["cnt"] if row else 0
 
-    def query_by_id(self, knowledge_id: int) -> Optional[Dict[str, Any]]:
+    def query_by_id(self, knowledge_id: int) -> dict[str, Any] | None:
         """
         根据 ID 查询知识条目
 
@@ -657,7 +897,39 @@ class SQLiteStore:
                 return dict(row)
             return None
 
-    def delete_entry(self, knowledge_id: int) -> bool:
+    def query_by_file_path(self, file_path: str) -> dict[str, Any] | None:
+        """Return the unique row for a Vault-relative Markdown path."""
+
+        with self.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM knowledge_items WHERE file_path = ?",
+                (file_path,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def query_storage_operation(self, operation_id: str) -> dict[str, Any] | None:
+        """Read a transaction-bound cross-store commit proof."""
+
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT operation_id, action, knowledge_id,
+                       relative_file_path, projection_sha256, committed_at
+                FROM storage_operation_commits
+                WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def delete_entry(
+        self,
+        knowledge_id: int,
+        *,
+        operation_id: str | None = None,
+        projection_sha256: str | None = None,
+        relative_file_path: str | None = None,
+    ) -> bool:
         """删除知识条目及所有关联数据。
 
         级联删除 content_chunks、knowledge_tags、video_timestamps（外键 CASCADE）。
@@ -670,7 +942,36 @@ class SQLiteStore:
         Returns:
             True 表示成功删除，False 表示条目不存在。
         """
+        self._validate_operation_proof(operation_id, projection_sha256)
+        if operation_id is not None and not relative_file_path:
+            raise ValueError("带提交凭据的删除必须提供 relative_file_path")
+
         with self.get_connection() as conn:
+            if operation_id is not None:
+                existing = conn.execute(
+                    "SELECT * FROM knowledge_items WHERE knowledge_id = ?",
+                    (knowledge_id,),
+                ).fetchone()
+                if existing is None:
+                    return False
+                if str(existing["file_path"]) != relative_file_path:
+                    raise ValueError("删除提交凭据与 SQLite file_path 不一致")
+                existing_chunks = [
+                    dict(chunk)
+                    for chunk in conn.execute(
+                        """
+                        SELECT chunk_index, chunk_text
+                        FROM content_chunks
+                        WHERE knowledge_id = ?
+                        ORDER BY chunk_index ASC
+                        """,
+                        (knowledge_id,),
+                    ).fetchall()
+                ]
+                if projection_sha256 != row_projection_sha256(
+                    dict(existing), existing_chunks
+                ):
+                    raise RuntimeError("删除前 SQLite projection 已变化，拒绝提交")
             # 1. 先递减标签计数（必须在 CASCADE 删除 knowledge_tags 之前）
             self._decrement_tag_counts(conn, knowledge_id)
 
@@ -682,6 +983,15 @@ class SQLiteStore:
 
             deleted = cursor.rowcount > 0
             if deleted:
+                if operation_id is not None and projection_sha256 is not None:
+                    self._record_storage_operation(
+                        conn,
+                        operation_id=operation_id,
+                        action="delete",
+                        knowledge_id=knowledge_id,
+                        relative_file_path=relative_file_path or "",
+                        projection_sha256=projection_sha256,
+                    )
                 logger.info(f"删除知识条目: knowledge_id={knowledge_id}")
             else:
                 logger.warning(f"条目不存在: knowledge_id={knowledge_id}")
@@ -725,7 +1035,7 @@ class SQLiteStore:
             )
             return cursor.fetchone() is not None
 
-    def query_by_url(self, source_url: str) -> Optional[Dict[str, Any]]:
+    def query_by_url(self, source_url: str) -> dict[str, Any] | None:
         """
         根据来源 URL 查询知识条目
 
@@ -755,9 +1065,9 @@ class SQLiteStore:
         offset: int = 0,
         sort_by: str = "archived_at",
         sort_order: str = "desc",
-        source_type: Optional[str] = None,
-        tag: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        source_type: str | None = None,
+        tag: str | None = None
+    ) -> list[dict[str, Any]]:
         """
         获取知识条目列表
 
@@ -780,8 +1090,8 @@ class SQLiteStore:
 
         try:
             query = "SELECT ki.* FROM knowledge_items ki"
-            params: List[Any] = []
-            conditions: List[str] = []
+            params: list[Any] = []
+            conditions: list[str] = []
 
             if tag:
                 query += " JOIN knowledge_tags kt ON ki.knowledge_id = kt.knowledge_id"
@@ -807,7 +1117,7 @@ class SQLiteStore:
             logger.error(f"获取知识条目列表失败: {e}")
             raise
 
-    def count_entries(self, source_type: Optional[str] = None, tag: Optional[str] = None) -> int:
+    def count_entries(self, source_type: str | None = None, tag: str | None = None) -> int:
         """
         获取知识条目数量
 
@@ -819,8 +1129,8 @@ class SQLiteStore:
             条目数量
         """
         try:
-            params: List[Any] = []
-            conditions: List[str] = []
+            params: list[Any] = []
+            conditions: list[str] = []
 
             if tag:
                 query = "SELECT COUNT(DISTINCT ki.knowledge_id) AS cnt FROM knowledge_items ki"
@@ -841,12 +1151,12 @@ class SQLiteStore:
             with self.get_connection() as conn:
                 cursor = conn.execute(query, tuple(params))
                 row = cursor.fetchone()
-                return int(row["cnt"]) if row else 0
+                return row["cnt"] if row else 0
         except Exception as e:
             logger.error(f"获取知识条目数量失败: {e}")
             raise
 
-    def count_entries_by_source_type(self) -> List[Tuple[str, int]]:
+    def count_entries_by_source_type(self) -> list[tuple[str, int]]:
         """
         按来源类型统计条目数量
 
@@ -864,7 +1174,7 @@ class SQLiteStore:
             logger.error(f"按来源类型统计失败: {e}")
             raise
 
-    def get_all_tags_with_count(self, limit: int = 0) -> List[Dict[str, Any]]:
+    def get_all_tags_with_count(self, limit: int = 0) -> list[dict[str, Any]]:
         """
         获取全部标签及其计数
 
@@ -876,7 +1186,7 @@ class SQLiteStore:
         """
         try:
             query = "SELECT name, count FROM tags ORDER BY count DESC"
-            params: List[Any] = []
+            params: list[Any] = []
             if limit > 0:
                 query += " LIMIT ?"
                 params.append(limit)
@@ -889,7 +1199,7 @@ class SQLiteStore:
             logger.error(f"获取标签计数失败: {e}")
             raise
 
-    def get_statistics(self) -> Dict[str, Any]:
+    def get_statistics(self) -> dict[str, Any]:
         """
         获取统计信息
 
@@ -938,10 +1248,10 @@ class SQLiteStore:
     def update_session(
         self,
         session_id: str,
-        messages: List[dict],
+        messages: list[dict],
         total_tokens: int,
         round_count: int,
-        summary: Optional[str] = None
+        summary: str | None = None
     ) -> None:
         """
         更新会话内容
@@ -981,7 +1291,7 @@ class SQLiteStore:
             logger.error(f"更新会话失败: {e}")
             raise
 
-    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
         """
         获取会话详情
 
@@ -1023,7 +1333,7 @@ class SQLiteStore:
         self,
         is_archived: bool = False,
         limit: int = 50
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         列出会话列表
 
@@ -1137,7 +1447,7 @@ class SQLiteStore:
             logger.error(f"关联会话失败: {e}")
             raise
 
-    def get_session_stats(self) -> Dict[str, Any]:
+    def get_session_stats(self) -> dict[str, Any]:
         """
         获取会话统计信息
 
@@ -1173,7 +1483,7 @@ class SQLiteStore:
             logger.error(f"获取会话统计失败: {e}")
             raise
 
-    def get_all_sessions_stats(self) -> List[Dict[str, Any]]:
+    def get_all_sessions_stats(self) -> list[dict[str, Any]]:
         """
         获取所有会话的统计概览
 

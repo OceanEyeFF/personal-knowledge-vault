@@ -3,13 +3,14 @@ DeepSeek API 客户端单元测试
 """
 
 import logging
-from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 
 import httpx
 import pytest
 
 from src.ai.deepseek_client import DeepSeekClient
+from src.runtime.errors import ErrorCode, PKVRuntimeError
+from src.runtime.layout import RuntimeLayout
 
 
 @pytest.fixture
@@ -20,6 +21,7 @@ def mock_config():
         config.llm_api_key = "test-api-key"
         config.llm_base_url = "https://api.deepseek.com/v1"
         config.llm_model = "configured-model"
+        config.layout = RuntimeLayout.resolve()
         mock.return_value = config
         yield config
 
@@ -110,12 +112,18 @@ class TestDeepSeekClientInit:
         assert "{content}" in client._summarize_prompt
         assert "{content}" in client._extract_tags_prompt
 
-    def test_load_prompt_missing_file(self, client, tmp_path: Path):
-        """测试 Prompt 文件缺失时抛出异常"""
-        client._prompts_dir = tmp_path
+    def test_load_prompt_missing_file(self, client):
+        """缺失 Prompt 通过 bundled-resource 稳定错误 fail closed。"""
 
-        with pytest.raises(FileNotFoundError, match="Prompt 模板不存在"):
+        with pytest.raises(PKVRuntimeError) as error:
             client._load_prompt("missing.txt")
+        assert error.value.code is ErrorCode.RESOURCE_MISSING
+
+    def test_load_prompt_rejects_path_escape(self, client):
+        """Prompt API 不允许用相对路径绕过 bundled resource 根。"""
+
+        with pytest.raises(ValueError, match="Prompt 文件名非法"):
+            client._load_prompt("../config/config.yaml")
 
 
 class TestDeepSeekSummarize:

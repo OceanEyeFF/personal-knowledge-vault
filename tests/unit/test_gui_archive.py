@@ -11,9 +11,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 from PySide6.QtCore import Qt
@@ -230,6 +231,27 @@ class TestArchiveViewIntegration:
         assert "测试文章" in archive_view._result_title_label.text()
         assert "kid-001" in archive_view._result_kid_label.text()
 
+    def test_result_ready_degraded_warns_visibly(self, archive_view):
+        """DEGRADED 仍是核心成功，但 GUI 必须可见地警告辅助索引需要修复。"""
+        data = {
+            "title": "降级条目",
+            "knowledge_id": 5,
+            "file_path": "text/x.md",
+            "status": "degraded",
+            "repair_actions": ["rebuild_vectors_for_entry"],
+            "core_committed": True,
+            "do_not_retry": True,
+        }
+        with patch("PySide6.QtWidgets.QMessageBox.warning") as warning_mock:
+            archive_view._on_result_ready(data)
+        assert not archive_view._result_area.isHidden()
+        assert "降级" in archive_view._result_title_label.text()
+        warning_mock.assert_called_once()
+        message = warning_mock.call_args[0][2]
+        assert "辅助索引需要修复" in message
+        assert "rebuild_vectors_for_entry" in message
+        assert "请勿盲目重试" in message
+
     def test_error_shows_result_area_with_failure(self, archive_view):
         """归档错误时结果区域显示失败信息。"""
         with patch("PySide6.QtWidgets.QMessageBox.warning"):
@@ -255,3 +277,41 @@ class TestArchiveViewIntegration:
         """点击"前往浏览"按钮发射 navigate_to_browser 信号。"""
         with qtbot.waitSignal(archive_view.navigate_to_browser, timeout=1000):
             archive_view._navigate_btn.click()
+
+
+# ============================================================
+# ArchiveWorker 崩溃协议终态 (committed-needs-repair)
+# ============================================================
+
+
+class TestArchiveWorkerCommittedRepair:
+    """已提交但需修复的归档失败必须携带 do-not-retry 警告。"""
+
+    def test_committed_failure_emits_do_not_retry_warning(self, qtbot, monkeypatch):
+        """核心存储已提交但终态日志失败的归档失败携带显式 do-not-retry。"""
+        from src.gui.viewmodels import archive_viewmodel as avm
+        from src.gui.viewmodels.archive_viewmodel import ArchiveWorker
+
+        monkeypatch.setattr(avm, "validate_url_security", lambda url: (True, ""))
+        mock_result = MagicMock()
+        mock_result.success = False
+        mock_result.errors = ["storage_repair_required: 核心存储已提交但操作日志更新失败"]
+        mock_result.data = {
+            "status": "repair_required",
+            "operation_id": "op-gui-1",
+            "core_committed": True,
+            "do_not_retry": True,
+            "repair_actions": ["repair_operation_journal"],
+        }
+        engine = MagicMock()
+        engine.execute_async = AsyncMock(return_value=mock_result)
+
+        worker = ArchiveWorker("url", {"url": "https://example.com/x"})
+        with patch("src.workflow.engine.WorkflowEngine", return_value=engine):
+            with qtbot.waitSignal(worker.finished_err, timeout=2000) as blocker:
+                asyncio.run(worker._execute_url())
+
+        message = blocker.args[0]
+        assert "请勿盲目重试" in message
+        assert "op-gui-1" in message
+        assert "repair_operation_journal" in message

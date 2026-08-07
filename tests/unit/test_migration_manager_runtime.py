@@ -5,7 +5,6 @@ MigrationManager 运行时与异常路径测试。
 from __future__ import annotations
 
 import sqlite3
-import subprocess
 import sys
 from pathlib import Path
 
@@ -14,7 +13,11 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.storage.migration_manager import MigrationManager  # noqa: E402
+from src.runtime.errors import ErrorCode, PKVRuntimeError  # noqa: E402
+from src.storage.migration_manager import (  # noqa: E402
+    DatabaseState,
+    MigrationManager,
+)
 
 
 SOURCE_MIGRATIONS_DIR = PROJECT_ROOT / "scripts" / "migrations"
@@ -55,38 +58,35 @@ def _apply_schema_version_only(db_path: Path, version: str) -> None:
         )
 
 
-def test_init_creates_missing_migrations_dir(tmp_path: Path) -> None:
+def test_init_does_not_create_missing_bundled_migrations_dir(tmp_path: Path) -> None:
     migrations_dir = tmp_path / "missing" / "migrations"
 
-    MigrationManager(tmp_path / "test.db", migrations_dir)
+    manager = MigrationManager(tmp_path / "test.db", migrations_dir)
 
-    assert migrations_dir.exists()
+    assert not migrations_dir.exists()
+    with pytest.raises(PKVRuntimeError) as error:
+        manager.latest_version()
+    assert error.value.code is ErrorCode.RESOURCE_MISSING
 
 
-def test_get_current_version_returns_zero_when_schema_table_missing(tmp_path: Path) -> None:
+def test_get_current_version_returns_zero_only_when_database_is_absent(tmp_path: Path) -> None:
     manager = MigrationManager(tmp_path / "test.db", SOURCE_MIGRATIONS_DIR)
 
     assert manager.get_current_version() == "0.0.0"
 
 
-def test_get_current_version_returns_zero_on_query_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_get_current_version_rejects_existing_database_without_version_table(
+    tmp_path: Path,
 ) -> None:
-    manager = MigrationManager(tmp_path / "test.db", SOURCE_MIGRATIONS_DIR)
+    db_path = tmp_path / "test.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
 
-    class BrokenConnection:
-        def cursor(self):
-            raise sqlite3.OperationalError("broken cursor")
+    manager = MigrationManager(db_path, SOURCE_MIGRATIONS_DIR)
+    with pytest.raises(PKVRuntimeError) as error:
+        manager.get_current_version()
 
-        def close(self) -> None:
-            return None
-
-    monkeypatch.setattr(
-        "src.storage.migration_manager.sqlite3.connect",
-        lambda _: BrokenConnection(),
-    )
-
-    assert manager.get_current_version() == "0.0.0"
+    assert error.value.code is ErrorCode.DATABASE_VERSION_TABLE_MISSING
 
 
 def test_run_health_check_reports_invalid_duplicate_and_unknown_version(
@@ -152,7 +152,7 @@ def test_run_health_check_reports_missing_expected_tables(tmp_path: Path) -> Non
     )
 
 
-def test_apply_migration_continues_when_auto_backup_fails(tmp_path: Path) -> None:
+def test_apply_migration_stops_when_auto_backup_fails(tmp_path: Path) -> None:
     db_path = tmp_path / "test.db"
     (tmp_path / "migrations").mkdir()
     with sqlite3.connect(str(db_path)) as conn:
@@ -184,15 +184,18 @@ def test_apply_migration_continues_when_auto_backup_fails(tmp_path: Path) -> Non
     manager = MigrationManager(db_path, tmp_path / "migrations")
     manager._backup_database = lambda _: (_ for _ in ()).throw(RuntimeError("backup failed"))
 
-    manager.apply_migration(migration_file, auto_backup=True)
+    with pytest.raises(PKVRuntimeError) as error:
+        manager.apply_migration(migration_file, auto_backup=True)
+
+    assert error.value.code is ErrorCode.MIGRATION_BACKUP_FAILED
 
     with sqlite3.connect(str(db_path)) as conn:
         assert conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='smoke'"
-        ).fetchone() is not None
+        ).fetchone() is None
         assert conn.execute(
             "SELECT version FROM schema_version WHERE version='9.0.0'"
-        ).fetchone() is not None
+        ).fetchone() is None
 
 
 def test_apply_migration_rolls_back_and_raises_on_sql_error(tmp_path: Path) -> None:
@@ -228,8 +231,9 @@ def test_apply_migration_rolls_back_and_raises_on_sql_error(tmp_path: Path) -> N
 
     manager = MigrationManager(db_path, migrations_dir)
 
-    with pytest.raises(sqlite3.Error):
+    with pytest.raises(PKVRuntimeError) as error:
         manager.apply_migration(migration_file, auto_backup=False)
+    assert error.value.code is ErrorCode.MIGRATION_FAILED
 
     with sqlite3.connect(str(db_path)) as conn:
         assert conn.execute(
@@ -237,102 +241,37 @@ def test_apply_migration_rolls_back_and_raises_on_sql_error(tmp_path: Path) -> N
         ).fetchone() is None
 
 
-def test_apply_all_pending_handles_empty_failure_and_rebuild_paths(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_apply_all_pending_publishes_only_a_valid_complete_chain(tmp_path: Path) -> None:
     manager = MigrationManager(tmp_path / "test.db", SOURCE_MIGRATIONS_DIR)
 
-    monkeypatch.setattr(manager, "get_pending_migrations", lambda: [])
+    assert manager.apply_all_pending(auto_backup=False) == 9
+    assert manager.inspect_database().state is DatabaseState.READY
     assert manager.apply_all_pending(auto_backup=False) == 0
-
-    applied: list[str] = []
-    monkeypatch.setattr(
-        manager,
-        "get_pending_migrations",
-        lambda: [
-            ("1.2.1", SOURCE_MIGRATIONS_DIR / "007_add_timeline_time_fields.sql"),
-            ("1.2.3", SOURCE_MIGRATIONS_DIR / "009_repair_fts_storage_contract.sql"),
-        ],
-    )
-    monkeypatch.setattr(
-        manager,
-        "apply_migration",
-        lambda path, auto_backup=True: applied.append(path.name),
-    )
-    rebuild_calls: list[Path] = []
-    monkeypatch.setattr(
-        "src.storage.migration_manager.SQLiteStore.rebuild_fts5_index",
-        lambda instance: rebuild_calls.append(instance.db_path),
-    )
-
-    assert manager.apply_all_pending(auto_backup=False) == 2
-    assert applied == [
-        "007_add_timeline_time_fields.sql",
-        "009_repair_fts_storage_contract.sql",
-    ]
-    assert rebuild_calls == [tmp_path / "test.db"]
-
-    def _raise_on_apply(path: Path, auto_backup: bool = True) -> None:
-        raise RuntimeError(f"boom: {path.name}")
-
-    monkeypatch.setattr(
-        manager,
-        "get_pending_migrations",
-        lambda: [("1.0.0", SOURCE_MIGRATIONS_DIR / "001_initial_schema.sql")],
-    )
-    monkeypatch.setattr(manager, "apply_migration", _raise_on_apply)
-    rebuild_calls.clear()
-
-    with pytest.raises(RuntimeError, match="boom: 001_initial_schema.sql"):
-        manager.apply_all_pending(auto_backup=False)
-    assert rebuild_calls == []
 
 
 def test_apply_all_pending_rolls_back_fts_versions_when_rebuild_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / "test.db"
-    migrations_dir = tmp_path / "migrations"
-    migrations_dir.mkdir()
-    with sqlite3.connect(str(db_path)) as conn:
-        conn.execute(
-            """
-            CREATE TABLE schema_version (
-                version_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                version TEXT NOT NULL UNIQUE,
-                description TEXT
-            )
-            """
-        )
+    manager = MigrationManager(db_path, SOURCE_MIGRATIONS_DIR)
+    for name in (
+        "001_initial_schema.sql",
+        "002_add_cli_tables.sql",
+        "004_add_chat_sessions.sql",
+        "005_add_review_system.sql",
+        "006_add_relations_foundation.sql",
+        "007_add_timeline_time_fields.sql",
+    ):
+        manager.apply_migration(SOURCE_MIGRATIONS_DIR / name, auto_backup=False)
 
-    migration_008 = migrations_dir / "008_align_fts_contract.sql"
-    migration_009 = migrations_dir / "009_repair_fts_storage_contract.sql"
-    migration_008.write_text("-- Version: 1.2.2\n", encoding="utf-8")
-    migration_009.write_text("-- Version: 1.2.3\n", encoding="utf-8")
-
-    manager = MigrationManager(db_path, migrations_dir)
-    monkeypatch.setattr(
-        manager,
-        "get_pending_migrations",
-        lambda: [("1.2.2", migration_008), ("1.2.3", migration_009)],
-    )
-
-    def _record_version(path: Path, auto_backup: bool = True) -> None:
-        version = "1.2.2" if path == migration_008 else "1.2.3"
-        with sqlite3.connect(str(db_path)) as conn:
-            conn.execute(
-                "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-                (version, path.name),
-            )
-
-    monkeypatch.setattr(manager, "apply_migration", _record_version)
     monkeypatch.setattr(
         "src.storage.migration_manager.SQLiteStore.rebuild_fts5_index",
         lambda instance: (_ for _ in ()).throw(RuntimeError("rebuild failed")),
     )
 
-    with pytest.raises(RuntimeError, match="rebuild failed"):
+    with pytest.raises(PKVRuntimeError) as error:
         manager.apply_all_pending(auto_backup=False)
+    assert error.value.code is ErrorCode.MIGRATION_FAILED
 
     with sqlite3.connect(str(db_path)) as conn:
         versions = {
@@ -341,6 +280,7 @@ def test_apply_all_pending_rolls_back_fts_versions_when_rebuild_fails(
 
     assert "1.2.2" not in versions
     assert "1.2.3" not in versions
+    assert "1.2.4" not in versions
 
 
 def test_check_and_prompt_upgrade_prints_pending_summary(
@@ -374,30 +314,28 @@ def test_check_and_prompt_upgrade_returns_false_when_up_to_date(
 def test_backup_database_success_and_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    manager = MigrationManager(tmp_path / "test.db", SOURCE_MIGRATIONS_DIR)
+    db_path = tmp_path / "test.db"
+    manager = MigrationManager(
+        db_path,
+        SOURCE_MIGRATIONS_DIR,
+        backup_dir=tmp_path / "backups",
+    )
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE durable_data (id INTEGER PRIMARY KEY)")
 
-    class SuccessResult:
-        stdout = "ok"
+    backup_path = manager._backup_database("001_initial_schema.sql")
+    assert backup_path.parent == tmp_path / "backups"
+    with sqlite3.connect(str(backup_path)) as conn:
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='durable_data'"
+        ).fetchone() is not None
 
-    calls: list[list[str]] = []
-
-    def _success_run(command: list[str], **_: object) -> SuccessResult:
-        calls.append(command)
-        return SuccessResult()
-
-    monkeypatch.setattr("src.storage.migration_manager.subprocess.run", _success_run)
-    manager._backup_database("001_initial_schema.sql")
-    assert calls[0][:2] == ["powershell", "-File"]
-
-    def _fail_run(command: list[str], **_: object) -> SuccessResult:
-        raise subprocess.CalledProcessError(
-            returncode=1,
-            cmd=command,
-            stderr="backup failed",
-        )
-
-    monkeypatch.setattr("src.storage.migration_manager.subprocess.run", _fail_run)
-    with pytest.raises(subprocess.CalledProcessError):
+    monkeypatch.setattr(
+        manager,
+        "_copy_database",
+        lambda *_args: (_ for _ in ()).throw(OSError("backup failed")),
+    )
+    with pytest.raises(OSError, match="backup failed"):
         manager._backup_database("001_initial_schema.sql")
 
 

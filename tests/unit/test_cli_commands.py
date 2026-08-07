@@ -30,6 +30,7 @@ class DummyConfig:
         self.vector_index_dir = base_path / "vectors"
         self.log_dir = base_path / "logs"
         self.tmp_dir = base_path / "tmp"
+        self.local_config_path = base_path / "config" / "local.yaml"
         self.llm_api_key: Optional[str] = None
         self.embd_api_key: Optional[str] = None
         self.log_level = "INFO"
@@ -227,6 +228,80 @@ def test_archive_command_failure(
     assert console_spy.call_count >= 1
 
 
+def test_archive_command_committed_failure_warns_do_not_retry(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    """Committed-needs-repair failure exposes status/operation_id/repair/do-not-retry."""
+    url = "https://example.com/committed"
+    result = WorkflowResult(
+        success=False,
+        data={
+            "knowledge_id": 7,
+            "status": "repair_required",
+            "operation_id": "op-9",
+            "core_committed": True,
+            "do_not_retry": True,
+            "repair_actions": ["repair_operation_journal"],
+        },
+        errors=["storage_repair_required: 核心存储已提交但操作日志更新失败"],
+        logs=[],
+    )
+
+    engine = mocker.MagicMock()
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    mocker.patch.object(commands.asyncio, "run", return_value=result)
+
+    response = runner.invoke(commands.cli, ["archive", url])
+
+    assert response.exit_code != 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "op-9" in printed
+    assert "repair_required" in printed
+    assert "repair_operation_journal" in printed
+    assert "请勿盲目重试" in printed
+
+
+def test_archive_command_success_degraded_warns_repair(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    """DEGRADED success exposes operation_id and visible repair guidance."""
+    url = "https://example.com/degraded"
+    entry = _make_entry(title="Degraded", source_url=url)
+    result = WorkflowResult(
+        success=True,
+        data={
+            "knowledge_id": 3,
+            "entry": entry,
+            "status": "degraded",
+            "operation_id": "op-deg-1",
+            "repair_actions": ["rebuild_vectors_for_entry"],
+            "core_committed": True,
+            "do_not_retry": True,
+        },
+        errors=[],
+        logs=[],
+    )
+
+    engine = mocker.MagicMock()
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    mocker.patch.object(commands.asyncio, "run", return_value=result)
+
+    response = runner.invoke(commands.cli, ["archive", url])
+
+    assert response.exit_code == 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "op-deg-1" in printed
+    assert "辅助索引需要修复" in printed
+    assert "rebuild_vectors_for_entry" in printed
+    assert "请勿盲目重试" in printed
+
+
 def test_search_command_auto_strategy(
     runner: CliRunner,
     mocker: pytest.MockFixture,
@@ -386,10 +461,12 @@ def test_show_command_raw(
 ) -> None:
     """show should emit raw markdown when --raw is used."""
     content = "# Raw Content\n\nBody"
-    md_path = tmp_path / "entry.md"
+    md_path = tmp_path / "vault" / "entry.md"
+    md_path.parent.mkdir(parents=True)
     md_path.write_text(content, encoding="utf-8")
 
-    entry = {"knowledge_id": 9, "file_path": str(md_path)}
+    # SQLite persists a Vault-relative path; the gateway resolves and validates it.
+    entry = {"knowledge_id": 9, "file_path": "entry.md"}
     store = mocker.MagicMock()
     store.query_by_id.return_value = entry
     mocker.patch.object(commands, "SQLiteStore", return_value=store)
@@ -727,19 +804,17 @@ def test_config_get_alias_key(
 
 def test_config_set(
     runner: CliRunner,
-    mocker: pytest.MockFixture,
+    load_config_stub,
+    mock_config: DummyConfig,
     console_spy,
-    tmp_path: Path,
 ) -> None:
     """config set should update the machine-local YAML file."""
-    mocker.patch.object(commands, "_project_root", return_value=tmp_path)
-
     response = runner.invoke(
         commands.cli, ["config", "set", "ai.llm.model", "test-model"]
     )
 
     assert response.exit_code == 0
-    local_path = tmp_path / "config" / "local.yaml"
+    local_path = mock_config.local_config_path
     assert local_path.exists()
     data = yaml.safe_load(local_path.read_text(encoding="utf-8"))
     assert data["ai"]["llm"]["model"] == "test-model"
@@ -954,11 +1029,10 @@ def test_config_set_rejects_credentials_embedded_in_base_url(
 
 def test_config_set_allows_non_sensitive_base_url_parameters(
     runner: CliRunner,
-    mocker: pytest.MockFixture,
-    tmp_path: Path,
+    load_config_stub,
+    mock_config: DummyConfig,
 ) -> None:
     """signal/design 等普通 query 参数不应误报为凭据。"""
-    mocker.patch.object(commands, "_project_root", return_value=tmp_path)
     endpoint = (
         "https://example.com/v1;compass=north"
         "?signal=enabled&design=compact&bypass=fast"
@@ -971,7 +1045,7 @@ def test_config_set_allows_non_sensitive_base_url_parameters(
 
     assert response.exit_code == 0
     data = yaml.safe_load(
-        (tmp_path / "config" / "local.yaml").read_text(encoding="utf-8")
+        mock_config.local_config_path.read_text(encoding="utf-8")
     )
     assert data["service"]["base_url"] == endpoint
 

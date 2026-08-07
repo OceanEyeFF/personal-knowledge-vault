@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from PySide6.QtCore import QObject, Signal
 
 from src.utils.config import (
+    Config,
     get_config,
     redact_url_credentials,
     set_yaml_config_values,
@@ -37,11 +38,11 @@ _HIDDEN_URL_MARKER = "已隐藏"
 _UNDISPLAYABLE_URL_PLACEHOLDER = "已设置（URL 格式不可显示）"
 _CREDENTIAL_URL_ERROR = (
     "Base URL 含有认证信息，不能在普通设置界面中编辑；"
-    "请直接编辑 Git 已忽略的 config/local.yaml"
+    "请直接编辑用户数据目录中的 config/local.yaml"
 )
 _REDACTED_URL_ERROR = (
     "Base URL 包含脱敏占位符，未保存；"
-    "请输入不含认证信息的完整 URL，或直接编辑 Git 已忽略的 config/local.yaml"
+    "请输入不含认证信息的完整 URL，或直接编辑用户数据目录中的 config/local.yaml"
 )
 
 
@@ -179,9 +180,7 @@ class SettingsViewModel(QObject):
         Returns:
             config/local.yaml 的 Path 对象（可能不存在）。
         """
-        # 项目根目录：从 src/utils/config.py 推算
-        project_root = Path(__file__).parent.parent.parent.parent
-        return project_root / "config" / "local.yaml"
+        return get_config().local_config_path
 
     def _update_local_config(self, updates: Dict[str, str]) -> None:
         """读取、修改并写回本机私有 YAML 配置。
@@ -189,6 +188,11 @@ class SettingsViewModel(QObject):
         Args:
             updates: YAML 点号键到值的映射。
         """
+        config = get_config()
         config_path = self._find_local_config_file()
-        set_yaml_config_values(config_path, updates)
+        if isinstance(config, Config):
+            config.update_local_config(updates)
+        else:
+            # Compatibility seam for an explicitly injected test/admin config.
+            set_yaml_config_values(config_path, updates)
         logger.debug("本机配置文件已更新: %s", config_path)

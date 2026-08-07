@@ -13,6 +13,43 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### M13 W1：运行时布局与数据安全底座（2026-08-02；2026-08-07 安全复审）
+
+- 新增 `src/runtime/`：`RuntimeLayout` 将 bundled 只读资源与单一用户数据根分离，
+  `bootstrap_runtime()` 成为 GUI、CLI、MCP 共用的资源校验、目录创建、数据库启动门禁和
+  repair record 扫描入口。
+- 新增 `VaultPathGateway`：所有产品 Vault 读取、原子写入、枚举、删除、隔离/恢复、
+  raw preview、MCP evidence/resource 与 relation backfill 均执行 canonical containment；
+  拒绝 traversal、symlink/junction/reparse point、硬链接及不可判定状态。
+- Markdown 发布改为原子 no-clobber；并发同名归档只选择新后缀，不覆盖已有事实源。
+  operation journal v3 同时记录文件身份与 SHA-256，补偿、隔离和崩溃恢复不再把
+  same-inode 原地重写误判为原始事实。
+- 新增 `StorageCoordinator` 和 durable operation journal：Markdown 主存储与
+  SQLite/FTS/tags/chunks 必需投影采用补偿状态机，Vector 作为可修复辅助层；公开
+  `ready/deleted/degraded/rejected/repair_required`、稳定错误码和 repair actions。
+- SQLite 业务连接统一使用 `mode=rw/ro` 的 existing-only opener，缺失 DB 不再被查询代码
+  隐式创建；归档的 SQLite/FTS/tags/chunks 写入收口为一个事务。迁移 010 新增
+  `storage_operation_commits`，业务投影与 operation-bound commit proof 在同一事务提交，
+  schema 更新为 `1.2.4`。
+- Vector index/metadata 双文件发布新增持久 pair transaction marker；首次创建、运行期首份
+  replace、两份 replace 后未清 marker、marker 发布后校验失败均可在重启时确定性回滚。
+  未登记的普通文件替换保持现场并 fail-closed。
+- migration 仅把路径完全不存在判定为 fresh；非 SQLite、缺失/非法版本表、迁移链前缀/
+  必需表漂移、旧版和未来版分别 fail-closed。fresh/迁移先在 off-path 副本完成校验，
+  临时数据库描述符从创建连续受控到发布，备份或脚本失败不继续、不发布半提交结果；
+  M13 默认仍拒绝历史库原地升级。
+- 新增 `packaging/runtime-resources.json` 只读资源 allowlist，明确排除密钥、`.env`、
+  local config、数据库、Vault、vector、日志与临时文件。
+- 新增/扩展 RuntimeLayout、bootstrap、Vault、migration、跨存储故障注入、Vector 崩溃恢复、
+  adapter 终态和 manifest 自动化合同；PI/DeepSeek 与独立 SubAgent 复审后未留确定性 P0/P1。
+  全部验证仅使用 `.data-test` 与合成数据，未访问真实 `.data/`。
+- 冻结后离线验收：unit `1583 passed, 19 skipped`；integration/blackbox/e2e
+  `277 passed, 9 deselected`。Windows symlink 权限与 POSIX-only 合同按原因跳过，live 用例由
+  离线入口按合同排除。
+- 已知后置边界：非协作外部写者仍存在 Python/Windows 无 inode-bound unlink/rename 所致的
+  极窄 ABA 窗口，Windows 掉电持久序依赖 NTFS；历史原地升级的 WAL 并发与列级 schema
+  drift 继续因 fresh-install 发布范围而后置。
+
 ### P0 主线离线收口（2026-07-31）
 
 - Phase C 固定评测在受控入口下通过 16/16 tasks、119/119 checks，
@@ -24,7 +61,7 @@
   脚本，拒绝 `-c`、stdin、解释器 flags 与仓库外目标；同进程安装 Python 级
   网络/子进程 guard。该机制不是 OS sandbox，也不覆盖非 Python Direct 命令。
 - 开发 vault 重建脚本已完成合成 `rebuilt -> up_to_date -> checked` 演练，结果为
-  schema `1.2.3`、8 migrations、3 seed。
+  schema `1.2.4`、9 migrations、3 seed。
 - 冻结工作树默认离线全量为 `1684 passed, 1 skipped, 9 deselected`；MCP
   门禁为 `364 passed, 1326 deselected`，`src.mcp` 覆盖率 `96.88%`（门槛 `95%`）。
 - 本轮未访问或执行真实数据；真实快照仍受 U1/G8 与迁移 FT5 阻塞。M13 是

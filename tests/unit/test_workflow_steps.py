@@ -13,7 +13,9 @@ sys.path.insert(0, str(project_root))
 import numpy as np
 import pytest
 
+from src.storage.coordinator import StorageCoordinator
 from src.storage.markdown_store import Entry, MarkdownStore
+from src.storage.migration_manager import MigrationManager
 from src.storage.sqlite_store import SQLiteStore
 from src.workflow.models import WorkflowContext
 from src.utils.config import Config
@@ -345,6 +347,11 @@ async def test_store_step_with_dummy_vector(
     vault_dir = tmp_path / "vault"
     db_path = tmp_path / "db" / "test.db"
     markdown_store = MarkdownStore(vault_dir=vault_dir)
+    MigrationManager(
+        db_path,
+        project_root / "scripts" / "migrations",
+        backup_dir=tmp_path / "backups",
+    ).initialize_fresh()
     sqlite_store = SQLiteStore(db_path=db_path)
     vector_store = DummyVectorStore()
     embedder = DummyEmbedder()
@@ -375,6 +382,118 @@ async def test_store_step_with_dummy_vector(
     assert vector_store.chunk_calls
     chunk_rows = sqlite_store.get_chunks_by_knowledge_id(result["knowledge_id"])
     assert [row["chunk_text"] for row in chunk_rows] == ["chunk1", "chunk2"]
+
+
+@pytest.mark.asyncio
+async def test_store_step_preserves_degraded_terminal_codes_without_retry_error(
+    tmp_path: Path,
+    isolated_steps_config: Config,
+) -> None:
+    """向量失败不否定已提交核心存储，并保留稳定错误码。"""
+    db_path = tmp_path / "degraded" / "db" / "test.db"
+    markdown_store = MarkdownStore(tmp_path / "degraded" / "vault")
+    MigrationManager(
+        db_path,
+        project_root / "scripts" / "migrations",
+        backup_dir=tmp_path / "degraded" / "backups",
+    ).initialize_fresh()
+    sqlite_store = SQLiteStore(db_path)
+    vector_store = DummyVectorStore()
+
+    def fail_vector(*_args, **_kwargs):
+        raise OSError("vector unavailable")
+
+    vector_store.add_doc_vector = fail_vector
+    entry = Entry(
+        title="Degraded entry",
+        source_type="generic",
+        content="Core content remains durable",
+    )
+    step = StoreStep(
+        step_id="store",
+        config={"targets": ["markdown", "sqlite", "vector_index"]},
+        markdown_store=markdown_store,
+        sqlite_store=sqlite_store,
+        vector_store=vector_store,
+        embedder=DummyEmbedder(),
+    )
+
+    result = await step.execute(WorkflowContext({"entry": entry}))
+
+    assert result["status"] == "degraded"
+    assert "errors" not in result
+    assert result["warnings"]
+    assert result["storage_errors"][0]["code"] == "storage_vector_failed"
+    assert sqlite_store.query_by_id(result["knowledge_id"]) is not None
+    assert result["core_committed"] is True
+    assert result["do_not_retry"] is True
+
+
+@pytest.mark.asyncio
+async def test_store_step_terminal_journal_failure_keeps_knowledge_id_and_do_not_retry(
+    tmp_path: Path,
+    isolated_steps_config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Committed core + terminal journal failure: knowledge_id retained as a
+    committed-needs-repair warning, not a retry-safe generic failure."""
+    vault_dir = tmp_path / "vault"
+    db_path = tmp_path / "db" / "test.db"
+    markdown_store = MarkdownStore(vault_dir=vault_dir)
+    MigrationManager(
+        db_path,
+        project_root / "scripts" / "migrations",
+        backup_dir=tmp_path / "backups",
+    ).initialize_fresh()
+    sqlite_store = SQLiteStore(db_path=db_path)
+    real_coordinator = StorageCoordinator(
+        markdown_store,
+        sqlite_store,
+        tmp_path / "ops",
+    )
+    original_write = real_coordinator.journal.write
+    write_count = 0
+
+    def fail_terminal_write(operation_id: str, payload: dict):
+        nonlocal write_count
+        write_count += 1
+        if write_count == 4:
+            raise OSError("terminal journal write failed")
+        return original_write(operation_id, payload)
+
+    monkeypatch.setattr(real_coordinator.journal, "write", fail_terminal_write)
+    monkeypatch.setattr(
+        workflow_steps,
+        "StorageCoordinator",
+        lambda _markdown, _sqlite, _journal_dir: real_coordinator,
+    )
+
+    entry = Entry(
+        title="Committed",
+        source_type="generic",
+        content="content",
+        tags=["t1"],
+    )
+    step = StoreStep(
+        step_id="store",
+        config={"targets": ["markdown", "sqlite"]},
+        markdown_store=markdown_store,
+        sqlite_store=sqlite_store,
+    )
+
+    result = await step.execute(WorkflowContext({"entry": entry}))
+
+    # knowledge_id is retained and the row is really committed
+    assert result["knowledge_id"] is not None
+    assert sqlite_store.query_by_id(result["knowledge_id"]) is not None
+    assert result["status"] == "repair_required"
+    assert result["core_committed"] is True
+    assert result["retry_safe"] is False
+    assert result["do_not_retry"] is True
+    assert result["operation_id"]
+    assert any("do_not_retry" in error for error in result["errors"])
+    assert any("do_not_retry" in warning for warning in result["warnings"])
+    assert result["storage_errors"][0]["code"] == "storage_repair_required"
 
 
 @pytest.mark.asyncio

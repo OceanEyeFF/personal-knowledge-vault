@@ -10,12 +10,13 @@ import json
 import logging
 import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 import yaml
+
+from src.runtime.layout import RuntimeLayout, atomic_publish_file, open_user_file_nofollow
 
 
 _DISPLAY_CREDENTIAL_PARAMETER_MARKERS = {
@@ -336,7 +337,13 @@ def endpoint_contract_sha256(value: str) -> str:
 def _load_yaml_mapping(config_path: Path, label: str) -> Dict[str, Any]:
     """加载 YAML 映射，并避免把含密钥的源文本带入异常消息。"""
     try:
-        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        with open_user_file_nofollow(
+            config_path,
+            "r",
+            label=label,
+            encoding="utf-8",
+        ) as handle:
+            loaded = yaml.safe_load(handle)
     except yaml.YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
         location = ""
@@ -386,33 +393,11 @@ def set_yaml_config_values(
         return
 
     serialized = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
-    file_descriptor, temp_name = tempfile.mkstemp(
-        prefix=f".{config_path.name}.",
-        suffix=".tmp",
-        dir=config_path.parent,
+    atomic_publish_file(
+        config_path,
+        label="配置文件",
+        data=serialized.encode("utf-8"),
     )
-    temp_path = Path(temp_name)
-    descriptor_open = True
-    try:
-        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as handle:
-            descriptor_open = False
-            handle.write(serialized)
-            handle.flush()
-            os.fsync(handle.fileno())
-
-        if os.name == "posix":
-            os.chmod(temp_path, 0o600)
-        os.replace(temp_path, config_path)
-    finally:
-        if descriptor_open:
-            try:
-                os.close(file_descriptor)
-            except OSError:
-                pass
-        try:
-            temp_path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 class Config:
@@ -422,23 +407,44 @@ class Config:
         self,
         config_path: Optional[str] = None,
         local_config_path: Optional[str] = None,
+        *,
+        layout: Optional[RuntimeLayout] = None,
     ):
         """
         初始化配置管理器
 
         Args:
             config_path: 基础配置文件路径，默认为 config/config.yaml
-            local_config_path: 本机配置文件路径，默认使用 config/local.yaml；
+            local_config_path: 本机配置文件路径，默认使用用户数据根/config/local.yaml；
                 显式指定 config_path 时默认不加载本机配置
         """
-        # 确定配置文件路径
+        # ``RuntimeLayout`` 是资源与用户数据路径的唯一来源。显式
+        # config_path 仍作为测试/运维注入 seam，但其 storage 路径同样必须
+        # 收敛到一个 data root 内。
         use_default_config = config_path is None
+        if layout is not None and config_path is not None:
+            requested = Path(config_path).resolve(strict=False)
+            expected = layout.base_config_path.resolve(strict=False)
+            if requested != expected:
+                raise ValueError(
+                    f"config_path 与 RuntimeLayout 不一致: {requested} != {expected}"
+                )
+
+        if layout is None and use_default_config:
+            layout = RuntimeLayout.resolve()
+
         if config_path is None:
-            # 获取项目根目录
-            project_root = Path(__file__).parent.parent.parent
-            config_path = project_root / "config" / "config.yaml"
+            assert layout is not None
+            config_path = layout.base_config_path
         else:
             config_path = Path(config_path)
+
+        # 产品默认路径在首次读取前也必须通过 bundled/user 边界检查。
+        if use_default_config:
+            assert layout is not None
+            config_path = layout.validate_bundled_path(
+                Path(config_path), label="基础配置"
+            )
 
         # 加载 YAML 配置
         if not config_path.exists():
@@ -448,16 +454,77 @@ class Config:
 
         self._config: Dict[str, Any] = copy.deepcopy(base_config)
         local_config: Dict[str, Any] = {}
-        if local_config_path is None and use_default_config:
-            local_config_path = str(config_path.parent / "local.yaml")
-        self._local_config_path = Path(local_config_path) if local_config_path else None
+        loaded_local_config_path: Optional[Path]
+        if local_config_path is not None:
+            # Explicit local config is a trusted test/admin read seam. Product
+            # writes always target layout.local_config_path.
+            loaded_local_config_path = Path(local_config_path)
+        elif use_default_config:
+            assert layout is not None
+            loaded_local_config_path = layout.local_config_path
+            layout.validate_user_file(
+                loaded_local_config_path,
+                label="本机配置",
+                allow_missing=True,
+            )
+        else:
+            loaded_local_config_path = None
 
-        if self._local_config_path and self._local_config_path.exists():
-            local_config = _load_yaml_mapping(self._local_config_path, "本机配置文件")
+        if loaded_local_config_path and loaded_local_config_path.exists():
+            local_config = _load_yaml_mapping(
+                loaded_local_config_path, "本机配置文件"
+            )
             self._deep_merge(self._config, local_config)
             self._rebase_inherited_storage_paths(base_config, local_config)
 
-        self._project_root = Path(__file__).parent.parent.parent
+        if layout is None:
+            storage = self._config.get("storage")
+            storage_mapping = storage if isinstance(storage, dict) else {}
+            runtime_data_root = os.getenv("PKV_DATA_ROOT") or os.getenv("DATA_DIR")
+            raw_data_root = runtime_data_root
+            if not raw_data_root:
+                raw_data_root = storage_mapping.get("data_dir")
+            if not raw_data_root:
+                raise ValueError("显式配置缺少 storage.data_dir")
+
+            if config_path.parent.name.casefold() == "config":
+                resources_root = config_path.parent.parent
+            else:
+                resources_root = config_path.parent
+
+            # A standalone explicit config is a complete test/admin input.  Do
+            # not let unrelated child-path variables inherited from a parent
+            # process silently replace paths in that config.  Fine-grained
+            # variables are meaningful only together with an explicit runtime
+            # data root, where RuntimeLayout can validate their containment.
+            layout_environment = dict(os.environ)
+            if not runtime_data_root:
+                for key in (
+                    "DB_PATH",
+                    "VAULT_DIR",
+                    "VECTOR_DIR",
+                    "LOG_DIR",
+                    "TMP_DIR",
+                ):
+                    layout_environment.pop(key, None)
+            layout = RuntimeLayout.resolve(
+                resources_root=resources_root,
+                user_data_root=Path(str(raw_data_root)),
+                base_config_path=config_path,
+                # A process-level root override deliberately rebases all
+                # non-explicit child paths. Fine-grained environment overrides
+                # are still validated by RuntimeLayout.
+                storage_config={} if runtime_data_root else storage_mapping,
+                environment=layout_environment,
+            )
+
+        self._layout = layout
+        # Backward-compatible inspection seam: this records what was actually
+        # loaded, while ``local_config_path`` remains the sole writable target.
+        self._local_config_path = loaded_local_config_path
+        self._loaded_local_config_path = loaded_local_config_path
+        self._project_root = layout.resources_root
+        self._legacy_runtime_cache_requires_cleanup = False
         self._resolved_embedding_dim = self._load_persisted_embedding_dim()
 
     @staticmethod
@@ -565,8 +632,11 @@ class Config:
         """
         if not workflow_name or not workflow_name.strip():
             raise ValueError("workflow_name 不能为空")
+        workflow_name = workflow_name.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", workflow_name):
+            raise ValueError("workflow_name 只能包含字母、数字、下划线和连字符")
 
-        workflow_dir = self._project_root / "config" / "workflows"
+        workflow_dir = self._layout.workflows_dir
         name_variants = [
             workflow_name,
             workflow_name.replace("_", "-"),
@@ -575,8 +645,12 @@ class Config:
 
         for name in dict.fromkeys(name_variants):
             workflow_path = workflow_dir / f"{name}.yaml"
-            if workflow_path.exists():
-                return _load_yaml_mapping(workflow_path, "工作流配置文件")
+            if os.path.lexists(workflow_path):
+                safe_path = self._layout.validate_bundled_path(
+                    workflow_path,
+                    label="工作流配置文件",
+                )
+                return _load_yaml_mapping(safe_path, "工作流配置文件")
 
         # 兼容 config.yaml 中的 workflows 配置
         workflow_key = workflow_name.replace("-", "_")
@@ -609,87 +683,50 @@ class Config:
         """读取进程级运行覆盖，不把环境变量作为应用配置源。"""
         return os.getenv(key, default)
 
-    def _runtime_data_subpath(self, name: str) -> Optional[Path]:
-        """当 DATA_DIR 被覆盖时，将其作为其余运行目录的隔离根。"""
-        data_dir = self._get_runtime_override("DATA_DIR")
-        if not data_dir:
-            return None
-        return self._project_root / data_dir / name
+    @property
+    def layout(self) -> RuntimeLayout:
+        """已经校验的只读资源/用户数据布局。"""
+        return self._layout
+
+    @property
+    def local_config_path(self) -> Path:
+        """产品唯一允许写入的本机配置路径。"""
+        return self._layout.local_config_path
 
     @property
     def vault_dir(self) -> Path:
         """Markdown Vault 目录"""
-        path = self._get_runtime_override("VAULT_DIR")
-        if path:
-            return self._project_root / path
-        runtime_path = self._runtime_data_subpath("vault")
-        if runtime_path is not None:
-            return runtime_path
-        path = self.get("storage.vault_dir", ".data/vault")
-        return self._project_root / path
+        return self._layout.vault_dir
 
     @property
     def data_dir(self) -> Path:
         """数据根目录。"""
-        data_dir_str = self._get_runtime_override("DATA_DIR") or self.get(
-            "storage.data_dir"
-        )
-        if data_dir_str:
-            return self._project_root / data_dir_str
-        return self.db_path.parent.parent
+        return self._layout.user_data_root
 
     @property
     def db_path(self) -> Path:
         """SQLite 数据库路径"""
-        db_path_str = self._get_runtime_override("DB_PATH")
-        if db_path_str:
-            return self._project_root / db_path_str
-        runtime_db_dir = self._runtime_data_subpath("db")
-        if runtime_db_dir is not None:
-            return runtime_db_dir / "knowledge_vault.db"
-        db_path_str = self.get("storage.db_path", ".data/db/knowledge_vault.db")
-        return self._project_root / db_path_str
+        return self._layout.db_path
 
     @property
     def vector_index_dir(self) -> Path:
         """向量索引目录"""
-        path = self._get_runtime_override("VECTOR_DIR")
-        if path:
-            return self._project_root / path
-        runtime_path = self._runtime_data_subpath("vectors")
-        if runtime_path is not None:
-            return runtime_path
-        path = self.get("storage.vector_index_dir", ".data/vectors")
-        return self._project_root / path
+        return self._layout.vector_index_dir
 
     @property
     def log_dir(self) -> Path:
         """日志目录"""
-        path = self._get_runtime_override("LOG_DIR")
-        if path:
-            return self._project_root / path
-        runtime_path = self._runtime_data_subpath("logs")
-        if runtime_path is not None:
-            return runtime_path
-        path = self.get("storage.log_dir", ".data/logs")
-        return self._project_root / path
+        return self._layout.log_dir
 
     @property
     def tmp_dir(self) -> Path:
         """临时文件目录"""
-        path = self._get_runtime_override("TMP_DIR")
-        if path:
-            return self._project_root / path
-        runtime_path = self._runtime_data_subpath("tmp")
-        if runtime_path is not None:
-            return runtime_path
-        path = self.get("storage.tmp_dir", ".data/tmp")
-        return self._project_root / path
+        return self._layout.tmp_dir
 
     @property
     def runtime_embedding_dim_path(self) -> Path:
         """自动探测出的 Embedding 维度缓存文件路径。"""
-        return self.data_dir / "runtime" / "embedding_dim.json"
+        return self._layout.runtime_state_dir / "embedding_dim.json"
 
     @property
     def embedding_runtime_fingerprint(self) -> Dict[str, str]:
@@ -767,46 +804,93 @@ class Config:
     def set_runtime_embedding_dim(self, dim: int) -> None:
         """写入运行期解析出的 Embedding 维度，并持久化到本地缓存。"""
         self._resolved_embedding_dim = int(dim)
-        target_path = self.runtime_embedding_dim_path
-        target_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "embedding_dim": self._resolved_embedding_dim,
             "fingerprint": self.embedding_runtime_fingerprint,
         }
-        with open(target_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        self._write_runtime_embedding_payload(payload)
+
+    def _write_runtime_embedding_payload(self, payload: Mapping[str, Any]) -> None:
+        """Atomically write the runtime cache after revalidating its data root."""
+
+        self._layout.ensure_user_directories()
+        target_path = self._layout.validate_user_file(
+            self.runtime_embedding_dim_path,
+            label="Embedding 运行缓存",
+            allow_missing=True,
+        )
+        serialized = (
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        self._layout.atomic_publish_user_file(
+            target_path,
+            label="Embedding 运行缓存",
+            data=serialized,
+        )
 
     def _load_persisted_embedding_dim(self) -> Optional[int]:
-        """加载持久化的 Embedding 维度缓存。"""
-        target_path = self.data_dir / "runtime" / "embedding_dim.json"
+        """只读加载持久化的 Embedding 维度缓存。
+
+        构造 Config 不得修改文件系统。旧格式若含 endpoint 原文，仅记录为
+        待清理状态；清理由完成路径校验后的 bootstrap 显式触发。
+        """
+        target_path = self._layout.validate_user_file(
+            self.runtime_embedding_dim_path,
+            label="Embedding 运行缓存",
+            allow_missing=True,
+        )
         if not target_path.exists():
             return None
 
         try:
-            with open(target_path, "r", encoding="utf-8") as f:
+            with self._layout.open_user_file(
+                target_path,
+                "r",
+                label="Embedding 运行缓存",
+                encoding="utf-8",
+            ) as f:
                 payload = json.load(f)
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             return None
 
+        # 合法 JSON 但根节点不是 object (list/str/int/null 等) 一律按失效
+        # 缓存处理，绝不调用 .get 或让 AttributeError 冒泡崩溃。
+        if not isinstance(payload, dict):
+            return None
+
         fingerprint = payload.get("fingerprint")
         if isinstance(fingerprint, dict) and "base_url" in fingerprint:
-            # 旧缓存可能将 userinfo/query 凭据与 endpoint 一起明文持久化。
-            # 按旧格式失效处理，同时必须从磁盘清除该原文。
-            try:
-                target_path.unlink()
-            except OSError:
-                try:
-                    target_path.write_text("{}\n", encoding="utf-8")
-                except OSError:
-                    raise RuntimeError(
-                        f"无法清理旧 Embedding 维度缓存: {target_path}"
-                    ) from None
+            self._legacy_runtime_cache_requires_cleanup = True
             return None
         if not self._runtime_embedding_fingerprint_matches(fingerprint):
             return None
 
         dim = payload.get("embedding_dim")
         return int(dim) if dim is not None else None
+
+    def sanitize_runtime_state(self) -> None:
+        """在 RuntimeLayout 已验证后清理不安全的旧运行缓存。"""
+        if not self._legacy_runtime_cache_requires_cleanup:
+            return
+
+        target_path = self.runtime_embedding_dim_path
+        self._layout.validate_user_file(
+            target_path,
+            label="Embedding 运行缓存",
+            allow_missing=False,
+        )
+        try:
+            target_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            try:
+                self._write_runtime_embedding_payload({})
+            except OSError:
+                raise RuntimeError(
+                    f"无法清理旧 Embedding 维度缓存: {target_path}"
+                ) from None
+        self._legacy_runtime_cache_requires_cleanup = False
 
     def _runtime_embedding_fingerprint_matches(self, payload: Any) -> bool:
         """检查运行期维度缓存是否仍然对应当前 Embedding 配置。"""
@@ -830,17 +914,23 @@ class Config:
 
     def ensure_dirs(self):
         """确保所有必要的目录存在"""
-        dirs = [
-            self.vault_dir,
-            self.db_path.parent,
-            self.vector_index_dir,
-            self.log_dir,
-            self.tmp_dir,
-            self.runtime_embedding_dim_path.parent,
-        ]
+        self._layout.ensure_user_directories()
 
-        for dir_path in dirs:
-            dir_path.mkdir(parents=True, exist_ok=True)
+    def update_local_config(self, updates: Mapping[str, Any]) -> None:
+        """Persist product settings only to the validated user-data config."""
+
+        self._layout.ensure_user_directories()
+        target_path = self._layout.validate_user_file(
+            self.local_config_path,
+            label="本机配置",
+            allow_missing=True,
+        )
+        set_yaml_config_values(target_path, updates)
+        self._layout.validate_user_file(
+            target_path,
+            label="本机配置",
+            allow_missing=False,
+        )
 
 
 # 全局配置实例 (单例模式)
@@ -857,7 +947,6 @@ def get_config() -> Config:
     global _config_instance
     if _config_instance is None:
         _config_instance = Config()
-        _config_instance.ensure_dirs()
     return _config_instance
 
 

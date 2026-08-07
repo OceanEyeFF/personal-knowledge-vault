@@ -8,7 +8,6 @@
 """
 
 import json
-import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -17,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from src.utils.config import get_config
 from src.utils.logger import get_logger
+from src.storage.sqlite_connection import connect_existing_sqlite
 
 logger = get_logger(__name__)
 
@@ -79,9 +79,6 @@ class ReviewManager:
     - 草稿管理 (list_drafts / restore_draft)
     """
 
-    # 迁移 SQL 文件路径（相对于项目根）
-    _MIGRATION_FILE = "scripts/migrations/005_add_review_system.sql"
-
     def __init__(self, db_path: Optional[Path] = None) -> None:
         """
         初始化 ReviewManager。
@@ -93,8 +90,7 @@ class ReviewManager:
             config = get_config()
             db_path = config.db_path
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._ensure_tables()
+        self._verify_tables()
         logger.info(f"ReviewManager 初始化: {self.db_path}")
 
     @contextmanager
@@ -102,12 +98,18 @@ class ReviewManager:
         """
         获取数据库连接（上下文管理器，与 SQLiteStore 保持一致的模式）。
 
+        row_factory/PRAGMA 初始化任一步失败时也必须关闭连接，且恰好关闭一次。
+
         Yields:
             sqlite3.Connection: 自动提交或回滚的数据库连接
         """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row          # 支持字典式列访问
-        conn.execute("PRAGMA foreign_keys = ON")
+        conn = connect_existing_sqlite(self.db_path)
+        try:
+            conn.row_factory = sqlite3.Row          # 支持字典式列访问
+            conn.execute("PRAGMA foreign_keys = ON")
+        except Exception:
+            conn.close()
+            raise
         try:
             yield conn
             conn.commit()
@@ -118,68 +120,32 @@ class ReviewManager:
         finally:
             conn.close()
 
-    def _ensure_tables(self) -> None:
-        """
-        确保审核相关表已创建。
+    def _verify_tables(self) -> None:
+        """Require bootstrap/migrations to have created the review schema."""
 
-        优先读取迁移 SQL 文件执行，若文件不存在则使用内联 DDL 兜底。
-        """
-        project_root = Path(os.path.dirname(os.path.abspath(__file__))).parent.parent
-        migration_path = project_root / self._MIGRATION_FILE
+        from src.runtime.errors import ErrorCode, PKVRuntimeError
 
-        if migration_path.exists():
-            try:
-                sql = migration_path.read_text(encoding="utf-8")
-                with self._get_connection() as conn:
-                    conn.executescript(sql)
-                logger.debug(f"审核表从迁移文件创建: {migration_path}")
-                return
-            except Exception as e:
-                logger.warning(f"迁移文件执行失败，使用内联 DDL: {e}")
-
-        self._create_tables_inline()
-
-    def _create_tables_inline(self) -> None:
-        """使用内联 DDL 创建审核表（迁移文件不可用时的兜底方案）。"""
-        with self._get_connection() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS review_queue (
-                    review_id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ai_generated_summary    TEXT NOT NULL,
-                    ai_generated_tags       TEXT NOT NULL DEFAULT '',
-                    source_type             TEXT NOT NULL DEFAULT 'unknown',
-                    ai_cleaned_content      TEXT NOT NULL DEFAULT '',
-                    ai_generation_model     TEXT NOT NULL DEFAULT 'deepseek-chat',
-                    original_content_preview TEXT NOT NULL DEFAULT '',
-                    source_url              TEXT,
-                    knowledge_id            INTEGER,
-                    user_summary            TEXT,
-                    user_tags               TEXT,
-                    user_comments           TEXT,
-                    regeneration_count      INTEGER NOT NULL DEFAULT 0,
-                    regeneration_prompts    TEXT NOT NULL DEFAULT '[]',
-                    review_status           TEXT NOT NULL DEFAULT 'pending'
-                                            CHECK(review_status IN ('pending', 'approved', 'rejected', 'draft')),
-                    review_version          INTEGER NOT NULL DEFAULT 1,
-                    created_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE TABLE IF NOT EXISTS review_history (
-                    history_id  INTEGER PRIMARY KEY AUTOINCREMENT,
-                    review_id   INTEGER NOT NULL,
-                    action      TEXT NOT NULL,
-                    details     TEXT NOT NULL DEFAULT '',
-                    operator    TEXT NOT NULL DEFAULT 'user',
-                    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (review_id) REFERENCES review_queue(review_id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_review_queue_status ON review_queue(review_status);
-                CREATE INDEX IF NOT EXISTS idx_review_queue_knowledge_id ON review_queue(knowledge_id);
-                CREATE INDEX IF NOT EXISTS idx_review_history_review_id ON review_history(review_id);
-            """)
-        logger.debug("审核表通过内联 DDL 创建")
+        if not self.db_path.is_file():
+            raise PKVRuntimeError(
+                ErrorCode.DATABASE_MISSING,
+                f"审核数据库尚未初始化: {self.db_path}",
+            )
+        conn = connect_existing_sqlite(self.db_path, read_only=True)
+        try:
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+        missing = {"review_queue", "review_history"} - tables
+        if missing:
+            raise PKVRuntimeError(
+                ErrorCode.DATABASE_SCHEMA_DRIFT,
+                f"审核表未由 migration 创建: {', '.join(sorted(missing))}",
+            )
 
     # ------------------------------------------------------------------
     # CRUD 操作

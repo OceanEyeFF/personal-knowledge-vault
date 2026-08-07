@@ -314,6 +314,23 @@ class ArchiveView(QWidget):
         title = data.get("title", "未知标题")
         kid = data.get("knowledge_id", "")
         file_path = data.get("file_path", "")
+        status = data.get("status")
+
+        if status == "degraded":
+            # DEGRADED 仍是核心成功，但必须向用户可见地警告辅助索引需要修复。
+            repairs = "、".join(data.get("repair_actions") or [])
+            warning = (
+                "核心归档已完成，但辅助索引需要修复"
+                + (f"（修复动作: {repairs}）" if repairs else "（见日志）")
+                + "。请勿盲目重试归档。"
+            )
+            self._result_title_label.setText(f"归档成功（降级）: {title}")
+            self._result_kid_label.setText(f"ID: {kid}")
+            self._result_path_label.setText(f"文件: {file_path}")
+            self._result_area.setVisible(True)
+            logger.warning(f"归档降级: {warning}")
+            QMessageBox.warning(self, "归档降级警告", warning)
+            return
 
         self._result_title_label.setText(f"归档成功: {title}")
         self._result_kid_label.setText(f"ID: {kid}")

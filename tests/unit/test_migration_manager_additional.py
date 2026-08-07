@@ -5,7 +5,6 @@ MigrationManager 额外白盒覆盖测试。
 from __future__ import annotations
 
 import sqlite3
-import subprocess
 import sys
 from pathlib import Path
 
@@ -14,7 +13,14 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.storage.migration_manager import MigrationManager  # noqa: E402
+from src.runtime.errors import ErrorCode, PKVRuntimeError  # noqa: E402
+from src.storage.migration_manager import (  # noqa: E402
+    DatabaseState,
+    MigrationManager,
+)
+
+
+MIGRATIONS_DIR = PROJECT_ROOT / "scripts" / "migrations"
 
 
 def _write_migration(path: Path, version: str, description: str = "desc") -> None:
@@ -72,45 +78,34 @@ def test_apply_all_pending_rebuilds_fts_when_alignment_versions_present(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    manager = MigrationManager(tmp_path / "test.db", tmp_path / "migrations")
-    migration_file = tmp_path / "migrations" / "008_align_fts_contract.sql"
-    migration_file.parent.mkdir(exist_ok=True)
-    _write_migration(migration_file, "1.2.2")
+    """真实迁移链在离线工作副本中完成 FTS 对齐后才发布。"""
+    from src.storage.sqlite_store import SQLiteStore
 
-    monkeypatch.setattr(
-        manager,
-        "get_pending_migrations",
-        lambda: [("1.2.2", migration_file)],
-    )
-
-    applied: list[Path] = []
-    monkeypatch.setattr(
-        manager,
-        "apply_migration",
-        lambda path, auto_backup=True: applied.append(path),
-    )
-
+    manager = MigrationManager(tmp_path / "test.db", MIGRATIONS_DIR)
     rebuilt: list[Path] = []
+    original_rebuild = SQLiteStore.rebuild_fts5_index
 
-    class StubStore:
-        def __init__(self, db_path: Path) -> None:
-            rebuilt.append(db_path)
+    def spy_rebuild(store: SQLiteStore) -> None:
+        rebuilt.append(store.db_path)
+        original_rebuild(store)
 
-        def rebuild_fts5_index(self) -> None:
-            rebuilt.append(Path("done"))
+    monkeypatch.setattr(SQLiteStore, "rebuild_fts5_index", spy_rebuild)
 
-    monkeypatch.setattr("src.storage.migration_manager.SQLiteStore", StubStore)
-
-    assert manager.apply_all_pending(auto_backup=False) == 1
-    assert applied == [migration_file]
-    assert rebuilt == [manager.db_path, Path("done")]
+    assert manager.apply_all_pending(auto_backup=False) == 9
+    assert len(rebuilt) == 1
+    assert rebuilt[0] != manager.db_path
+    assert manager.inspect_database().state is DatabaseState.READY
 
 
-def test_apply_all_pending_returns_zero_when_no_pending(tmp_path: Path) -> None:
+def test_apply_all_pending_rejects_empty_migration_bundle(tmp_path: Path) -> None:
     manager = MigrationManager(tmp_path / "test.db", tmp_path / "migrations")
     manager.migrations_dir.mkdir(exist_ok=True)
 
-    assert manager.apply_all_pending(auto_backup=False) == 0
+    with pytest.raises(PKVRuntimeError) as error:
+        manager.apply_all_pending(auto_backup=False)
+
+    assert error.value.code is ErrorCode.RESOURCE_MISSING
+    assert not manager.db_path.exists()
 
 
 def test_read_only_manager_does_not_create_missing_paths(tmp_path: Path) -> None:
@@ -124,7 +119,9 @@ def test_read_only_manager_does_not_create_missing_paths(tmp_path: Path) -> None
     assert not migrations_dir.exists()
     assert not (tmp_path / "missing").exists()
     assert manager.get_current_version() == "0.0.0"
-    assert manager.get_pending_migrations() == []
+    with pytest.raises(PKVRuntimeError) as error:
+        manager.get_pending_migrations()
+    assert error.value.code is ErrorCode.RESOURCE_MISSING
     assert not (tmp_path / "missing").exists()
 
 
@@ -152,10 +149,9 @@ def test_read_only_manager_rejects_mutating_apis(
     assert not manager.db_path.exists()
 
 
-def test_apply_migration_warns_on_backup_failure_and_rolls_back_on_sql_error(
+def test_apply_migration_rejects_backup_failure_and_rolls_back_on_sql_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     migrations_dir = tmp_path / "migrations"
     migrations_dir.mkdir()
@@ -175,25 +171,30 @@ def test_apply_migration_warns_on_backup_failure_and_rolls_back_on_sql_error(
         encoding="utf-8",
     )
 
-    manager = MigrationManager(tmp_path / "test.db", migrations_dir)
+    db_path = tmp_path / "test.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE existing_data (id INTEGER PRIMARY KEY)")
+    manager = MigrationManager(db_path, migrations_dir)
     monkeypatch.setattr(
         manager,
         "_backup_database",
         lambda migration_name: (_ for _ in ()).throw(RuntimeError("backup failed")),
     )
 
-    manager.apply_migration(good_migration, auto_backup=True)
+    with pytest.raises(PKVRuntimeError) as backup_error:
+        manager.apply_migration(good_migration, auto_backup=True)
+    assert backup_error.value.code is ErrorCode.MIGRATION_BACKUP_FAILED
     with sqlite3.connect(str(manager.db_path)) as conn:
         assert (
             conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='sample_table'"
             ).fetchone()
-            is not None
+            is None
         )
-    assert "自动备份失败: backup failed" in caplog.text
 
-    with pytest.raises(sqlite3.Error):
+    with pytest.raises(PKVRuntimeError) as migration_error:
         manager.apply_migration(bad_migration, auto_backup=False)
+    assert migration_error.value.code is ErrorCode.MIGRATION_FAILED
 
 
 def test_check_and_prompt_upgrade_prints_pending_descriptions(
@@ -223,28 +224,29 @@ def test_backup_and_parse_helper_methods_cover_success_fallbacks_and_invalid_ver
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    manager = MigrationManager(tmp_path / "test.db", tmp_path / "migrations")
+    db_path = tmp_path / "test.db"
+    manager = MigrationManager(
+        db_path,
+        tmp_path / "migrations",
+        backup_dir=tmp_path / "backups",
+    )
     manager.migrations_dir.mkdir(exist_ok=True)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE durable_data (id INTEGER PRIMARY KEY)")
 
-    calls: list[list[str]] = []
+    backup_path = manager._backup_database("010_good.sql")
+    assert backup_path.parent == manager.backup_dir
+    with sqlite3.connect(str(backup_path)) as conn:
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='durable_data'"
+        ).fetchone() is not None
 
-    def fake_run(command, check, capture_output, text):
-        calls.append(command)
-
-        class Result:
-            stdout = "backup ok"
-
-        return Result()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    manager._backup_database("010_good.sql")
-    assert calls and calls[0][0] == "powershell"
-
-    def failing_run(command, check, capture_output, text):
-        raise subprocess.CalledProcessError(1, command, stderr="backup error")
-
-    monkeypatch.setattr(subprocess, "run", failing_run)
-    with pytest.raises(subprocess.CalledProcessError):
+    monkeypatch.setattr(
+        manager,
+        "_copy_database",
+        lambda *_args: (_ for _ in ()).throw(OSError("backup error")),
+    )
+    with pytest.raises(OSError, match="backup error"):
         manager._backup_database("011_bad.sql")
 
     fallback_file = manager.migrations_dir / "012_no_header.sql"

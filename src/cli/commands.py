@@ -31,6 +31,7 @@ from src.retrieval.bm25_retriever import BM25Retriever
 from src.retrieval.vector_retriever import VectorRetriever
 from src.retrieval.hybrid_retriever import HybridRetriever
 from src.storage.sqlite_store import SQLiteStore
+from src.storage.markdown_store import MarkdownStore
 from src.utils.text_utils import TextProcessor
 from src.ai.embedder import Embedder
 
@@ -305,7 +306,7 @@ def _render_entry_panel(entry: Dict[str, Any], raw: bool = False) -> Panel:
     return Panel(text, title=f"知识条目 #{entry.get('knowledge_id', '-')}")
 
 
-def _set_config_value(config_path: Path, key: str, value: str) -> None:
+def _set_config_value(config: Config, key: str, value: str) -> None:
     """写入本机 YAML 配置中的点号路径键。"""
     try:
         parsed_value = yaml.safe_load(value) if value.strip() else ""
@@ -322,9 +323,14 @@ def _set_config_value(config_path: Path, key: str, value: str) -> None:
     ):
         raise ValueError(
             "Base URL 不得通过命令行传入认证信息；"
-            "请直接编辑 config/local.yaml"
+            "请直接编辑用户数据目录中的 config/local.yaml"
         )
-    set_yaml_config_value(config_path, key, parsed_value)
+    updater = getattr(config, "update_local_config", None)
+    if callable(updater):
+        updater({key: parsed_value})
+    else:
+        # Compatibility seam for injected lightweight test/admin configs.
+        set_yaml_config_value(config.local_config_path, key, parsed_value)
 
 
 def _resolve_config_value(config: Config, key: str) -> Any:
@@ -404,9 +410,13 @@ def _friendly_hint(message: str) -> None:
     if "processor" in msg or "抓取" in msg or "url" in msg:
         console.print("[yellow]提示: 请检查 URL 是否正确，或稍后重试[/yellow]")
     if "openai" in msg or "embedding" in msg:
-        console.print("[yellow]提示: 请检查 config/local.yaml 中的 Embedding 配置[/yellow]")
+        console.print(
+            "[yellow]提示: 请检查用户数据目录中 config/local.yaml 的 Embedding 配置[/yellow]"
+        )
     if "deepseek" in msg or "llm" in msg:
-        console.print("[yellow]提示: 请检查 config/local.yaml 中的 LLM 配置[/yellow]")
+        console.print(
+            "[yellow]提示: 请检查用户数据目录中 config/local.yaml 的 LLM 配置[/yellow]"
+        )
 
 
 @click.group()
@@ -464,6 +474,22 @@ def archive(url_or_path: str, skip_sharpen: bool, tags: Optional[str], quiet: bo
                     _friendly_hint(err)
             else:
                 console.print("[red]未返回详细错误信息[/red]")
+            failure_data = result.data or {}
+            operation_id = failure_data.get("operation_id")
+            if operation_id:
+                console.print(f"[dim]操作 ID: {operation_id}[/dim]")
+            knowledge_id = failure_data.get("knowledge_id")
+            if knowledge_id is not None:
+                console.print(f"[dim]知识条目 ID: {knowledge_id}[/dim]")
+            status = failure_data.get("status")
+            if status:
+                console.print(f"[yellow]终态: {status}[/yellow]")
+            for action in failure_data.get("repair_actions") or []:
+                console.print(f"[yellow]- 修复动作: {action}[/yellow]")
+            if failure_data.get("core_committed") or failure_data.get("do_not_retry"):
+                console.print(
+                    "[red]警告: 核心存储可能已提交，请勿盲目重试！请先按上述修复动作处理[/red]"
+                )
             sys.exit(1)
 
         data = result.data or {}
@@ -479,6 +505,17 @@ def archive(url_or_path: str, skip_sharpen: bool, tags: Optional[str], quiet: bo
             return
 
         console.print("[green]成功: 归档完成![/green]")
+        operation_id = data.get("operation_id")
+        if operation_id:
+            console.print(f"[dim]操作 ID: {operation_id}[/dim]")
+        if data.get("status") == "degraded":
+            console.print("[yellow]警告: 核心归档已完成，但辅助索引需要修复[/yellow]")
+            for action in data.get("repair_actions") or []:
+                console.print(f"[yellow]- 修复动作: {action}[/yellow]")
+        if data.get("do_not_retry") and data.get("status") not in ("ready", "deleted"):
+            console.print(
+                "[yellow]警告: 核心存储已提交或需先修复，请勿盲目重试归档；先执行上述修复动作[/yellow]"
+            )
 
         title = getattr(entry, "title", "") if entry else ""
         source_url = getattr(entry, "source_url", "") if entry else url_or_path
@@ -643,11 +680,8 @@ def show(id_or_url: Optional[str], source_url: Optional[str], raw: bool) -> None
             if not file_path:
                 console.print("[red]错误: 条目缺少 file_path，无法读取原始 Markdown[/red]")
                 sys.exit(1)
-            path = Path(file_path)
-            if not path.exists():
-                console.print(f"[red]错误: Markdown 文件不存在: {file_path}[/red]")
-                sys.exit(1)
-            content = path.read_text(encoding="utf-8")
+            markdown_store = MarkdownStore(config.vault_dir)
+            content = markdown_store.load(file_path).content
             console.print(content, markup=False)
             return
 
@@ -784,14 +818,14 @@ def config_set(key: str, value: str) -> None:
         if _config_key_touches_sensitive_value(key):
             raise ValueError(
                 "该配置路径包含敏感值，不得作为命令行参数传入；"
-                "请直接编辑 config/local.yaml"
+                "请直接编辑用户数据目录中的 config/local.yaml"
             )
         if "." not in key:
             raise ValueError("配置键必须使用 YAML 点号路径，例如 ai.llm.model")
-        local_config_path = _project_root() / "config" / "local.yaml"
-        _set_config_value(local_config_path, key, value)
+        config = _load_config()
+        _set_config_value(config, key, value)
         console.print(
-            f"[green]成功: 已更新 {key} 到 config/local.yaml[/green]"
+            f"[green]成功: 已更新 {key} 到用户数据目录中的 local.yaml[/green]"
         )
 
     except Exception as exc:

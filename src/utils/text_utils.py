@@ -6,22 +6,32 @@
 
 import re
 import jieba
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 from pathlib import Path
 
 
 class TextProcessor:
     """文本处理器"""
 
-    def __init__(self, custom_dict_path: str = "config/custom_dict.txt"):
+    def __init__(self, custom_dict_path: Optional[str] = None):
         """
         初始化文本处理器
 
         Args:
             custom_dict_path: jieba 自定义词典路径
         """
-        # 加载自定义词典
-        dict_path = Path(custom_dict_path)
+        # 产品默认资源必须通过 RuntimeLayout 解析；显式路径仅保留为测试/
+        # 运维注入 seam，不能影响产品的 bundled-resource 根。
+        if custom_dict_path is None:
+            from src.utils.config import get_config
+
+            layout = get_config().layout
+            dict_path = layout.validate_bundled_path(
+                layout.custom_dict_path,
+                label="jieba 自定义词典",
+            )
+        else:
+            dict_path = Path(custom_dict_path)
         if dict_path.exists():
             jieba.load_userdict(str(dict_path))
 

@@ -4,20 +4,31 @@ Unit tests for relation extractors.
 
 from __future__ import annotations
 
+import sqlite3
 import sys
 from pathlib import Path
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.runtime import ErrorCode, PKVRuntimeError  # noqa: E402
 from src.relations.extractors import (  # noqa: E402
     BackfillReport,
+    RelationBackfillService,
     extract_frontmatter_relation_fields,
     extract_frontmatter_related_docs,
     extract_markdown_link_references,
     parse_front_matter,
 )
 from src.relations.models import RelationSourceType, RelationType  # noqa: E402
+from src.storage.markdown_store import Entry  # noqa: E402
+from src.storage.migration_manager import MigrationManager  # noqa: E402
+from src.storage.sqlite_store import SQLiteStore  # noqa: E402
+
+
+MIGRATIONS_DIR = PROJECT_ROOT / "scripts" / "migrations"
 
 
 def test_parse_front_matter_returns_metadata_and_body():
@@ -168,6 +179,29 @@ def test_backfill_report_quality_gate_and_markdown_summary():
     assert "## 扩展上下文" in markdown
 
 
+def test_backfill_rejects_database_path_outside_vault_without_reading_it(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "data"
+    db_path = data_root / "db" / "vault.db"
+    vault_dir = data_root / "vault"
+    vault_dir.mkdir(parents=True)
+    MigrationManager(db_path, MIGRATIONS_DIR).initialize_fresh()
+
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside sentinel", encoding="utf-8")
+    SQLiteStore(db_path).insert_entry(
+        Entry(title="unsafe", source_type="text", content="must not be used"),
+        str(outside),
+    )
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        RelationBackfillService(db_path, vault_dir).backfill(apply=False)
+
+    assert exc_info.value.code is ErrorCode.PATH_OUTSIDE_VAULT
+    assert outside.read_text(encoding="utf-8") == "outside sentinel"
+
+
 def test_backfill_report_quality_gate_can_fail():
     report = BackfillReport(
         total_references=10,
@@ -190,3 +224,43 @@ def test_backfill_report_quality_gate_can_fail():
         "noise_rate",
         "conflict_rate",
     ]
+
+
+def test_load_entries_closes_connection_when_query_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """_load_entries 查询任一步失败也必须关闭连接（恰好一次）。"""
+    data_root = tmp_path / "data"
+    db_path = data_root / "db" / "vault.db"
+    vault_dir = data_root / "vault"
+    vault_dir.mkdir(parents=True)
+    MigrationManager(db_path, MIGRATIONS_DIR).initialize_fresh()
+
+    service = RelationBackfillService(db_path, vault_dir)
+
+    real_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+    close_counts: dict[sqlite3.Connection, int] = {}
+
+    class TrackingConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            if isinstance(sql, str) and "SELECT knowledge_id" in sql:
+                raise sqlite3.OperationalError("simulated query failure")
+            return super().execute(sql, parameters)
+
+        def close(self):
+            close_counts[self] = close_counts.get(self, 0) + 1
+            super().close()
+
+    def tracked_connect(database, *args, **kwargs):
+        conn = real_connect(database, *args, factory=TrackingConnection, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", tracked_connect)
+
+    with pytest.raises(sqlite3.OperationalError):
+        service._load_entries()
+
+    assert len(opened) == 1
+    assert close_counts.get(opened[0], 0) == 1

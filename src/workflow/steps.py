@@ -17,11 +17,12 @@ from rich.prompt import Prompt
 from src.ai.deepseek_client import DeepSeekClient
 from src.ai.embedder import Embedder
 from src.processors import get_processor
+from src.runtime.errors import OperationStatus
 from src.storage.markdown_store import Entry, MarkdownStore
+from src.storage.coordinator import StorageCoordinator
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.vector_store import VectorStore
 from src.utils.config import get_config
-from src.utils.text_utils import TextProcessor
 from src.workflow.models import WorkflowContext
 
 
@@ -354,68 +355,122 @@ class StoreStep(BaseStep):
         targets = self.config.get("targets") or ["markdown"]
         config = get_config()
 
-        file_path: Optional[str] = None
-        knowledge_id: Optional[int] = None
-        errors: List[str] = []
-
-        if "markdown" in targets:
-            try:
-                markdown_store = self._markdown_store or MarkdownStore(config.vault_dir)
-                saved_path = markdown_store.save(entry)
-                file_path = str(saved_path)
-            except Exception as e:
-                errors.append(f"Markdown 存储失败: {e}")
-
-        if "sqlite" in targets:
-            try:
-                sqlite_store = self._sqlite_store or SQLiteStore(config.db_path)
-                sqlite_store.initialize()
-                if not file_path:
-                    safe_title = TextProcessor.sanitize_filename(entry.title or "entry")
-                    file_path = str(config.vault_dir / f"{safe_title}.md")
-                if isinstance(entry.keywords, list):
-                    entry.keywords = ",".join(entry.keywords)
-                knowledge_id = sqlite_store.insert_entry(entry, file_path=file_path)
-            except Exception as e:
-                errors.append(f"SQLite 存储失败: {e}")
-
-        if "vector_index" in targets:
-            if knowledge_id is None:
+        required_targets = {"markdown", "sqlite"}
+        if not required_targets.issubset(set(targets)):
+            missing = sorted(required_targets - set(targets))
+            errors = [
+                "W1 存储合同要求 Markdown 主存储与 SQLite/FTS/chunk 索引同时启用；"
+                f"缺少: {', '.join(missing)}"
+            ]
+            if "vector_index" in targets:
                 errors.append("缺少 knowledge_id，跳过向量索引")
-            else:
-                try:
-                    embedder = self._embedder or Embedder()
+            self._log(context, "存储目标不满足 W1 核心合同")
+            return {
+                "file_path": None,
+                "knowledge_id": None,
+                "stored_targets": targets,
+                "entry": entry,
+                "status": "rejected",
+                "stage": "preparing",
+                "errors": errors,
+            }
+
+        markdown_store = self._markdown_store or MarkdownStore(config.vault_dir)
+        sqlite_store = self._sqlite_store or SQLiteStore(config.db_path)
+        coordinator = StorageCoordinator(
+            markdown_store,
+            sqlite_store,
+            config.layout.runtime_state_dir / "operations",
+        )
+
+        chunks: Optional[List[str]] = None
+        vector_operation = None
+        vector_error: Optional[BaseException] = None
+        vector_required = "vector_index" in targets
+        if vector_required:
+            try:
+                embedder = self._embedder or Embedder()
+
+                def prepare_vectors():
+                    doc_vector = embedder.embed_document(entry.content)
+                    chunk_vectors, prepared_chunks = embedder.embed_chunks(
+                        entry.content, True
+                    )
                     resolved_dim = getattr(embedder, "dim", None)
+                    if resolved_dim is None and getattr(doc_vector, "shape", None):
+                        resolved_dim = int(doc_vector.shape[-1])
                     if resolved_dim is None and hasattr(embedder, "resolve_dim"):
                         resolved_dim = embedder.resolve_dim()
                     vector_store = self._vector_store or VectorStore(
                         index_dir=config.vector_index_dir,
                         dim=resolved_dim,
                     )
-                    sqlite_store = self._sqlite_store or SQLiteStore(config.db_path)
-                    doc_vector = await asyncio.to_thread(embedder.embed_document, entry.content)
+                    return doc_vector, chunk_vectors, prepared_chunks or [], vector_store
+
+                (
+                    doc_vector,
+                    chunk_vectors,
+                    chunks,
+                    vector_store,
+                ) = await asyncio.to_thread(prepare_vectors)
+
+                def write_vectors(knowledge_id: int) -> None:
                     vector_store.add_doc_vector(knowledge_id, doc_vector)
+                    chunk_indices = list(range(len(chunk_vectors)))
+                    if hasattr(vector_store, "add_chunk_vectors"):
+                        vector_store.add_chunk_vectors(
+                            knowledge_id,
+                            chunk_indices,
+                            chunk_vectors,
+                        )
+                    else:
+                        for index, vector in enumerate(chunk_vectors):
+                            vector_store.add_chunk_vector(knowledge_id, index, vector)
 
-                    chunk_vectors, chunks = await asyncio.to_thread(
-                        embedder.embed_chunks, entry.content, True
+                vector_operation = write_vectors
+            except Exception as exc:
+                vector_error = exc
+
+        operation = await asyncio.to_thread(
+            coordinator.archive,
+            entry,
+            chunks=chunks,
+            vector_operation=vector_operation,
+            vector_error=vector_error,
+            vector_required=vector_required,
+        )
+        result = operation.to_dict()
+        result.update(
+            {
+                "stored_targets": targets,
+                "entry": entry,
+            }
+        )
+        stable_errors = list(operation.errors)
+        result["storage_errors"] = stable_errors
+        # WorkflowEngine consumes the human-readable ``errors`` key. Preserve
+        # machine-readable W1 codes separately, and treat DEGRADED as a committed
+        # core result with repair warnings rather than a retry-safe rejection.
+        result.pop("errors", None)
+        if stable_errors:
+            messages = [
+                f"{error['code']}: {error['message']}" for error in operation.errors
+            ]
+            if operation.status is OperationStatus.DEGRADED:
+                result["warnings"] = messages
+            else:
+                result["errors"] = messages
+                if not operation.retry_safe:
+                    # Markdown+SQLite may already be committed: retrying blindly
+                    # would duplicate facts.  Surface a committed-needs-repair
+                    # warning instead of a retry-safe generic failure.
+                    do_not_retry = (
+                        f"do_not_retry: 核心存储已提交或需先修复（operation_id="
+                        f"{operation.operation_id}），请勿盲目重试归档"
                     )
-                    sqlite_store.insert_chunks(knowledge_id, chunks or [])
-                    for idx, vector in enumerate(chunk_vectors):
-                        vector_store.add_chunk_vector(knowledge_id, idx, vector)
-                except Exception as e:
-                    errors.append(f"向量索引失败: {e}")
-
-        if errors:
-            self._log(context, "部分存储失败，已降级")
-
-        result: Dict[str, Any] = {
-            "file_path": file_path,
-            "knowledge_id": knowledge_id,
-            "stored_targets": targets,
-            "entry": entry,
-        }
-        if errors:
-            result["errors"] = errors
+                    result["errors"] = [*messages, do_not_retry]
+                    result["warnings"] = [do_not_retry]
+            self._log(context, f"存储终态: {operation.status.value}")
         return result
 
 

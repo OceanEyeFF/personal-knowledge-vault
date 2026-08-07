@@ -12,6 +12,11 @@ from dataclasses import dataclass, field, asdict
 
 from src.utils.logger import get_logger
 from src.utils.text_utils import TextProcessor
+from src.storage.vault_paths import (
+    PublishedVaultFile,
+    QuarantinedVaultFile,
+    VaultPathGateway,
+)
 
 logger = get_logger(__name__)
 
@@ -96,6 +101,14 @@ class Entry:
         return data
 
 
+@dataclass(frozen=True)
+class PlannedVaultWrite:
+    """Deterministic no-clobber Markdown target selected before any write."""
+
+    absolute_path: Path
+    relative_path: str
+
+
 class MarkdownStore:
     """Markdown 文件存储管理器"""
 
@@ -106,9 +119,41 @@ class MarkdownStore:
         Args:
             vault_dir: Markdown Vault 目录
         """
-        self.vault_dir = Path(vault_dir)
-        self.vault_dir.mkdir(parents=True, exist_ok=True)
+        self.gateway = VaultPathGateway(vault_dir)
+        self.vault_dir = self.gateway.vault_dir
         logger.info(f"Markdown 存储初始化完成: {self.vault_dir}")
+
+    def plan_save(self, entry: Entry, subdir: Optional[str] = None) -> PlannedVaultWrite:
+        """Plan the exact no-clobber Markdown target without writing any file.
+
+        Deterministic for a given Vault state; keeps the human-friendly
+        ``{title}.md`` name while uncontended.  The coordinator journals this
+        plan before any archive file write.
+        """
+        if subdir is None:
+            subdir = entry.source_type
+        safe_title = TextProcessor.sanitize_filename(entry.title)
+        file_path = self.gateway.unique_markdown_path(subdir, safe_title)
+        return PlannedVaultWrite(file_path, self.gateway.relative_name(file_path))
+
+    def save_planned(self, plan: PlannedVaultWrite, entry: Entry) -> Path:
+        """Publish exactly at the planned target; never retry, never overwrite.
+
+        If the planned target raced into existence, ``FileExistsError``
+        propagates and the temporary file is cleaned: no overwrite and no
+        orphan is left behind.
+        """
+        return self.save_planned_record(plan, entry).path
+
+    def save_planned_record(
+        self, plan: PlannedVaultWrite, entry: Entry
+    ) -> PublishedVaultFile:
+        """Publish a planned Markdown file and retain its exact identity."""
+
+        metadata = entry.to_dict()
+        post = frontmatter.Post(entry.content, **metadata)
+        serialized = frontmatter.dumps(post)
+        return self.gateway.write_text_atomic_record(plan.absolute_path, serialized)
 
     def save(self, entry: Entry, subdir: Optional[str] = None) -> Path:
         """
@@ -126,36 +171,9 @@ class MarkdownStore:
             >>> entry = Entry(title="测试", content="# 内容")
             >>> path = store.save(entry, subdir="wechat")
         """
-        # 确定子目录
-        if subdir is None:
-            subdir = entry.source_type
-
-        target_dir = self.vault_dir / subdir
-        target_dir.mkdir(parents=True, exist_ok=True)
-
-        # 生成文件名
-        safe_title = TextProcessor.sanitize_filename(entry.title)
-        filename = f"{safe_title}.md"
-        file_path = target_dir / filename
-
-        # 如果文件已存在，添加时间戳后缀
-        if file_path.exists():
-            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            filename = f"{safe_title}-{timestamp}.md"
-            file_path = target_dir / filename
-
-        # 构建 Front Matter
-        metadata = entry.to_dict()
-
-        # 创建 frontmatter 对象
-        post = frontmatter.Post(entry.content, **metadata)
-
-        # 写入文件
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(frontmatter.dumps(post))
-
-        logger.info(f"保存 Markdown 文件: {file_path}")
-        return file_path
+        # 兼容入口：先规划精确目标，再严格写入该目标（并发同名不重试、不覆盖）。
+        plan = self.plan_save(entry, subdir)
+        return self.save_planned(plan, entry)
 
     def load(self, file_path: Path) -> Entry:
         """
@@ -171,12 +189,10 @@ class MarkdownStore:
             >>> store = MarkdownStore(vault_dir=".data/vault")
             >>> entry = store.load(Path(".data/vault/wechat/测试.md"))
         """
-        if not file_path.exists():
-            raise FileNotFoundError(f"文件不存在: {file_path}")
+        safe_path = self.gateway.resolve(file_path, must_exist=True, require_file=True)
 
         # 解析 frontmatter
-        with open(file_path, "r", encoding="utf-8") as f:
-            post = frontmatter.load(f)
+        post = frontmatter.loads(self.gateway.read_text(safe_path))
 
         # 提取元数据和内容
         metadata = post.metadata
@@ -204,7 +220,7 @@ class MarkdownStore:
             content=content,
         )
 
-        logger.info(f"加载 Markdown 文件: {file_path}")
+        logger.info(f"加载 Markdown 文件: {safe_path}")
         return entry
 
     def list_all(self, subdir: Optional[str] = None) -> list[Path]:
@@ -217,16 +233,7 @@ class MarkdownStore:
         Returns:
             文件路径列表
         """
-        if subdir:
-            search_dir = self.vault_dir / subdir
-        else:
-            search_dir = self.vault_dir
-
-        if not search_dir.exists():
-            return []
-
-        # 递归查找所有 .md 文件
-        md_files = list(search_dir.rglob("*.md"))
+        md_files = list(self.gateway.iter_markdown(subdir))
         logger.info(f"找到 {len(md_files)} 个 Markdown 文件")
         return md_files
 
@@ -237,8 +244,38 @@ class MarkdownStore:
         Args:
             file_path: 文件路径
         """
-        if file_path.exists():
-            file_path.unlink()
+        if self.gateway.delete(file_path):
             logger.info(f"删除 Markdown 文件: {file_path}")
         else:
             logger.warning(f"文件不存在，无法删除: {file_path}")
+
+    def relative_path(self, file_path: Path | str) -> str:
+        """返回数据库唯一允许持久化的 Vault-relative POSIX 路径。"""
+        return self.gateway.relative_name(file_path)
+
+    def quarantine(
+        self,
+        file_path: Path | str,
+        operation_id: Optional[str] = None,
+        expected_identity: tuple[int, int] | None = None,
+        expected_sha256: str | None = None,
+    ) -> QuarantinedVaultFile:
+        """为跨存储删除准备可恢复的 Markdown 隔离（支持确定性 operation 派生路径）。"""
+        return self.gateway.quarantine(
+            file_path,
+            operation_id=operation_id,
+            expected_identity=expected_identity,
+            expected_sha256=expected_sha256,
+        )
+
+    def plan_quarantine(self, file_path: Path | str, operation_id: str) -> Path:
+        """返回由 operation_id 派生的确定性隔离目标（不移动文件）。"""
+        return self.gateway.plan_quarantine_path(file_path, operation_id=operation_id)
+
+    def restore(self, item: QuarantinedVaultFile) -> Path:
+        """回滚尚未提交的跨存储删除。"""
+        return self.gateway.restore(item)
+
+    def finalize_quarantine(self, item: QuarantinedVaultFile) -> None:
+        """在 SQLite 删除提交后清理隔离文件。"""
+        self.gateway.finalize_quarantine(item)

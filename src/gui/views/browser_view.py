@@ -479,60 +479,41 @@ class BrowserView(QWidget):
             self._execute_delete(entry)
 
     def _execute_delete(self, entry: dict) -> None:
-        """执行三层存储删除（best-effort 策略）。
-
-        删除顺序：SQLite → Markdown → Vector。
-        向量删除失败不阻断（辅助索引）。
+        """通过 W1 状态机执行可补偿的三层存储删除。
 
         Args:
             entry: 待删除的条目字典。
         """
-        knowledge_id = entry.get("knowledge_id")
-        file_path = entry.get("file_path", "")
-        errors: list[str] = []
+        knowledge_id = int(entry.get("knowledge_id") or 0)
+        from src.gui.stores import get_storage_coordinator, get_vector_store
 
-        # 1. 删除 SQLite 记录（含 CASCADE + FTS5 触发器）
-        try:
-            from src.gui.stores import get_sqlite_store
-            store = get_sqlite_store()
-            if not store.delete_entry(knowledge_id):
-                errors.append("数据库记录不存在")
-        except Exception as exc:
-            logger.error(f"SQLite 删除失败: {exc}", exc_info=True)
-            errors.append(f"数据库删除失败: {exc}")
+        def delete_vectors(entry_id: int) -> None:
+            vector_store = get_vector_store()
+            if vector_store is not None:
+                vector_store.delete_vectors_for_entry(entry_id)
 
-        # 2. 删除 Markdown 文件
-        if file_path:
-            try:
-                from src.gui.stores import get_markdown_store
-                from pathlib import Path
-                md_store = get_markdown_store()
-                full_path = Path(md_store.vault_dir) / file_path
-                md_store.delete(full_path)
-            except Exception as exc:
-                logger.warning(f"Markdown 删除失败: {exc}")
-                errors.append(f"文件删除失败: {exc}")
+        result = get_storage_coordinator().delete(
+            knowledge_id,
+            vector_operation=delete_vectors,
+        )
 
-        # 3. 删除向量索引（best-effort，失败不报错）
-        try:
-            from src.gui.stores import get_vector_store
-            vs = get_vector_store()
-            if vs is not None:
-                vs.delete_vectors_for_entry(knowledge_id)
-        except Exception as exc:
-            logger.warning(f"向量索引删除失败（不影响主功能）: {exc}")
-
-        # 4. 刷新视图
         self.refresh()
 
-        # 5. 反馈结果
-        if not errors:
+        if result.status.value == "deleted":
             logger.info(f"条目删除成功: knowledge_id={knowledge_id}")
         else:
+            messages = [str(error.get("message", "未知错误")) for error in result.errors]
+            if result.repair_actions:
+                messages.append("修复动作: " + ", ".join(result.repair_actions))
+            if result.operation_id:
+                messages.append(f"操作 ID: {result.operation_id}")
+            if result.do_not_retry:
+                messages.append("请勿盲目重试删除，先执行上述修复动作")
             QMessageBox.warning(
                 self,
-                "删除部分失败",
-                "删除过程中出现问题:\n\n" + "\n".join(f"• {e}" for e in errors),
+                f"删除终态: {result.status.value}",
+                "删除操作未达到完整成功:\n\n"
+                + "\n".join(f"• {message}" for message in messages),
             )
 
     # ------------------------------------------------------------------

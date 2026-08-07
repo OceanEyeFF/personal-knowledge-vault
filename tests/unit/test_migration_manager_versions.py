@@ -5,7 +5,6 @@ MigrationManager 版本链自检测试。
 from __future__ import annotations
 
 import sqlite3
-import subprocess
 import sys
 from pathlib import Path
 
@@ -14,7 +13,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.storage.migration_manager import MigrationManager  # noqa: E402
+from src.runtime.errors import ErrorCode, PKVRuntimeError  # noqa: E402
+from src.storage.migration_manager import DatabaseState, MigrationManager  # noqa: E402
 from src.storage.sqlite_store import SQLiteStore  # noqa: E402
 
 
@@ -40,6 +40,7 @@ def test_migration_versions_are_monotonic_for_active_chain(tmp_path: Path) -> No
         "007_add_timeline_time_fields.sql",
         "008_align_fts_contract.sql",
         "009_repair_fts_storage_contract.sql",
+        "010_add_storage_operation_commits.sql",
     ]
     parsed_versions = [
         manager._parse_version_from_file(MIGRATIONS_DIR / name)
@@ -55,6 +56,7 @@ def test_migration_versions_are_monotonic_for_active_chain(tmp_path: Path) -> No
         "1.2.1",
         "1.2.2",
         "1.2.3",
+        "1.2.4",
     ]
 
 
@@ -76,6 +78,7 @@ def test_get_pending_migrations_keeps_007_when_version_missing_even_if_columns_e
         "1.2.1",
         "1.2.2",
         "1.2.3",
+        "1.2.4",
     ]
     assert [path.name for _, path in pending] == [
         "004_add_chat_sessions.sql",
@@ -84,6 +87,7 @@ def test_get_pending_migrations_keeps_007_when_version_missing_even_if_columns_e
         "007_add_timeline_time_fields.sql",
         "008_align_fts_contract.sql",
         "009_repair_fts_storage_contract.sql",
+        "010_add_storage_operation_commits.sql",
     ]
 
 
@@ -143,7 +147,12 @@ def test_get_pending_migrations_keeps_007_for_legacy_schema(tmp_path: Path) -> N
     manager = MigrationManager(db_path, MIGRATIONS_DIR)
     pending = manager.get_pending_migrations()
 
-    assert [version for version, _ in pending] == ["1.2.1", "1.2.2", "1.2.3"]
+    assert [version for version, _ in pending] == [
+        "1.2.1",
+        "1.2.2",
+        "1.2.3",
+        "1.2.4",
+    ]
 
 
 def test_apply_migration_007_creates_missing_indexes_when_columns_already_exist(
@@ -282,20 +291,8 @@ def test_apply_all_pending_and_upgrade_prompt_cover_no_pending_paths(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "latest.db"
-    with sqlite3.connect(str(db_path)) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE schema_version (
-                version_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                version TEXT NOT NULL UNIQUE,
-                description TEXT
-            );
-            INSERT INTO schema_version (version, description)
-            VALUES ('1.2.3', 'latest');
-            """
-        )
-
     manager = MigrationManager(db_path, MIGRATIONS_DIR)
+    assert manager.initialize_fresh().state is DatabaseState.READY
 
     assert manager.apply_all_pending(auto_backup=False) == 0
     assert manager.check_and_prompt_upgrade() is False
@@ -306,61 +303,48 @@ def test_apply_all_pending_rebuilds_fts_after_alignment_migrations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = MigrationManager(tmp_path / "pending.db", MIGRATIONS_DIR)
-    applied: list[tuple[str, bool]] = []
     rebuild_calls: list[Path] = []
+    original_rebuild = SQLiteStore.rebuild_fts5_index
 
-    monkeypatch.setattr(
-        manager,
-        "get_pending_migrations",
-        lambda: [
-            ("1.2.2", MIGRATIONS_DIR / "008_align_fts_contract.sql"),
-            ("1.2.3", MIGRATIONS_DIR / "009_repair_fts_storage_contract.sql"),
-        ],
-    )
-    monkeypatch.setattr(
-        manager,
-        "apply_migration",
-        lambda migration_file, auto_backup=True: applied.append(
-            (migration_file.name, auto_backup)
-        ),
-    )
-    monkeypatch.setattr(
-        SQLiteStore,
-        "rebuild_fts5_index",
-        lambda self: rebuild_calls.append(self.db_path),
-    )
+    def spy_rebuild(store: SQLiteStore) -> None:
+        rebuild_calls.append(store.db_path)
+        original_rebuild(store)
+
+    monkeypatch.setattr(SQLiteStore, "rebuild_fts5_index", spy_rebuild)
 
     migrated = manager.apply_all_pending(auto_backup=False)
 
-    assert migrated == 2
-    assert applied == [
-        ("008_align_fts_contract.sql", False),
-        ("009_repair_fts_storage_contract.sql", False),
-    ]
-    assert rebuild_calls == [tmp_path / "pending.db"]
+    assert migrated == 9
+    assert len(rebuild_calls) == 1
+    assert rebuild_calls[0] != manager.db_path
+    assert manager.inspect_database().state is DatabaseState.READY
 
 
-def test_apply_migration_continues_when_auto_backup_fails(
+def test_apply_migration_rejects_when_auto_backup_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "migrate.db"
     manager = MigrationManager(db_path, MIGRATIONS_DIR)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE existing_data (id INTEGER PRIMARY KEY)")
 
     def _fail_backup(_: str) -> None:
         raise RuntimeError("backup unavailable")
 
     monkeypatch.setattr(manager, "_backup_database", _fail_backup)
 
-    manager.apply_migration(MIGRATIONS_DIR / "001_initial_schema.sql", auto_backup=True)
+    with pytest.raises(PKVRuntimeError) as error:
+        manager.apply_migration(
+            MIGRATIONS_DIR / "001_initial_schema.sql", auto_backup=True
+        )
+
+    assert error.value.code is ErrorCode.MIGRATION_BACKUP_FAILED
 
     with sqlite3.connect(str(db_path)) as conn:
-        version = conn.execute(
-            "SELECT version FROM schema_version ORDER BY version_id DESC LIMIT 1"
-        ).fetchone()
-
-    assert version is not None
-    assert version[0] == "1.0.0"
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
+        ).fetchone() is None
 
 
 def test_check_and_prompt_upgrade_outputs_pending_migrations(
@@ -387,42 +371,28 @@ def test_backup_database_and_version_helpers_cover_fallback_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    manager = MigrationManager(tmp_path / "helpers.db", MIGRATIONS_DIR)
-    called: dict[str, object] = {}
+    db_path = tmp_path / "helpers.db"
+    manager = MigrationManager(
+        db_path,
+        MIGRATIONS_DIR,
+        backup_dir=tmp_path / "backups",
+    )
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE durable_data (id INTEGER PRIMARY KEY)")
 
-    class _Result:
-        stdout = "backup ok"
+    backup_path = manager._backup_database("001_initial_schema.sql")
+    assert backup_path.parent == manager.backup_dir
+    with sqlite3.connect(str(backup_path)) as conn:
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='durable_data'"
+        ).fetchone() is not None
 
-    def _success_run(command, check, capture_output, text):
-        called["command"] = command
-        called["check"] = check
-        called["capture_output"] = capture_output
-        called["text"] = text
-        return _Result()
-
-    monkeypatch.setattr(subprocess, "run", _success_run)
-    manager._backup_database("001_initial_schema.sql")
-
-    assert called["command"] == [
-        "powershell",
-        "-File",
-        "scripts/backup-data.ps1",
-        "-Message",
-        "自动备份 - Schema 迁移前 (001_initial_schema.sql)",
-    ]
-    assert called["check"] is True
-    assert called["capture_output"] is True
-    assert called["text"] is True
-
-    def _fail_run(command, check, capture_output, text):
-        raise subprocess.CalledProcessError(
-            returncode=1,
-            cmd=command,
-            stderr="backup failed",
-        )
-
-    monkeypatch.setattr(subprocess, "run", _fail_run)
-    with pytest.raises(subprocess.CalledProcessError):
+    monkeypatch.setattr(
+        manager,
+        "_copy_database",
+        lambda *_args: (_ for _ in ()).throw(OSError("backup failed")),
+    )
+    with pytest.raises(OSError, match="backup failed"):
         manager._backup_database("001_initial_schema.sql")
 
     fallback_file = tmp_path / "010_manual_fix.sql"

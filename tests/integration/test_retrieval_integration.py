@@ -5,6 +5,7 @@
 """
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import numpy as np
@@ -31,7 +32,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 def _create_legacy_knowledge_fts_db(db_path: Path) -> None:
     """构造真实旧版 knowledge_fts 合同数据库。"""
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn, conn:
         conn.executescript(
             """
             CREATE TABLE schema_version (
@@ -182,11 +183,21 @@ def _create_legacy_knowledge_fts_db(db_path: Path) -> None:
 
 def _create_external_content_fts_db(db_path: Path) -> None:
     """构造已在 1.2.2 的 external-content knowledge_items_fts 数据库。"""
-    sql = (PROJECT_ROOT / "scripts" / "migrations" / "001_initial_schema.sql").read_text(
-        encoding="utf-8"
-    )
-    with sqlite3.connect(str(db_path)) as conn:
-        conn.executescript(sql)
+    manager = MigrationManager(db_path, PROJECT_ROOT / "scripts" / "migrations")
+    for migration_name in (
+        "001_initial_schema.sql",
+        "002_add_cli_tables.sql",
+        "004_add_chat_sessions.sql",
+        "005_add_review_system.sql",
+        "006_add_relations_foundation.sql",
+        "007_add_timeline_time_fields.sql",
+        "008_align_fts_contract.sql",
+    ):
+        manager.apply_migration(
+            PROJECT_ROOT / "scripts" / "migrations" / migration_name,
+            auto_backup=False,
+        )
+    with closing(sqlite3.connect(str(db_path))) as conn, conn:
         conn.execute("DROP TRIGGER IF EXISTS knowledge_items_ad")
         conn.execute("DROP TRIGGER IF EXISTS knowledge_items_au")
         conn.execute("DROP TRIGGER IF EXISTS knowledge_items_ai")
@@ -248,11 +259,6 @@ def _create_external_content_fts_db(db_path: Path) -> None:
                 "/tmp/external-alpha.md",
                 3,
             ),
-        )
-        conn.execute("DELETE FROM schema_version")
-        conn.execute(
-            "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            ("1.2.2", "external-content knowledge_items_fts"),
         )
         conn.commit()
 
@@ -587,7 +593,7 @@ class TestDataPipelineIntegration:
                 auto_backup=False,
             )
 
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn, conn:
             conn.execute(
                 """
                 INSERT INTO knowledge_items (
@@ -616,7 +622,7 @@ class TestDataPipelineIntegration:
             )
             conn.commit()
 
-        assert manager.apply_all_pending(auto_backup=False) == 2
+        assert manager.apply_all_pending(auto_backup=False) == 3
 
         results = BM25Retriever(db_path).search("一致性", limit=5)
         assert results
@@ -634,9 +640,9 @@ class TestDataPipelineIntegration:
             PROJECT_ROOT / "scripts" / "migrations",
         )
 
-        assert manager.apply_all_pending(auto_backup=False) == 7
+        assert manager.apply_all_pending(auto_backup=False) == 8
 
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn, conn:
             tables = {
                 row[0]
                 for row in conn.execute(
@@ -649,7 +655,7 @@ class TestDataPipelineIntegration:
 
         assert LEGACY_FTS_TABLE_NAME not in tables
         assert FTS_TABLE_NAME in tables
-        assert latest_version == "1.2.3"
+        assert latest_version == "1.2.4"
 
         results = BM25Retriever(db_path).search("alpha", limit=5)
         assert results
@@ -658,7 +664,7 @@ class TestDataPipelineIntegration:
     def test_pending_fts_repair_migration_replaces_external_content_contract(
         self, tmp_path: Path
     ):
-        """已有 1.2.2 external-content 合同的库应通过 1.2.3 修复为独立 FTS 存储。"""
+        """已有 1.2.2 external-content 合同的库应修复 FTS 并升级到最新 schema。"""
         db_path = tmp_path / "external-content.db"
         _create_external_content_fts_db(db_path)
 
@@ -667,9 +673,9 @@ class TestDataPipelineIntegration:
             PROJECT_ROOT / "scripts" / "migrations",
         )
 
-        assert manager.apply_all_pending(auto_backup=False) == 1
+        assert manager.apply_all_pending(auto_backup=False) == 2
 
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn, conn:
             table_sql = conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
                 (FTS_TABLE_NAME,),
@@ -755,7 +761,7 @@ class TestDataPipelineIntegration:
 
         SQLiteStore(db_path).initialize()
 
-        with sqlite3.connect(str(db_path)) as conn:
+        with closing(sqlite3.connect(str(db_path))) as conn, conn:
             indexes = {
                 row[0]
                 for row in conn.execute(

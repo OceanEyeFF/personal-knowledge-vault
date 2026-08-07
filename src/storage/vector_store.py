@@ -4,18 +4,31 @@
 基于 hnswlib 的向量索引管理
 """
 
+import hashlib
 import json
 import os
 import shutil
 import tempfile
 import time
+import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 import hnswlib
 import numpy as np
 from pathlib import Path
-from typing import Any, List, Tuple, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
+from src.runtime.errors import ErrorCode, PKVRuntimeError
+from src.runtime.layout import (
+    atomic_publish_file,
+    ensure_safe_directory,
+    lexically_within,
+    open_user_file_nofollow,
+    validate_directory_components,
+    validate_path_components,
+    verify_fd_matches_path,
+)
 from src.utils.config import (
     endpoint_contract_sha256,
     get_config,
@@ -26,12 +39,135 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+@dataclass(frozen=True)
+class _PathContract:
+    """统一 containment/link 合同：可选 layout（完整合同）或裸 validator。"""
+
+    layout: Any = None
+    validator: Optional[Callable[..., Any]] = None
+
+
+@dataclass
+class _PairTransaction:
+    """内存中的持久 index/metadata 配对事务。"""
+
+    name: str
+    payload: dict[str, Any]
+    marker_identity: Optional[tuple[int, int]] = None
+    marker_sha256: Optional[str] = None
+
+
+def _contract_validate(contract: Optional[_PathContract], path: Path, *, label: str) -> Path:
+    """对单个叶子执行统一链接/包含检查（不打开）。"""
+    if contract is not None and contract.validator is not None:
+        return contract.validator(path, label=label)
+    return validate_path_components(path, label=label)
+
+
+def _contract_validate_dir(
+    contract: Optional[_PathContract], path: Path, *, label: str
+) -> Path:
+    """对单个目录叶子执行统一链接/包含检查。"""
+    if contract is not None and contract.layout is not None:
+        return contract.layout.validate_user_directory(path, label=label)
+    return validate_directory_components(path, label=label)
+
+
+def _contract_open(
+    contract: Optional[_PathContract],
+    path: Path,
+    mode: str,
+    *,
+    label: str,
+    encoding: Optional[str] = None,
+    newline: Optional[str] = None,
+):
+    """按合同打开叶子：有 layout 时走 O_NOFOLLOW + 身份核验的完整路径。"""
+    if contract is not None and contract.layout is not None:
+        return contract.layout.open_user_file(
+            path,
+            mode,
+            label=label,
+            encoding=encoding,
+            newline=newline,
+        )
+    if contract is not None and contract.validator is not None:
+        target = contract.validator(path, label=label)
+    else:
+        target = validate_path_components(path, label=label)
+    return open_user_file_nofollow(
+        target,
+        mode,
+        label=label,
+        encoding=encoding,
+        newline=newline,
+    )
+
+
+def _contract_publish(
+    contract: Optional[_PathContract],
+    path: Path,
+    *,
+    label: str,
+    writer: Optional[Callable[[Path], None]] = None,
+    data: Optional[bytes] = None,
+    pre_replace: Optional[Callable[[], None]] = None,
+) -> None:
+    """按合同写完整临时文件后原子发布（不能通过链接覆盖根外目标）。"""
+    if contract is not None and contract.layout is not None:
+        contract.layout.atomic_publish_user_file(
+            path,
+            label=label,
+            writer=writer,
+            data=data,
+            pre_replace=pre_replace,
+        )
+        return
+    if contract is not None and contract.validator is not None:
+        atomic_publish_file(
+            path,
+            label=label,
+            writer=writer,
+            data=data,
+            extra_validate=lambda candidate: contract.validator(candidate, label=label),
+            pre_replace=pre_replace,
+        )
+        return
+    atomic_publish_file(
+        path,
+        label=label,
+        writer=writer,
+        data=data,
+        pre_replace=pre_replace,
+    )
+
+
+def _read_contract_bytes(
+    path: Path,
+    contract: Optional[_PathContract],
+    *,
+    label: str,
+) -> bytes:
+    """按合同读取叶子完整字节（CAS 并发写保护用）。"""
+    with _contract_open(contract, path, "rb", label=label) as source:
+        return source.read()
+
+
 class _UnsupportedMetadataFormatError(RuntimeError):
     """metadata 使用了不受支持、畸形或相互冲突的格式。"""
 
 
 class _FutureMetadataSchemaError(_UnsupportedMetadataFormatError):
     """metadata 使用了当前 reader 不认识的未来 schema。"""
+
+
+def _is_idempotent_delete_error(error: RuntimeError) -> bool:
+    """Recognize only hnswlib's exact benign delete terminal messages."""
+
+    return str(error) in {
+        "Label not found",
+        "The requested to delete element is already deleted",
+    }
 
 
 class VectorStore:
@@ -43,17 +179,49 @@ class VectorStore:
     EMBEDDING_FINGERPRINT_SCHEMA_VERSION = 2
     LEGACY_EMBEDDING_FINGERPRINT_KEY = "embedding_fingerprint"
     EMBEDDING_FINGERPRINT_V2_KEY = "embedding_fingerprint_v2"
+    PAIR_TRANSACTION_SCHEMA_VERSION = 1
+    PAIR_NAMES = ("doc_vectors", "chunk_vectors")
 
-    def __init__(self, index_dir: Path, dim: Optional[int] = None):
+    def __init__(
+        self,
+        index_dir: Path,
+        dim: Optional[int] = None,
+        *,
+        layout: Any = None,
+        path_validator: Optional[Callable[..., Any]] = None,
+    ):
         """
         初始化向量索引
 
         Args:
             index_dir: 向量索引目录
             dim: 向量维度；未传入时优先沿用已有索引维度，否则回落到配置值
+            layout: 显式注入的 RuntimeLayout（测试/运维 seam）；缺省时若
+                index_dir 位于已声明用户数据根内则自动启用完整 containment 合同
+            path_validator: 显式注入的叶子验证器（测试 seam）
         """
         self.index_dir = Path(index_dir)
-        self.index_dir.mkdir(parents=True, exist_ok=True)
+        self._contract = self._resolve_path_contract(
+            self.index_dir,
+            layout=layout,
+            path_validator=path_validator,
+        )
+        if self._contract.layout is not None:
+            # 产品目录由 bootstrap 创建；这里幂等重建并拒绝链接/越界。
+            self._contract.layout.ensure_user_directories()
+            self._contract.layout.validate_user_directory(
+                self.index_dir,
+                label="向量索引目录",
+            )
+            if not self.index_dir.is_dir():
+                # 父路径已验证；单个叶目录由我们创建（不递归，避免穿过链接）。
+                self.index_dir.mkdir()
+        else:
+            ensure_safe_directory(self.index_dir, label="向量索引目录")
+        self._active_pair_transactions: dict[str, _PairTransaction] = {}
+        # 必须先恢复跨 index/metadata 两次发布的中断事务；否则后续维度解析或
+        # metadata 迁移会把可恢复的半提交状态误判为永久损坏。
+        self._recover_incomplete_pair_transactions()
         self._migrate_legacy_embedding_fingerprints()
         self.dim = self._resolve_index_dim(dim)
         self.embedding_fingerprint = self._resolve_embedding_fingerprint(self.dim)
@@ -70,15 +238,98 @@ class VectorStore:
 
         logger.info(f"向量存储初始化完成: {self.index_dir}")
 
+    @staticmethod
+    def _resolve_path_contract(
+        index_dir: Path,
+        *,
+        layout: Any = None,
+        path_validator: Optional[Callable[..., Any]] = None,
+    ) -> _PathContract:
+        """解析本实例的 containment/link 合同。
+
+        显式 ``layout``/``path_validator`` 优先；否则当 ``index_dir`` 词法上位于
+        已声明用户数据根内时自动启用完整合同（产品路径必然满足），任意测试目录
+        则退化为本地链接/硬链接检查。
+        """
+        if layout is not None:
+            return _PathContract(layout=layout, validator=layout.writable_user_path)
+        if path_validator is not None:
+            return _PathContract(layout=None, validator=path_validator)
+        config = get_config()
+        candidate_layout = getattr(config, "layout", None)
+        if candidate_layout is not None:
+            candidate = Path(
+                os.path.abspath(os.path.normpath(os.fspath(index_dir)))
+            )
+            if lexically_within(
+                candidate,
+                candidate_layout.user_data_root,
+                allow_equal=True,
+            ):
+                return _PathContract(
+                    layout=candidate_layout,
+                    validator=candidate_layout.writable_user_path,
+                )
+        return _PathContract(layout=None, validator=None)
+
+    def _validate_leaf(
+        self,
+        path: Path,
+        *,
+        label: str,
+        allow_missing: bool = True,
+    ) -> Path:
+        """统一链接/包含合同：任何读取或写入前的叶子检查。"""
+        if allow_missing:
+            return _contract_validate(self._contract, path, label=label)
+        if self._contract.layout is not None:
+            return self._contract.layout.validate_user_file(
+                path,
+                label=label,
+                allow_missing=False,
+            )
+        target = validate_path_components(path, label=label)
+        if not os.path.lexists(target):
+            raise PKVRuntimeError(
+                ErrorCode.PATH_STATE_UNDETERMINED,
+                f"{label}不存在: {target}",
+            )
+        return target
+
+    def _open_leaf(
+        self,
+        path: Path,
+        mode: str = "rb",
+        *,
+        label: str,
+        encoding: Optional[str] = None,
+        newline: Optional[str] = None,
+    ):
+        """通过统一合同打开叶子；无 layout 时仍做链接/身份核验。"""
+        return _contract_open(
+            self._contract,
+            path,
+            mode,
+            label=label,
+            encoding=encoding,
+            newline=newline,
+        )
+
     @classmethod
     def has_index_artifacts(cls, index_dir: Path) -> bool:
         """检查索引目录中是否已经存在向量索引相关文件。"""
-        target_dir = Path(index_dir)
-        for name in ("doc_vectors", "chunk_vectors"):
+        target_dir = validate_path_components(Path(index_dir), label="向量索引目录")
+        if not os.path.lexists(target_dir):
+            return False
+        validate_directory_components(target_dir, label="向量索引目录")
+        for name in cls.PAIR_NAMES:
             index_path = target_dir / f"{name}.idx"
             metadata_path = target_dir / f"{name}_metadata.json"
-            if index_path.exists() or metadata_path.exists():
-                return True
+            transaction_path = target_dir / f".{name}.pair-transaction.json"
+            for artifact in (index_path, metadata_path, transaction_path):
+                if os.path.lexists(artifact):
+                    validate_path_components(artifact, label="向量索引文件")
+                    return True
         return False
 
     def _resolve_index_dim(self, requested_dim: Optional[int]) -> int:
@@ -86,11 +337,18 @@ class VectorStore:
         metadata_dims: dict[str, int] = {}
         for name in ("doc_vectors", "chunk_vectors"):
             metadata_path = self.index_dir / f"{name}_metadata.json"
-            if not metadata_path.exists():
-                continue
+            with self._index_pair_lock(name):
+                self._recover_pair_transaction_locked(name)
+                if not os.path.lexists(metadata_path):
+                    continue
 
-            with open(metadata_path, "r", encoding="utf-8") as f:
-                metadata = json.load(f)
+                with self._open_leaf(
+                    metadata_path,
+                    "r",
+                    encoding="utf-8",
+                    label="向量元数据文件",
+                ) as f:
+                    metadata = json.load(f)
 
             dim = metadata.get("dim")
             if dim is None:
@@ -217,9 +475,11 @@ class VectorStore:
         path: Path,
         *,
         validate_schema: bool = True,
+        contract: Optional[_PathContract] = None,
     ) -> tuple[dict[str, Any], bytes]:
-        """一次读取 metadata 内容及其 CAS 字节快照。"""
-        original_bytes = path.read_bytes()
+        """一次读取 metadata 内容及其 CAS 字节快照（走链接安全合同）。"""
+        with _contract_open(contract, path, "rb", label="向量元数据文件") as source:
+            original_bytes = source.read()
         payload = json.loads(original_bytes.decode("utf-8"))
         if not isinstance(payload, dict):
             raise TypeError("metadata 必须是 JSON object")
@@ -291,17 +551,26 @@ class VectorStore:
 
     @staticmethod
     @contextmanager
-    def _metadata_write_lock(path: Path):
+    def _metadata_write_lock(
+        path: Path,
+        *,
+        contract: Optional[_PathContract] = None,
+    ):
         """用同目录 sidecar advisory lock 串行化当前版本的 metadata writer。"""
         lock_path = path.with_name(f".{path.name}.lock")
-        lock_file = open(lock_path, "a+b")
-        if lock_file.seek(0, os.SEEK_END) == 0:
-            lock_file.write(b"\0")
-            lock_file.flush()
-
+        lock_file = _contract_open(
+            contract,
+            lock_path,
+            "a+b",
+            label="向量索引锁文件",
+        )
         acquired = False
-        deadline = time.monotonic() + 10.0
         try:
+            if lock_file.seek(0, os.SEEK_END) == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+
+            deadline = time.monotonic() + 10.0
             while not acquired:
                 try:
                     lock_file.seek(0)
@@ -344,47 +613,53 @@ class VectorStore:
         *,
         expected_bytes: Optional[bytes] = None,
         require_missing: bool = False,
+        contract: Optional[_PathContract] = None,
+        pre_publish: Optional[Callable[[Path], None]] = None,
     ) -> None:
         """在 metadata 写锁内落盘、CAS 并原子替换 JSON 文件。"""
-        with VectorStore._metadata_write_lock(path):
-            temp_path: Optional[Path] = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
+        with VectorStore._metadata_write_lock(path, contract=contract):
+            def write_temp(temp_path: Path) -> None:
+                with _contract_open(
+                    contract,
+                    temp_path,
+                    "w",
                     encoding="utf-8",
-                    dir=path.parent,
-                    prefix=f".{path.name}.",
-                    suffix=".tmp",
-                    delete=False,
+                    label="向量元数据临时文件",
                 ) as temp_file:
-                    temp_path = Path(temp_file.name)
                     json.dump(payload, temp_file, indent=2)
-                    temp_file.flush()
-                    os.fsync(temp_file.fileno())
 
+            def pre_replace() -> None:
                 if expected_bytes is not None:
-                    try:
-                        current_bytes = path.read_bytes()
-                    except FileNotFoundError:
-                        current_bytes = None
+                    if not os.path.lexists(path):
+                        current_bytes: Optional[bytes] = None
+                    else:
+                        current_bytes = _read_contract_bytes(
+                            path,
+                            contract,
+                            label="向量元数据文件",
+                        )
                     if current_bytes != expected_bytes:
                         raise RuntimeError(
                             f"{path.name} 在写入期间发生并发修改，请重试"
                         )
-                elif require_missing and path.exists():
+                elif require_missing and os.path.lexists(path):
                     raise RuntimeError(f"{path.name} 已被并发创建，请重试")
+                if pre_publish is not None:
+                    pre_publish(temp_path_holder[0])
 
-                os.replace(temp_path, path)
-                temp_path = None
-            finally:
-                if temp_path is not None:
-                    try:
-                        temp_path.unlink()
-                    except FileNotFoundError:
-                        pass
-                    except OSError:
-                        # 不覆盖原始写入异常；正常可删除的临时文件已在此清理。
-                        pass
+            temp_path_holder: list[Path] = []
+
+            def tracked_write_temp(temp_path: Path) -> None:
+                temp_path_holder.append(temp_path)
+                write_temp(temp_path)
+
+            _contract_publish(
+                contract,
+                path,
+                label="向量元数据文件",
+                writer=tracked_write_temp,
+                pre_replace=pre_replace,
+            )
 
     def _migrate_legacy_embedding_fingerprints(self) -> None:
         """在任何校验前，以文件级原子操作升级 doc/chunk 元数据。"""
@@ -393,13 +668,16 @@ class VectorStore:
         for name in ("doc_vectors", "chunk_vectors"):
             metadata_path = self.index_dir / f"{name}_metadata.json"
             try:
-                if not metadata_path.exists():
-                    continue
-                metadata, _ = self._read_json_snapshot(
-                    metadata_path,
-                    validate_schema=False,
-                )
-                self._validate_supported_metadata(metadata)
+                with self._index_pair_lock(name):
+                    self._recover_pair_transaction_locked(name)
+                    if not os.path.lexists(metadata_path):
+                        continue
+                    metadata, _ = self._read_json_snapshot(
+                        metadata_path,
+                        validate_schema=False,
+                        contract=self._contract,
+                    )
+                    self._validate_supported_metadata(metadata)
             except _FutureMetadataSchemaError:
                 future_schema_names.append(name)
             except _UnsupportedMetadataFormatError:
@@ -423,9 +701,10 @@ class VectorStore:
         for name in ("doc_vectors", "chunk_vectors"):
             metadata_path = self.index_dir / f"{name}_metadata.json"
             try:
-                if not metadata_path.exists():
+                if not os.path.lexists(metadata_path):
                     continue
                 with self._index_pair_lock(name):
+                    self._recover_pair_transaction_locked(name)
                     self._migrate_embedding_metadata_file(name, metadata_path)
             except Exception:
                 # 必须继续处理另一份文件；异常内容可能包含旧 endpoint，不能回显。
@@ -440,7 +719,10 @@ class VectorStore:
 
     def _migrate_embedding_metadata_file(self, name: str, path: Path) -> None:
         """将单份 metadata 升级到版本化、安全且可幂等重试的格式。"""
-        metadata, original_bytes = self._read_json_snapshot(path)
+        metadata, original_bytes = self._read_json_snapshot(
+            path,
+            contract=self._contract,
+        )
         fingerprint_v2 = metadata.get(self.EMBEDDING_FINGERPRINT_V2_KEY)
         legacy_fingerprint = metadata.get(self.LEGACY_EMBEDDING_FINGERPRINT_KEY)
         source = (
@@ -513,6 +795,7 @@ class VectorStore:
             path,
             migrated_metadata,
             expected_bytes=original_bytes,
+            contract=self._contract,
         )
         if removed_credential_endpoint:
             logger.warning(
@@ -533,11 +816,13 @@ class VectorStore:
         for name in ("doc_vectors", "chunk_vectors"):
             metadata_path = self.index_dir / f"{name}_metadata.json"
             try:
-                if not metadata_path.exists():
+                if not os.path.lexists(metadata_path):
                     continue
                 with self._index_pair_lock(name):
+                    self._recover_pair_transaction_locked(name)
                     metadata, original_bytes = self._read_json_snapshot(
-                        metadata_path
+                        metadata_path,
+                        contract=self._contract,
                     )
                     if self.LEGACY_EMBEDDING_FINGERPRINT_KEY not in metadata:
                         continue
@@ -555,6 +840,7 @@ class VectorStore:
                         metadata_path,
                         migrated_metadata,
                         expected_bytes=original_bytes,
+                        contract=self._contract,
                     )
                     removed_names.append(name)
             except Exception:
@@ -576,96 +862,901 @@ class VectorStore:
     def _index_pair_lock(self, name: str):
         """串行化同一 index/metadata 配对的检查、变更与保存。"""
         index_path = self.index_dir / f"{name}.idx"
-        with self._metadata_write_lock(index_path):
+        with self._metadata_write_lock(index_path, contract=self._contract):
             yield
 
+    @classmethod
+    def _validate_pair_name(cls, name: str) -> None:
+        if name not in cls.PAIR_NAMES:
+            raise ValueError(f"未知向量索引配对: {name}")
+
+    def _pair_paths(self, name: str) -> dict[str, Path]:
+        self._validate_pair_name(name)
+        return {
+            "index": self.index_dir / f"{name}.idx",
+            "metadata": self.index_dir / f"{name}_metadata.json",
+        }
+
+    def _pair_transaction_path(self, name: str) -> Path:
+        self._validate_pair_name(name)
+        return self.index_dir / f".{name}.pair-transaction.json"
+
+    def _fsync_index_directory(self) -> None:
+        """持久化目录项顺序；Windows 不支持目录 fsync，进程崩溃不受影响。"""
+        if os.name == "nt":
+            return
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        descriptor = os.open(self.index_dir, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _snapshot_file(self, path: Path, *, label: str) -> dict[str, Any]:
+        """在统一路径合同下取得稳定 identity/size/content 快照。"""
+        digest = hashlib.sha256()
+        byte_count = 0
+        with self._open_leaf(path, "rb", label=label) as source:
+            before = os.fstat(source.fileno())
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                byte_count += len(chunk)
+            after = os.fstat(source.fileno())
+        published = os.lstat(path)
+        before_state = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        )
+        after_state = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        )
+        path_state = (
+            published.st_dev,
+            published.st_ino,
+            published.st_size,
+            published.st_mtime_ns,
+        )
+        if before_state != after_state or after_state != path_state:
+            raise PKVRuntimeError(
+                ErrorCode.PATH_STATE_UNDETERMINED,
+                f"{label}在读取期间发生变化: {path}",
+            )
+        if byte_count != before.st_size:
+            raise PKVRuntimeError(
+                ErrorCode.PATH_STATE_UNDETERMINED,
+                f"{label}读取长度与文件状态不一致: {path}",
+            )
+        return {
+            "identity": [int(before.st_dev), int(before.st_ino)],
+            "size": int(before.st_size),
+            "sha256": digest.hexdigest(),
+        }
+
+    def _read_small_file_snapshot(
+        self,
+        path: Path,
+        *,
+        label: str,
+        max_bytes: int,
+    ) -> tuple[bytes, dict[str, Any]]:
+        """读取小型事务标记，并绑定读取字节与路径身份。"""
+        with self._open_leaf(path, "rb", label=label) as source:
+            before = os.fstat(source.fileno())
+            if before.st_size > max_bytes:
+                raise RuntimeError(f"{label}超过允许大小，拒绝自动恢复")
+            content = source.read(max_bytes + 1)
+            after = os.fstat(source.fileno())
+        if len(content) > max_bytes:
+            raise RuntimeError(f"{label}超过允许大小，拒绝自动恢复")
+        published = os.lstat(path)
+        before_state = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        )
+        after_state = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        )
+        path_state = (
+            published.st_dev,
+            published.st_ino,
+            published.st_size,
+            published.st_mtime_ns,
+        )
+        if before_state != after_state or after_state != path_state:
+            raise PKVRuntimeError(
+                ErrorCode.PATH_STATE_UNDETERMINED,
+                f"{label}在读取期间发生变化: {path}",
+            )
+        return content, {
+            "identity": [int(before.st_dev), int(before.st_ino)],
+            "size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+
     @staticmethod
-    def _create_rollback_copy(source: Path) -> Path:
-        """在同目录创建并 fsync 一份精确的 rollback 副本。"""
+    def _snapshot_matches(
+        snapshot: Optional[dict[str, Any]],
+        expected: Optional[dict[str, Any]],
+    ) -> bool:
+        if snapshot is None or expected is None:
+            return False
+        return all(
+            snapshot.get(key) == expected.get(key)
+            for key in ("identity", "size", "sha256")
+        )
+
+    def _unlink_exact_snapshot(
+        self,
+        path: Path,
+        expected: dict[str, Any],
+        *,
+        label: str,
+    ) -> None:
+        """仅删除身份和内容均与事务记录一致的辅助文件。"""
+        if not os.path.lexists(path):
+            return
+        current = self._snapshot_file(path, label=label)
+        if not self._snapshot_matches(current, expected):
+            raise PKVRuntimeError(
+                ErrorCode.PATH_STATE_UNDETERMINED,
+                f"{label}身份或内容已变化，拒绝删除: {path}",
+            )
+        path.unlink()
+        if os.path.lexists(path):
+            raise PKVRuntimeError(
+                ErrorCode.PATH_STATE_UNDETERMINED,
+                f"{label}删除结果不确定: {path}",
+            )
+
+    @classmethod
+    def _validate_snapshot_record(
+        cls,
+        record: Any,
+        *,
+        expected_target: Optional[str] = None,
+        auxiliary: bool = False,
+    ) -> None:
+        if not isinstance(record, dict):
+            raise RuntimeError("向量配对事务快照必须是 JSON object")
+        identity = record.get("identity")
+        if (
+            not isinstance(identity, list)
+            or len(identity) != 2
+            or any(type(value) is not int or value < 0 for value in identity)
+        ):
+            raise RuntimeError("向量配对事务快照 identity 无效")
+        size = record.get("size")
+        if type(size) is not int or size < 0:
+            raise RuntimeError("向量配对事务快照 size 无效")
+        digest = record.get("sha256")
+        if not isinstance(digest, str) or not cls._is_sha256(digest):
+            raise RuntimeError("向量配对事务快照 sha256 无效")
+        name_key = "file_name" if auxiliary else "target_name"
+        file_name = record.get(name_key)
+        if not isinstance(file_name, str) or Path(file_name).name != file_name:
+            raise RuntimeError("向量配对事务快照文件名无效")
+        if expected_target is not None and file_name != expected_target:
+            raise RuntimeError("向量配对事务快照目标不匹配")
+        staged_name = record.get("staged_file_name")
+        if staged_name is not None and (
+            not isinstance(staged_name, str)
+            or Path(staged_name).name != staged_name
+            or not staged_name.startswith(f".{file_name}.")
+            or not staged_name.endswith(".tmp")
+        ):
+            raise RuntimeError("向量配对事务 staged 文件名无效")
+
+    @classmethod
+    def _validate_pair_transaction_payload(
+        cls,
+        payload: Any,
+        *,
+        expected_name: str,
+    ) -> None:
+        if not isinstance(payload, dict):
+            raise RuntimeError("向量配对事务标记必须是 JSON object")
+        schema_version = payload.get("schema_version")
+        if (
+            type(schema_version) is not int
+            or schema_version != cls.PAIR_TRANSACTION_SCHEMA_VERSION
+        ):
+            raise RuntimeError("向量配对事务标记 schema 不受支持")
+        if payload.get("name") != expected_name or expected_name not in cls.PAIR_NAMES:
+            raise RuntimeError("向量配对事务标记名称无效")
+        operation_id = payload.get("operation_id")
+        if (
+            not isinstance(operation_id, str)
+            or len(operation_id) != 32
+            or any(char not in "0123456789abcdef" for char in operation_id)
+        ):
+            raise RuntimeError("向量配对事务 operation_id 无效")
+        if payload.get("mode") not in {"create", "update"}:
+            raise RuntimeError("向量配对事务 mode 无效")
+
+        expected_targets = {
+            "index": f"{expected_name}.idx",
+            "metadata": f"{expected_name}_metadata.json",
+        }
+        originals = payload.get("originals")
+        if not isinstance(originals, dict) or set(originals) != set(expected_targets):
+            raise RuntimeError("向量配对事务 originals 无效")
+        for kind, target_name in expected_targets.items():
+            original = originals[kind]
+            if not isinstance(original, dict) or type(original.get("exists")) is not bool:
+                raise RuntimeError("向量配对事务 original 状态无效")
+            if original.get("target_name") != target_name:
+                raise RuntimeError("向量配对事务 original 目标无效")
+            if original["exists"]:
+                cls._validate_snapshot_record(
+                    original,
+                    expected_target=target_name,
+                )
+                rollback = original.get("rollback")
+                cls._validate_snapshot_record(rollback, auxiliary=True)
+                rollback_name = rollback["file_name"]
+                if (
+                    not rollback_name.startswith(f".{target_name}.")
+                    or not rollback_name.endswith(".rollback")
+                ):
+                    raise RuntimeError("向量配对事务 rollback 文件名无效")
+                if rollback["sha256"] != original["sha256"]:
+                    raise RuntimeError("向量配对事务 rollback 内容摘要不匹配")
+            elif any(
+                key in original
+                for key in ("identity", "size", "sha256", "rollback")
+            ):
+                raise RuntimeError("不存在的 original 不得携带文件快照")
+
+        if payload["mode"] == "create" and any(
+            originals[kind]["exists"] for kind in expected_targets
+        ):
+            raise RuntimeError("create 配对事务不得声明既有 artifact")
+        if payload["mode"] == "update" and not all(
+            originals[kind]["exists"] for kind in expected_targets
+        ):
+            raise RuntimeError("update 配对事务必须包含完整既有配对")
+
+        for collection_name in ("outputs", "recovery_outputs"):
+            collection = payload.get(collection_name, {})
+            if not isinstance(collection, dict) or not set(collection).issubset(
+                expected_targets
+            ):
+                raise RuntimeError(f"向量配对事务 {collection_name} 无效")
+            for kind, record in collection.items():
+                cls._validate_snapshot_record(
+                    record,
+                    expected_target=expected_targets[kind],
+                )
+
+    def _persist_pair_transaction(
+        self,
+        transaction: _PairTransaction,
+        *,
+        require_missing: bool = False,
+    ) -> None:
+        marker_path = self._pair_transaction_path(transaction.name)
+        marker_bytes = (
+            json.dumps(
+                transaction.payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+
+        def pre_replace() -> None:
+            if require_missing:
+                if os.path.lexists(marker_path):
+                    raise RuntimeError(
+                        f"{transaction.name} 已存在未完成配对事务，拒绝覆盖"
+                    )
+                return
+            if transaction.marker_identity is None or transaction.marker_sha256 is None:
+                raise RuntimeError("向量配对事务缺少上一版标记身份")
+            if not os.path.lexists(marker_path):
+                raise RuntimeError("向量配对事务标记在更新前消失")
+            current = self._snapshot_file(marker_path, label="向量配对事务标记")
+            expected = {
+                "identity": list(transaction.marker_identity),
+                "size": current["size"],
+                "sha256": transaction.marker_sha256,
+            }
+            if current["identity"] != expected["identity"] or current[
+                "sha256"
+            ] != expected["sha256"]:
+                raise PKVRuntimeError(
+                    ErrorCode.PATH_STATE_UNDETERMINED,
+                    "向量配对事务标记在更新期间被替换",
+                )
+
+        _contract_publish(
+            self._contract,
+            marker_path,
+            label="向量配对事务标记",
+            data=marker_bytes,
+            pre_replace=pre_replace,
+        )
+        marker_snapshot = self._snapshot_file(
+            marker_path,
+            label="向量配对事务标记",
+        )
+        if marker_snapshot["sha256"] != hashlib.sha256(marker_bytes).hexdigest():
+            raise PKVRuntimeError(
+                ErrorCode.PATH_STATE_UNDETERMINED,
+                "向量配对事务标记发布后内容不一致",
+            )
+        transaction.marker_identity = tuple(marker_snapshot["identity"])
+        transaction.marker_sha256 = marker_snapshot["sha256"]
+        self._fsync_index_directory()
+
+    def _begin_pair_transaction(
+        self,
+        name: str,
+        *,
+        allow_missing: bool,
+    ) -> _PairTransaction:
+        if name in self._active_pair_transactions:
+            raise RuntimeError(f"{name} 已存在当前进程内配对事务")
+        marker_path = self._pair_transaction_path(name)
+        if os.path.lexists(marker_path):
+            raise RuntimeError(f"{name} 存在未恢复配对事务，拒绝开始新写入")
+
+        paths = self._pair_paths(name)
+        existence = {kind: os.path.lexists(path) for kind, path in paths.items()}
+        if len(set(existence.values())) != 1:
+            raise RuntimeError(f"{name} 当前配对不完整，拒绝开始事务")
+        pair_exists = all(existence.values())
+        if not pair_exists and not allow_missing:
+            raise RuntimeError(f"{name} 当前配对缺失，拒绝开始更新事务")
+
+        originals: dict[str, dict[str, Any]] = {}
+        rollback_snapshots: list[tuple[Path, dict[str, Any]]] = []
+        try:
+            for kind, target_path in paths.items():
+                original: dict[str, Any] = {
+                    "target_name": target_path.name,
+                    "exists": pair_exists,
+                }
+                if pair_exists:
+                    before = self._snapshot_file(
+                        target_path,
+                        label="向量索引文件",
+                    )
+                    rollback_path, rollback_identity = self._create_rollback_copy(
+                        target_path
+                    )
+                    after = self._snapshot_file(
+                        target_path,
+                        label="向量索引文件",
+                    )
+                    rollback = self._snapshot_file(
+                        rollback_path,
+                        label="向量 rollback 文件",
+                    )
+                    if not self._snapshot_matches(before, after):
+                        raise PKVRuntimeError(
+                            ErrorCode.PATH_STATE_UNDETERMINED,
+                            f"{target_path.name} 在 rollback 准备期间发生变化",
+                        )
+                    if rollback["sha256"] != before["sha256"] or rollback[
+                        "size"
+                    ] != before["size"]:
+                        raise PKVRuntimeError(
+                            ErrorCode.PATH_STATE_UNDETERMINED,
+                            f"{target_path.name} rollback 副本内容不一致",
+                        )
+                    if tuple(rollback["identity"]) != rollback_identity:
+                        raise PKVRuntimeError(
+                            ErrorCode.PATH_STATE_UNDETERMINED,
+                            f"{target_path.name} rollback 副本身份不一致",
+                        )
+                    original.update(before)
+                    original["rollback"] = {
+                        "file_name": rollback_path.name,
+                        **rollback,
+                    }
+                    rollback_snapshots.append((rollback_path, rollback))
+                originals[kind] = original
+
+            transaction = _PairTransaction(
+                name=name,
+                payload={
+                    "schema_version": self.PAIR_TRANSACTION_SCHEMA_VERSION,
+                    "operation_id": uuid.uuid4().hex,
+                    "name": name,
+                    "mode": "update" if pair_exists else "create",
+                    "originals": originals,
+                    "outputs": {},
+                    "recovery_outputs": {},
+                },
+            )
+            self._persist_pair_transaction(transaction, require_missing=True)
+        except BaseException:
+            # Once the marker may have been published, its rollback references
+            # are durable recovery authority.  A post-publish snapshot/fsync
+            # failure must not turn that marker into a dangling record by
+            # deleting the referenced copies.  Clean only when absence is
+            # positively proven; any other state is fail-closed recovery debt.
+            marker_definitely_absent = False
+            try:
+                os.lstat(marker_path)
+            except FileNotFoundError:
+                marker_definitely_absent = True
+            except OSError:
+                pass
+            if marker_definitely_absent:
+                for rollback_path, snapshot in rollback_snapshots:
+                    try:
+                        self._unlink_exact_snapshot(
+                            rollback_path,
+                            snapshot,
+                            label="向量 rollback 文件",
+                        )
+                    except BaseException:
+                        logger.error(
+                            "配对事务准备失败后无法安全清理 rollback: %s",
+                            rollback_path.name,
+                        )
+            else:
+                logger.error(
+                    "%s 配对事务 marker 已存在或状态不确定；保留全部 rollback 供启动恢复",
+                    name,
+                )
+            raise
+
+        self._active_pair_transactions[name] = transaction
+        return transaction
+
+    def _prepare_pair_output(self, name: str, kind: str, temp_path: Path) -> None:
+        """在目标 replace 前持久记录将发布临时文件的身份和摘要。"""
+        transaction = self._active_pair_transactions.get(name)
+        if transaction is None:
+            return
+        paths = self._pair_paths(name)
+        if kind not in paths:
+            raise ValueError(f"未知配对 artifact: {kind}")
+        snapshot = self._snapshot_file(temp_path, label="向量配对发布临时文件")
+        transaction.payload["outputs"][kind] = {
+            "target_name": paths[kind].name,
+            "staged_file_name": temp_path.name,
+            **snapshot,
+        }
+        self._persist_pair_transaction(transaction)
+
+    def _read_pair_transaction_locked(self, name: str) -> _PairTransaction:
+        marker_path = self._pair_transaction_path(name)
+        content, marker_snapshot = self._read_small_file_snapshot(
+            marker_path,
+            label="向量配对事务标记",
+            max_bytes=64 * 1024,
+        )
+        try:
+            payload = json.loads(content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RuntimeError(
+                f"{name} 配对事务标记无法解析，拒绝自动恢复"
+            ) from error
+        self._validate_pair_transaction_payload(payload, expected_name=name)
+        return _PairTransaction(
+            name=name,
+            payload=payload,
+            marker_identity=tuple(marker_snapshot["identity"]),
+            marker_sha256=marker_snapshot["sha256"],
+        )
+
+    @staticmethod
+    def _matches_any_snapshot(
+        current: Optional[dict[str, Any]],
+        candidates: List[Optional[dict[str, Any]]],
+    ) -> bool:
+        return any(
+            VectorStore._snapshot_matches(current, candidate)
+            for candidate in candidates
+            if candidate is not None
+        )
+
+    def _target_snapshot_or_none(self, path: Path) -> Optional[dict[str, Any]]:
+        if not os.path.lexists(path):
+            return None
+        return self._snapshot_file(path, label="向量索引文件")
+
+    def _prepare_recovery_output(
+        self,
+        transaction: _PairTransaction,
+        kind: str,
+        temp_path: Path,
+    ) -> None:
+        paths = self._pair_paths(transaction.name)
+        current = self._target_snapshot_or_none(paths[kind])
+        original = transaction.payload["originals"][kind]
+        candidates = [
+            original if original["exists"] else None,
+            transaction.payload.get("outputs", {}).get(kind),
+            transaction.payload.get("recovery_outputs", {}).get(kind),
+        ]
+        if (
+            current is not None
+            and not self._matches_any_snapshot(current, candidates)
+        ):
+            raise PKVRuntimeError(
+                ErrorCode.PATH_STATE_UNDETERMINED,
+                f"{paths[kind].name} 不属于已记录事务，拒绝覆盖",
+            )
+        snapshot = self._snapshot_file(temp_path, label="向量恢复临时文件")
+        transaction.payload.setdefault("recovery_outputs", {})[kind] = {
+            "target_name": paths[kind].name,
+            "staged_file_name": temp_path.name,
+            **snapshot,
+        }
+        self._persist_pair_transaction(transaction)
+
+    def _publish_rollback_restore(
+        self,
+        transaction: _PairTransaction,
+        kind: str,
+        rollback_path: Path,
+    ) -> None:
+        target_path = self._pair_paths(transaction.name)[kind]
+        restore_temp_path: list[Optional[Path]] = [None]
+
+        def copy_rollback(temp_path: Path) -> None:
+            restore_temp_path[0] = temp_path
+            with self._open_leaf(
+                rollback_path,
+                "rb",
+                label="向量 rollback 文件",
+            ) as source, self._open_leaf(
+                temp_path,
+                "wb",
+                label="向量恢复临时文件",
+            ) as destination:
+                shutil.copyfileobj(source, destination)
+
+        def prepare_restore() -> None:
+            temp_path = restore_temp_path[0]
+            if temp_path is None:
+                raise RuntimeError("向量恢复临时文件尚未准备")
+            self._prepare_recovery_output(
+                transaction,
+                kind,
+                temp_path,
+            )
+
+        _contract_publish(
+            self._contract,
+            target_path,
+            label="向量索引文件",
+            writer=copy_rollback,
+            pre_replace=prepare_restore,
+        )
+
+    def _clear_pair_transaction(self, transaction: _PairTransaction) -> None:
+        """先持久移除恢复意图，再按精确身份清理 rollback/staged 辅助文件。"""
+        marker_path = self._pair_transaction_path(transaction.name)
+        if transaction.marker_identity is None or transaction.marker_sha256 is None:
+            raise RuntimeError("向量配对事务缺少标记身份，拒绝清理")
+        marker_content, marker_snapshot = self._read_small_file_snapshot(
+            marker_path,
+            label="向量配对事务标记",
+            max_bytes=64 * 1024,
+        )
+        del marker_content
+        if marker_snapshot["identity"] != list(transaction.marker_identity) or (
+            marker_snapshot["sha256"] != transaction.marker_sha256
+        ):
+            raise PKVRuntimeError(
+                ErrorCode.PATH_STATE_UNDETERMINED,
+                "向量配对事务标记在清理前被替换",
+            )
+        marker_path.unlink()
+        if os.path.lexists(marker_path):
+            raise PKVRuntimeError(
+                ErrorCode.PATH_STATE_UNDETERMINED,
+                "向量配对事务标记删除结果不确定",
+            )
+        self._fsync_index_directory()
+
+        auxiliary_records: list[tuple[Path, dict[str, Any], str]] = []
+        for original in transaction.payload["originals"].values():
+            rollback = original.get("rollback")
+            if isinstance(rollback, dict):
+                auxiliary_records.append(
+                    (
+                        self.index_dir / rollback["file_name"],
+                        rollback,
+                        "向量 rollback 文件",
+                    )
+                )
+        for collection_name in ("outputs", "recovery_outputs"):
+            for record in transaction.payload.get(collection_name, {}).values():
+                staged_name = record.get("staged_file_name")
+                if staged_name:
+                    auxiliary_records.append(
+                        (
+                            self.index_dir / staged_name,
+                            record,
+                            "向量配对残留临时文件",
+                        )
+                    )
+        for auxiliary_path, snapshot, label in auxiliary_records:
+            if not os.path.lexists(auxiliary_path):
+                continue
+            try:
+                self._unlink_exact_snapshot(
+                    auxiliary_path,
+                    snapshot,
+                    label=label,
+                )
+            except BaseException:
+                # 标记已删除，辅助副本不会再影响正式配对；不触碰未知替换物。
+                logger.warning("拒绝清理身份不确定的向量辅助文件: %s", auxiliary_path)
+        self._fsync_index_directory()
+
+    def _restore_pair_transaction_locked(
+        self,
+        transaction: _PairTransaction,
+    ) -> None:
+        """回滚 prepared 配对事务；严格恢复只接受标记中登记过的身份。"""
+        paths = self._pair_paths(transaction.name)
+        originals = transaction.payload["originals"]
+        outputs = transaction.payload.get("outputs", {})
+        recovery_outputs = transaction.payload.get("recovery_outputs", {})
+        current_by_kind: dict[str, Optional[dict[str, Any]]] = {}
+
+        # 先验证两份目标及所有 rollback，任何不确定状态都必须在首个写动作前失败。
+        for kind, target_path in paths.items():
+            current = self._target_snapshot_or_none(target_path)
+            current_by_kind[kind] = current
+            original = originals[kind]
+            allowed = [
+                original if original["exists"] else None,
+                outputs.get(kind),
+                recovery_outputs.get(kind),
+            ]
+            if (
+                current is not None
+                and not self._matches_any_snapshot(current, allowed)
+            ):
+                raise PKVRuntimeError(
+                    ErrorCode.PATH_STATE_UNDETERMINED,
+                    f"{target_path.name} 身份或内容不属于未完成事务；"
+                    "已保留标记与副本，拒绝自动恢复",
+                )
+            rollback = original.get("rollback")
+            if rollback is not None:
+                rollback_path = self.index_dir / rollback["file_name"]
+                rollback_current = self._snapshot_file(
+                    rollback_path,
+                    label="向量 rollback 文件",
+                )
+                if not self._snapshot_matches(rollback_current, rollback):
+                    raise PKVRuntimeError(
+                        ErrorCode.PATH_STATE_UNDETERMINED,
+                        f"{target_path.name} rollback 身份或内容不一致",
+                    )
+
+        for kind, target_path in paths.items():
+            original = originals[kind]
+            current = current_by_kind[kind]
+            if original["exists"]:
+                already_restored = self._snapshot_matches(current, original) or (
+                    self._snapshot_matches(current, recovery_outputs.get(kind))
+                    and recovery_outputs.get(kind, {}).get("sha256")
+                    == original["sha256"]
+                )
+                if not already_restored:
+                    rollback_path = self.index_dir / original["rollback"][
+                        "file_name"
+                    ]
+                    self._publish_rollback_restore(
+                        transaction,
+                        kind,
+                        rollback_path,
+                    )
+                    restored = self._target_snapshot_or_none(target_path)
+                    recovery_record = transaction.payload["recovery_outputs"][kind]
+                    if (
+                        not self._snapshot_matches(restored, recovery_record)
+                        or restored["sha256"] != original["sha256"]
+                    ):
+                        raise PKVRuntimeError(
+                            ErrorCode.PATH_STATE_UNDETERMINED,
+                            f"{target_path.name} 回滚发布后校验失败",
+                        )
+            elif current is not None:
+                # create 中断时只能删除明确登记为本事务输出的 artifact。
+                output = outputs.get(kind)
+                if not self._snapshot_matches(current, output):
+                    raise PKVRuntimeError(
+                        ErrorCode.PATH_STATE_UNDETERMINED,
+                        f"{target_path.name} 不是已登记的创建输出，拒绝删除",
+                    )
+                self._unlink_exact_snapshot(
+                    target_path,
+                    output,
+                    label="向量中断创建 artifact",
+                )
+
+        self._clear_pair_transaction(transaction)
+
+    def _complete_pair_transaction(self, transaction: _PairTransaction) -> None:
+        paths = self._pair_paths(transaction.name)
+        originals = transaction.payload["originals"]
+        outputs = transaction.payload.get("outputs", {})
+        for kind, target_path in paths.items():
+            current = self._target_snapshot_or_none(target_path)
+            expected = outputs.get(kind)
+            if expected is None and originals[kind]["exists"]:
+                expected = originals[kind]
+            if expected is None or not self._snapshot_matches(current, expected):
+                raise PKVRuntimeError(
+                    ErrorCode.PATH_STATE_UNDETERMINED,
+                    f"{target_path.name} 配对提交结果与事务记录不一致",
+                )
+        self._clear_pair_transaction(transaction)
+
+    def _recover_pair_transaction_locked(self, name: str) -> bool:
+        marker_path = self._pair_transaction_path(name)
+        if not os.path.lexists(marker_path):
+            return False
+        transaction = self._read_pair_transaction_locked(name)
+        self._restore_pair_transaction_locked(transaction)
+        logger.warning("已确定性回滚未完成向量配对事务: %s", name)
+        return True
+
+    def _recover_incomplete_pair_transactions(self) -> None:
+        for name in self.PAIR_NAMES:
+            marker_path = self._pair_transaction_path(name)
+            if not os.path.lexists(marker_path):
+                continue
+            with self._index_pair_lock(name):
+                self._recover_pair_transaction_locked(name)
+
+    def _create_rollback_copy(self, source: Path) -> tuple[Path, tuple[int, int]]:
+        """在同目录创建并 fsync 一份精确的 rollback 副本（先过链接安全合同）。"""
+        source = self._validate_leaf(
+            source,
+            label="向量索引文件",
+            allow_missing=False,
+        )
+        parent = source.parent
+        _contract_validate_dir(self._contract, parent, label="向量索引目录")
+        parent_info = os.lstat(parent)
+        parent_identity = (parent_info.st_dev, parent_info.st_ino)
         descriptor, raw_path = tempfile.mkstemp(
-            dir=source.parent,
+            dir=parent,
             prefix=f".{source.name}.",
             suffix=".rollback",
         )
         rollback_path = Path(raw_path)
+        initial_rollback_info = os.fstat(descriptor)
+        rollback_identity = (
+            initial_rollback_info.st_dev,
+            initial_rollback_info.st_ino,
+        )
+        descriptor_open = True
+
+        def cleanup_owned_rollback() -> None:
+            if not os.path.lexists(rollback_path):
+                return
+            try:
+                validated = self._validate_leaf(
+                    rollback_path,
+                    label="向量 rollback 文件",
+                    allow_missing=False,
+                )
+                info = os.lstat(validated)
+                if (info.st_dev, info.st_ino) == rollback_identity:
+                    validated.unlink()
+            except (OSError, PKVRuntimeError):
+                # 路径已被替换时保留未知文件，绝不按名称盲删。
+                pass
         try:
-            with os.fdopen(descriptor, "wb") as destination, open(
-                source, "rb"
+            verify_fd_matches_path(
+                descriptor,
+                rollback_path,
+                label="向量 rollback 文件",
+            )
+            rollback_info = os.fstat(descriptor)
+            rollback_identity = (rollback_info.st_dev, rollback_info.st_ino)
+            parent_after = os.lstat(parent)
+            if (parent_after.st_dev, parent_after.st_ino) != parent_identity:
+                raise PKVRuntimeError(
+                    ErrorCode.DATA_ROOT_UNSAFE,
+                    f"向量索引目录在回滚副本创建期间被替换: {parent}",
+                )
+            destination_handle = os.fdopen(descriptor, "wb")
+            descriptor_open = False
+            with destination_handle as destination, self._open_leaf(
+                source,
+                "rb",
+                label="向量索引文件",
             ) as source_file:
                 shutil.copyfileobj(source_file, destination)
                 destination.flush()
                 os.fsync(destination.fileno())
+                verify_fd_matches_path(
+                    destination.fileno(),
+                    rollback_path,
+                    label="向量 rollback 文件",
+                )
         except BaseException:
-            try:
-                rollback_path.unlink()
-            except OSError:
-                pass
-            raise
-        return rollback_path
-
-    @contextmanager
-    def _pair_rollback_guard(self, name: str):
-        """写失败时恢复 index/metadata 原字节，并重载当前实例内存。"""
-        index_path = self.index_dir / f"{name}.idx"
-        metadata_path = self.index_dir / f"{name}_metadata.json"
-        rollback_files: list[tuple[Path, Path]] = []
-        preserve_rollback_files = False
-        try:
-            rollback_files.append(
-                (self._create_rollback_copy(index_path), index_path)
-            )
-            rollback_files.append(
-                (self._create_rollback_copy(metadata_path), metadata_path)
-            )
-        except BaseException:
-            for rollback_path, _ in rollback_files:
+            if descriptor_open:
                 try:
-                    rollback_path.unlink()
+                    os.close(descriptor)
                 except OSError:
                     pass
+            cleanup_owned_rollback()
             raise
+        try:
+            published = self._validate_leaf(
+                rollback_path,
+                label="向量 rollback 文件",
+                allow_missing=False,
+            )
+            published_info = os.lstat(published)
+            if (published_info.st_dev, published_info.st_ino) != rollback_identity:
+                raise PKVRuntimeError(
+                    ErrorCode.PATH_STATE_UNDETERMINED,
+                    f"向量 rollback 文件创建后身份已变化: {rollback_path}",
+                )
+        except BaseException:
+            cleanup_owned_rollback()
+            raise
+        return rollback_path, rollback_identity
 
+    @contextmanager
+    def _pair_rollback_guard(
+        self,
+        name: str,
+        *,
+        allow_missing: bool = False,
+        reload_on_error: bool = True,
+    ):
+        """以持久事务标记保护两次发布，异常与下次启动共用恢复协议。"""
+        transaction = self._begin_pair_transaction(
+            name,
+            allow_missing=allow_missing,
+        )
         try:
             yield
         except BaseException as original_error:
-            restore_failures: list[str] = []
-            for rollback_path, target_path in rollback_files:
-                try:
-                    os.replace(rollback_path, target_path)
-                except OSError:
-                    restore_failures.append(target_path.name)
-            if restore_failures:
-                preserve_rollback_files = True
-                retained_paths = [
-                    str(rollback_path)
-                    for rollback_path, _ in rollback_files
-                    if rollback_path.exists()
-                ]
-                raise RuntimeError(
-                    "index/metadata 回滚失败: "
-                    + ", ".join(restore_failures)
-                    + "；已保留可用 rollback 副本: "
-                    + (", ".join(retained_paths) or "无")
-                ) from original_error
             try:
-                self._reload_index_for_update_locked(name)
-            except BaseException as reload_error:
+                # 正常发布在 replace 前已经把输出身份和摘要写入 marker。
+                # 即使仍在同一异常展开中，也不能把未登记的普通文件替换
+                # 假定为“本进程所有”，否则会覆盖外部并发写入。
+                self._restore_pair_transaction_locked(transaction)
+            except BaseException:
                 raise RuntimeError(
-                    f"{name} 磁盘文件已回滚，但当前实例重载失败: {reload_error}"
+                    f"index/metadata 回滚失败: {name}；"
+                    "已保留事务标记与可验证 rollback 副本"
                 ) from original_error
+            if reload_on_error:
+                try:
+                    self._reload_index_for_update_locked(name)
+                except BaseException as reload_error:
+                    raise RuntimeError(
+                        f"{name} 磁盘文件已回滚，但当前实例重载失败: {reload_error}"
+                    ) from original_error
             raise
+        else:
+            self._complete_pair_transaction(transaction)
         finally:
-            if not preserve_rollback_files:
-                for rollback_path, _ in rollback_files:
-                    try:
-                        rollback_path.unlink()
-                    except FileNotFoundError:
-                        pass
-                    except OSError:
-                        logger.warning(
-                            "无法清理 rollback 文件: %s",
-                            rollback_path.name,
-                        )
+            self._active_pair_transactions.pop(name, None)
 
     def _init_index(self, name: str) -> hnswlib.Index:
         """在配对锁内初始化或加载 hnswlib 索引。"""
@@ -682,20 +1773,26 @@ class VectorStore:
         Returns:
             hnswlib.Index 对象
         """
+        self._recover_pair_transaction_locked(name)
         index_path = self.index_dir / f"{name}.idx"
         metadata_path = self.index_dir / f"{name}_metadata.json"
 
-        if index_path.exists() != metadata_path.exists():
+        index_exists = os.path.lexists(index_path)
+        metadata_exists = os.path.lexists(metadata_path)
+        if index_exists != metadata_exists:
             raise RuntimeError(
                 f"{name} 索引文件与元数据不一致，无法安全初始化: "
-                f"index_exists={index_path.exists()}, metadata_exists={metadata_path.exists()}"
+                f"index_exists={index_exists}, metadata_exists={metadata_exists}"
             )
 
         # 创建索引对象
         index = hnswlib.Index(space='cosine', dim=self.dim)
 
-        if index_path.exists():
-            metadata, metadata_bytes = self._read_json_snapshot(metadata_path)
+        if index_exists:
+            metadata, metadata_bytes = self._read_json_snapshot(
+                metadata_path,
+                contract=self._contract,
+            )
             existing_dim = metadata.get("dim")
             if existing_dim is None:
                 raise RuntimeError(f"{name} 缺少 dim 元数据，无法安全加载索引")
@@ -712,10 +1809,26 @@ class VectorStore:
                 metadata,
                 expected_bytes=metadata_bytes,
             )
-
+            # hnswlib 不能接收 fd：加载前拒绝链接/硬链接叶子，加载后再次核验。
+            # 校验与 hnswlib 内部 open 之间的替换窗口无法消除（平台限制）。
+            self._validate_leaf(
+                index_path,
+                label="向量索引文件",
+                allow_missing=False,
+            )
             index.load_index(
                 str(index_path),
                 allow_replace_deleted=True,
+            )
+            self._validate_leaf(
+                index_path,
+                label="向量索引文件",
+                allow_missing=False,
+            )
+            self._validate_leaf(
+                metadata_path,
+                label="向量元数据文件",
+                allow_missing=False,
             )
             # 修正容量：若 max_elements 不足则扩容到安全值
             if index.max_elements < index.element_count + 1000:
@@ -747,25 +1860,23 @@ class VectorStore:
                 metadata[self.LEGACY_EMBEDDING_FINGERPRINT_KEY] = (
                     self._legacy_embedding_fingerprint
                 )
-            try:
-                index.save_index(str(index_path))
+            with self._pair_rollback_guard(
+                name,
+                allow_missing=True,
+                reload_on_error=False,
+            ):
+                self._publish_index(name, index)
                 self._atomic_write_json(
                     metadata_path,
                     metadata,
                     require_missing=True,
+                    contract=self._contract,
+                    pre_publish=lambda temp_path: self._prepare_pair_output(
+                        name,
+                        "metadata",
+                        temp_path,
+                    ),
                 )
-            except Exception:
-                # 本分支进入时两份 artifact 均不存在；失败必须回收本次创建物，
-                # 否则下次初始化会永久卡在 index/metadata mismatch。
-                # metadata helper 失败时不会创建目标；若目标此时存在则属于并发 writer，
-                # 不能清理。这里只回收本实例刚写出的 index artifact。
-                try:
-                    index_path.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    logger.error("新索引初始化失败后无法清理: %s", index_path.name)
-                raise
 
             logger.info(f"✅ 创建新索引: {index_path}")
 
@@ -776,12 +1887,16 @@ class VectorStore:
 
     def _reload_index_for_update_locked(self, name: str) -> hnswlib.Index:
         """在配对锁内从磁盘重载最新 index，并重新校验其 metadata。"""
+        self._recover_pair_transaction_locked(name)
         index_path = self.index_dir / f"{name}.idx"
         metadata_path = self.index_dir / f"{name}_metadata.json"
-        if not index_path.exists() or not metadata_path.exists():
+        if not os.path.lexists(index_path) or not os.path.lexists(metadata_path):
             raise RuntimeError(f"{name} index/metadata 配对缺失，无法安全更新")
 
-        metadata, metadata_bytes = self._read_json_snapshot(metadata_path)
+        metadata, metadata_bytes = self._read_json_snapshot(
+            metadata_path,
+            contract=self._contract,
+        )
         existing_dim = metadata.get("dim")
         if existing_dim is None or int(existing_dim) != self.dim:
             raise RuntimeError(f"{name} 维度不匹配，无法安全更新")
@@ -791,8 +1906,19 @@ class VectorStore:
             expected_bytes=metadata_bytes,
         )
 
+        # hnswlib 不能接收 fd：加载前后都核验同一路径仍是安全叶子。
+        self._validate_leaf(
+            index_path,
+            label="向量索引文件",
+            allow_missing=False,
+        )
         index = hnswlib.Index(space="cosine", dim=self.dim)
         index.load_index(str(index_path), allow_replace_deleted=True)
+        self._validate_leaf(
+            index_path,
+            label="向量索引文件",
+            allow_missing=False,
+        )
         if index.max_elements < index.element_count + 1000:
             index.resize_index(max(10000, index.element_count + 1000))
         index.set_ef(self.ef_search)
@@ -889,6 +2015,10 @@ class VectorStore:
                     metadata_path,
                     metadata,
                     expected_bytes=metadata_bytes,
+                    contract=self._contract,
+                    pre_publish=lambda temp_path: self._prepare_pair_output(
+                        "chunk_vectors", "metadata", temp_path
+                    ),
                 )
                 self._save_index("chunk_vectors")
 
@@ -950,6 +2080,10 @@ class VectorStore:
                     metadata_path,
                     metadata,
                     expected_bytes=metadata_bytes,
+                    contract=self._contract,
+                    pre_publish=lambda temp_path: self._prepare_pair_output(
+                        "chunk_vectors", "metadata", temp_path
+                    ),
                 )
                 self._save_index("chunk_vectors")
         logger.info(
@@ -1029,7 +2163,9 @@ class VectorStore:
             with self._pair_rollback_guard("doc_vectors"):
                 try:
                     index.mark_deleted(knowledge_id)
-                except RuntimeError:
+                except RuntimeError as error:
+                    if not _is_idempotent_delete_error(error):
+                        raise
                     logger.debug(f"文档向量不存在: knowledge_id={knowledge_id}")
                 else:
                     self._save_index("doc_vectors")
@@ -1050,7 +2186,9 @@ class VectorStore:
                     try:
                         index.mark_deleted(hnswlib_id)
                         stats["chunks_deleted"] += 1
-                    except RuntimeError:
+                    except RuntimeError as error:
+                        if not _is_idempotent_delete_error(error):
+                            raise
                         logger.debug(f"分块向量不存在: hnswlib_id={hnswlib_id}")
 
                 if stats["chunks_deleted"] > 0:
@@ -1061,6 +2199,10 @@ class VectorStore:
                         metadata_path,
                         metadata,
                         expected_bytes=metadata_bytes,
+                        contract=self._contract,
+                        pre_publish=lambda temp_path: self._prepare_pair_output(
+                            "chunk_vectors", "metadata", temp_path
+                        ),
                     )
                     self._save_index("chunk_vectors")
             if stats["chunks_deleted"] > 0:
@@ -1113,7 +2255,9 @@ class VectorStore:
                     try:
                         index.mark_deleted(hnswlib_id)
                         deleted_count += 1
-                    except RuntimeError:
+                    except RuntimeError as error:
+                        if not _is_idempotent_delete_error(error):
+                            raise
                         logger.debug(f"分块向量不存在: hnswlib_id={hnswlib_id}")
 
                 if deleted_count > 0:
@@ -1124,6 +2268,10 @@ class VectorStore:
                         metadata_path,
                         metadata,
                         expected_bytes=metadata_bytes,
+                        contract=self._contract,
+                        pre_publish=lambda temp_path: self._prepare_pair_output(
+                            "chunk_vectors", "metadata", temp_path
+                        ),
                     )
                     self._save_index("chunk_vectors")
             if deleted_count > 0:
@@ -1275,33 +2423,32 @@ class VectorStore:
 
         return results
 
-    def _save_index(self, name: str):
-        """通过同目录临时文件原子保存索引，避免破坏现有 idx。"""
+    def _publish_index(self, name: str, index: hnswlib.Index) -> None:
+        """保存 idx，并在 replace 前把将发布临时文件绑定进配对事务。"""
         index_path = self.index_dir / f"{name}.idx"
-        index = self.doc_index if name == "doc_vectors" else self.chunk_index
-        descriptor, raw_path = tempfile.mkstemp(
-            dir=index_path.parent,
-            prefix=f".{index_path.name}.",
-            suffix=".tmp",
-        )
-        os.close(descriptor)
-        temp_path: Optional[Path] = Path(raw_path)
-        try:
+        temp_path_holder: list[Path] = []
+
+        def write_index(temp_path: Path) -> None:
+            temp_path_holder.append(temp_path)
             index.save_index(str(temp_path))
-            # Windows CRT 的 fsync/_commit 需要可写文件描述符。
-            with open(temp_path, "r+b") as temp_file:
-                os.fsync(temp_file.fileno())
-            os.replace(temp_path, index_path)
-            temp_path = None
-        finally:
-            if temp_path is not None:
-                try:
-                    temp_path.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    # 不覆盖原始保存异常。
-                    pass
+
+        def prepare_output() -> None:
+            if not temp_path_holder:
+                raise RuntimeError("向量索引临时文件尚未准备")
+            self._prepare_pair_output(name, "index", temp_path_holder[0])
+
+        _contract_publish(
+            self._contract,
+            index_path,
+            label="向量索引文件",
+            writer=write_index,
+            pre_replace=prepare_output,
+        )
+
+    def _save_index(self, name: str):
+        """通过同目录临时文件原子保存索引，避免破坏现有 idx（统一叶子合同）。"""
+        index = self.doc_index if name == "doc_vectors" else self.chunk_index
+        self._publish_index(name, index)
 
     def _load_metadata(self, name: str) -> dict:
         """加载元数据"""
@@ -1310,7 +2457,10 @@ class VectorStore:
     def _load_metadata_snapshot(self, name: str) -> tuple[dict[str, Any], bytes]:
         """加载 metadata 及用于并发写保护的原始字节。"""
         metadata_path = self.index_dir / f"{name}_metadata.json"
-        return self._read_json_snapshot(metadata_path)
+        return self._read_json_snapshot(
+            metadata_path,
+            contract=self._contract,
+        )
 
     def _validate_embedding_fingerprint(
         self,
@@ -1391,6 +2541,7 @@ class VectorStore:
                 metadata_path,
                 migrated_metadata,
                 expected_bytes=expected_bytes,
+                contract=self._contract,
             )
 
     def _update_metadata(self, name: str, hnswlib_id: int, mapping: Tuple[int, int]):
@@ -1403,6 +2554,7 @@ class VectorStore:
                 metadata_path,
                 metadata,
                 expected_bytes=metadata_bytes,
+                contract=self._contract,
             )
 
     def _update_metadata_batch(self, name: str, mappings: dict[int, Tuple[int, int]]):
@@ -1419,6 +2571,7 @@ class VectorStore:
                 metadata_path,
                 metadata,
                 expected_bytes=metadata_bytes,
+                contract=self._contract,
             )
 
     @staticmethod

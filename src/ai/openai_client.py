@@ -73,7 +73,9 @@ class OpenAIClient:
 
         self.api_key = api_key or config.embd_api_key
         if not self.api_key:
-            raise ValueError("Embedding API Key 未配置，请检查 config/local.yaml")
+            raise ValueError(
+                "Embedding API Key 未配置，请检查用户数据目录中的 config/local.yaml"
+            )
 
         self.base_url = base_url or config.embd_base_url
         self.model = model or config.embd_model

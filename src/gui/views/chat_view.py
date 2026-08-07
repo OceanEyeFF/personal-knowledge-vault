@@ -777,6 +777,7 @@ class ChatView(QWidget):
         self.viewmodel.url_archive_started.connect(self._on_url_archive_started)
         self.viewmodel.url_archive_completed.connect(self._on_url_archive_completed)
         self.viewmodel.url_archive_failed.connect(self._on_url_archive_failed)
+        self.viewmodel.url_archive_warning.connect(self._on_url_archive_warning)
 
         # 对话保存到知识库
         self.viewmodel.session_saved_to_kb.connect(self._on_session_saved_to_kb)
@@ -1104,6 +1105,20 @@ class ChatView(QWidget):
             f"<p style='color: {colors['status_warning']}; font-size: 12px;'>"
             f"⚠️ URL 归档失败: {url}<br>"
             f"原因: {error_msg}</p>"
+        )
+
+    def _on_url_archive_warning(self, url: str, warning_msg: str) -> None:
+        """URL 归档降级/需修复警告（核心已提交，请勿盲目重试）
+
+        Args:
+            url: 归档的 URL
+            warning_msg: 警告消息
+        """
+        colors = theme_colors.get_current_colors()
+        self.chat_area.message_display.append(
+            f"<p style='color: {colors['status_warning']}; font-size: 12px;'>"
+            f"⚠️ URL 归档需修复: {url}<br>"
+            f"{warning_msg}</p>"
         )
 
     def _on_stop_clicked(self) -> None:

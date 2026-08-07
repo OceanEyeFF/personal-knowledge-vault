@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.utils.config import get_config
 from src.utils.logger import LoggerSetup
+from src.runtime.bootstrap import bootstrap_runtime
 
 __version__ = "0.8.0-alpha"
 
@@ -65,8 +66,13 @@ def _resolve_log_level(verbose: bool, debug: bool) -> str:
 def _configure_logging(level: str) -> None:
     """Configure global logging with project defaults."""
     config = get_config()
+    bootstrap_runtime(config)
     log_file = config.log_dir / "pkv.log"
-    LoggerSetup.setup(level=level, log_file=log_file)
+    LoggerSetup.setup(
+        level=level,
+        log_file=log_file,
+        path_validator=config.layout.writable_user_path,
+    )
     logging.getLogger(__name__).debug("Logging initialized at %s", level)
 
 

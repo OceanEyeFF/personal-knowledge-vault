@@ -819,6 +819,45 @@ class TestArchiveUrlAndInjectCompletion:
             finally:
                 loop.close()
 
+    def test_ready_archive_does_not_emit_repair_warning(
+        self, viewmodel, mock_dependencies, qtbot
+    ) -> None:
+        """READY is committed/non-retryable, but it does not need repair."""
+        mock_dependencies["store"].query_by_url.return_value = None
+        mock_dependencies["store"].query_by_id.return_value = {
+            "knowledge_id": 100,
+            "title": "Ready article",
+        }
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.data = {
+            "knowledge_id": 100,
+            "status": "ready",
+            "do_not_retry": True,
+            "repair_actions": [],
+        }
+        mock_engine = MagicMock()
+        mock_engine.execute_async = AsyncMock(return_value=mock_result)
+        warning_handler = MagicMock()
+        viewmodel.url_archive_warning.connect(warning_handler)
+
+        with patch(
+            "src.workflow.engine.WorkflowEngine",
+            return_value=mock_engine,
+        ):
+            loop = asyncio.new_event_loop()
+            try:
+                with qtbot.waitSignal(viewmodel.url_archive_completed, timeout=1000):
+                    loop.run_until_complete(
+                        viewmodel.archive_url_and_inject.__wrapped__(
+                            viewmodel, "https://example.com/ready"
+                        )
+                    )
+            finally:
+                loop.close()
+
+        warning_handler.assert_not_called()
+
     def test_url_archive_workflow_failure(
         self, viewmodel, mock_dependencies, qtbot
     ) -> None:

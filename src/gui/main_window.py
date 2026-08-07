@@ -37,6 +37,9 @@ from src.gui.views.stats_view import StatsView
 from src.gui.views.settings_view import SettingsView
 from src.gui.views.chat_view import ChatView  # M12
 from src.gui.styles import theme_colors
+from src.runtime.layout import open_user_file_nofollow
+from src.utils.config import get_config
+from src.utils.logger import LoggerSetup
 
 logger = logging.getLogger("pkv.gui.mainwindow")
 
@@ -50,6 +53,20 @@ _NAV_ARCHIVE = 2
 _NAV_CHAT = 3  # M12 - AI 对话
 _NAV_STATS = 4
 _NAV_SETTINGS = 5
+
+
+def _precreate_ini_leaf(path) -> None:
+    """以 O_NOFOLLOW 预创建 ini 叶文件，使 Qt 只能打开已存在普通文件。
+
+    ``os.O_NOFOLLOW`` 在 POSIX 与 Windows 3.12+ 可用；更早的 Windows 上退化为
+    仅依赖写入前验证与写入后核验（不伪称消除竞态）。
+    """
+    with open_user_file_nofollow(
+        Path(path),
+        "a+b",
+        label="界面设置 ui.ini",
+    ):
+        pass
 
 
 class MainWindow(QMainWindow):
@@ -83,6 +100,9 @@ class MainWindow(QMainWindow):
         self._create_menu_bar()
         self._create_status_bar()
         self._create_shortcuts()
+
+        # GUI 文件日志与 CLI/MCP 共用统一可写叶子合同（幂等、延迟打开）
+        self._ensure_file_logging()
 
         # 恢复上次窗口状态（几何 + 主题）
         self.restore_settings()
@@ -361,13 +381,18 @@ class MainWindow(QMainWindow):
         Args:
             theme: 主题名称，"light" 或 "dark"。
         """
-        qss_path = Path(__file__).parent / "styles" / f"{theme}.qss"
-        if not qss_path.exists():
-            logger.warning(f"主题文件不存在: {qss_path}")
-            return
-
         try:
-            with open(qss_path, "r", encoding="utf-8") as f:
+            layout = get_config().layout
+            qss_path = layout.validate_bundled_path(
+                layout.styles_dir / f"{theme}.qss",
+                label="GUI 主题",
+            )
+            with open_user_file_nofollow(
+                qss_path,
+                "r",
+                label="GUI 主题",
+                encoding="utf-8",
+            ) as f:
                 qss = f.read()
             app = QApplication.instance()
             if app:
@@ -391,16 +416,35 @@ class MainWindow(QMainWindow):
         """
         self._status_label.setText(message)
 
+    def _ensure_file_logging(self) -> None:
+        """GUI 文件日志走统一可写叶子合同（幂等，延迟打开）。"""
+        layout = get_config().layout
+        LoggerSetup.add_file_handler(
+            layout.log_dir / "pkv.log",
+            path_validator=layout.writable_user_path,
+            delay=True,
+        )
+
     # ------------------------------------------------------------------
     # QSettings 状态持久化
     # ------------------------------------------------------------------
 
     def save_settings(self) -> None:
         """保存窗口几何、布局状态和当前主题到 QSettings。"""
-        settings = QSettings(self._SETTINGS_ORG, self._SETTINGS_APP)
+        settings = self._settings_store()
         settings.setValue("geometry", self.saveGeometry())
         settings.setValue("state", self.saveState())
         settings.setValue("theme", self.current_theme)
+        settings.sync()
+        # 写入后再次核验：ui.ini 仍是数据根内普通文件（fail-closed）。
+        layout = get_config().layout
+        if settings.status() != QSettings.NoError:
+            raise OSError(f"QSettings 无法写入界面设置: {layout.ui_settings_path}")
+        layout.validate_user_file(
+            layout.ui_settings_path,
+            label="界面设置 ui.ini",
+            allow_missing=False,
+        )
         logger.debug("窗口状态已保存")
 
     def restore_settings(self) -> None:
@@ -408,7 +452,7 @@ class MainWindow(QMainWindow):
 
         若无历史记录则使用默认设置（明亮主题）。
         """
-        settings = QSettings(self._SETTINGS_ORG, self._SETTINGS_APP)
+        settings = self._settings_store()
 
         if settings.contains("geometry"):
             geometry = settings.value("geometry")
@@ -426,6 +470,30 @@ class MainWindow(QMainWindow):
         self.apply_theme(theme)
         logger.debug(f"已恢复窗口状态（主题: {theme}）")
 
+    @staticmethod
+    def _settings_store() -> QSettings:
+        """Persist Qt state only inside the declared user-data root.
+
+        QSettings cannot accept an open file descriptor, so the strongest
+        provable contract is: validate the leaf before Qt touches it, pre-create
+        it with O_NOFOLLOW (POSIX / Windows 3.12+), and re-validate after every
+        sync.  A swap between the pre-create and Qt's own open() remains a
+        documented platform limit (no fd handoff), not an eliminated race.
+        """
+
+        layout = get_config().layout
+        settings_path = layout.ui_settings_path
+        layout.ensure_user_directories()
+        layout.writable_user_path(settings_path, label="界面设置 ui.ini")
+        _precreate_ini_leaf(settings_path)
+        settings = QSettings(str(settings_path), QSettings.IniFormat)
+        layout.validate_user_file(
+            settings_path,
+            label="界面设置 ui.ini",
+            allow_missing=True,
+        )
+        return settings
+
     # ------------------------------------------------------------------
     # 窗口事件
     # ------------------------------------------------------------------
@@ -433,10 +501,12 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         """窗口关闭时保存状态。
 
-        Args:
-            event: Qt 关闭事件。
+        保存失败（例如 ui.ini 被链接替换）不阻止窗口关闭，但会记录错误。
         """
-        self.save_settings()
+        try:
+            self.save_settings()
+        except Exception as exc:
+            logger.error("关闭时保存窗口状态失败: %s", exc)
         super().closeEvent(event)
 
     # ------------------------------------------------------------------

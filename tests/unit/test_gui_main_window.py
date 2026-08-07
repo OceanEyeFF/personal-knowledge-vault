@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -23,6 +25,7 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.utils.config import Config
 
 
@@ -70,6 +73,10 @@ def mock_stores(tmp_path, monkeypatch):
              "src.gui.viewmodels.chat_viewmodel.Config",
              return_value=isolated_config,
          ), \
+         patch(
+             "src.gui.main_window.get_config",
+             return_value=isolated_config,
+         ), \
          patch("src.utils.config.get_config", return_value=isolated_config):
         yield mock_store
 
@@ -114,7 +121,7 @@ def main_window(qtbot):
 
 
 def test_database_initialization_uses_runtime_db_path(tmp_path):
-    """GUI 启动迁移应使用支持 DATA_DIR/DB_PATH 覆盖的 Config.db_path。"""
+    """GUI 启动必须委托唯一 runtime bootstrap，不能自建迁移流程。"""
     from src.gui import app as gui_app
 
     runtime_db_path = tmp_path / "runtime" / "db" / "knowledge.db"
@@ -122,19 +129,16 @@ def test_database_initialization_uses_runtime_db_path(tmp_path):
     mock_config.db_path = runtime_db_path
     mock_config.get.return_value = tmp_path / "wrong.db"
 
-    mock_manager = MagicMock()
-    mock_manager.get_current_version.return_value = "1.0.0"
-    mock_manager.get_pending_migrations.return_value = []
+    context = MagicMock()
+    context.database.current_version = "1.2.3"
+    context.database.state.value = "ready"
 
     with patch("src.gui.app.Config", return_value=mock_config), patch(
-        "src.gui.app.MigrationManager", return_value=mock_manager
-    ) as manager_cls:
+        "src.gui.app.bootstrap_runtime", return_value=context
+    ) as bootstrap:
         assert gui_app.ensure_database_initialized() is True
 
-    manager_cls.assert_called_once_with(
-        runtime_db_path,
-        gui_app._PROJECT_ROOT / "scripts" / "migrations",
-    )
+    bootstrap.assert_called_once_with(mock_config)
     mock_config.get.assert_not_called()
 
 
@@ -363,8 +367,8 @@ class TestSettingsPersistence:
         main_window.apply_theme("dark")
         main_window.save_settings()
 
-        # 读取 QSettings 确认持久化
-        settings = QSettings("PKV", "MainWindow")
+        # 读取同一个用户数据目录内的显式 INI，禁止回退到用户注册表。
+        settings = main_window._settings_store()
         saved_theme = settings.value("theme")
         assert saved_theme == "dark"
 
@@ -391,3 +395,79 @@ class TestAboutDialog:
         with patch("PySide6.QtWidgets.QMessageBox.about") as mock_about:
             main_window._show_about()
             mock_about.assert_called_once()
+
+
+# ============================================================
+# 统一可写叶子合同：ui.ini QSettings 与 GUI 文件日志
+# ============================================================
+
+
+def test_gui_file_logging_registers_validated_handler_once(qtbot):
+    """GUI 日志通过统一合同注册同一个路径的 handler（幂等）。"""
+    from src.gui.main_window import MainWindow
+    from src.utils.logger import _ValidatedRotatingFileHandler
+
+    from src.utils.config import get_config
+    log_file = get_config().layout.log_dir / "pkv.log"
+
+    first = MainWindow()
+    qtbot.addWidget(first)
+    second = MainWindow()
+    qtbot.addWidget(second)
+
+    handlers = [
+        handler
+        for handler in logging.getLogger().handlers
+        if isinstance(handler, _ValidatedRotatingFileHandler)
+        and Path(handler.baseFilename) == log_file
+    ]
+    assert len(handlers) == 1
+
+
+def test_file_handler_rejects_hardlinked_log_target(tmp_path):
+    """日志叶子被硬链接替换时，handler 注册在任何打开前拒绝。"""
+    from src.utils.logger import LoggerSetup
+
+    from src.utils.config import get_config
+    layout = get_config().layout
+    log_file = layout.log_dir / "pkv.log"
+    layout.ensure_user_directories()
+    outside = tmp_path / "outside.log"
+    outside.write_bytes(b"attacker")
+    log_file.write_bytes(b"original")
+    log_file.unlink()
+    os.link(outside, log_file)
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        LoggerSetup.add_file_handler(
+            log_file,
+            path_validator=layout.writable_user_path,
+            delay=True,
+        )
+
+    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+    assert outside.read_bytes() == b"attacker"
+
+
+def test_settings_store_rejects_linked_ui_ini(tmp_path, qtbot):
+    """ui.ini 叶子被链接替换时，QSettings 在任何读写前拒绝。"""
+    from src.gui.main_window import MainWindow
+
+    from src.utils.config import get_config
+    layout = get_config().layout
+    layout.ensure_user_directories()
+    settings_path = layout.ui_settings_path
+    outside = tmp_path / "outside.ini"
+    outside.write_text("[PKV]\ngeometry=stolen\n", encoding="utf-8")
+    try:
+        settings_path.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        MainWindow()
+
+    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+    assert outside.read_text(encoding="utf-8") == (
+        "[PKV]\ngeometry=stolen\n"
+    )

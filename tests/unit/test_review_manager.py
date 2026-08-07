@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.storage.review_manager import ReviewItem, ReviewManager
 
 
@@ -616,29 +617,25 @@ class TestUpdateField:
 
 
 # ---------------------------------------------------------------------------
-# Task 1 补充：_ensure_tables 行为
+# W1：审核表只能由 migration 创建
 # ---------------------------------------------------------------------------
 
-class TestEnsureTables:
-    def test_ensure_tables_creates_required_tables(self, tmp_path):
-        """_ensure_tables 在全新 DB 上正确建表。"""
+class TestMigrationOwnedTables:
+    def test_missing_database_is_rejected_without_implicit_creation(self, tmp_path):
+        """业务管理器不得把缺库误判成 fresh install 并自行建表。"""
         db_path = tmp_path / "new_db.db"
-        # ReviewManager.__init__ 会自动调用 _ensure_tables
-        manager = ReviewManager(db_path=db_path)
-        import sqlite3 as _sqlite3
-        conn = _sqlite3.connect(str(db_path))
-        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        conn.close()
-        assert "review_queue" in tables
-        assert "review_history" in tables
 
-    def test_ensure_tables_idempotent(self, tmp_path):
-        """重复调用 _ensure_tables 不报错（IF NOT EXISTS）。"""
+        with pytest.raises(PKVRuntimeError) as error:
+            ReviewManager(db_path=db_path)
+
+        assert error.value.code is ErrorCode.DATABASE_MISSING
+        assert not db_path.exists()
+
+    def test_schema_verification_is_idempotent(self, tmp_path):
+        """已迁移 schema 可重复验证，验证过程不执行 DDL。"""
         manager = _make_manager(tmp_path)
-        # 第二次调用不应抛出异常
-        manager._ensure_tables()
-        manager._ensure_tables()
-        # 验证表依然正常
+        manager._verify_tables()
+        manager._verify_tables()
         review_id = manager.create_review(_make_item())
         assert review_id > 0
 
@@ -739,19 +736,99 @@ class TestCommentAppend:
 
 
 # ---------------------------------------------------------------------------
-# Task 1 补充：_create_tables_inline 兜底路径
+# W1：缺表时 fail closed，不保留内联 DDL 兜底
 # ---------------------------------------------------------------------------
 
-class TestCreateTablesInline:
-    def test_create_tables_inline_directly(self, tmp_path):
-        """直接调用 _create_tables_inline 能正常建表。"""
-        import sqlite3 as _sqlite3
+class TestMissingReviewSchema:
+    def test_partial_review_schema_is_rejected_without_repairing_it(self, tmp_path):
         db_path = tmp_path / "inline.db"
-        manager = ReviewManager(db_path=db_path)
-        # 再次显式调用内联建表（幂等性）
-        manager._create_tables_inline()
-        conn = _sqlite3.connect(str(db_path))
-        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        conn.close()
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute("CREATE TABLE review_queue (review_id INTEGER PRIMARY KEY)")
+
+        with pytest.raises(PKVRuntimeError) as error:
+            ReviewManager(db_path=db_path)
+
+        assert error.value.code is ErrorCode.DATABASE_SCHEMA_DRIFT
+        with sqlite3.connect(str(db_path)) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
         assert "review_queue" in tables
-        assert "review_history" in tables
+        assert "review_history" not in tables
+
+
+# ---------------------------------------------------------------------------
+# 连接初始化失败 fail-closed：row_factory/PRAGMA 任一步失败也恰好关闭一次
+# ---------------------------------------------------------------------------
+
+
+def _install_init_failure_tracking(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fail_row_factory: bool = False,
+    fail_pragma: bool = False,
+):
+    """Fault-inject sqlite3.connect with a tracking connection whose
+    row_factory assignment / PRAGMA init step can fail."""
+    real_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+    close_counts: dict[sqlite3.Connection, int] = {}
+
+    class TrackingConnection(sqlite3.Connection):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._tracked_row_factory = None
+
+        @property
+        def row_factory(self):
+            return self._tracked_row_factory
+
+        @row_factory.setter
+        def row_factory(self, value):
+            if fail_row_factory:
+                raise RuntimeError("simulated row_factory failure")
+            self._tracked_row_factory = value
+
+        def execute(self, sql, parameters=()):
+            if (
+                fail_pragma
+                and isinstance(sql, str)
+                and sql.upper().startswith("PRAGMA FOREIGN_KEYS")
+            ):
+                raise sqlite3.OperationalError("simulated PRAGMA failure")
+            return super().execute(sql, parameters)
+
+        def close(self):
+            close_counts[self] = close_counts.get(self, 0) + 1
+            super().close()
+
+    def tracked_connect(database, *args, **kwargs):
+        conn = real_connect(database, *args, factory=TrackingConnection, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", tracked_connect)
+    return opened, close_counts
+
+
+@pytest.mark.parametrize("failure_mode", ["row_factory", "pragma"])
+def test_get_connection_closes_once_when_init_step_fails(
+    tmp_path, monkeypatch, failure_mode
+):
+    """row_factory/PRAGMA 初始化任一步失败时连接也必须恰好关闭一次。"""
+    manager = _make_manager(tmp_path)
+    opened, close_counts = _install_init_failure_tracking(
+        monkeypatch,
+        fail_row_factory=(failure_mode == "row_factory"),
+        fail_pragma=(failure_mode == "pragma"),
+    )
+
+    with pytest.raises((RuntimeError, sqlite3.OperationalError)):
+        with manager._get_connection() as conn:
+            pass
+
+    assert len(opened) == 1
+    assert close_counts.get(opened[0], 0) == 1

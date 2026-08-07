@@ -43,6 +43,7 @@ class ChatViewModel(QObject):
         url_archive_started(str): URL 归档开始（url）
         url_archive_completed(str, dict): URL 归档完成（url, entry_dict）
         url_archive_failed(str, str): URL 归档失败（url, error_msg）
+        url_archive_warning(str, str): URL 归档降级/需修复（url, warning_msg）
     """
 
     token_received = Signal(str)  # token 内容
@@ -56,6 +57,7 @@ class ChatViewModel(QObject):
     url_archive_started = Signal(str)
     url_archive_completed = Signal(str, dict)
     url_archive_failed = Signal(str, str)
+    url_archive_warning = Signal(str, str)
 
     # 对话保存到知识库
     session_saved_to_kb = Signal(str, int)  # session_id, knowledge_id
@@ -249,7 +251,9 @@ class ChatViewModel(QObject):
             return
 
         if not self.api_key:
-            self.error_occurred.emit("未配置 LLM API Key，请检查 config/local.yaml")
+            self.error_occurred.emit(
+                "未配置 LLM API Key，请检查用户数据目录中的 config/local.yaml"
+            )
             return
 
         client = None
@@ -481,7 +485,19 @@ class ChatViewModel(QObject):
             )
 
             if result.success:
-                knowledge_id = result.data.get("knowledge_id")
+                data = result.data or {}
+                knowledge_id = data.get("knowledge_id")
+                # DEGRADED 仍是核心成功，但必须向用户可见地警告辅助索引需要修复；
+                # 已提交但需修复的终态同样禁止盲目重试。
+                if data.get("status") == "degraded":
+                    repairs = "、".join(data.get("repair_actions") or [])
+                    warning = (
+                        f"URL 归档核心存储已提交但需修复: status={data.get('status')}, "
+                        f"operation_id={data.get('operation_id', '')}, "
+                        f"repair={repairs or '见日志'}。请勿盲目重试归档。"
+                    )
+                    logger.warning(f"⚠️ URL 归档降级: {url} - {warning}")
+                    self.url_archive_warning.emit(url, warning)
                 if knowledge_id:
                     entry = self.store.query_by_id(knowledge_id)
                     if entry:
@@ -494,7 +510,16 @@ class ChatViewModel(QObject):
                 # 归档成功但无法获取条目
                 self.url_archive_completed.emit(url, result.data)
             else:
+                data = result.data or {}
                 error_msg = "; ".join(result.errors) if result.errors else "未知错误"
+                if data.get("core_committed") or data.get("do_not_retry"):
+                    error_msg = (
+                        f"{error_msg} [核心存储已提交或需先修复: "
+                        f"status={data.get('status')}, "
+                        f"operation_id={data.get('operation_id', '')}, "
+                        f"repair={data.get('repair_actions') or []}] "
+                        f"请勿盲目重试！"
+                    )
                 logger.warning(f"⚠️ URL 归档失败: {url} - {error_msg}")
                 self.url_archive_failed.emit(url, error_msg)
 

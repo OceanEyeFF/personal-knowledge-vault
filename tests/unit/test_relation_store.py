@@ -228,3 +228,72 @@ def test_delete_relations_by_source_type(populated_relations):
     assert deleted == 1
     assert len(remaining) == 1
     assert remaining[0].relation_source_type == RelationSourceType.FRONTMATTER_RELATED_DOCS
+
+
+def _install_init_failure_tracking(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fail_row_factory: bool = False,
+    fail_pragma: bool = False,
+):
+    """Fault-inject sqlite3.connect with a tracking connection whose
+    row_factory assignment / PRAGMA init step can fail."""
+    real_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+    close_counts: dict[sqlite3.Connection, int] = {}
+
+    class TrackingConnection(sqlite3.Connection):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._tracked_row_factory = None
+
+        @property
+        def row_factory(self):
+            return self._tracked_row_factory
+
+        @row_factory.setter
+        def row_factory(self, value):
+            if fail_row_factory:
+                raise RuntimeError("simulated row_factory failure")
+            self._tracked_row_factory = value
+
+        def execute(self, sql, parameters=()):
+            if (
+                fail_pragma
+                and isinstance(sql, str)
+                and sql.upper().startswith("PRAGMA FOREIGN_KEYS")
+            ):
+                raise sqlite3.OperationalError("simulated PRAGMA failure")
+            return super().execute(sql, parameters)
+
+        def close(self):
+            close_counts[self] = close_counts.get(self, 0) + 1
+            super().close()
+
+    def tracked_connect(database, *args, **kwargs):
+        conn = real_connect(database, *args, factory=TrackingConnection, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", tracked_connect)
+    return opened, close_counts
+
+
+@pytest.mark.parametrize("failure_mode", ["row_factory", "pragma"])
+def test_get_connection_closes_once_when_init_step_fails(
+    stores, monkeypatch, failure_mode
+):
+    """row_factory/PRAGMA 初始化任一步失败时连接也必须恰好关闭一次。"""
+    relation_store = stores["relations"]
+    opened, close_counts = _install_init_failure_tracking(
+        monkeypatch,
+        fail_row_factory=(failure_mode == "row_factory"),
+        fail_pragma=(failure_mode == "pragma"),
+    )
+
+    with pytest.raises((RuntimeError, sqlite3.OperationalError)):
+        with relation_store.get_connection() as conn:
+            pass
+
+    assert len(opened) == 1
+    assert close_counts.get(opened[0], 0) == 1

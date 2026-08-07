@@ -15,6 +15,9 @@ from unittest.mock import patch, MagicMock
 import pytest
 from PySide6.QtCore import Qt
 
+from src.runtime.errors import OperationStatus, StorageStage
+from src.storage.coordinator import StorageOperationResult
+
 # 确保项目根目录在 sys.path 中
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -361,60 +364,77 @@ class TestDeleteFeature:
 
     def test_execute_delete_refreshes_view(self, browser_view, mock_store):
         """删除条目后视图自动刷新。"""
-        mock_store.delete_entry = MagicMock(return_value=True)
+        coordinator = MagicMock()
+        coordinator.delete.return_value = StorageOperationResult(
+            operation_id="delete-refresh",
+            action="delete",
+            status=OperationStatus.DELETED,
+            stage=StorageStage.COMPLETED,
+        )
         initial_list_calls = mock_store.list_entries.call_count
 
         entry = MOCK_ENTRIES[0]
-        with patch("src.gui.stores.get_sqlite_store", return_value=mock_store), \
-             patch("src.gui.stores.get_markdown_store", return_value=MagicMock()), \
-             patch("src.gui.stores.get_vector_store", return_value=MagicMock()):
+        with patch(
+            "src.gui.stores.get_storage_coordinator", return_value=coordinator
+        ):
             browser_view._execute_delete(entry)
 
         # 验证 list_entries 被再次调用（refresh 触发）
         assert mock_store.list_entries.call_count > initial_list_calls
 
-    def test_execute_delete_calls_store_delete(self, browser_view, mock_store):
-        """删除操作调用 SQLiteStore.delete_entry()。"""
-        mock_store.delete_entry = MagicMock(return_value=True)
+    def test_execute_delete_calls_storage_coordinator(self, browser_view):
+        """GUI 删除只调用统一协调器，不绕过跨存储状态机。"""
+        coordinator = MagicMock()
+        coordinator.delete.return_value = StorageOperationResult(
+            operation_id="delete-coordinator",
+            action="delete",
+            status=OperationStatus.DELETED,
+            stage=StorageStage.COMPLETED,
+        )
 
         entry = MOCK_ENTRIES[0]
-        with patch("src.gui.stores.get_sqlite_store", return_value=mock_store), \
-             patch("src.gui.stores.get_markdown_store", return_value=MagicMock()), \
-             patch("src.gui.stores.get_vector_store", return_value=MagicMock()):
+        with patch(
+            "src.gui.stores.get_storage_coordinator", return_value=coordinator
+        ):
             browser_view._execute_delete(entry)
 
-        mock_store.delete_entry.assert_called_once_with(entry["knowledge_id"])
+        coordinator.delete.assert_called_once()
+        args, kwargs = coordinator.delete.call_args
+        assert args == (entry["knowledge_id"],)
+        assert callable(kwargs["vector_operation"])
 
     def test_execute_delete_calls_all_storage_layers(
         self,
         browser_view,
-        mock_store,
-        tmp_path,
     ):
-        """成功删除应同步清理 Markdown 与 Vector 辅助存储。"""
+        """GUI 将向量删除回调交给协调器，由协调器决定执行时机。"""
 
-        mock_store.delete_entry = MagicMock(return_value=True)
-        markdown_store = MagicMock()
-        markdown_store.vault_dir = tmp_path / "vault"
+        coordinator = MagicMock()
         vector_store = MagicMock()
         entry = MOCK_ENTRIES[0]
 
+        def run_delete(knowledge_id, *, vector_operation):
+            vector_operation(knowledge_id)
+            return StorageOperationResult(
+                operation_id="delete-all-layers",
+                action="delete",
+                status=OperationStatus.DELETED,
+                stage=StorageStage.COMPLETED,
+                knowledge_id=knowledge_id,
+            )
+
+        coordinator.delete.side_effect = run_delete
+
         with patch(
-            "src.gui.stores.get_sqlite_store",
-            return_value=mock_store,
-        ), patch(
-            "src.gui.stores.get_markdown_store",
-            return_value=markdown_store,
+            "src.gui.stores.get_storage_coordinator",
+            return_value=coordinator,
         ), patch(
             "src.gui.stores.get_vector_store",
             return_value=vector_store,
         ):
             browser_view._execute_delete(entry)
 
-        mock_store.delete_entry.assert_called_once_with(entry["knowledge_id"])
-        markdown_store.delete.assert_called_once_with(
-            Path(markdown_store.vault_dir) / entry["file_path"]
-        )
+        coordinator.delete.assert_called_once()
         vector_store.delete_vectors_for_entry.assert_called_once_with(
             entry["knowledge_id"]
         )

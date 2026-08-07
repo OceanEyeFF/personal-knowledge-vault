@@ -4,6 +4,7 @@ VectorStore 安全性回归测试
 
 import json
 import os
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -13,6 +14,8 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from src.runtime.errors import ErrorCode, PKVRuntimeError
+from src.runtime.layout import RuntimeLayout
 from src.storage.vector_store import VectorStore
 from src.utils.config import endpoint_contract_sha256
 
@@ -445,8 +448,9 @@ def test_vector_store_mismatch_does_not_echo_legacy_endpoint_credentials(
     "failure_target",
     (
         "src.storage.vector_store.json.dump",
-        "src.storage.vector_store.os.fsync",
-        "src.storage.vector_store.os.replace",
+        # fsync/replace 现在发生在 layout 的统一原子发布路径里
+        "src.runtime.layout.os.fsync",
+        "src.runtime.layout.os.replace",
     ),
     ids=("dump", "fsync", "replace"),
 )
@@ -515,7 +519,7 @@ def test_one_file_migration_failure_does_not_block_other_file(tmp_path: Path):
             raise OSError("injected doc replace failure")
         return real_replace(source, destination)
 
-    with patch("src.storage.vector_store.os.replace", side_effect=fail_doc_replace):
+    with patch("src.runtime.layout.os.replace", side_effect=fail_doc_replace):
         with pytest.raises(RuntimeError, match="doc_vectors") as exc_info:
             VectorStore(vector_dir, dim=4)
 
@@ -715,6 +719,190 @@ def test_creation_metadata_dump_failure_is_recoverable(
         assert (vector_dir / f"{name}_metadata.json").exists()
 
 
+def _leave_interrupted_initial_index_publish(vector_dir: Path) -> None:
+    """构造等价于 idx replace 后立即 os._exit 的首次创建落盘状态。"""
+    vector_dir.mkdir()
+    partial = object.__new__(VectorStore)
+    partial.index_dir = vector_dir
+    partial._contract = VectorStore._resolve_path_contract(vector_dir)
+    partial._active_pair_transactions = {}
+    partial._begin_pair_transaction("doc_vectors", allow_missing=True)
+    fake_index = SimpleNamespace(
+        save_index=lambda path: Path(path).write_bytes(b"owned interrupted index")
+    )
+    partial._publish_index("doc_vectors", fake_index)
+    # os._exit 不会执行 contextmanager/finally；这里只移除进程内引用以模拟重启。
+    partial._active_pair_transactions.clear()
+
+
+def test_restart_recovers_interrupted_initial_single_artifact(tmp_path: Path):
+    """首次创建只发布 idx 后崩溃，重启应验证归属、回滚为空并重新建对。"""
+    vector_dir = tmp_path / "vectors"
+    config = _fake_config("https://embd.example.com/v1", "model-a", 4)
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        _leave_interrupted_initial_index_publish(vector_dir)
+        marker = vector_dir / ".doc_vectors.pair-transaction.json"
+        assert marker.exists()
+        assert (vector_dir / "doc_vectors.idx").read_bytes() == (
+            b"owned interrupted index"
+        )
+        assert not (vector_dir / "doc_vectors_metadata.json").exists()
+
+        recovered = VectorStore(vector_dir, dim=4)
+
+    assert recovered.get_index_stats()["doc_count"] == 0
+    assert not marker.exists()
+    for name in ("doc_vectors", "chunk_vectors"):
+        assert (vector_dir / f"{name}.idx").exists()
+        assert (vector_dir / f"{name}_metadata.json").exists()
+    assert list(vector_dir.glob(".*.rollback")) == []
+
+
+@pytest.mark.parametrize("failure_point", ["marker_snapshot", "directory_fsync"])
+def test_restart_recovers_when_begin_fails_after_marker_publish(
+    tmp_path: Path,
+    failure_point: str,
+):
+    """marker 发布后的校验失败必须保留 rollback，供新进程恢复。"""
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    marker = vector_dir / ".doc_vectors.pair-transaction.json"
+    index_path = vector_dir / "doc_vectors.idx"
+    metadata_path = vector_dir / "doc_vectors_metadata.json"
+    original_index = index_path.read_bytes()
+    original_metadata = metadata_path.read_bytes()
+    real_snapshot = store._snapshot_file
+
+    def fail_marker_snapshot(path: Path, *, label: str):
+        if Path(path).name == marker.name:
+            raise OSError("injected marker post-publish snapshot failure")
+        return real_snapshot(path, label=label)
+
+    if failure_point == "marker_snapshot":
+        failure = patch.object(
+            store,
+            "_snapshot_file",
+            side_effect=fail_marker_snapshot,
+        )
+        expected_error = "marker post-publish snapshot failure"
+    else:
+        failure = patch.object(
+            store,
+            "_fsync_index_directory",
+            side_effect=OSError("injected marker directory fsync failure"),
+        )
+        expected_error = "marker directory fsync failure"
+
+    with failure:
+        with pytest.raises(OSError, match=expected_error):
+            store._begin_pair_transaction("doc_vectors", allow_missing=False)
+
+    assert marker.exists()
+    assert len(list(vector_dir.glob(".doc_vectors.idx.*.rollback"))) == 1
+    assert len(list(vector_dir.glob(".doc_vectors_metadata.json.*.rollback"))) == 1
+
+    recovered = VectorStore(vector_dir, dim=4)
+    assert recovered.get_index_stats()["doc_count"] == 0
+    assert index_path.read_bytes() == original_index
+    assert metadata_path.read_bytes() == original_metadata
+    assert not marker.exists()
+    assert list(vector_dir.glob(".*.rollback")) == []
+
+
+def test_restart_rolls_back_pair_when_both_publishes_finished_but_marker_remains(
+    tmp_path: Path,
+):
+    """两份 replace 已完成但提交标记未清理时，重启确定性回滚到旧配对。"""
+    vector_dir = tmp_path / "vectors"
+    config = _fake_config("https://embd.example.com/v1", "model-a", 4)
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        store = VectorStore(vector_dir, dim=4)
+        marker = vector_dir / ".chunk_vectors.pair-transaction.json"
+        with patch.object(
+            store,
+            "_clear_pair_transaction",
+            side_effect=RuntimeError("simulated exit before marker cleanup"),
+        ):
+            with pytest.raises(RuntimeError, match="simulated exit"):
+                store.add_chunk_vector(
+                    1,
+                    0,
+                    np.ones(4, dtype=np.float32),
+                )
+
+        assert marker.exists()
+        assert json.loads(
+            (vector_dir / "chunk_vectors_metadata.json").read_text(encoding="utf-8")
+        )["id_mapping"] == {"10000": [1, 0]}
+
+        recovered = VectorStore(vector_dir, dim=4)
+
+    assert recovered.get_chunk_indices_for_entry(1) == []
+    assert recovered.get_index_stats()["chunk_count"] == 0
+    assert not marker.exists()
+    assert list(vector_dir.glob(".*.rollback")) == []
+
+
+def test_restart_rolls_back_runtime_pair_after_first_of_two_publishes(
+    tmp_path: Path,
+):
+    """chunk metadata 已 replace、idx 尚未 replace 时，重启恢复旧 metadata/index。"""
+    vector_dir = tmp_path / "vectors"
+    config = _fake_config("https://embd.example.com/v1", "model-a", 4)
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        store = VectorStore(vector_dir, dim=4)
+        with store._index_pair_lock("chunk_vectors"):
+            metadata, metadata_bytes = store._load_metadata_snapshot("chunk_vectors")
+            store._begin_pair_transaction("chunk_vectors", allow_missing=False)
+            metadata["id_mapping"]["10000"] = (1, 0)
+            store._atomic_write_json(
+                vector_dir / "chunk_vectors_metadata.json",
+                metadata,
+                expected_bytes=metadata_bytes,
+                contract=store._contract,
+                pre_publish=lambda temp_path: store._prepare_pair_output(
+                    "chunk_vectors", "metadata", temp_path
+                ),
+            )
+            # 等价于第一份 replace 返回后进程直接退出，第二份 idx 尚未发布。
+            store._active_pair_transactions.clear()
+
+        marker = vector_dir / ".chunk_vectors.pair-transaction.json"
+        assert marker.exists()
+        assert json.loads(
+            (vector_dir / "chunk_vectors_metadata.json").read_text(encoding="utf-8")
+        )["id_mapping"] == {"10000": [1, 0]}
+
+        recovered = VectorStore(vector_dir, dim=4)
+
+    assert recovered.get_chunk_indices_for_entry(1) == []
+    assert recovered.get_index_stats()["chunk_count"] == 0
+    assert not marker.exists()
+    assert list(vector_dir.glob(".*.rollback")) == []
+
+
+def test_restart_preserves_unknown_replacement_during_interrupted_create(
+    tmp_path: Path,
+):
+    """事务目标被未知文件替换时必须 fail closed，保留标记且不按名称删除。"""
+    vector_dir = tmp_path / "vectors"
+    config = _fake_config("https://embd.example.com/v1", "model-a", 4)
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        _leave_interrupted_initial_index_publish(vector_dir)
+        index_path = vector_dir / "doc_vectors.idx"
+        index_path.unlink()
+        index_path.write_bytes(b"unknown replacement")
+
+        with pytest.raises(
+            PKVRuntimeError,
+            match="不属于未完成事务",
+        ):
+            VectorStore(vector_dir, dim=4)
+
+    assert index_path.read_bytes() == b"unknown replacement"
+    assert (vector_dir / ".doc_vectors.pair-transaction.json").exists()
+
+
 @pytest.mark.parametrize("writer_name", ["single", "batch"])
 def test_runtime_mapping_dump_failure_preserves_metadata_bytes(
     tmp_path: Path,
@@ -790,13 +978,14 @@ def test_runtime_add_save_failure_restores_index_metadata_pair(
     metadata_path = vector_dir / f"{pair_name}_metadata.json"
     original_index_bytes = index_path.read_bytes()
     original_metadata_bytes = metadata_path.read_bytes()
+    real_save_index = store._save_index
 
-    def corrupt_target_then_fail(name: str) -> None:
+    def publish_target_then_fail(name: str) -> None:
         assert name == pair_name
-        index_path.write_bytes(b"injected partial index")
+        real_save_index(name)
         raise OSError("injected add index save failure")
 
-    with patch.object(store, "_save_index", side_effect=corrupt_target_then_fail):
+    with patch.object(store, "_save_index", side_effect=publish_target_then_fail):
         with pytest.raises(OSError, match="add index save failure"):
             if writer_name == "doc":
                 store.add_doc_vector(1, np.ones(4, dtype=np.float32))
@@ -862,7 +1051,7 @@ def test_runtime_delete_save_failure_restores_chunk_pair_and_retry_succeeds(
 
     def fail_chunk_save(name: str) -> None:
         if name == "chunk_vectors":
-            index_path.write_bytes(b"injected partial delete index")
+            real_save_index(name)
             raise OSError("injected delete index save failure")
         real_save_index(name)
 
@@ -903,13 +1092,14 @@ def test_delete_vectors_doc_save_failure_restores_pair_and_retry_succeeds(
     metadata_path = vector_dir / "doc_vectors_metadata.json"
     original_index_bytes = index_path.read_bytes()
     original_metadata_bytes = metadata_path.read_bytes()
+    real_save_index = store._save_index
 
-    def corrupt_doc_then_fail(name: str) -> None:
+    def publish_doc_then_fail(name: str) -> None:
         assert name == "doc_vectors"
-        index_path.write_bytes(b"injected partial doc delete index")
+        real_save_index(name)
         raise OSError("injected doc delete index save failure")
 
-    with patch.object(store, "_save_index", side_effect=corrupt_doc_then_fail):
+    with patch.object(store, "_save_index", side_effect=publish_doc_then_fail):
         with pytest.raises(OSError, match="doc delete index save failure"):
             store.delete_vectors_for_entry(1)
 
@@ -929,6 +1119,34 @@ def test_delete_vectors_doc_save_failure_restores_pair_and_retry_succeeds(
     assert reopened.get_chunk_indices_for_entry(1) == []
     assert reopened.search_doc(np.ones(4, dtype=np.float32), k=10) == []
     assert reopened.search_chunk(np.ones(4, dtype=np.float32), k=10) == []
+
+
+def test_runtime_rollback_preserves_unregistered_regular_file_replacement(
+    tmp_path: Path,
+):
+    """异常回滚不得把未登记的普通文件替换误认为本进程输出。"""
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    index_path = vector_dir / "doc_vectors.idx"
+    unknown_bytes = b"unregistered external replacement"
+
+    def replace_with_unknown_then_fail(name: str) -> None:
+        assert name == "doc_vectors"
+        index_path.unlink()
+        index_path.write_bytes(unknown_bytes)
+        raise OSError("injected external replacement")
+
+    with patch.object(
+        store,
+        "_save_index",
+        side_effect=replace_with_unknown_then_fail,
+    ):
+        with pytest.raises(RuntimeError, match="index/metadata 回滚失败"):
+            store.add_doc_vector(1, np.ones(4, dtype=np.float32))
+
+    assert index_path.read_bytes() == unknown_bytes
+    assert (vector_dir / ".doc_vectors.pair-transaction.json").exists()
+    assert list(vector_dir.glob(".doc_vectors.idx.*.rollback")) != []
 
 
 def test_search_doc_uses_active_count_after_partial_and_full_delete(tmp_path: Path):
@@ -1188,7 +1406,7 @@ def test_migration_cas_does_not_overwrite_concurrent_metadata_update(
             mutated = True
 
     with patch(
-        "src.storage.vector_store.os.fsync",
+        "src.runtime.layout.os.fsync",
         side_effect=fsync_then_concurrently_update,
     ):
         with pytest.raises(RuntimeError, match="安全迁移失败"):
@@ -1574,3 +1792,257 @@ def test_current_schema_missing_v2_fingerprint_is_rejected(tmp_path: Path):
     with patch("src.storage.vector_store.get_config", return_value=config):
         with pytest.raises(RuntimeError, match="当前 metadata schema 缺少"):
             VectorStore(vector_dir, dim=4)
+
+
+# ============================================================
+# 统一 containment/link 合同：链接/硬链接叶子与原子发布故障注入
+# ============================================================
+
+
+def _runtime_layout(tmp_path: Path) -> RuntimeLayout:
+    """把数据根绑定到 tmp 目录的显式 layout（完整 containment 合同）。"""
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    return RuntimeLayout.resolve(
+        resources_root=resources,
+        user_data_root=tmp_path / "data",
+        environment={},
+    )
+
+
+def _make_hardlink(source: Path, target: Path) -> None:
+    """Windows/POSIX 都可用的硬链接故障注入。"""
+    os.link(source, target)
+
+
+def test_vector_store_init_rejects_hardlinked_metadata_leaf(tmp_path: Path):
+    """metadata 叶子被硬链接替换时，初始化必须在任何改写前拒绝。"""
+    vector_dir = tmp_path / "vectors"
+    config = _fake_config("https://embd.example.com/v1", "model-a", 4)
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        VectorStore(vector_dir, dim=4)
+
+    outside = tmp_path / "outside-metadata.bin"
+    outside.write_bytes(b"attacker-controlled")
+    metadata_path = vector_dir / "doc_vectors_metadata.json"
+    metadata_path.unlink()
+    _make_hardlink(outside, metadata_path)
+
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        with pytest.raises(RuntimeError, match="安全迁移失败") as exc_info:
+            VectorStore(vector_dir, dim=4)
+
+    assert "attacker-controlled" not in str(exc_info.value)
+    assert outside.read_bytes() == b"attacker-controlled"
+    # 硬链接未被改写为迁移后的 metadata
+    assert metadata_path.read_bytes() == b"attacker-controlled"
+
+
+def test_vector_store_write_rejects_hardlinked_lock_sidecar(tmp_path: Path):
+    """sidecar lock 叶子被硬链接替换时，任何写路径在打开前拒绝。"""
+    vector_dir = tmp_path / "vectors"
+    config = _fake_config("https://embd.example.com/v1", "model-a", 4)
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        store = VectorStore(vector_dir, dim=4)
+
+    outside = tmp_path / "outside-lock.bin"
+    outside.write_bytes(b"attacker")
+    lock_path = vector_dir / ".doc_vectors.idx.lock"
+    lock_path.unlink()
+    _make_hardlink(outside, lock_path)
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        store.add_doc_vector(1, np.ones(4, dtype=np.float32))
+
+    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+    assert outside.read_bytes() == b"attacker"
+
+
+def test_vector_store_rejects_symlinked_index_dir(tmp_path: Path):
+    """索引目录本身是链接时，init 在任何写入前拒绝。"""
+    layout = _runtime_layout(tmp_path)
+    outside = tmp_path / "outside-vectors"
+    outside.mkdir()
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    linked = data_root / "vectors"
+    try:
+        linked.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        VectorStore(linked, dim=4, layout=layout)
+
+    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+    assert list(outside.iterdir()) == []
+
+
+def test_vector_store_explicit_layout_enforces_containment(tmp_path: Path):
+    """显式 layout 时，索引目录越过数据根必须拒绝。"""
+    layout = _runtime_layout(tmp_path)
+    outside = tmp_path / "outside-vectors"
+    outside.mkdir()
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        VectorStore(outside, dim=4, layout=layout)
+
+    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+    assert list(outside.iterdir()) == []
+
+
+def test_vector_store_explicit_layout_writes_inside_data_root(tmp_path: Path):
+    """显式 layout 的合法索引目录可正常创建并读写（含 lock/metadata/temp）。"""
+    layout = _runtime_layout(tmp_path)
+    config = _fake_config("https://embd.example.com/v1", "model-a", 4)
+
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        store = VectorStore(layout.vector_index_dir, dim=4, layout=layout)
+        store.add_doc_vector(1, np.ones(4, dtype=np.float32))
+        store.add_chunk_vector(1, 0, np.ones(4, dtype=np.float32))
+
+        reopened = VectorStore(layout.vector_index_dir, dim=4, layout=layout)
+        assert reopened.get_index_stats()["doc_count"] == 1
+        assert reopened.get_chunk_indices_for_entry(1) == [0]
+    assert list(layout.vector_index_dir.glob(".*.tmp")) == []
+    assert list(layout.vector_index_dir.glob(".*.rollback")) == []
+
+
+def test_vector_store_atomic_write_rejects_link_swap_before_replace(
+    tmp_path: Path,
+):
+    """writer 把 metadata 目标换成硬链接时，发布前检查拒绝且外部文件不变。"""
+    import src.storage.vector_store as vector_store_module
+
+    layout = _runtime_layout(tmp_path)
+    config = _fake_config("https://embd.example.com/v1", "model-a", 4)
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        store = VectorStore(layout.vector_index_dir, dim=4, layout=layout)
+
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"attacker")
+    target = layout.vector_index_dir / "probe.json"
+    target.write_bytes(b"original")
+    real_publish = vector_store_module._contract_publish
+
+    def evil_publish(
+        contract,
+        path,
+        *,
+        label,
+        writer=None,
+        data=None,
+        pre_replace=None,
+    ):
+        def evil(temp_path):
+            if writer is not None:
+                writer(temp_path)
+            target.unlink()
+            _make_hardlink(outside, target)
+
+        return real_publish(
+            contract,
+            path,
+            label=label,
+            writer=evil,
+            data=data,
+            pre_replace=pre_replace,
+        )
+
+    with patch(
+        "src.storage.vector_store._contract_publish",
+        side_effect=evil_publish,
+    ):
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            store._atomic_write_json(
+                target,
+                {"generation": 1},
+                contract=store._contract,
+            )
+
+    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+    assert outside.read_bytes() == b"attacker"
+    assert target.read_bytes() == b"attacker"
+    assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
+
+
+def test_vector_store_atomic_write_post_replace_swap_detected(
+    tmp_path: Path,
+):
+    """replace 后 metadata 目标被换成硬链接时，发布后核验必须失败。"""
+    layout = _runtime_layout(tmp_path)
+    target = layout.tmp_dir / "leaf.json"
+    layout.ensure_user_directories()
+    target.write_bytes(b"original")
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"attacker")
+    real_replace = os.replace
+
+    def swap_after_replace(source, destination):
+        result = real_replace(source, destination)
+        target.unlink()
+        _make_hardlink(outside, target)
+        return result
+
+    with patch("src.runtime.layout.os.replace", side_effect=swap_after_replace):
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            layout.atomic_publish_user_file(
+                target,
+                label="探测文件",
+                data=b"new",
+            )
+
+    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+    assert outside.read_bytes() == b"attacker"
+    assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
+
+
+def test_vector_store_rollback_guard_rejects_replaced_target(tmp_path: Path):
+    """回滚恢复前目标被换成硬链接时，恢复失败且保留 rollback 副本。"""
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    store.add_doc_vector(1, np.ones(4, dtype=np.float32))
+
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"attacker")
+    index_path = vector_dir / "doc_vectors.idx"
+
+    def corrupt_save_then_swap(name: str) -> None:
+        # 触发回滚后把目标替换为硬链接，让恢复前核验失败
+        index_path.unlink()
+        _make_hardlink(outside, index_path)
+        raise OSError("injected save failure")
+
+    with patch.object(store, "_save_index", side_effect=corrupt_save_then_swap):
+        with pytest.raises(RuntimeError, match="回滚失败"):
+            store.add_doc_vector(2, np.ones(4, dtype=np.float32))
+
+    assert outside.read_bytes() == b"attacker"
+    # 回滚副本保留（restore 因链接核验失败而放弃覆盖）
+    assert list(vector_dir.glob(".doc_vectors.idx.*.rollback")) != []
+
+
+def test_vector_store_open_identity_check_detects_replaced_leaf(
+    tmp_path: Path,
+):
+    """open 后 metadata 路径被换成另一文件时，身份核验必须拒绝。"""
+    layout = _runtime_layout(tmp_path)
+    target = layout.tmp_dir / "leaf.bin"
+    layout.ensure_user_directories()
+    target.write_bytes(b"original")
+    real_lstat = os.lstat
+    swapped = tmp_path / "swapped.bin"
+
+    def swapped_lstat(path):
+        info = real_lstat(path)
+        if os.path.abspath(os.fspath(path)) == os.path.abspath(os.fspath(target)):
+            swapped.write_bytes(b"other")
+            return real_lstat(swapped)
+        return info
+
+    with patch("src.runtime.layout.os.lstat", side_effect=swapped_lstat):
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            with layout.open_user_file(target, "rb", label="探测文件") as f:
+                f.read()
+
+    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE

@@ -15,6 +15,7 @@ import yaml
 
 from src.relations.models import RelationRecord, RelationSourceType, RelationType
 from src.storage.relation_store import RelationStore
+from src.storage.vault_paths import VaultPathGateway
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -592,7 +593,8 @@ class RelationBackfillService:
 
     def __init__(self, db_path: Path, vault_dir: Path):
         self.db_path = Path(db_path)
-        self.vault_dir = Path(vault_dir)
+        self.vault_gateway = VaultPathGateway(vault_dir, create=False)
+        self.vault_dir = self.vault_gateway.vault_dir
         self.relation_store = RelationStore(self.db_path)
 
     def backfill(
@@ -628,11 +630,11 @@ class RelationBackfillService:
             report.limitation_notes.append("关系表不存在，未执行冲突检测。")
 
         for entry in entries:
-            if not entry.file_path.exists():
+            try:
+                markdown_text = self.vault_gateway.read_text(entry.file_path)
+            except FileNotFoundError:
                 report.missing_files.append(str(entry.file_path))
                 continue
-
-            markdown_text = entry.file_path.read_text(encoding="utf-8")
             markdown_refs, markdown_issues = extract_markdown_link_references(
                 markdown_text
             )
@@ -765,10 +767,14 @@ class RelationBackfillService:
 
         query += " ORDER BY knowledge_id ASC"
 
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(query, tuple(params)).fetchall()
-        conn.close()
+        from src.storage.sqlite_connection import connect_existing_sqlite
+
+        conn = connect_existing_sqlite(self.db_path, read_only=True)
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(query, tuple(params)).fetchall()
+        finally:
+            conn.close()
 
         return [
             KnowledgeEntryRef(
@@ -789,14 +795,9 @@ class RelationBackfillService:
         return [entry for entry in entries if entry.knowledge_id in normalized_ids]
 
     def _normalize_entry_file_path(self, raw_path: str) -> Path:
-        path = Path(raw_path)
-        if path.is_absolute():
-            return path.resolve()
-
-        vault_candidate = (self.vault_dir / path).resolve()
-        if vault_candidate.exists():
-            return vault_candidate
-        return path.resolve()
+        # The persisted path is database-controlled input. Historical absolute
+        # paths remain compatible only when they are still inside this Vault.
+        return self.vault_gateway.resolve(raw_path, must_exist=False)
 
     def _build_entry_path_maps(
         self, entries: Iterable[KnowledgeEntryRef]
@@ -867,11 +868,23 @@ class RelationBackfillService:
         target_path = Path(target)
         candidates: List[Path] = []
         if target_path.is_absolute():
-            candidates.append(target_path.resolve())
+            try:
+                candidates.append(self.vault_gateway.resolve(target_path))
+            except (FileNotFoundError, ValueError, RuntimeError):
+                return []
         else:
-            candidates.append((source_file_path.parent / target_path).resolve())
-            candidates.append((self.vault_dir / target_path).resolve())
-            candidates.append(target_path)
+            for candidate in (
+                source_file_path.parent / target_path,
+                self.vault_dir / target_path,
+            ):
+                try:
+                    candidates.append(self.vault_gateway.resolve(candidate))
+                except (FileNotFoundError, ValueError, RuntimeError):
+                    continue
+            # Preserve filename-only matching for ordinary relative references,
+            # but never let traversal fall back to an unrelated in-Vault file.
+            if ".." not in target_path.parts:
+                candidates.append(target_path)
 
         if target_path.suffix == "":
             candidates.extend(

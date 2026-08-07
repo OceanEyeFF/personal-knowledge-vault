@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "description": "M13 bundled read-only resource allowlist; user data is never collected.",
+  "include_globs": [
+    "config/config.yaml",
+    "config/custom_dict.txt",
+    "config/workflows/*.yaml",
+    "scripts/migrations/*.sql",
+    "src/ai/prompts/*.txt",
+    "src/gui/styles/*.qss"
+  ],
+  "build_collections": [
+    "PySide6 Qt plugins and native libraries selected by the frozen dependency graph"
+  ],
+  "forbidden_globs": [
+    "**/.env",
+    "**/.env.*",
+    "**/local.yaml",
+    "**/*.db",
+    "**/*.sqlite",
+    "**/*.sqlite3",
+    "**/*.log",
+    "**/*.idx",
+    "**/*_metadata.json",
+    ".data/**",
+    ".data-test/**",
+    "vault/**",
+    "logs/**",
+    "tmp/**"
+  ]
+}

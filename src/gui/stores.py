@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from src.storage.sqlite_store import SQLiteStore
     from src.storage.markdown_store import MarkdownStore
     from src.storage.vector_store import VectorStore
+    from src.storage.coordinator import StorageCoordinator
     from src.retrieval.bm25_retriever import BM25Retriever
 
 logger = logging.getLogger("pkv.gui.stores")
@@ -21,6 +22,7 @@ _sqlite_store: Optional["SQLiteStore"] = None
 _markdown_store: Optional["MarkdownStore"] = None
 _vector_store: Optional["VectorStore"] = None
 _bm25_retriever: Optional["BM25Retriever"] = None
+_storage_coordinator: Optional["StorageCoordinator"] = None
 
 
 def get_sqlite_store() -> "SQLiteStore":
@@ -100,10 +102,28 @@ def get_bm25_retriever() -> "BM25Retriever":
     return _bm25_retriever
 
 
+def get_storage_coordinator() -> "StorageCoordinator":
+    """获取 GUI 归档/删除共用的跨存储状态机。"""
+
+    global _storage_coordinator
+    if _storage_coordinator is None:
+        from src.storage.coordinator import StorageCoordinator
+        from src.utils.config import get_config
+
+        config = get_config()
+        _storage_coordinator = StorageCoordinator(
+            get_markdown_store(),
+            get_sqlite_store(),
+            config.layout.runtime_state_dir / "operations",
+        )
+    return _storage_coordinator
+
+
 def reset_stores() -> None:
     """重置所有单例（仅用于测试）。"""
-    global _sqlite_store, _markdown_store, _vector_store, _bm25_retriever
+    global _sqlite_store, _markdown_store, _vector_store, _bm25_retriever, _storage_coordinator
     _sqlite_store = None
     _markdown_store = None
     _vector_store = None
     _bm25_retriever = None
+    _storage_coordinator = None

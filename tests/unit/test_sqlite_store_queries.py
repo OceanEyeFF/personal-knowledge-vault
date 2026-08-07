@@ -377,7 +377,9 @@ def test_chunk_and_entry_validation_paths(store: SQLiteStore, tmp_path: Path) ->
 
     assert store.query_by_id(9999) is None
     assert store.delete_entry(9999) is False
-    assert store.table_exists("chat_sessions") is False
+    # initialize() now delegates to the complete bundled migration chain.
+    assert store.table_exists("chat_sessions") is True
+    assert store.table_exists("definitely_missing") is False
 
     entry = Entry(
         title="Delete Me",

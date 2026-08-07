@@ -41,7 +41,9 @@ def isolate_vector_config(
 
 
 
-def test_vector_retriever_get_metadata(tmp_path: Path):
+def test_vector_retriever_get_metadata(
+    isolate_vector_config: Config,
+):
     """
     测试 VectorRetriever._get_metadata() 方法
 
@@ -50,11 +52,10 @@ def test_vector_retriever_get_metadata(tmp_path: Path):
     2. 返回的字典包含所有必要字段
     """
     # 创建临时测试环境
-    temp_dir = tmp_path
-    db_path = temp_dir / "test.db"
-    vault_dir = temp_dir / "vault"
-    vector_dir = temp_dir / "vectors"
-    vault_dir.mkdir()
+    db_path = isolate_vector_config.db_path
+    vault_dir = isolate_vector_config.vault_dir
+    vector_dir = isolate_vector_config.vector_index_dir
+    vault_dir.mkdir(parents=True)
     vector_dir.mkdir()
 
     # 初始化存储
@@ -101,16 +102,17 @@ def test_vector_retriever_get_metadata(tmp_path: Path):
     assert metadata["source_type"] == entry.source_type, "source_type 应该匹配"
     assert metadata["tags"] == "向量检索,测试", "tags 应该匹配"
 
-def test_vector_retriever_search_chunks_returns_chunk_metadata(tmp_path: Path):
+def test_vector_retriever_search_chunks_returns_chunk_metadata(
+    isolate_vector_config: Config,
+):
     """search_chunks should map vector hits back to chunk rows."""
     from unittest.mock import Mock
     from src.retrieval.vector_retriever import VectorRetriever
 
-    temp_dir = tmp_path
-    db_path = temp_dir / "test.db"
-    vault_dir = temp_dir / "vault"
-    vector_dir = temp_dir / "vectors"
-    vault_dir.mkdir()
+    db_path = isolate_vector_config.db_path
+    vault_dir = isolate_vector_config.vault_dir
+    vector_dir = isolate_vector_config.vector_index_dir
+    vault_dir.mkdir(parents=True)
     vector_dir.mkdir()
 
     md_store = MarkdownStore(vault_dir)

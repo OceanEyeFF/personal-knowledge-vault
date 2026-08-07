@@ -44,7 +44,7 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
    - 当前状态：三个 Tool 具备明确结构、limitation、citation/provenance 与降级合同
    - 剩余边界：仍为弱语义/启发式版本；全局语义桥接、正文事件抽取与高级对比建模属于未来 full 增强
 3. **真实库回填/快照验证仍未执行**
-   - 当前状态：测试副本库能力与合成开发 vault 重建演练已具备；后者完成 `rebuilt -> up_to_date -> checked`，schema `1.2.3`、8 migrations、3 seed
+   - 当前状态：测试副本库能力与合成开发 vault 重建演练已具备；后者完成 `rebuilt -> up_to_date -> checked`，schema `1.2.4`、9 migrations、3 seed
    - 阻塞项：user-only launcher U1/G8 与迁移受控入口 FT5 尚未交付，不得执行真实快照
 4. **关系来源扩展仍未完成**
    - 当前状态：已从 Markdown 显式链接 / `related_docs` 扩展到 Front Matter 关系字段 `children` / `version_of`
@@ -163,7 +163,7 @@ Phase B 负责把“关系层基础”推进为“可调用的推理型 MCP 能�
 - 当前 `scripts/backfill_relations.py` 已支持可选质量门禁参数：`--min-coverage`、`--max-noise`、`--max-conflict`、`--fail-on-gate`
 - 当前已补入最小关系推理回归样例集：`tests/fixtures/phase_b_5_4_min_regression.yaml`
 - 当前已新增 `docs/operations/关系回填质量验证指南.md`，用于规范测试副本库的 dry-run / apply 演练与回归命令
-- 合成开发 vault 已完成 `rebuilt -> up_to_date -> checked` 演练（schema `1.2.3`、8 migrations、3 seed）；这不是正式真实库回填
+- 合成开发 vault 已完成 `rebuilt -> up_to_date -> checked` 演练（schema `1.2.4`、9 migrations、3 seed）；这不是正式真实库回填
 - 真实快照执行仍受 U1/G8 与迁移 FT5 阻塞，本轮未执行真实数据
 
 ---

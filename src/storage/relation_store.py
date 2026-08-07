@@ -18,6 +18,7 @@ from src.relations.models import (
     normalize_relation_source_types,
     normalize_relation_types,
 )
+from src.storage.sqlite_connection import connect_existing_sqlite
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -28,14 +29,20 @@ class RelationStore:
 
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     @contextmanager
     def get_connection(self):
-        """获取数据库连接。"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
+        """获取数据库连接。
+
+        row_factory/PRAGMA 初始化任一步失败时也必须关闭连接，且恰好关闭一次。
+        """
+        conn = connect_existing_sqlite(self.db_path)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+        except Exception:
+            conn.close()
+            raise
         try:
             yield conn
             conn.commit()
