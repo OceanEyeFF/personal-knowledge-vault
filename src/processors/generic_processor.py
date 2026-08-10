@@ -4,13 +4,12 @@ Generic web page processor.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Dict, Optional
 
 from bs4 import BeautifulSoup, Tag
-import requests
 
 from src.processors.base import BaseProcessor
+from src.processors.safe_fetch import SafeFetcher, describe_url_target
 from src.storage.markdown_store import Entry
 from src.utils.config import get_config
 from src.utils.logger import get_logger
@@ -21,7 +20,12 @@ logger = get_logger(__name__)
 class GenericProcessor(BaseProcessor):
     """Processor for generic web pages."""
 
-    def __init__(self, timeout: float = 20.0, user_agent: Optional[str] = None):
+    def __init__(
+        self,
+        timeout: float = 20.0,
+        user_agent: Optional[str] = None,
+        safe_fetcher: SafeFetcher | None = None,
+    ):
         """
         Initialize the processor.
 
@@ -31,6 +35,10 @@ class GenericProcessor(BaseProcessor):
         """
         config = get_config()
         self.timeout = timeout
+        self._init_safe_fetcher(
+            timeout_seconds=timeout,
+            safe_fetcher=safe_fetcher,
+        )
         self.user_agent = user_agent or config.get(
             "processors.generic.user_agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -52,10 +60,10 @@ class GenericProcessor(BaseProcessor):
         Returns:
             Entry with extracted content.
         """
-        logger.info("GenericProcessor processing url=%s", url)
+        logger.info("GenericProcessor processing target=%s", describe_url_target(url))
         html = await self._fetch_html(url)
         if not html:
-            raise ValueError(f"Empty HTML content for url={url}")
+            raise ValueError("Empty HTML content returned by target")
 
         soup = BeautifulSoup(html, "lxml")
         metadata = self._extract_metadata(soup)
@@ -78,24 +86,18 @@ class GenericProcessor(BaseProcessor):
         )
         entry.metadata = metadata
 
-        logger.info("GenericProcessor completed url=%s title=%s", url, title)
+        logger.info(
+            "GenericProcessor completed target=%s content_length=%s",
+            describe_url_target(url),
+            len(markdown),
+        )
         return entry
 
     async def _fetch_html(self, url: str) -> str:
-        """Fetch HTML using requests in a background thread."""
+        """Fetch HTML through the DNS-pinned SSRF-safe transport."""
         headers = {"User-Agent": self.user_agent}
-
-        def _request() -> str:
-            response = requests.get(url, headers=headers, timeout=self.timeout)
-            response.raise_for_status()
-            response.encoding = response.apparent_encoding or response.encoding
-            return response.text
-
-        try:
-            return await asyncio.to_thread(_request)
-        except requests.RequestException as exc:
-            logger.error("Failed to fetch url=%s error=%s", url, exc)
-            raise ValueError(f"Failed to fetch url={url}: {exc}") from exc
+        response = await self._fetch_public_url(url, headers=headers)
+        return response.text
 
     def _extract_metadata(self, soup: BeautifulSoup) -> Dict[str, str]:
         """Extract Open Graph metadata with fallback to title tags."""

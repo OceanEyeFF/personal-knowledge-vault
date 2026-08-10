@@ -22,6 +22,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.processors.zhihu_processor import ZhihuProcessor
+from src.processors.safe_fetch import SafeResponse
+from src.runtime.errors import ErrorCode, PKVRuntimeError
 
 
 # ============================================================
@@ -49,7 +51,13 @@ def login_wall_html() -> str:
 def test_zhihu_can_handle():
     """can_handle should recognize Zhihu URLs."""
     assert ZhihuProcessor.can_handle("https://www.zhihu.com/question/123456")
+    assert ZhihuProcessor.can_handle("https://zhihu.com/question/123456")
+    assert ZhihuProcessor.can_handle("https://zhuanlan.zhihu.com/p/123456")
     assert not ZhihuProcessor.can_handle("https://example.com")
+    assert not ZhihuProcessor.can_handle("https://owned.zhihu.com/question/123456")
+    assert not ZhihuProcessor.can_handle(
+        "https://evil.example/?next=www.zhihu.com"
+    )
 
 
 # ============================================================
@@ -97,6 +105,20 @@ async def test_zhihu_process_without_publish_time_keeps_published_at_empty():
     metadata = getattr(entry, "metadata", {})
     assert "published_time" not in metadata
     assert entry.published_at is None
+
+
+@pytest.mark.asyncio
+async def test_zhihu_empty_response_error_does_not_echo_url_secret():
+    processor = ZhihuProcessor()
+    secret = "pkv-url-secret"
+
+    with patch.object(processor, "_fetch_html", new=AsyncMock(return_value="")):
+        with pytest.raises(ValueError) as exc_info:
+            await processor.process(
+                f"https://www.zhihu.com/question/123?token={secret}"
+            )
+
+    assert secret not in str(exc_info.value)
 
 
 # ============================================================
@@ -208,47 +230,111 @@ class TestCookieParsing:
 # ============================================================
 
 class TestCookieInjection:
-    """测试 Cookie 注入到 Playwright 和 requests。"""
+    """测试 Cookie 只注入 DNS-pinned safe-fetch 请求。"""
 
     @pytest.mark.asyncio
-    async def test_cookie_injected_to_requests(self):
-        """requests fallback 注入 Cookie 到 headers。"""
-        processor = ZhihuProcessor()
+    @pytest.mark.parametrize(
+        "hostname,path",
+        [
+            ("zhihu.com", "/question/123"),
+            ("www.zhihu.com", "/question/123"),
+            ("zhuanlan.zhihu.com", "/p/123"),
+        ],
+    )
+    async def test_cookie_only_injected_to_exact_content_hosts(
+        self,
+        hostname: str,
+        path: str,
+    ):
+        """安全传输请求注入 Cookie 到 headers。"""
+        target_url = f"https://{hostname}{path}"
+        fetcher = MagicMock()
+        fetcher.fetch = AsyncMock(return_value=SafeResponse(
+            url=target_url,
+            status_code=200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            content="<html><body>正常内容</body></html>".encode(),
+        ))
+        processor = ZhihuProcessor(safe_fetcher=fetcher)
         processor._cookie_str = "_zap=abc; d_c0=xyz"
 
-        captured_headers = {}
+        html = await processor._fetch_with_requests(target_url)
 
-        def mock_get(url, headers=None, timeout=None):
-            captured_headers.update(headers or {})
-            resp = MagicMock()
-            resp.text = "<html><body>正常内容</body></html>"
-            resp.encoding = "utf-8"
-            resp.apparent_encoding = "utf-8"
-            return resp
-
-        with patch("src.processors.zhihu_processor.requests.get", side_effect=mock_get):
-            html = await processor._fetch_with_requests("https://www.zhihu.com/question/123")
-
-        assert captured_headers.get("Cookie") == "_zap=abc; d_c0=xyz"
+        headers = fetcher.fetch.await_args.kwargs["headers"]
+        assert headers.get("Cookie") == "_zap=abc; d_c0=xyz"
+        assert fetcher.fetch.await_args.args == (target_url,)
         assert "正常内容" in html
 
     @pytest.mark.asyncio
     async def test_no_cookie_no_header(self):
-        """无 Cookie 时 requests headers 不包含 Cookie 字段。"""
-        processor = ZhihuProcessor()
+        """无 Cookie 时安全传输 headers 不包含 Cookie 字段。"""
+        fetcher = MagicMock()
+        fetcher.fetch = AsyncMock(return_value=SafeResponse(
+            url="https://www.zhihu.com/question/123",
+            status_code=200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            content="<html><body>内容</body></html>".encode(),
+        ))
+        processor = ZhihuProcessor(safe_fetcher=fetcher)
         processor._cookie_str = None
 
-        captured_headers = {}
+        await processor._fetch_with_requests("https://www.zhihu.com/question/123")
 
-        def mock_get(url, headers=None, timeout=None):
-            captured_headers.update(headers or {})
-            resp = MagicMock()
-            resp.text = "<html><body>内容</body></html>"
-            resp.encoding = "utf-8"
-            resp.apparent_encoding = "utf-8"
-            return resp
+        headers = fetcher.fetch.await_args.kwargs["headers"]
+        assert "Cookie" not in headers
 
-        with patch("src.processors.zhihu_processor.requests.get", side_effect=mock_get):
-            await processor._fetch_with_requests("https://www.zhihu.com/question/123")
+    @pytest.mark.asyncio
+    async def test_cookie_is_never_sent_to_non_zhihu_target(self):
+        fetcher = MagicMock()
+        fetcher.fetch = AsyncMock()
+        processor = ZhihuProcessor(safe_fetcher=fetcher)
+        processor._cookie_str = "session=secret"
 
-        assert "Cookie" not in captured_headers
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            await processor._fetch_with_requests(
+                "https://evil.example/?next=www.zhihu.com"
+            )
+
+        assert exc_info.value.code is ErrorCode.SSRF_TARGET_FORBIDDEN
+        fetcher.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cookie_is_never_sent_to_arbitrary_zhihu_subdomain(
+        self,
+        caplog,
+    ):
+        cookie_canary = "ZHIHU-COOKIE-SECRET-CANARY"
+        url_canary = "ZHIHU-URL-SECRET-CANARY"
+        fetcher = MagicMock()
+        fetcher.fetch = AsyncMock()
+        processor = ZhihuProcessor(safe_fetcher=fetcher)
+        processor._cookie_str = f"session={cookie_canary}"
+
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            await processor._fetch_with_requests(
+                f"https://owned.zhihu.com/question/123?token={url_canary}"
+            )
+
+        assert exc_info.value.code is ErrorCode.SSRF_TARGET_FORBIDDEN
+        assert exc_info.value.stage == "network_policy"
+        assert exc_info.value.recoverable is False
+        assert cookie_canary not in repr(exc_info.value.to_dict())
+        assert url_canary not in repr(exc_info.value.to_dict())
+        assert cookie_canary not in caplog.text
+        assert url_canary not in caplog.text
+        fetcher.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cookie_is_never_sent_over_plain_http(self):
+        fetcher = MagicMock()
+        fetcher.fetch = AsyncMock()
+        processor = ZhihuProcessor(safe_fetcher=fetcher)
+        processor._cookie_str = "session=secret"
+
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            await processor._fetch_with_requests(
+                "http://www.zhihu.com/question/123"
+            )
+
+        assert exc_info.value.code is ErrorCode.SSRF_TARGET_FORBIDDEN
+        fetcher.fetch.assert_not_awaited()

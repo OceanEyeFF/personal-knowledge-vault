@@ -260,8 +260,10 @@ def test_search_json_format_no_results(cli: CLITester):
     data = json.loads(result.stdout)
     assert data == {
         "query": "不存在的关键词xyz123abc",
+        "status": "no_hits",
         "strategy": "bm25",
         "total": 0,
+        "issues": [],
         "results": [],
     }
 

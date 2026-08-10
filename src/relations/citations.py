@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
 from typing import Any
 from typing import Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, unquote_plus, urlparse, urlsplit, urlunsplit
 
 import frontmatter
 
@@ -80,13 +81,131 @@ _LOCAL_PATH_KEYS = {
     "target_file_path",
 }
 
+_PUBLIC_URL_SENSITIVE_QUERY_NAMES = frozenset(
+    {
+        "access_token",
+        "api_key",
+        "apikey",
+        "auth",
+        "auth_token",
+        "authorization",
+        "basic_auth",
+        "bearer",
+        "bearer_token",
+        "client_secret",
+        "code",
+        "cookie",
+        "credential",
+        "credentials",
+        "id_token",
+        "jsession_id",
+        "jsessionid",
+        "jsessionidsso",
+        "jwt",
+        "jwt_token",
+        "key",
+        "oauth_token",
+        "pass",
+        "passcode",
+        "passphrase",
+        "passwd",
+        "password",
+        "phpsessid",
+        "private_key",
+        "pwd",
+        "refresh_token",
+        "secret",
+        "session",
+        "session_id",
+        "session_key",
+        "sessionid",
+        "session_token",
+        "sid",
+        "sig",
+        "signature",
+        "subscription_key",
+        "token",
+        "x_amz_credential",
+        "x_amz_security_token",
+        "x_amz_signature",
+        "x_api_key",
+        "x_auth_token",
+        "x_goog_credential",
+        "x_goog_signature",
+    }
+)
+_PUBLIC_URL_SENSITIVE_QUERY_MARKERS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "auth",
+        "authorization",
+        "bearer",
+        "cookie",
+        "credential",
+        "jwt",
+        "password",
+        "secret",
+        "session",
+        "sig",
+        "signature",
+        "token",
+    }
+)
+_PUBLIC_URL_REDACTED_VALUE = "redacted"
+_NESTED_URL_USERINFO_RE = re.compile(
+    # WHATWG special-scheme URLs may omit one or both authority slashes and
+    # are still normalized into credential-bearing URLs by browsers/clients.
+    r"(?:(?:https?|ftp|wss?):[\\/]*|//)[^/?#&;]*@",
+    re.IGNORECASE,
+)
+
+
+def _decode_bounded(value: str, *, plus: bool = False) -> tuple[str, bool]:
+    """Decode at most eight layers and report an unsafe remaining layer."""
+
+    decoder = unquote_plus if plus else unquote
+    decoded = str(value)
+    for _ in range(8):
+        next_value = decoder(decoded)
+        if next_value == decoded:
+            return decoded, False
+        decoded = next_value
+    return decoded, decoder(decoded) != decoded
+
+
+def _has_unsafe_decoded_transport_residual(value: str) -> bool:
+    """Reject decoded URL sub-values that can be reinterpreted as private data.
+
+    Query and matrix values may hide another URL or filesystem path behind one
+    or more percent-encoding layers.  Checking the raw URL alone is therefore
+    insufficient: browsers and downstream clients commonly decode these values
+    again before logging, redirecting, or displaying them.
+    """
+
+    if "\\" in value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return True
+    if re.search(r"(?i)(?:^|[/?&;=#])file:", value):
+        return True
+    for component in re.split(r"[?&;#]", value):
+        _key, separator, nested_value = component.partition("=")
+        if separator and is_local_reference(nested_value):
+            return True
+    return False
+
 
 def is_local_reference(value: str) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
-    decoded = unquote(text)
-    if urlparse(decoded).scheme.lower() == "file":
+    decoded, decode_exhausted = _decode_bounded(text)
+    if decode_exhausted:
+        return True
+    try:
+        parsed_scheme = urlparse(decoded).scheme.lower()
+    except ValueError:
+        return True
+    if parsed_scheme == "file":
         return True
     windows_path = PureWindowsPath(decoded)
     return (
@@ -99,11 +218,154 @@ def is_local_reference(value: str) -> bool:
 
 
 def sanitize_public_source_url(value: Any) -> str:
-    """Return a remote-safe source URL, clearing filesystem-backed references."""
+    """Return a public HTTP(S) citation URL without embedded credentials."""
     text = str(value or "").strip()
     if not text or is_local_reference(text):
         return ""
-    return text
+    if "\\" in text or any(ord(char) <= 32 or ord(char) == 127 for char in text):
+        return ""
+
+    try:
+        parsed = urlsplit(text)
+        scheme = parsed.scheme.lower()
+        hostname = parsed.hostname
+        port = parsed.port
+    except (TypeError, ValueError):
+        return ""
+    if scheme not in {"http", "https"} or not hostname or "%" in hostname:
+        return ""
+    try:
+        hostname = hostname.encode("idna").decode("ascii")
+    except UnicodeError:
+        return ""
+
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    default_port = 443 if scheme == "https" else 80
+    netloc = host if port in (None, default_port) else f"{host}:{port}"
+    path = _redact_public_url_path_matrix(parsed.path or "/")
+    query = _redact_public_url_query(parsed.query)
+    # Fragments are neither sent to the source server nor stable MCP locators;
+    # dropping them also prevents a second credential-bearing parameter surface.
+    return urlunsplit((scheme, netloc, path, query, ""))
+
+
+def _redact_public_url_path_matrix(path: str) -> str:
+    """Replace credential-bearing ``;name=value`` matrix values in URL paths."""
+
+    def replace(match: re.Match[str]) -> str:
+        if not _is_sensitive_public_query_key(match.group("key")):
+            return match.group(0)
+        return (
+            f"{match.group('prefix')}{match.group('key')}="
+            f"{_PUBLIC_URL_REDACTED_VALUE}"
+        )
+
+    sanitized = re.sub(
+        (
+            r"(?P<prefix>;|%3[bB])"
+            r"(?P<key>[^/;=?#]+)=(?P<value>[^/;]*)"
+        ),
+        replace,
+        path,
+    )
+    decoded, decode_exhausted = _decode_bounded(sanitized)
+    if decode_exhausted:
+        return "/"
+    if _has_unsafe_decoded_transport_residual(decoded):
+        return "/"
+    if _NESTED_URL_USERINFO_RE.search(decoded):
+        return "/"
+    for match in re.finditer(r";(?P<key>[^/;=?#]+)=(?P<value>[^/;]*)", decoded):
+        if (
+            _is_sensitive_public_query_key(match.group("key"))
+            and match.group("value") != _PUBLIC_URL_REDACTED_VALUE
+        ):
+            # Ambiguous/double-encoded matrix syntax cannot be rewritten while
+            # preserving exact path semantics, so retain only the safe origin.
+            return "/"
+    return sanitized
+
+
+def _redact_public_url_query(query: str) -> str:
+    """Preserve query order and safe values while replacing credential values."""
+
+    parts = re.split(r"([&;])", query)
+    sanitized_parts: list[str] = []
+    pending_separator = ""
+    for index in range(0, len(parts), 2):
+        parameter = parts[index]
+        decoded_parameter, decode_exhausted = _decode_bounded(
+            parameter,
+            plus=True,
+        )
+        if decode_exhausted:
+            return ""
+        decoded_key, decoded_separator, _decoded_value = decoded_parameter.partition("=")
+
+        if "=" in parameter:
+            key, _separator, _value = parameter.partition("=")
+            if _is_sensitive_public_query_key(key):
+                parameter = f"{key}={_PUBLIC_URL_REDACTED_VALUE}"
+        elif decoded_separator and _is_sensitive_public_query_key(decoded_key):
+            # An encoded/double-encoded ``=`` is ambiguous across downstream
+            # parsers.  Drop the complete credential-bearing component.
+            parameter = ""
+
+        if parameter:
+            if sanitized_parts:
+                sanitized_parts.append(pending_separator or "&")
+            sanitized_parts.append(parameter)
+        if index + 1 < len(parts):
+            pending_separator = parts[index + 1]
+        else:
+            pending_separator = ""
+
+    sanitized = "".join(sanitized_parts)
+    decoded, decode_exhausted = _decode_bounded(sanitized, plus=True)
+    if decode_exhausted:
+        return ""
+    if _has_unsafe_decoded_transport_residual(decoded):
+        return ""
+    if _NESTED_URL_USERINFO_RE.search(decoded):
+        return ""
+    for match in re.finditer(
+        r"(?:^|[?&;#])(?P<key>[^?&;=#]+)=(?P<value>[^?&;#]*)",
+        decoded,
+    ):
+        if (
+            _is_sensitive_public_query_key(match.group("key"))
+            and match.group("value") != _PUBLIC_URL_REDACTED_VALUE
+        ):
+            # Nested encoded separators can make a credential appear only after
+            # downstream decoding.  Dropping the query is the only unambiguous
+            # public representation.
+            return ""
+    return sanitized
+
+
+def _is_sensitive_public_query_key(key: str) -> bool:
+    decoded, decode_exhausted = _decode_bounded(str(key), plus=True)
+    if decode_exhausted:
+        return True
+    camel_normalized = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", decoded)
+    camel_normalized = re.sub(
+        r"([a-z0-9])([A-Z])", r"\1_\2", camel_normalized
+    )
+    normalized_candidates = {
+        re.sub(r"[^A-Za-z0-9]+", "_", candidate).strip("_").lower()
+        for candidate in (decoded, camel_normalized)
+    }
+    for normalized in normalized_candidates:
+        if normalized in _PUBLIC_URL_SENSITIVE_QUERY_NAMES:
+            return True
+        if any(
+            normalized.startswith(f"{marker}_")
+            or normalized.endswith(f"_{marker}")
+            or f"_{marker}_" in normalized
+            for marker in _PUBLIC_URL_SENSITIVE_QUERY_MARKERS
+        ):
+            return True
+    return False
 
 
 def _fallback_knowledge_id(value: dict[str, Any]) -> Optional[int]:
@@ -138,6 +400,88 @@ def _sanitize_public_dict_key(key: Any, existing: dict[Any, Any]) -> Any:
     return sanitized_key
 
 
+def _sanitize_public_source_reference(
+    value: str,
+    *,
+    knowledge_id: Optional[int],
+) -> str:
+    """Sanitize citation ``source`` fields while preserving canonical locators."""
+
+    text = str(value or "").strip()
+    fallback = (
+        build_entry_locator(knowledge_id)
+        if knowledge_id is not None
+        else "[redacted-source-reference]"
+    )
+    if is_local_reference(text):
+        return (
+            build_entry_locator(knowledge_id)
+            if knowledge_id is not None
+            else "[redacted-local-reference]"
+        )
+    public_url = sanitize_public_source_url(text)
+    if public_url:
+        return public_url
+    if _is_stable_pkv_locator(text):
+        return text
+    return fallback if _looks_url_like_source_reference(text) else text
+
+
+def _looks_url_like_source_reference(value: str) -> bool:
+    """Fail closed for malformed/relative URL shapes, preserving plain labels."""
+
+    decoded, decode_exhausted = _decode_bounded(
+        str(value or "").strip(),
+        plus=True,
+    )
+    if decode_exhausted:
+        return True
+    lowered = decoded.lower()
+    if (
+        not decoded
+        or "://" in decoded
+        or decoded.startswith("//")
+        or lowered.startswith("www.")
+        or any(marker in decoded for marker in ("@", "?", "#", "\\"))
+        or any(ord(char) <= 32 or ord(char) == 127 for char in decoded)
+        or re.match(
+            r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?::[0-9]+)?(?:/|$)",
+            decoded,
+        )
+    ):
+        return True
+    try:
+        if urlsplit(decoded).scheme:
+            return True
+    except ValueError:
+        return True
+    return any(
+        _is_sensitive_public_query_key(match.group("key"))
+        for match in re.finditer(
+            r"(?:^|[?&;])(?P<key>[^?&;=#]+)=",
+            decoded,
+        )
+    )
+
+
+def _is_stable_pkv_locator(value: str) -> bool:
+    """Accept only locator forms generated by this module's public builders."""
+
+    return bool(
+        re.fullmatch(
+            (
+                r"pkv://entries/[1-9][0-9]*"
+                r"(?:/(?:metadata(?:/[A-Za-z0-9._~-]+)?"
+                r"|chunks/[1-9][0-9]*|chunk-index/[0-9]+))?"
+                r"|pkv://relations/(?:[1-9][0-9]*"
+                r"|by-edge/[1-9][0-9]*/[1-9][0-9]*/"
+                r"[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+)"
+            ),
+            value,
+        )
+    )
+
+
 def sanitize_public_evidence(value: Any) -> Any:
     """Recursively remove local filesystem locations from public evidence."""
     if isinstance(value, dict):
@@ -150,16 +494,18 @@ def sanitize_public_evidence(value: Any) -> Any:
             if key == "source_url":
                 sanitized[public_key] = sanitize_public_source_url(item)
                 continue
-            if (
-                key in {"source", "citation_source"}
-                and isinstance(item, str)
-                and is_local_reference(item)
-            ):
-                sanitized[public_key] = (
-                    build_entry_locator(knowledge_id)
-                    if knowledge_id is not None
-                    else "[redacted-local-reference]"
-                )
+            if key in {"source", "citation_source"}:
+                if isinstance(item, str):
+                    sanitized[public_key] = _sanitize_public_source_reference(
+                        item,
+                        knowledge_id=knowledge_id,
+                    )
+                else:
+                    sanitized[public_key] = (
+                        build_entry_locator(knowledge_id)
+                        if knowledge_id is not None
+                        else "[redacted-source-reference]"
+                    )
                 continue
             sanitized[public_key] = sanitize_public_evidence(item)
         return sanitized

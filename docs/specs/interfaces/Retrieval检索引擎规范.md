@@ -1,9 +1,12 @@
 # Retrieval 检索引擎规范（M4 核心）
 
-> **版本**: 1.0
+> **版本**: 1.1
 > **创建日期**: 2026-02-15
+> **最后更新**: 2026-08-07（M13 W2 契约对齐）
 > **文件位置**: `src/retrieval/`
 > **作用**: M4 检索引擎的核心组件和接口规范
+
+> **M13 发布边界**：所有检索器统一返回五态 `SearchResponse`，不得把失败伪装成空列表。GUI 发布面只保证 BM25；CLI/MCP 可显式选择向量或混合检索，并在真正进入语义分支时才按需创建 Provider。默认验证必须离线运行，不使用真实 Provider、密钥或 Vault 数据。
 
 ---
 
@@ -40,6 +43,31 @@ class SearchResult:
 **约束**:
 - `score` 必须在 `[0.0, 1.0]` 范围内
 - 使用 `frozen=True` 确保不可变性
+
+#### SearchResponse（统一结果信封）
+
+```python
+SearchStatus = Literal["success", "no_hits", "invalid", "error", "degraded"]
+
+@dataclass(frozen=True)
+class SearchResponse:
+    status: SearchStatus
+    results: tuple[SearchResult, ...] = ()
+    strategy: str = "unknown"
+    issues: tuple[RetrievalIssue, ...] = ()
+```
+
+状态语义：
+
+| 状态 | 语义 | 结果 / issue 约束 |
+|------|------|-------------------|
+| `success` | 检索成功且命中 | 至少一条 `results`，无 `issues` |
+| `no_hits` | 检索成功但无命中 | 无结果、无 issue |
+| `invalid` | 查询或 limit 无效 | 无结果，至少一个 `RETRIEVAL_INVALID_QUERY` issue |
+| `error` | 请求策略整体失败 | 无结果，至少一个 issue |
+| `degraded` | 仅部分检索分支可用 | 可含部分结果，至少一个 issue |
+
+`SearchResponse` 不是列表，也禁止隐式真值判断；调用方必须先检查 `status`，再读取 `results`。`RetrievalIssue` 只暴露稳定错误码、公开消息、阶段与可恢复性，不向响应泄露底层异常文本。
 
 ---
 
@@ -83,7 +111,7 @@ else:
 #### 核心方法
 
 ```python
-def search(self, query: str, limit: int = 10) -> List[SearchResult]:
+def search(self, query: str, limit: int = 10) -> SearchResponse:
     """执行 BM25 关键词检索"""
 ```
 
@@ -131,7 +159,7 @@ def search(self, query: str, limit: int = 10) -> List[SearchResult]:
 #### 核心方法
 
 ```python
-def search(self, query: str, limit: int = 10) -> List[SearchResult]:
+def search(self, query: str, limit: int = 10) -> SearchResponse:
     """执行向量语义检索"""
 ```
 
@@ -150,7 +178,7 @@ def search(self, query: str, limit: int = 10) -> List[SearchResult]:
 3. **分数转换**:
    ```python
    # 距离 → 相似度
-   similarity = 1.0 / (1.0 + distance)  # 归一化到 [0.0, 1.0]
+   similarity = max(min(1.0 - distance, 1.0), 0.0)
    ```
 
 4. **查询元数据**:
@@ -164,6 +192,7 @@ def search(self, query: str, limit: int = 10) -> List[SearchResult]:
 - ✅ 向量索引绑定 `ai.embedding.base_url` / `ai.embedding.model` / `ai.embedding.dim` 契约，配置漂移时拒绝静默复用旧索引
 - ✅ hnswlib 索引（HNSW 算法）
 - ✅ 余弦距离 → 相似度转换
+- ✅ 支持 `embedder_factory` 懒创建；纯 BM25 路径不触发 Provider 初始化
 
 ---
 
@@ -177,7 +206,7 @@ def search(self, query: str, limit: int = 10) -> List[SearchResult]:
 
 ```python
 # 对于每个文档 d
-RRF_score(d) = Σ 1 / (k + rank(d))
+RRF_score(d) = Σ branch_weight / (k + rank(d))
 
 # 其中:
 # - k = 60 (RRF 常数)
@@ -192,22 +221,34 @@ RRF_score(d) = Σ 1 / (k + rank(d))
        future_bm25 = executor.submit(bm25_retriever.search, query, limit*2)
        future_vector = executor.submit(vector_retriever.search, query, limit*2)
 
-       bm25_results = future_bm25.result()
-       vector_results = future_vector.result()
+       bm25_response = future_bm25.result()
+       vector_response = future_vector.result()
    ```
 
 2. **RRF 融合**:
    ```python
    def _compute_rrf_scores(self, bm25_results, vector_results):
        scores = {}
+       bm25_ranks = {
+           result.knowledge_id: rank
+           for rank, result in enumerate(bm25_results, start=1)
+       }
+       vector_ranks = {
+           result.knowledge_id: rank
+           for rank, result in enumerate(vector_results, start=1)
+       }
 
-       # BM25 贡献
-       for rank, result in enumerate(bm25_results, start=1):
-           scores[result.knowledge_id] = 1 / (self.rrf_k + rank)
-
-       # 向量检索贡献
-       for rank, result in enumerate(vector_results, start=1):
-           scores[result.knowledge_id] += 1 / (self.rrf_k + rank)
+       all_ids = (
+           {r.knowledge_id for r in bm25_results}
+           | {r.knowledge_id for r in vector_results}
+       )
+       for knowledge_id in all_ids:
+           score = 0.0
+           if knowledge_id in bm25_ranks:
+               score += self.bm25_weight / (self.rrf_k + bm25_ranks[knowledge_id])
+           if knowledge_id in vector_ranks:
+               score += self.vector_weight / (self.rrf_k + vector_ranks[knowledge_id])
+           scores[knowledge_id] = score
 
        return scores
    ```
@@ -223,12 +264,11 @@ RRF_score(d) = Σ 1 / (k + rank(d))
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `bm25_weight` | 0.4 | BM25 权重（未使用） |
-| `vector_weight` | 0.6 | 向量权重（未使用） |
+| `bm25_weight` | 0.4 | BM25 分支的加权 RRF 权重 |
+| `vector_weight` | 0.6 | 向量分支的加权 RRF 权重 |
 | `rrf_k` | 60 | RRF 常数（标准值） |
 
-**注意**:
-- ⚠️ `bm25_weight` 和 `vector_weight` 参数存在但未使用（RRF 算法不需要权重）
+**分支状态聚合**：两个分支都健康时返回 `success` / `no_hits`；一个分支为 `invalid`、`error` 或 `degraded` 时，保留健康分支结果并返回 `degraded`；两个分支都不可用时返回 `invalid`（均为输入无效）或 `error`。issue 顺序固定为 BM25、Vector，不受线程完成顺序影响。
 
 ---
 
@@ -257,7 +297,7 @@ QueryRouter.search()
                           ↓
                     排序 + 去重 + 截断
                           ↓
-                   List[SearchResult]
+       SearchResponse(status, results, strategy, issues)
 ```
 
 ---
@@ -268,25 +308,30 @@ QueryRouter.search()
 
 ```python
 from pathlib import Path
-from src.ai.embedder import Embedder
+from src.ai.provider_factory import create_embedder
 from src.retrieval.query_router import QueryRouter
+from src.utils.config import get_config
 
-# 1. 创建 Embedder
-embedder = Embedder(chunk_size=500, chunk_overlap=50)
+# 1. 声明懒工厂；短查询的 BM25 路径不会调用它
+embedder_factory = lambda: create_embedder(get_config())
 
 # 2. 创建 QueryRouter
 router = QueryRouter(
     db_path=Path(".data/pkv.db"),
     vector_index_dir=Path(".data/vectors"),
-    embedder=embedder,
+    embedder_factory=embedder_factory,
     token_threshold=5  # 可配置
 )
 
 # 3. 执行检索
-results = router.search("如何使用向量检索", limit=10)
+response = router.search("如何使用向量检索", limit=10)
 
-# 4. 访问结果
-for result in results:
+# 4. 先判断五态，再访问结果
+if response.status in {"invalid", "error"}:
+    for issue in response.issues:
+        print(issue.code.value, issue.message)
+
+for result in response.results:
     print(f"ID: {result.knowledge_id}")
     print(f"标题: {result.title}")
     print(f"分数: {result.score:.3f}")
@@ -298,15 +343,15 @@ for result in results:
 
 ## ⚠️ 已知问题
 
-### 问题 1: `bm25_weight` 和 `vector_weight` 未使用
+### 问题 1: 加权 RRF 的同分与元数据合并仍需强化
 
-**问题**: HybridRetriever 接受权重参数但实际使用 RRF 算法（不需要权重）
+**问题**: 当前已使用 `bm25_weight` / `vector_weight`，但精确同分排序与冲突元数据合并仍属于后续硬化项
 
-**影响**: 参数误导性
+**影响**: 极端同分场景下，需要更明确的稳定排序与字段优先级规则
 
 **优先级**: 低
 
-**建议**: 移除未使用的参数
+**建议**: 补充明确的二级排序键和冲突字段合并测试
 
 ---
 
@@ -324,7 +369,7 @@ for result in results:
 
 ### 问题 3: BM25 和向量检索的 `top_k` 不一致
 
-**问题**: `HybridRetriever` 使用 `limit * 2` 作为候选数，但硬编码
+**问题**: `HybridRetriever` 使用 `max(limit * 2, 20)` 作为候选数，但目前不可配置
 
 **影响**: 性能和召回率的平衡
 
@@ -334,15 +379,15 @@ for result in results:
 
 ---
 
-### 问题 4: 空查询处理不一致
+### 问题 4: 各入口必须保持五态适配一致
 
-**问题**: 各检索器返回空列表但没有统一的异常处理
+**问题**: 核心检索器已统一 `SearchResponse`，但新增入口仍可能错误地把 `error` / `degraded` 映射成“无结果”
 
-**影响**: 上层调用难以区分"无结果"和"查询失败"
+**影响**: 上层调用可能丢失故障或降级信息
 
 **优先级**: 低
 
-**建议**: 定义统一的空结果约定
+**建议**: 入口适配必须显式映射全部五态，并保留稳定 issue；禁止列表兼容和 truthiness 兼容
 
 ---
 
@@ -355,6 +400,7 @@ for result in results:
 ✅ RRF 算法融合结果
 ✅ 并行执行提高性能
 ✅ 统一的 SearchResult 格式
+✅ 五态 SearchResponse 区分无命中、无效、失败与降级
 ✅ 分数归一化到 [0.0, 1.0]
 
 ### 核心参数
@@ -369,4 +415,4 @@ for result in results:
 ---
 
 **文档维护者**: AI Agent
-**最后更新**: 2026-02-15
+**最后更新**: 2026-08-07

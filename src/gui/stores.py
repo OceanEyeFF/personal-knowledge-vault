@@ -37,7 +37,7 @@ def get_sqlite_store() -> "SQLiteStore":
         from src.utils.config import get_config
         config = get_config()
         _sqlite_store = SQLiteStore(config.db_path)
-        logger.info(f"SQLiteStore 初始化: {config.db_path}")
+        logger.info("store_initialized component=sqlite status=ready")
     return _sqlite_store
 
 
@@ -53,7 +53,7 @@ def get_markdown_store() -> "MarkdownStore":
         from src.utils.config import get_config
         config = get_config()
         _markdown_store = MarkdownStore(config.vault_dir)
-        logger.info(f"MarkdownStore 初始化: {config.vault_dir}")
+        logger.info("store_initialized component=markdown status=ready")
     return _markdown_store
 
 
@@ -68,17 +68,17 @@ def get_vector_store() -> Optional["VectorStore"]:
         from src.storage.vector_store import VectorStore
         from src.utils.config import get_config
         config = get_config()
-        if (
-            not VectorStore.has_index_artifacts(config.vector_index_dir)
-            and config.embedding_dim is None
-        ):
-            logger.info("VectorStore 延迟初始化: 索引不存在且 embedding 维度尚未解析")
+        if not VectorStore.has_index_artifacts(config.vector_index_dir):
+            logger.info(
+                "store_initialization_skipped component=vector status=absent"
+            )
             return None
         _vector_store = VectorStore(
             index_dir=config.vector_index_dir,
             dim=None,
+            allow_index_creation=False,
         )
-        logger.info(f"VectorStore 初始化: {config.vector_index_dir}")
+        logger.info("store_initialized component=vector status=ready")
     return _vector_store
 
 
@@ -98,7 +98,7 @@ def get_bm25_retriever() -> "BM25Retriever":
         from src.utils.config import get_config
         config = get_config()
         _bm25_retriever = BM25Retriever(db_path=config.db_path)
-        logger.info(f"BM25Retriever 初始化: {config.db_path}")
+        logger.info("retriever_initialized component=bm25 status=ready")
     return _bm25_retriever
 
 

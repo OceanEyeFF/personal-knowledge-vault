@@ -17,11 +17,17 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+import re
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from PySide6.QtCore import QPoint, QTimer, Qt, Signal
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QListWidget, QListWidgetItem, QWidget
+
+from src.gui.utils.search_response_contract import is_strict_search_response
+
+if TYPE_CHECKING:
+    from src.retrieval.result import RetrievalIssue
 
 logger = logging.getLogger("pkv.gui.widgets.autocomplete")
 
@@ -176,9 +182,11 @@ class AutocompletePopup(QListWidget):
                 self._search_knowledge()
             elif self._mode == MODE_SEARCH:
                 self._search_keywords()
+            else:
+                self._add_error_item("自动补全模式无效")
         except Exception as e:
-            logger.error(f"自动补全搜索失败: {e}")
-            self._add_error_item(f"搜索失败: {e}")
+            logger.error("自动补全搜索失败: type=%s", type(e).__name__)
+            self._add_error_item("搜索失败：服务暂不可用")
 
     def _search_knowledge(self) -> None:
         """搜索知识库条目"""
@@ -205,7 +213,7 @@ class AutocompletePopup(QListWidget):
                 self._populate_entries(entries)
 
         except Exception as e:
-            logger.error(f"知识库搜索失败: {e}")
+            logger.error("知识库搜索失败: type=%s", type(e).__name__)
             self._add_error_item("知识库暂不可用")
 
     def _search_keywords(self) -> None:
@@ -217,16 +225,31 @@ class AutocompletePopup(QListWidget):
         try:
             from src.gui.stores import get_bm25_retriever
             retriever = get_bm25_retriever()
-            results = retriever.search(
+            response = retriever.search(
                 self._filter_text,
                 limit=self._MAX_VISIBLE_ITEMS,
             )
+            if not self._is_strict_response(response):
+                raise TypeError("BM25Retriever 返回了非 SearchResponse 结果")
 
-            if not results:
+            if response.status == "no_hits":
                 self._add_hint_item("无搜索结果")
                 return
 
-            for result in results:
+            if response.status == "invalid":
+                self._add_error_item(
+                    f"关键词无效（错误代码：{self._issue_codes(response.issues)}）"
+                )
+                return
+
+            if response.status == "error":
+                self._add_error_item(
+                    "搜索引擎暂不可用"
+                    f"（错误代码：{self._issue_codes(response.issues)}）"
+                )
+                return
+
+            for result in response.results:
                 title = result.title
                 score = f"{result.score:.2f}"
                 display = f"🔍 {title} ({score})"
@@ -241,9 +264,41 @@ class AutocompletePopup(QListWidget):
                 })
                 self.addItem(item)
 
+            if response.status == "degraded":
+                self._add_error_item(
+                    "搜索已降级，以上仅为可用结果"
+                    f"（问题代码：{self._issue_codes(response.issues)}）"
+                )
+
+            if response.results:
+                self.setCurrentRow(0)
+
         except Exception as e:
-            logger.error(f"关键词搜索失败: {e}")
+            logger.error("关键词搜索 adapter 异常: type=%s", type(e).__name__)
             self._add_error_item("搜索引擎暂不可用")
+
+    @staticmethod
+    def _issue_codes(issues: tuple["RetrievalIssue", ...]) -> str:
+        """仅公开稳定错误代码，避免把后端异常详情放进补全弹窗。"""
+
+        codes = []
+        for issue in issues:
+            raw_code = getattr(getattr(issue, "code", None), "value", None)
+            code = (
+                raw_code
+                if isinstance(raw_code, str)
+                and re.fullmatch(r"[a-z0-9_]{1,64}", raw_code)
+                else "retrieval_error"
+            )
+            if code not in codes:
+                codes.append(code)
+        return ", ".join(codes) if codes else "unknown"
+
+    @staticmethod
+    def _is_strict_response(response: Any) -> bool:
+        """Validate all five-state invariants without eager vector imports."""
+
+        return is_strict_search_response(response)
 
     def _populate_entries(self, entries: List[Dict[str, Any]]) -> None:
         """填充条目列表

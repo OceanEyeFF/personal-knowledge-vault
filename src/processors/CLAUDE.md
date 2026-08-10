@@ -14,6 +14,7 @@
 - **自动路由**: 根据 URL 特征自动选择合适的处理器
 - **统一输出**: 所有处理器返回标准的 `Entry` 数据类
 - **优雅降级**: 未匹配的 URL 自动回退到通用处理器
+- **安全抓取**: 所有 URL 内容、重定向与页面子资源统一通过 DNS-pinned `SafeFetcher`，禁止网络库直连退路
 
 ---
 
@@ -87,7 +88,10 @@ class BaseProcessor(ABC):
 - `src.utils.logger`: 日志记录
 - `beautifulsoup4`: HTML 解析
 - `html2text`: HTML 转 Markdown
-- `httpx`: 异步 HTTP 请求
+- `urllib3>=2.2,<3`: `Urllib3PinnedTransport` 的显式 direct dependency
+- `safe_fetch.py`: URL 解析、全 DNS 答案公网校验、固定 IP 连接、redirect/子资源重校验与响应大小上限
+
+URL processors 不使用 Playwright、requests 或 httpx 作为 runtime 抓取/降级路径。`SafeFetcher` 将安全决策与实际连接绑定：每跳重新解析并验证 DNS，连接验证过的固定 IP，同时保留原始 Host、TLS SNI 与证书 hostname；跨 origin redirect 会剥离 Cookie/Authorization 等敏感 header。
 
 ### 配置项
 
@@ -251,7 +255,7 @@ class Entry:
 
 ### Mock 策略
 
-- 使用 `unittest.mock` 模拟 HTTP 请求
+- 向 `SafeFetcher` 注入 fake resolver / pinned transport，覆盖公网、私网、DNS rebinding、redirect、SNI/hostname 与响应上限
 - 使用 `tests/fixtures/` 中的真实样本数据
 - 避免依赖外部网络
 
@@ -286,16 +290,16 @@ _PROCESSORS.insert(0, MyProcessor)  # 插入优先级位置
 
 ### Q3: 如何处理需要登录的网站？
 
-在处理器中添加 Cookie 或 Token 配置:
+凭据只能来自 Git 忽略的本机配置，并通过同一个 `SafeFetcher` 发送；不得为了登录绕过安全抓取器或恢复 Playwright/requests/httpx 直连。跨 origin redirect 时敏感 header 会自动移除:
 
 ```python
-async def process(self, url: str) -> Entry:
-    headers = {
-        "Cookie": self._get_cookie_from_config()
-    }
-    async with httpx.AsyncClient(headers=headers) as client:
-        response = await client.get(url)
-        ...
+from src.processors.safe_fetch import SafeFetcher
+
+fetcher = SafeFetcher(timeout_seconds=30)
+response = await fetcher.fetch(
+    url,
+    headers={"Cookie": self._get_cookie_from_config()},
+)
 ```
 
 ### Q4: HTML 转 Markdown 的配置如何调整？
@@ -325,12 +329,14 @@ converter.unicode_snob = True     # 使用 Unicode 而非 ASCII
 | `ai_chat_processor.py` | AI 聊天导出处理器 |
 | `text_fallback_processor.py` | 文本回退处理器 |
 | `generic_processor.py` | 通用网页处理器 |
+| `safe_fetch.py` | DNS-pinned SSRF-safe transport 与 redirect 策略 |
 
 ### 测试文件
 
 | 文件 | 说明 |
 |------|------|
 | `tests/unit/test_processors_*.py` | 单元测试（7 个文件） |
+| `tests/unit/test_safe_fetch.py` | SafeFetcher DNS pinning / redirect / TLS 安全合同 |
 | `tests/fixtures/ai_chat/` | AI 聊天样本数据 |
 | `tests/fixtures/chat_sample.json` | 聊天记录样本 |
 | `tests/fixtures/test_urls.json` | 测试 URL 列表 |

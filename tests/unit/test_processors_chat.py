@@ -43,17 +43,32 @@ def test_chat_can_handle():
 
 
 @pytest.mark.asyncio
+async def test_chat_process_default_never_reads_local_file(
+    chat_text_path: Path,
+):
+    processor = ChatProcessor(deepseek_client=_mock_deepseek())
+    with patch(
+        "src.processors.chat_processor.read_local_text_file",
+        side_effect=AssertionError("implicit local read"),
+    ) as reader:
+        with pytest.raises(ValueError, match="process_file"):
+            await processor.process(str(chat_text_path))
+    reader.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_chat_process_text(chat_text_path: Path):
     """Processor should parse text chat and build Markdown transcript."""
     processor = ChatProcessor()
 
     with patch("src.processors.chat_processor.DeepSeekClient") as mock_client_cls:
         mock_client_cls.return_value = _mock_deepseek()
-        entry = await processor.process(str(chat_text_path))
+        entry = await processor.process_file(chat_text_path)
 
     assert entry.title == "聊天记录 - chat_sample"
     assert entry.source_type == "chat"
-    assert entry.source_url == str(chat_text_path)
+    assert entry.source_url is None
+    assert entry.metadata["source_url"] is None
     assert entry.summary_100_words == "Mock summary"
     assert entry.tags == ["tag1", "tag2", "tag3"]
     assert "## 对话摘要" in entry.content
@@ -74,7 +89,7 @@ async def test_chat_process_json(chat_json_path: Path):
 
     with patch("src.processors.chat_processor.DeepSeekClient") as mock_client_cls:
         mock_client_cls.return_value = _mock_deepseek()
-        entry = await processor.process(str(chat_json_path))
+        entry = await processor.process_file(chat_json_path)
 
     assert entry.title == "聊天记录 - chat_sample"
     assert "JSON message one." in entry.content

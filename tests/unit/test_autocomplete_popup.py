@@ -22,6 +22,25 @@ from src.gui.widgets.autocomplete_popup import (
     MODE_KNOWLEDGE,
     MODE_SEARCH,
 )
+from src.retrieval.result import RetrievalIssue, SearchResponse, SearchResult
+from src.runtime.errors import ErrorCode
+
+
+def _unchecked_response(
+    *,
+    status: object,
+    results: object = (),
+    issues: object = (),
+    strategy: object = "bm25",
+) -> SearchResponse:
+    """Build a deliberately malformed response without running post-init."""
+
+    response = object.__new__(SearchResponse)
+    object.__setattr__(response, "status", status)
+    object.__setattr__(response, "results", results)
+    object.__setattr__(response, "issues", issues)
+    object.__setattr__(response, "strategy", strategy)
+    return response
 
 
 @pytest.fixture
@@ -373,7 +392,7 @@ class TestSearchKeywords:
         popup._filter_text = "不存在的关键词"
 
         mock_retriever = MagicMock()
-        mock_retriever.search.return_value = []
+        mock_retriever.search.return_value = SearchResponse.completed((), strategy="bm25")
 
         with patch(
             "src.gui.stores.get_bm25_retriever",
@@ -388,14 +407,19 @@ class TestSearchKeywords:
         """有搜索结果"""
         popup._filter_text = "AI"
 
-        mock_result = MagicMock()
-        mock_result.title = "AI 文章"
-        mock_result.score = 0.85
-        mock_result.knowledge_id = 42
-        mock_result.metadata = {}
+        mock_result = SearchResult(
+            knowledge_id=42,
+            title="AI 文章",
+            score=0.85,
+            highlight="AI",
+            metadata={},
+        )
 
         mock_retriever = MagicMock()
-        mock_retriever.search.return_value = [mock_result]
+        mock_retriever.search.return_value = SearchResponse.completed(
+            (mock_result,),
+            strategy="bm25",
+        )
 
         with patch(
             "src.gui.stores.get_bm25_retriever",
@@ -407,6 +431,135 @@ class TestSearchKeywords:
         item_data = popup.item(0).data(Qt.ItemDataRole.UserRole)
         assert item_data["knowledge_id"] == 42
         assert item_data["ref_type"] == "search"
+
+    def test_invalid_search_is_not_no_hit(self, popup) -> None:
+        popup._filter_text = "bad"
+        mock_retriever = MagicMock()
+        mock_retriever.search.return_value = SearchResponse.invalid(
+            "private validation detail",
+            strategy="bm25",
+        )
+
+        with patch(
+            "src.gui.stores.get_bm25_retriever",
+            return_value=mock_retriever,
+        ):
+            popup._search_keywords()
+
+        text = popup.item(0).text()
+        assert "关键词无效" in text
+        assert ErrorCode.RETRIEVAL_INVALID_QUERY.value in text
+        assert "无搜索结果" not in text
+        assert "private validation detail" not in text
+
+    def test_backend_error_is_not_no_hit_and_is_redacted(self, popup) -> None:
+        popup._filter_text = "AI"
+        issue = RetrievalIssue(
+            code=ErrorCode.RETRIEVAL_BACKEND_FAILED,
+            message="api_key=do-not-show C:/private/db.sqlite",
+            stage="bm25_query",
+        )
+        mock_retriever = MagicMock()
+        mock_retriever.search.return_value = SearchResponse.failed_response(
+            issue,
+            strategy="bm25",
+        )
+
+        with patch(
+            "src.gui.stores.get_bm25_retriever",
+            return_value=mock_retriever,
+        ):
+            popup._search_keywords()
+
+        text = popup.item(0).text()
+        assert "暂不可用" in text
+        assert ErrorCode.RETRIEVAL_BACKEND_FAILED.value in text
+        assert "无搜索结果" not in text
+        assert "do-not-show" not in text
+        assert "private" not in text
+
+    def test_legacy_list_result_fails_closed(self, popup) -> None:
+        popup._filter_text = "AI"
+        mock_retriever = MagicMock()
+        mock_retriever.search.return_value = []
+
+        with patch(
+            "src.gui.stores.get_bm25_retriever",
+            return_value=mock_retriever,
+        ):
+            popup._search_keywords()
+
+        text = popup.item(0).text()
+        assert "暂不可用" in text
+        assert "无搜索结果" not in text
+
+    def test_inconsistent_success_response_fails_closed(self, popup) -> None:
+        """A malformed success must be an error item, never a no-hit hint."""
+
+        popup._filter_text = "AI"
+        issue = RetrievalIssue(
+            code=ErrorCode.RETRIEVAL_BACKEND_FAILED,
+            message="secret detail",
+            stage="bm25_query",
+        )
+        mock_retriever = MagicMock()
+        mock_retriever.search.return_value = _unchecked_response(
+            status="success",
+            results=(),
+            issues=(issue,),
+        )
+
+        with patch(
+            "src.gui.stores.get_bm25_retriever",
+            return_value=mock_retriever,
+        ):
+            popup._search_keywords()
+
+        assert popup.count() == 1
+        text = popup.item(0).text()
+        assert "暂不可用" in text
+        assert "无搜索结果" not in text
+        assert popup.item(0).flags() == Qt.ItemFlag.NoItemFlags
+
+    def test_degraded_search_shows_results_and_warning(self, popup) -> None:
+        popup._filter_text = "AI"
+        result = SearchResult(
+            knowledge_id=42,
+            title="AI 文章",
+            score=0.85,
+            highlight="AI",
+            metadata={},
+        )
+        issue = RetrievalIssue(
+            code=ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+            message="raw detail",
+            stage="metadata",
+            recoverable=True,
+        )
+        mock_retriever = MagicMock()
+        mock_retriever.search.return_value = SearchResponse.degraded_response(
+            (result,),
+            (issue,),
+            strategy="bm25",
+        )
+
+        with patch(
+            "src.gui.stores.get_bm25_retriever",
+            return_value=mock_retriever,
+        ):
+            popup._search_keywords()
+
+        assert popup.count() == 2
+        assert popup.item(0).data(Qt.ItemDataRole.UserRole)["knowledge_id"] == 42
+        warning = popup.item(1).text()
+        assert "降级" in warning
+        assert ErrorCode.RETRIEVAL_METADATA_INCONSISTENT.value in warning
+        assert "raw detail" not in warning
+
+    def test_untrusted_issue_code_is_not_echoed(self, popup) -> None:
+        issue = MagicMock()
+        issue.code = "token=CANARY C:/private/db.sqlite"
+        assert popup._issue_codes((issue,)) == "retrieval_error"
 
     def test_search_keywords_error(self, popup) -> None:
         """搜索引擎异常时显示错误提示"""

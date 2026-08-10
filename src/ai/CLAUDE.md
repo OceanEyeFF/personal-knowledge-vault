@@ -13,7 +13,9 @@
 - **服务隔离**: 每个 AI 服务独立封装，便于替换和测试
 - **成本可控**: 智能缓存和策略优化，节省 API 成本
 - **错误处理**: 自动重试和降级策略
-- **配置驱动**: API Key 和参数通过配置文件管理
+- **配置驱动**: API Key 和参数通过 YAML 管理，生产调用通过统一 Provider factory 构造
+
+W2 新增 `provider_factory.py` 与 `chat_provider.py`：Embedding 和 Chat 都从显式、不可变的配置快照构造，固定使用 `openai_compatible`，并传递 model/endpoint/timeout/retry/dimensions 等关键字段。Retrieval 的语义分支使用 lazy `embedder_factory`，BM25 或参数拒绝路径不会提前构造 Provider。默认自动化只注入 doubles，不连接真实 Provider、不读取真实 key 或真实 Vault；release 中不存在内置 fake/test mode。
 
 ---
 
@@ -228,18 +230,24 @@ class Embedder:
 ai:
   # OpenAI-compatible LLM
   llm:
+    provider: "openai_compatible"
     api_key: ""
     base_url: "https://api.deepseek.com/v1"
     model: "deepseek-chat"
     max_tokens: 2000
     temperature: 0.7
+    timeout_seconds: 30
+    max_retries: 2
 
   # OpenAI-compatible Embedding
   embedding:
+    provider: "openai_compatible"
     api_key: ""
     base_url: "https://api.openai.com/v1"
     model: "text-embedding-3-small"
     dim: auto
+    timeout_seconds: 30
+    max_retries: 3
 
   # Whisper 配置 (Phase 2)
   whisper:
@@ -514,6 +522,8 @@ summary = await deepseek.summarize(content)
 | `deepseek_client.py` | DeepSeek API 客户端 |
 | `openai_client.py` | OpenAI API 客户端（备用） |
 | `embedder.py` | Embedding 服务封装 |
+| `provider_factory.py` | W2 Provider 配置快照、严格校验与生产构造入口 |
+| `chat_provider.py` | GUI Chat 的 OpenAI-compatible 流式 adapter |
 | `prompts/` | Prompt 模板目录 |
 | `prompts/summarize.txt` | 摘要生成 Prompt |
 | `prompts/extract_tags.txt` | 标签提取 Prompt |
@@ -525,6 +535,8 @@ summary = await deepseek.summarize(content)
 | `tests/unit/test_ai_deepseek.py` | DeepSeek 单元测试 |
 | `tests/unit/test_ai_openai.py` | OpenAI 单元测试 |
 | `tests/unit/test_ai_embedder.py` | Embedder 单元测试 |
+| `tests/unit/test_provider_factory.py` | Provider 快照、校验与构造合同 |
+| `tests/unit/test_chat_provider.py` | Chat 流式 adapter 离线合同 |
 | `tests/manual_test_ai_services.py` | 手动测试脚本 |
 
 ### 文档

@@ -11,12 +11,64 @@ import logging
 import os
 import re
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable, Dict, Mapping, Optional
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 import yaml
+from yaml.constructor import ConstructorError
+from yaml.nodes import MappingNode
+from yaml.resolver import BaseResolver
 
-from src.runtime.layout import RuntimeLayout, atomic_publish_file, open_user_file_nofollow
+from src.runtime.layout import (
+    RuntimeLayout,
+    atomic_publish_file,
+    open_user_file_nofollow,
+)
+from src.runtime.errors import ErrorCode, PKVRuntimeError
+
+
+_RUNTIME_EMBEDDING_DIM_LOCK = Lock()
+_MAX_RUNTIME_EMBEDDING_DIM = 65_536
+
+
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects ambiguous duplicate mapping keys."""
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeySafeLoader,
+    node: MappingNode,
+    deep: bool = False,
+) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable mapping key",
+                key_node.start_mark,
+            ) from None
+        if duplicate:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found a duplicate mapping key",
+                key_node.start_mark,
+            ) from None
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeySafeLoader.add_constructor(
+    BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
 
 
 _DISPLAY_CREDENTIAL_PARAMETER_MARKERS = {
@@ -206,8 +258,7 @@ def _path_matrix_has_credentials(
 ) -> bool:
     """检测 URL path segment 的 ``;name=value`` matrix 凭据参数。"""
     return any(
-        predicate(match.group(1))
-        for match in re.finditer(r";([^/;=?#]+)=", path)
+        predicate(match.group(1)) for match in re.finditer(r";([^/;=?#]+)=", path)
     )
 
 
@@ -343,7 +394,7 @@ def _load_yaml_mapping(config_path: Path, label: str) -> Dict[str, Any]:
             label=label,
             encoding="utf-8",
         ) as handle:
-            loaded = yaml.safe_load(handle)
+            loaded = yaml.load(handle, Loader=_UniqueKeySafeLoader)
     except yaml.YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
         location = ""
@@ -471,9 +522,7 @@ class Config:
             loaded_local_config_path = None
 
         if loaded_local_config_path and loaded_local_config_path.exists():
-            local_config = _load_yaml_mapping(
-                loaded_local_config_path, "本机配置文件"
-            )
+            local_config = _load_yaml_mapping(loaded_local_config_path, "本机配置文件")
             self._deep_merge(self._config, local_config)
             self._rebase_inherited_storage_paths(base_config, local_config)
 
@@ -618,7 +667,7 @@ class Config:
 
     def get_workflow_config(self, workflow_name: str) -> Dict[str, Any]:
         """
-        获取工作流配置（优先加载 config/workflows 下的 YAML）。
+        获取工作流配置（仅加载 bundled config/workflows 下的版本化 YAML）。
 
         Args:
             workflow_name: 工作流名称
@@ -651,31 +700,7 @@ class Config:
                     label="工作流配置文件",
                 )
                 return _load_yaml_mapping(safe_path, "工作流配置文件")
-
-        # 兼容 config.yaml 中的 workflows 配置
-        workflow_key = workflow_name.replace("-", "_")
-        legacy_config = self.get(f"workflows.{workflow_key}")
-        if legacy_config is None:
-            raise FileNotFoundError(f"工作流配置不存在: {workflow_name}")
-
-        steps = legacy_config.get("steps")
-        if isinstance(steps, list) and steps and isinstance(steps[0], str):
-            step_type_map = {
-                "fetch": "fetch_content",
-                "analyze": "ai_analyze",
-                "sharpen": "idea_sharpen",
-                "store": "store_entry",
-            }
-            steps = [
-                {"id": step_name, "type": step_type_map.get(step_name, step_name)}
-                for step_name in steps
-            ]
-
-        merged_config = {"name": workflow_name}
-        merged_config.update(legacy_config)
-        if steps is not None:
-            merged_config["steps"] = steps
-        return merged_config
+        raise FileNotFoundError(f"工作流配置不存在: {workflow_name}")
 
     def _get_runtime_override(
         self, key: str, default: Optional[str] = None
@@ -755,6 +780,11 @@ class Config:
         return self.get("ai.llm.api_key")
 
     @property
+    def llm_provider(self) -> str:
+        """LLM Provider 类型；M13 仅发布 OpenAI-compatible 协议。"""
+        return self.get("ai.llm.provider") or "openai_compatible"
+
+    @property
     def llm_base_url(self) -> str:
         """OpenAI-compatible LLM API Base URL。"""
         return self.get("ai.llm.base_url") or "https://api.deepseek.com/v1"
@@ -765,9 +795,34 @@ class Config:
         return self.get("ai.llm.model") or "deepseek-chat"
 
     @property
+    def llm_max_tokens(self) -> int:
+        """Chat 单次响应最大 token 数。"""
+        return int(self.get("ai.llm.max_tokens", 2000))
+
+    @property
+    def llm_temperature(self) -> float:
+        """LLM 采样温度。"""
+        return float(self.get("ai.llm.temperature", 0.7))
+
+    @property
+    def llm_timeout_seconds(self) -> float:
+        """LLM 请求超时秒数。"""
+        return float(self.get("ai.llm.timeout_seconds", 30.0))
+
+    @property
+    def llm_max_retries(self) -> int:
+        """LLM Provider 最大重试次数。"""
+        return int(self.get("ai.llm.max_retries", 2))
+
+    @property
     def embd_api_key(self) -> Optional[str]:
         """OpenAI-compatible Embedding API Key。"""
         return self.get("ai.embedding.api_key")
+
+    @property
+    def embd_provider(self) -> str:
+        """Embedding Provider 类型；M13 仅发布 OpenAI-compatible 协议。"""
+        return self.get("ai.embedding.provider") or "openai_compatible"
 
     @property
     def embd_base_url(self) -> str:
@@ -778,6 +833,16 @@ class Config:
     def embd_model(self) -> str:
         """OpenAI-compatible Embedding 模型名称。"""
         return self.get("ai.embedding.model") or "text-embedding-3-small"
+
+    @property
+    def embd_timeout_seconds(self) -> float:
+        """Embedding 请求超时秒数。"""
+        return float(self.get("ai.embedding.timeout_seconds", 30.0))
+
+    @property
+    def embd_max_retries(self) -> int:
+        """Embedding Provider 最大重试次数。"""
+        return int(self.get("ai.embedding.max_retries", 3))
 
     @property
     def embedding_dim_raw(self) -> Any:
@@ -802,13 +867,38 @@ class Config:
         return int(raw_val)
 
     def set_runtime_embedding_dim(self, dim: int) -> None:
-        """写入运行期解析出的 Embedding 维度，并持久化到本地缓存。"""
-        self._resolved_embedding_dim = int(dim)
-        payload = {
-            "embedding_dim": self._resolved_embedding_dim,
-            "fingerprint": self.embedding_runtime_fingerprint,
-        }
-        self._write_runtime_embedding_payload(payload)
+        """以进程内 CAS 写入 auto 维度，成功发布后才更新内存。"""
+        if type(dim) is not int or not 1 <= dim <= _MAX_RUNTIME_EMBEDDING_DIM:
+            raise PKVRuntimeError(
+                ErrorCode.PROVIDER_PROTOCOL_FAILED,
+                "Embedding Provider 响应非法",
+                stage="embedding_protocol",
+                recoverable=True,
+            )
+        resolved_dim = dim
+        with _RUNTIME_EMBEDDING_DIM_LOCK:
+            durable_dim = self._load_persisted_embedding_dim()
+            existing_dim = (
+                durable_dim if durable_dim is not None else self._resolved_embedding_dim
+            )
+            if existing_dim is not None:
+                if existing_dim != resolved_dim:
+                    raise PKVRuntimeError(
+                        ErrorCode.PROVIDER_PROTOCOL_FAILED,
+                        "Embedding Provider 响应非法",
+                        stage="embedding_protocol",
+                        recoverable=True,
+                    )
+                if durable_dim is not None:
+                    self._resolved_embedding_dim = durable_dim
+                    return
+
+            payload = {
+                "embedding_dim": resolved_dim,
+                "fingerprint": self.embedding_runtime_fingerprint,
+            }
+            self._write_runtime_embedding_payload(payload)
+            self._resolved_embedding_dim = resolved_dim
 
     def _write_runtime_embedding_payload(self, payload: Mapping[str, Any]) -> None:
         """Atomically write the runtime cache after revalidating its data root."""
@@ -819,9 +909,9 @@ class Config:
             label="Embedding 运行缓存",
             allow_missing=True,
         )
-        serialized = (
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-        ).encode("utf-8")
+        serialized = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode(
+            "utf-8"
+        )
         self._layout.atomic_publish_user_file(
             target_path,
             label="Embedding 运行缓存",
@@ -866,7 +956,9 @@ class Config:
             return None
 
         dim = payload.get("embedding_dim")
-        return int(dim) if dim is not None else None
+        if type(dim) is not int or not 1 <= dim <= _MAX_RUNTIME_EMBEDDING_DIM:
+            return None
+        return dim
 
     def sanitize_runtime_state(self) -> None:
         """在 RuntimeLayout 已验证后清理不安全的旧运行缓存。"""
@@ -898,7 +990,9 @@ class Config:
             return False
 
         expected = self.embedding_runtime_fingerprint
-        return all(str(payload.get(key, "")) == value for key, value in expected.items())
+        return all(
+            str(payload.get(key, "")) == value for key, value in expected.items()
+        )
 
     @property
     def zhihu_cookie(self) -> Optional[str]:

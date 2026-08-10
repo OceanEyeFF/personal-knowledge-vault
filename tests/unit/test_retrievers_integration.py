@@ -96,17 +96,20 @@ def test_bm25_retriever_basic(test_env):
     retriever = BM25Retriever(test_env["db_path"])
 
     # 测试 1: 单词查询
-    results = retriever.search("Python", limit=5)
-    assert len(results) >= 1, "应该能召回 Python 相关内容"
-    assert results[0].title == "Python 基础教程", "最相关的应该是 Python 基础教程"
+    response = retriever.search("Python", limit=5)
+    assert response.status == "success"
+    assert len(response.results) >= 1, "应该能召回 Python 相关内容"
+    assert response.results[0].title == "Python 基础教程", "最相关的应该是 Python 基础教程"
 
     # 测试 2: 多词查询
-    results = retriever.search("学习", limit=5)
-    assert len(results) >= 2, "应该能召回至少 2 条包含'学习'的内容"
+    response = retriever.search("学习", limit=5)
+    assert response.status == "success"
+    assert len(response.results) >= 2, "应该能召回至少 2 条包含'学习'的内容"
 
     # 测试 3: 不存在的词
-    results = retriever.search("区块链", limit=5)
-    assert len(results) == 0, "不存在的词应该返回空结果"
+    response = retriever.search("区块链", limit=5)
+    assert response.status == "no_hits"
+    assert response.results == (), "不存在的词应该返回空结果"
 
 
 def test_vector_retriever_with_mock(test_env):
@@ -155,12 +158,12 @@ def test_query_router_short_query(test_env):
     )
 
     # 短查询（< 5 tokens）应该使用 BM25
-    results = router.search("Python", limit=5)
-    assert len(results) >= 1, "应该能召回结果"
+    response = router.search("Python", limit=5)
+    assert response.status == "success"
+    assert len(response.results) >= 1, "应该能召回结果"
 
     # 验证使用了 BM25（通过检查结果中的元数据）
-    if results:
-        assert "bm25_score" in results[0].metadata, "短查询应该使用 BM25"
+    assert "bm25_score" in response.results[0].metadata, "短查询应该使用 BM25"
 
 
 def test_query_router_token_threshold(test_env):
@@ -196,8 +199,9 @@ def test_all_retrievers_column_names(test_env):
     """
     # 测试 BM25Retriever
     bm25 = BM25Retriever(test_env["db_path"])
-    results = bm25.search("Python", limit=1)
-    assert len(results) >= 1, "BM25 应该能召回结果"
+    response = bm25.search("Python", limit=1)
+    assert response.status == "success"
+    assert len(response.results) >= 1, "BM25 应该能召回结果"
 
     # 测试 VectorRetriever._get_metadata
     mock_embedder = Mock()
@@ -211,11 +215,11 @@ def test_all_retrievers_column_names(test_env):
 def test_search_result_score_range(test_env):
     """测试 SearchResult 分数范围"""
     retriever = BM25Retriever(test_env["db_path"])
-    results = retriever.search("Python", limit=5)
+    response = retriever.search("Python", limit=5)
 
-    if results:
-        for result in results:
-            assert 0.0 <= result.score <= 1.0, f"分数应该在 [0.0, 1.0] 范围内，当前: {result.score}"
+    assert response.status == "success"
+    for result in response.results:
+        assert 0.0 <= result.score <= 1.0, f"分数应该在 [0.0, 1.0] 范围内，当前: {result.score}"
 
 
 def test_empty_query_handling(test_env):
@@ -223,9 +227,11 @@ def test_empty_query_handling(test_env):
     retriever = BM25Retriever(test_env["db_path"])
 
     # 空字符串
-    results = retriever.search("", limit=5)
-    assert len(results) == 0, "空查询应该返回空结果"
+    response = retriever.search("", limit=5)
+    assert response.status == "invalid"
+    assert response.results == (), "空查询应该返回空结果"
 
     # 仅空格
-    results = retriever.search("   ", limit=5)
-    assert len(results) == 0, "仅空格查询应该返回空结果"
+    response = retriever.search("   ", limit=5)
+    assert response.status == "invalid"
+    assert response.results == (), "仅空格查询应该返回空结果"

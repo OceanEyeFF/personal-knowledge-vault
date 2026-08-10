@@ -1,9 +1,11 @@
 # Processors 接口规范
 
-> **版本**: 1.0
+> **版本**: 1.1
 > **创建日期**: 2026-02-15
 > **文件位置**: `src/processors/`
 > **作用**: 定义内容处理器的统一接口和注册机制
+
+> **W2 抓取边界（2026-08-07）**：所有 URL processor 必须通过 `src/processors/safe_fetch.py` 的 DNS-pinned `SafeFetcher` 获取页面、重定向与子资源。runtime 不允许 Playwright、requests 或 httpx 直连/降级；默认自动化只注入 resolver/transport doubles，不访问真实网络或真实数据。
 
 ---
 
@@ -117,12 +119,13 @@ async def process(self, url: str) -> Entry:
 
 **异常**:
 - `ValueError` - URL 格式错误、内容为空等输入问题
-- `httpx.HTTPError` - 网络请求失败
+- `PKVRuntimeError` - URL/SSRF 策略拒绝，携带稳定 `ErrorCode`
+- `SafeFetchTransportError` - 已通过策略校验后的受控网络/HTTP 失败
 - `Exception` - 其他处理错误
 
 **约定**:
 - ✅ 必须是异步方法 (`async def`)
-- ✅ 网络错误应考虑重试（由具体实现决定）
+- ✅ 所有 URL 网络 I/O 必须复用 `SafeFetcher`；redirect 和页面子资源不能绕过
 - ✅ 失败时抛出明确的异常（包含错误信息）
 - ✅ 返回的 Entry 必须包含 `title`, `source_type`, `content` 字段
 - ✅ `source_url` 字段应填充原始 URL（如果适用）
@@ -332,6 +335,28 @@ def _get_title_text(self, soup: BeautifulSoup) -> str:
 
 ---
 
+## 🔒 SafeFetcher 网络合同
+
+```python
+from src.processors.safe_fetch import SafeFetcher
+
+fetcher = SafeFetcher(
+    timeout_seconds=30,
+    max_redirects=5,
+    max_response_bytes=10 * 1024 * 1024,
+)
+response = await fetcher.fetch(url, headers={"User-Agent": user_agent})
+```
+
+- 只接受无 userinfo 的 `http/https` URL 与合法 `1..65535` 端口。
+- 每一跳解析完整 DNS answer set；任一地址非 globally routable 即拒绝。
+- transport 连接已验证的固定 IP，HTTP 保留原 Host，HTTPS 同时保留原 SNI 和证书 hostname 校验。
+- redirect 重新走完整解析/校验；禁止 HTTPS 降级到 HTTP，跨 origin 自动剥离认证和 Cookie header。
+- HTML 内图片等子资源继续由同一 fetcher 获取；不得调用浏览器或其他 HTTP client 绕过。
+- 响应大小和重定向次数有硬上限；对外错误使用稳定错误码和固定安全文案，原始异常只写私有日志。
+
+---
+
 ## 📦 已实现的处理器
 
 ### 1. WechatProcessor
@@ -341,7 +366,8 @@ def _get_title_text(self, soup: BeautifulSoup) -> str:
 **匹配规则**: `"mp.weixin.qq.com" in url`
 
 **特性**:
-- 使用 Playwright 渲染（带 requests 降级）
+- 通过 urllib3 pinned transport 获取 HTML，不启动浏览器，也没有 requests/httpx 降级
+- 每次 DNS、固定 IP 连接、redirect 与图片子资源都执行 SSRF 安全合同
 - 下载并本地化图片
 - 提取微信特定元数据
 

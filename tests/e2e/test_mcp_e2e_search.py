@@ -28,13 +28,18 @@ def _parse_tool_content(result) -> Dict[str, Any]:
 
 def _assert_search_payload(data: Dict[str, Any], min_total: int = 1) -> None:
     assert isinstance(data, dict)
-    assert set(data) == {"total", "strategy_used", "results"}
+    assert set(data) == {"status", "strategy", "total", "results", "issues"}
+    assert data["status"] in {"success", "no_hits", "invalid", "error", "degraded"}
+    assert isinstance(data["strategy"], str)
     assert isinstance(data["total"], int)
     assert not isinstance(data["total"], bool)
-    assert isinstance(data["strategy_used"], str)
     assert isinstance(data["results"], list)
+    assert isinstance(data["issues"], list)
     assert data["total"] == len(data["results"])
     assert data["total"] >= min_total
+    if min_total > 0:
+        assert data["status"] == "success"
+        assert data["issues"] == []
 
     for item in data["results"]:
         assert isinstance(item, dict)
@@ -110,6 +115,8 @@ async def test_search_empty_result(mcp_server):
     data = _parse_tool_content(result)
     assert data["total"] == 0
     assert data["results"] == []
+    assert data["status"] == "no_hits"
+    assert data["issues"] == []
 
 
 @pytest.mark.asyncio
@@ -127,8 +134,8 @@ async def test_search_strategy_selection(mcp_server):
     bm25_data = _parse_tool_content(bm25)
     _assert_search_payload(auto_data, min_total=1)
     _assert_search_payload(bm25_data, min_total=1)
-    assert auto_data["strategy_used"] == "auto"
-    assert bm25_data["strategy_used"] == "bm25"
+    assert auto_data["strategy"] == "bm25"
+    assert bm25_data["strategy"] == "bm25"
     assert auto_data["results"][0]["title"] == bm25_data["results"][0]["title"]
 
 
@@ -187,10 +194,45 @@ def test_search_repeated_calls_are_deterministic(sample_knowledge_db):
     snapshots = [
         [
             (item.knowledge_id, item.title, item.score)
-            for item in retriever.search("AI", limit=5)
+            for item in retriever.search("AI", limit=5).results
         ]
         for _ in range(3)
     ]
 
     assert snapshots[0]
     assert snapshots[1:] == [snapshots[0], snapshots[0]]
+
+
+@pytest.mark.asyncio
+async def test_search_invalid_query_is_distinguishable(mcp_server):
+    result = await _call_search(
+        mcp_server,
+        {"query": "", "strategy": "bm25", "top_k": 5},
+    )
+    data = _parse_tool_content(result)
+
+    assert set(data) == {"status", "strategy", "total", "results", "issues"}
+    assert data["status"] == "invalid"
+    assert data["strategy"] == "bm25"
+    assert data["total"] == 0
+    assert data["results"] == []
+    assert data["issues"][0]["code"] == "retrieval_invalid_query"
+
+
+@pytest.mark.asyncio
+async def test_search_vector_without_provider_is_error_not_no_hits(mcp_server):
+    result = await _call_search(
+        mcp_server,
+        {"query": "语义搜索", "strategy": "vector", "top_k": 5},
+    )
+    data = _parse_tool_content(result)
+
+    assert set(data) == {"status", "strategy", "total", "results", "issues"}
+    assert data["status"] == "error"
+    assert data["strategy"] == "vector"
+    assert data["total"] == 0
+    assert data["results"] == []
+    assert data["issues"][0]["code"] in {
+        "provider_config_invalid",
+        "retrieval_index_unavailable",
+    }

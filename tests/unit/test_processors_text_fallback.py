@@ -9,11 +9,13 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
 from src.processors.text_fallback_processor import DialogueMessage, TextFallbackProcessor
+from src.processors.local_file_reader import read_local_text_file
+from src.runtime.errors import PKVRuntimeError
 
 
 def _mock_deepseek():
@@ -100,6 +102,113 @@ async def test_text_fallback_process_empty_input():
 
 
 @pytest.mark.asyncio
+async def test_text_fallback_path_string_is_raw_text_by_default(tmp_path: Path):
+    """A path-shaped raw value must never trigger an implicit local file read."""
+    file_path = tmp_path / "secret.txt"
+    file_path.write_text("TOP_SECRET_FILE_CONTENT", encoding="utf-8")
+    processor = TextFallbackProcessor(deepseek_client=_mock_deepseek())
+
+    with (
+        patch.object(Path, "exists", side_effect=AssertionError("unexpected path lookup")) as exists,
+        patch.object(Path, "read_text", side_effect=AssertionError("unexpected file read")) as read_text,
+    ):
+        entry = await processor.process(str(file_path))
+
+    exists.assert_not_called()
+    read_text.assert_not_called()
+    assert entry.content == str(file_path)
+    assert entry.source_url is None
+    assert "TOP_SECRET_FILE_CONTENT" not in entry.content
+
+
+@pytest.mark.asyncio
+async def test_text_fallback_process_text_never_reads_path(tmp_path: Path):
+    """The explicit raw-text seam must preserve path-shaped text verbatim."""
+    file_path = tmp_path / "raw-text-canary.txt"
+    file_path.write_text("SHOULD_NOT_BE_READ", encoding="utf-8")
+    processor = TextFallbackProcessor(deepseek_client=_mock_deepseek())
+
+    with patch.object(Path, "read_text") as read_text:
+        entry = await processor.process_text(str(file_path))
+
+    read_text.assert_not_called()
+    assert entry.content == str(file_path)
+    assert entry.source_url is None
+
+
+@pytest.mark.asyncio
+async def test_text_fallback_process_file_requires_explicit_opt_in(tmp_path: Path):
+    """Explicit file imports should retain the legacy file-loading capability."""
+    file_path = tmp_path / "sample.txt"
+    file_path.write_text("# Imported note\nImported body", encoding="utf-8")
+    processor = TextFallbackProcessor(deepseek_client=_mock_deepseek())
+
+    entry = await processor.process_file(file_path)
+
+    assert entry.content == "# Imported note\nImported body"
+    assert entry.source_url is None
+    assert entry.metadata["source_url"] is None
+    assert entry.title == "Imported note"
+    assert str(tmp_path) not in repr(entry)
+
+
+@pytest.mark.asyncio
+async def test_text_fallback_empty_file_never_persists_local_path(tmp_path: Path):
+    """Even an empty explicit import must not turn its path into provenance."""
+    private_root = tmp_path / "PRIVATE-PATH-CANARY"
+    private_root.mkdir()
+    file_path = private_root / "empty-note.md"
+    file_path.write_text("", encoding="utf-8")
+    processor = TextFallbackProcessor(deepseek_client=_mock_deepseek())
+
+    entry = await processor.process_file(file_path)
+
+    assert entry.title == "empty-note"
+    assert entry.source_url is None
+    assert entry.metadata["source_url"] is None
+    assert str(private_root) not in repr(entry)
+
+
+def test_local_file_reader_uses_descriptor_verified_nofollow_open(tmp_path: Path):
+    file_path = tmp_path / "note.md"
+    handle = MagicMock()
+    handle.read.return_value = "verified content"
+    context = MagicMock()
+    context.__enter__.return_value = handle
+    context.__exit__.return_value = False
+
+    with patch(
+        "src.processors.local_file_reader.open_user_file_nofollow",
+        return_value=context,
+    ) as safe_open:
+        content = read_local_text_file(file_path, errors="ignore")
+
+    assert content == "verified content"
+    safe_open.assert_called_once_with(
+        file_path,
+        "r",
+        label="本地导入源文件",
+        encoding="utf-8",
+        errors="ignore",
+    )
+
+
+@pytest.mark.asyncio
+async def test_text_fallback_process_file_rejects_symlink(tmp_path: Path):
+    target = tmp_path / "target.md"
+    target.write_text("# Target\nsecret", encoding="utf-8")
+    link = tmp_path / "link.md"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    processor = TextFallbackProcessor(deepseek_client=_mock_deepseek())
+    with pytest.raises(PKVRuntimeError):
+        await processor.process_file(link)
+
+
+@pytest.mark.asyncio
 async def test_text_fallback_resolve_text_unicode_error(tmp_path: Path):
     """_resolve_text should retry with errors=ignore on decode failure."""
     file_path = tmp_path / "sample.txt"
@@ -112,8 +221,14 @@ async def test_text_fallback_resolve_text_unicode_error(tmp_path: Path):
             raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "boom")
         return "Recovered text"
 
-    with patch.object(Path, "read_text", side_effect=read_text_side_effect):
-        text, source = await processor._resolve_text(str(file_path))
+    with patch(
+        "src.processors.text_fallback_processor.read_local_text_file",
+        side_effect=read_text_side_effect,
+    ):
+        text, source = await processor._resolve_text(
+            str(file_path),
+            allow_local_file=True,
+        )
 
     assert text == "Recovered text"
     assert source == file_path
@@ -125,16 +240,13 @@ def test_text_fallback_detect_text_type_variants():
 
     assert processor._detect_text_type("") == "article"
     assert (
-        processor._detect_text_type("Alice: hi\nBob: hi\nCarol: hi")
-        == "article"
+        processor._detect_text_type("Alice: hi\nBob: hi\nCarol: hi") == "article"
     )
     assert (
-        processor._detect_text_type("Alice: a\nAlice: b\nAlice: c")
-        == "dialogue"
+        processor._detect_text_type("Alice: a\nAlice: b\nAlice: c") == "dialogue"
     )
     assert (
-        processor._detect_text_type("Alice: hi\nAlice: ok")
-        == "dialogue"
+        processor._detect_text_type("Alice: hi\nAlice: ok") == "dialogue"
     )
 
 

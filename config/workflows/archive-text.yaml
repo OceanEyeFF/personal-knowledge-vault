@@ -2,38 +2,36 @@
 # 归档文本工作流配置
 #
 # 用途: 归档纯文本/AI对话摘要等非URL内容
-# 触发方式: MCP Tool `archive_text(text, title)`
+# 触发方式: GUI 或 MCP Tool `archive_text(text, title)`
 #
 # 与 archive-url 的区别:
 #   - 跳过 fetch_content 步骤（无需抓取，文本由 MCP Tool 层传入）
-#   - 跳过 idea_sharpen 步骤（MCP 场景无终端交互能力）
-#   - Entry 由 MCP Tool 层调用 TextFallbackProcessor 预构建
+#   - 跳过 idea_sharpen 步骤（非交互调用无终端问答能力）
+#   - Entry 由调用 adapter 使用 TextFallbackProcessor 预构建
 #
 # 数据流:
-#   MCP Tool 构造 Entry → AI 分析（摘要/标签）→ 持久化存储
+#   Adapter 构造 Entry → AI 分析（摘要/标签）→ 可选审核 → 持久化存储
 
+schema_version: 1
 name: archive-text
-description: "归档纯文本内容工作流（MCP 专用）"
+description: "归档纯文本内容工作流（非交互调用）"
 
 # 工作流步骤（顺序执行）
 steps:
   - id: ai_analyze
     type: ai_analyze
     config:
-      model: deepseek-chat
-      max_tokens: 2000
-      temperature: 0.7
       tasks:
         - summarize
         - extract_tags
+      max_words: 300
+      num_tags: 5
     on_error: continue      # AI 失败则跳过，保留 TextFallbackProcessor 的默认摘要
 
   - id: review_entry
     type: review_entry
     config:
       required: false
-      timeout: 600
-      skip_on_timeout: true
       max_regenerations: 3
       preview_chars: 500
     on_error: continue
@@ -46,8 +44,3 @@ steps:
         - sqlite        # SQLite FTS5 索引
         - vector_index  # hnswlib 向量索引
     on_error: fail  # 存储失败则终止工作流
-
-# 全局配置
-global:
-  log_level: INFO
-  enable_metrics: true

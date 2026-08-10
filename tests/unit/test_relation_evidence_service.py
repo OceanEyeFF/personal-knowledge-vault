@@ -21,7 +21,12 @@ from src.relations.models import (  # noqa: E402
     RelationSourceType,
     RelationType,
 )
-from src.retrieval.result import SearchResult  # noqa: E402
+from src.retrieval.result import (  # noqa: E402
+    RetrievalIssue,
+    SearchResponse,
+    SearchResult,
+)
+from src.runtime.errors import ErrorCode, PKVRuntimeError  # noqa: E402
 from src.storage.markdown_store import Entry  # noqa: E402
 
 
@@ -30,7 +35,9 @@ class StubQueryRouter:
         self.results = results
 
     def search(self, query: str, limit: int = 10):
-        return self.results[:limit]
+        if isinstance(self.results, SearchResponse):
+            return self.results
+        return SearchResponse.completed(self.results[:limit], strategy="hybrid")
 
 
 class StubSQLiteStore:
@@ -121,7 +128,9 @@ class StubChunkSearcher:
         self.results = results
 
     def search_chunks(self, query: str, limit: int = 10):
-        return self.results[:limit]
+        if isinstance(self.results, SearchResponse):
+            return self.results
+        return SearchResponse.completed(self.results[:limit], strategy="vector_chunks")
 
 
 class StubFailingChunkSearcher:
@@ -447,6 +456,68 @@ def test_collect_evidence_deduplicates_near_duplicate_chunk_text():
     assert result.evidence[0].chunk_id == 101
 
 
+def test_collect_evidence_compacts_ranks_after_chunk_deduplication():
+    entries = {
+        1: {"title": "Alpha", "file_path": "/tmp/alpha.md"},
+        2: {"title": "Beta", "file_path": "/tmp/beta.md"},
+    }
+    service = EvidenceCollectionService(
+        query_router=StubQueryRouter(
+            [SearchResult(1, "Alpha", 0.95, "Alpha", {})]
+        ),
+        sqlite_store=StubSQLiteStore(entries),
+        markdown_store=StubMarkdownStore(
+            {
+                "/tmp/alpha.md": "Alpha document",
+                "/tmp/beta.md": "Beta document",
+            }
+        ),
+        relation_query_service=StubRelationQueryService(),
+        chunk_searcher=StubChunkSearcher(
+            [
+                SearchResult(
+                    1,
+                    "Alpha",
+                    0.93,
+                    "Alpha chunk",
+                    {
+                        "chunk_id": 101,
+                        "chunk_index": 0,
+                        "chunk_text": "Alpha chunk about graphs and retrieval",
+                    },
+                ),
+                SearchResult(
+                    1,
+                    "Alpha duplicate",
+                    0.91,
+                    "Alpha duplicate",
+                    {
+                        "chunk_id": 102,
+                        "chunk_index": 1,
+                        "chunk_text": "Alpha chunk about graphs and retrieval.",
+                    },
+                ),
+                SearchResult(
+                    2,
+                    "Beta",
+                    0.80,
+                    "Beta chunk",
+                    {
+                        "chunk_id": 201,
+                        "chunk_index": 0,
+                        "chunk_text": "A distinct Beta chunk",
+                    },
+                ),
+            ]
+        ),
+    )
+
+    result = service.collect_evidence("Alpha?", top_k=3, include_chunks=True)
+
+    assert [item.knowledge_id for item in result.evidence] == [1, 2]
+    assert [item.retrieval_rank for item in result.evidence] == [1, 2]
+
+
 def test_collect_evidence_default_keeps_document_preview_when_chunks_available():
     service = EvidenceCollectionService(
         query_router=StubQueryRouter(
@@ -611,6 +682,7 @@ def test_collect_evidence_ranks_non_seed_items_by_multi_factor_score():
     )
 
     assert [item.knowledge_id for item in result.evidence] == [1, 2, 3]
+    assert [item.retrieval_rank for item in result.evidence] == [1, 2, 3]
     assert result.evidence[1].ranking_score > result.evidence[2].ranking_score
     assert result.evidence[1].relation_score > result.evidence[2].relation_score
 
@@ -628,6 +700,135 @@ def test_collect_evidence_returns_not_found_when_search_empty():
     assert result.found is False
     assert result.total_evidence == 0
     assert "未找到" in result.summary
+
+
+def test_collect_evidence_does_not_turn_document_error_into_not_found():
+    message_canary = "MESSAGE_CANARY_token=secret"
+    stage_canary = "STAGE_CANARY_private_path"
+    response = SearchResponse.failed_response(
+        RetrievalIssue(
+            code=ErrorCode.PROVIDER_UNAVAILABLE,
+            message=message_canary,
+            stage=stage_canary,
+            recoverable=True,
+            cause_type="CanaryProviderError",
+        ),
+        strategy="vector",
+    )
+    service = EvidenceCollectionService(
+        query_router=StubQueryRouter(response),
+        sqlite_store=StubSQLiteStore({}),
+        markdown_store=StubMarkdownStore({}),
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    with pytest.raises(PKVRuntimeError) as captured:
+        service.collect_evidence("Alpha")
+
+    assert captured.value.code is ErrorCode.PROVIDER_UNAVAILABLE
+    assert captured.value.stage == "evidence_document_retrieval"
+    assert str(captured.value) == "文档证据检索服务暂不可用"
+    assert message_canary not in repr(captured.value.to_dict())
+    assert stage_canary not in repr(captured.value.to_dict())
+
+
+def test_collect_evidence_keeps_empty_document_degradation_observable():
+    message_canary = "MESSAGE_CANARY_token=secret"
+    stage_canary = "STAGE_CANARY_private_path"
+    response = SearchResponse.degraded_response(
+        (),
+        (
+            RetrievalIssue(
+                code=ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                message=message_canary,
+                stage=stage_canary,
+                recoverable=True,
+            ),
+        ),
+        strategy="hybrid",
+    )
+    service = EvidenceCollectionService(
+        query_router=StubQueryRouter(response),
+        sqlite_store=StubSQLiteStore({}),
+        markdown_store=StubMarkdownStore({}),
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    result = service.collect_evidence("Alpha")
+
+    assert result.found is False
+    assert any(
+        note.startswith("document_retrieval_degraded[retrieval_index_unavailable]")
+        for note in result.limitation_notes
+    )
+    assert message_canary not in repr(result.to_dict())
+    assert stage_canary not in repr(result.to_dict())
+
+
+def test_collect_evidence_rejects_corrupted_document_response_as_backend_error():
+    malformed_result = SearchResult(1, "Alpha", 0.8, "", {})
+    malformed_response = SearchResponse.completed(
+        (malformed_result,),
+        strategy="bm25",
+    )
+    object.__setattr__(malformed_result, "knowledge_id", True)
+    service = EvidenceCollectionService(
+        query_router=StubQueryRouter(malformed_response),
+        sqlite_store=StubSQLiteStore({}),
+        markdown_store=StubMarkdownStore({}),
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    with pytest.raises(PKVRuntimeError) as captured:
+        service.collect_evidence("Alpha")
+
+    assert captured.value.code is ErrorCode.RETRIEVAL_BACKEND_FAILED
+    assert captured.value.stage == "evidence_document_retrieval"
+    assert str(captured.value) == "文档证据检索返回了无效响应"
+
+
+def test_collect_evidence_does_not_turn_corrupted_no_hits_into_not_found():
+    malformed_response = SearchResponse.completed((), strategy="bm25")
+    object.__setattr__(
+        malformed_response,
+        "strategy",
+        "bm25\r\nSTRATEGY_CANARY",
+    )
+    service = EvidenceCollectionService(
+        query_router=StubQueryRouter(malformed_response),
+        sqlite_store=StubSQLiteStore({}),
+        markdown_store=StubMarkdownStore({}),
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    with pytest.raises(PKVRuntimeError) as captured:
+        service.collect_evidence("Alpha")
+
+    assert captured.value.code is ErrorCode.RETRIEVAL_BACKEND_FAILED
+    assert "STRATEGY_CANARY" not in str(captured.value)
+
+
+def test_corrupted_chunk_response_is_explicit_document_fallback():
+    malformed_result = SearchResult(1, "Alpha chunk", 0.8, "", {})
+    malformed_response = SearchResponse.completed(
+        (malformed_result,),
+        strategy="vector_chunks",
+    )
+    object.__setattr__(malformed_result, "metadata", ())
+    service = EvidenceCollectionService(
+        query_router=StubQueryRouter([]),
+        sqlite_store=StubSQLiteStore({}),
+        markdown_store=StubMarkdownStore({}),
+        relation_query_service=StubRelationQueryService(),
+        chunk_searcher=StubChunkSearcher(malformed_response),
+    )
+
+    results, status, limitation = service._search_chunk_results("Alpha", limit=3)
+
+    assert results == []
+    assert status == service.CHUNK_STATUS_SEARCH_ERROR
+    assert limitation is not None
+    assert "返回了无效响应" in limitation
 
 
 def test_collect_evidence_distinguishes_no_chunk_hits_without_degradation():
@@ -670,6 +871,150 @@ def test_collect_evidence_distinguishes_no_chunk_hits_without_degradation():
     assert result.found is True
     assert result.chunk_retrieval_status == "no_hits"
     assert result.limitation_notes == []
+
+
+def test_collect_evidence_reports_no_chunk_hits_when_vault_filter_removes_all(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def reject_outside_vault(file_path, vault_dir):
+        raise ValueError("outside vault")
+
+    monkeypatch.setattr(
+        "src.relations.evidence_service.resolve_vault_file_path",
+        reject_outside_vault,
+    )
+    document_hit = SearchResult(
+        knowledge_id=1,
+        title="Outside document",
+        score=0.95,
+        highlight="outside document",
+        metadata={},
+    )
+    chunk_hit = SearchResult(
+        knowledge_id=1,
+        title="Outside chunk",
+        score=0.91,
+        highlight="outside chunk",
+        metadata={
+            "chunk_id": 101,
+            "chunk_index": 0,
+            "chunk_text": "outside chunk",
+        },
+    )
+    service = EvidenceCollectionService(
+        query_router=StubQueryRouter([document_hit]),
+        sqlite_store=StubSQLiteStore(
+            {
+                1: {
+                    "knowledge_id": 1,
+                    "title": "Outside",
+                    "file_path": "/outside/vault.md",
+                }
+            }
+        ),
+        markdown_store=StubMarkdownStore({}),
+        relation_query_service=StubRelationQueryService(),
+        chunk_searcher=StubChunkSearcher([chunk_hit]),
+    )
+
+    result = service.collect_evidence(
+        question="outside?",
+        top_k=1,
+        include_chunks=True,
+    )
+
+    assert result.found is False
+    assert result.seed_knowledge_id is None
+    assert result.evidence == []
+    assert result.chunk_retrieval_status == "no_hits"
+    assert any(
+        "chunk 检索候选未通过 vault 文件边界校验" in note
+        for note in result.limitation_notes
+    )
+
+
+def test_collect_evidence_reports_no_chunk_hits_when_top_k_projects_only_document(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def reject_only_outside(file_path, vault_dir):
+        path = Path(file_path)
+        if path == Path("/outside/vault.md"):
+            raise ValueError("outside vault")
+        return path
+
+    monkeypatch.setattr(
+        "src.relations.evidence_service.resolve_vault_file_path",
+        reject_only_outside,
+    )
+    service = EvidenceCollectionService(
+        query_router=StubQueryRouter(
+            [
+                SearchResult(
+                    knowledge_id=1,
+                    title="Document seed",
+                    score=0.95,
+                    highlight="document seed",
+                    metadata={},
+                )
+            ]
+        ),
+        sqlite_store=StubSQLiteStore(
+            {
+                1: {"title": "Document seed", "file_path": "/tmp/seed.md"},
+                2: {"title": "Safe chunk", "file_path": "/tmp/safe.md"},
+                3: {"title": "Outside chunk", "file_path": "/outside/vault.md"},
+            }
+        ),
+        markdown_store=StubMarkdownStore(
+            {
+                "/tmp/seed.md": "document seed",
+                "/tmp/safe.md": "safe chunk",
+            }
+        ),
+        relation_query_service=StubRelationQueryService(),
+        chunk_searcher=StubChunkSearcher(
+            [
+                SearchResult(
+                    knowledge_id=3,
+                    title="Outside chunk",
+                    score=0.92,
+                    highlight="outside chunk",
+                    metadata={
+                        "chunk_id": 301,
+                        "chunk_index": 0,
+                        "chunk_text": "outside chunk",
+                    },
+                ),
+                SearchResult(
+                    knowledge_id=2,
+                    title="Safe chunk",
+                    score=0.90,
+                    highlight="safe chunk",
+                    metadata={
+                        "chunk_id": 201,
+                        "chunk_index": 0,
+                        "chunk_text": "safe chunk",
+                    },
+                ),
+            ]
+        ),
+    )
+
+    result = service.collect_evidence(
+        question="seed?",
+        top_k=1,
+        include_chunks=True,
+    )
+
+    assert result.found is True
+    assert [item.knowledge_id for item in result.evidence] == [1]
+    assert result.evidence[0].chunk_id is None
+    assert result.evidence[0].chunk_index is None
+    assert result.chunk_retrieval_status == "no_hits"
+    assert any(
+        "chunk 检索候选未通过 vault 文件边界校验" in note
+        for note in result.limitation_notes
+    )
 
 
 def test_collect_evidence_marks_chunk_degradation_on_exception(caplog):
@@ -854,6 +1199,61 @@ def test_collect_evidence_appends_document_hits_not_represented_by_chunks():
     assert result.evidence[0].chunk_index == 0
     assert result.evidence[1].chunk_index is None
     assert result.evidence[1].content_preview == "# Beta Beta full content"
+
+
+def test_collect_evidence_compacts_ranks_after_final_trim():
+    service = EvidenceCollectionService(
+        query_router=StubQueryRouter(
+            [
+                SearchResult(1, "Alpha", 0.95, "Alpha", {}),
+                SearchResult(2, "Beta", 0.94, "Alpha Beta relation", {}),
+            ]
+        ),
+        sqlite_store=StubSQLiteStore(
+            {
+                1: {"title": "Alpha", "file_path": "/tmp/alpha.md"},
+                2: {"title": "Beta", "file_path": "/tmp/beta.md"},
+                3: {"title": "Gamma", "file_path": "/tmp/gamma.md"},
+            }
+        ),
+        markdown_store=StubMarkdownStore(
+            {
+                "/tmp/alpha.md": "Alpha",
+                "/tmp/beta.md": "Alpha Beta relation",
+                "/tmp/gamma.md": "unrelated",
+            }
+        ),
+        relation_query_service=StubRelationQueryService(),
+        chunk_searcher=StubChunkSearcher(
+            [
+                SearchResult(
+                    1,
+                    "Alpha",
+                    0.93,
+                    "Alpha chunk",
+                    {"chunk_id": 101, "chunk_index": 0, "chunk_text": "Alpha"},
+                ),
+                SearchResult(
+                    3,
+                    "Gamma",
+                    0.01,
+                    "Gamma chunk",
+                    {"chunk_id": 301, "chunk_index": 0, "chunk_text": "unrelated"},
+                ),
+            ]
+        ),
+    )
+
+    result = service.collect_evidence(
+        "Alpha Beta relation",
+        top_k=2,
+        include_chunks=True,
+    )
+
+    assert [item.knowledge_id for item in result.evidence] == [1, 2]
+    assert [item.retrieval_rank for item in result.evidence] == [1, 2]
+    assert result.evidence[0].is_seed is True
+    assert result.evidence[1].chunk_id is None
 
 
 def test_deduplicate_replaces_lower_score_duplicate_and_detects_exact_text_match():

@@ -4,7 +4,8 @@
   "include_globs": [
     "config/config.yaml",
     "config/custom_dict.txt",
-    "config/workflows/*.yaml",
+    "config/workflows/archive-url.yaml",
+    "config/workflows/archive-text.yaml",
     "scripts/migrations/*.sql",
     "src/ai/prompts/*.txt",
     "src/gui/styles/*.qss"

@@ -4,12 +4,11 @@ VectorStore 安全性回归测试
 
 import json
 import os
-import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -755,6 +754,25 @@ def test_restart_recovers_interrupted_initial_single_artifact(tmp_path: Path):
     for name in ("doc_vectors", "chunk_vectors"):
         assert (vector_dir / f"{name}.idx").exists()
         assert (vector_dir / f"{name}_metadata.json").exists()
+
+
+def test_read_only_restart_recovers_interrupted_initial_then_refuses_creation(
+    tmp_path: Path,
+):
+    """只读打开先按 W1 回滚初次半提交，再因 pair 缺失 fail closed。"""
+    vector_dir = tmp_path / "vectors"
+    config = _fake_config("https://embd.example.com/v1", "model-a", 4)
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        _leave_interrupted_initial_index_publish(vector_dir)
+        marker = vector_dir / ".doc_vectors.pair-transaction.json"
+
+        with pytest.raises(PKVRuntimeError) as raised:
+            VectorStore(vector_dir, dim=4, allow_index_creation=False)
+
+    assert raised.value.code is ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE
+    assert not marker.exists()
+    assert list(vector_dir.glob("*.idx")) == []
+    assert list(vector_dir.glob("*_metadata.json")) == []
     assert list(vector_dir.glob(".*.rollback")) == []
 
 
@@ -835,7 +853,11 @@ def test_restart_rolls_back_pair_when_both_publishes_finished_but_marker_remains
             (vector_dir / "chunk_vectors_metadata.json").read_text(encoding="utf-8")
         )["id_mapping"] == {"10000": [1, 0]}
 
-        recovered = VectorStore(vector_dir, dim=4)
+        recovered = VectorStore(
+            vector_dir,
+            dim=4,
+            allow_index_creation=False,
+        )
 
     assert recovered.get_chunk_indices_for_entry(1) == []
     assert recovered.get_index_stats()["chunk_count"] == 0
@@ -1027,6 +1049,480 @@ def test_runtime_add_save_failure_restores_index_metadata_pair(
         assert reopened.get_chunk_indices_for_entry(1) == [0, 1]
 
 
+def _vector_artifact_snapshot(vector_dir: Path) -> dict[str, bytes]:
+    return {
+        path.name: path.read_bytes()
+        for path in sorted(vector_dir.iterdir())
+        if path.is_file()
+    }
+
+
+def _assert_vector_write_rejected_before_side_effects(
+    store: VectorStore,
+    vector_dir: Path,
+    invoke,
+    *,
+    expected_exception=PKVRuntimeError,
+    match: str | None = None,
+) -> None:
+    """A rejected write must not reach any pair/capacity/persistence boundary."""
+
+    before = _vector_artifact_snapshot(vector_dir)
+    fake_index = SimpleNamespace(add_items=MagicMock())
+    with (
+        patch.object(store, "_index_pair_lock") as pair_lock,
+        patch.object(
+            store,
+            "_reload_index_for_update_locked",
+            return_value=fake_index,
+        ) as reload_index,
+        patch.object(store, "_load_metadata_snapshot") as load_metadata,
+        patch.object(store, "_pair_rollback_guard") as rollback_guard,
+        patch.object(store, "_begin_pair_transaction") as begin_transaction,
+        patch.object(store, "_ensure_capacity") as ensure_capacity,
+        patch.object(store, "_atomic_write_json") as metadata_write,
+        patch.object(store, "_save_index") as save_index,
+    ):
+        with pytest.raises(expected_exception, match=match) as raised:
+            invoke()
+
+    if expected_exception is PKVRuntimeError:
+        assert raised.value.code is ErrorCode.STORAGE_VECTOR_FAILED
+        assert raised.value.stage == "vector_write_preflight"
+        assert raised.value.recoverable is False
+        assert str(raised.value) == "向量写入输入不符合索引契约"
+    pair_lock.assert_not_called()
+    reload_index.assert_not_called()
+    load_metadata.assert_not_called()
+    rollback_guard.assert_not_called()
+    begin_transaction.assert_not_called()
+    ensure_capacity.assert_not_called()
+    fake_index.add_items.assert_not_called()
+    metadata_write.assert_not_called()
+    save_index.assert_not_called()
+    assert _vector_artifact_snapshot(vector_dir) == before
+    assert list(vector_dir.glob(".*.pair-transaction.json")) == []
+
+
+def _assert_vector_query_rejected_before_reads(
+    store: VectorStore,
+    vector_dir: Path,
+    invoke,
+) -> None:
+    """A rejected query must not acquire a pair lock or reach hnswlib."""
+
+    before = _vector_artifact_snapshot(vector_dir)
+    fake_index = SimpleNamespace()
+    with (
+        patch.object(store, "_index_pair_lock") as pair_lock,
+        patch.object(
+            store,
+            "_reload_index_for_update_locked",
+            return_value=fake_index,
+        ) as reload_index,
+        patch.object(store, "_knn_query_active") as knn_query,
+    ):
+        with pytest.raises(PKVRuntimeError) as raised:
+            invoke()
+
+    assert raised.value.code is ErrorCode.RETRIEVAL_INVALID_QUERY
+    assert raised.value.stage == "vector_query_preflight"
+    assert raised.value.recoverable is False
+    assert str(raised.value) == "查询向量不符合索引契约"
+    pair_lock.assert_not_called()
+    reload_index.assert_not_called()
+    knn_query.assert_not_called()
+    assert _vector_artifact_snapshot(vector_dir) == before
+
+
+@pytest.mark.parametrize("writer_name", ["doc", "single_chunk"])
+def test_single_vector_writes_reject_invalid_float32_cosine_domain_before_writes(
+    tmp_path: Path,
+    writer_name: str,
+    caplog: pytest.LogCaptureFixture,
+):
+    """Both scalar writers share the exact value-free float32 preflight."""
+
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    underflow = np.nextafter(np.float32(0.0), np.float32(1.0))
+    canary = "CANARY_VECTOR_VALUE_MUST_NOT_LEAK"
+    invalid_vectors = (
+        ("zero", np.zeros(4, dtype=np.float32)),
+        ("norm_underflow", np.full(4, underflow, dtype=np.float32)),
+        ("float32_cast_overflow", np.full(4, 1e308, dtype=np.float64)),
+        ("float32_norm_overflow", np.full(4, 3e38, dtype=np.float32)),
+        ("non_finite", np.asarray([1.0, 0.0, np.nan, 0.0])),
+        ("wrong_rank", np.ones((1, 4), dtype=np.float32)),
+        ("wrong_dimension", np.ones(3, dtype=np.float32)),
+        ("bool", np.ones(4, dtype=np.bool_)),
+        ("complex", np.ones(4, dtype=np.complex64)),
+        ("object", np.asarray([canary] * 4, dtype=object)),
+        ("string", np.asarray([canary] * 4)),
+        ("not_ndarray", [1.0, 0.0, 0.0, 0.0]),
+    )
+
+    for case_name, vector in invalid_vectors:
+        if writer_name == "doc":
+            _assert_vector_write_rejected_before_side_effects(
+                store,
+                vector_dir,
+                lambda vector=vector: store.add_doc_vector(1, vector),
+            )
+        else:
+            _assert_vector_write_rejected_before_side_effects(
+                store,
+                vector_dir,
+                lambda vector=vector: store.add_chunk_vector(1, 0, vector),
+            )
+    assert canary not in caplog.text
+
+
+def test_batch_vector_write_validates_every_row_before_first_write(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    """A valid first row cannot hide a malformed later row or cause a partial add."""
+
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    valid = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    underflow = np.nextafter(np.float32(0.0), np.float32(1.0))
+    canary = "CANARY_BATCH_VECTOR_VALUE_MUST_NOT_LEAK"
+    invalid_batches = (
+        ("zero", np.vstack((valid, np.zeros(4, dtype=np.float32)))),
+        (
+            "norm_underflow",
+            np.vstack((valid, np.full(4, underflow, dtype=np.float32))),
+        ),
+        (
+            "float32_cast_overflow",
+            np.vstack((valid.astype(np.float64), np.full(4, 1e308))),
+        ),
+        (
+            "float32_norm_overflow",
+            np.vstack((valid, np.full(4, 3e38, dtype=np.float32))),
+        ),
+        (
+            "non_finite",
+            np.vstack((valid, np.asarray([0.0, np.inf, 0.0, 0.0]))),
+        ),
+        ("bool", np.ones((2, 4), dtype=np.bool_)),
+        ("complex", np.ones((2, 4), dtype=np.complex64)),
+        ("object", np.asarray([[1.0] * 4, [canary] * 4], dtype=object)),
+        ("string", np.asarray([["1"] * 4, [canary] * 4])),
+    )
+
+    for case_name, vectors in invalid_batches:
+        _assert_vector_write_rejected_before_side_effects(
+            store,
+            vector_dir,
+            lambda vectors=vectors: store.add_chunk_vectors(
+                1,
+                [0, 1],
+                vectors,
+            ),
+        )
+    assert canary not in caplog.text
+
+
+@pytest.mark.parametrize("search_name", ["doc", "chunk"])
+def test_vector_queries_reject_invalid_float32_cosine_domain_before_reads(
+    tmp_path: Path,
+    search_name: str,
+    caplog: pytest.LogCaptureFixture,
+):
+    """Both search boundaries reject malformed queries before lock/reload/kNN."""
+
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    underflow = np.nextafter(np.float32(0.0), np.float32(1.0))
+    canary = "CANARY_QUERY_VECTOR_VALUE_MUST_NOT_LEAK"
+    invalid_queries = (
+        np.zeros(4, dtype=np.float32),
+        np.full(4, underflow, dtype=np.float32),
+        np.full(4, 1e308, dtype=np.float64),
+        np.full(4, 3e38, dtype=np.float32),
+        np.asarray([1.0, 0.0, np.nan, 0.0]),
+        np.ones((1, 4), dtype=np.float32),
+        np.ones(3, dtype=np.float32),
+        np.ones(4, dtype=np.bool_),
+        np.ones(4, dtype=np.complex64),
+        np.asarray([canary] * 4, dtype=object),
+        np.asarray([canary] * 4),
+        [1.0, 0.0, 0.0, 0.0],
+    )
+
+    for query_vector in invalid_queries:
+        if search_name == "doc":
+            _assert_vector_query_rejected_before_reads(
+                store,
+                vector_dir,
+                lambda query_vector=query_vector: store.search_doc(
+                    query_vector,
+                    k=1,
+                ),
+            )
+        else:
+            _assert_vector_query_rejected_before_reads(
+                store,
+                vector_dir,
+                lambda query_vector=query_vector: store.search_chunk(
+                    query_vector,
+                    k=1,
+                ),
+            )
+    assert canary not in caplog.text
+
+
+def test_get_doc_vector_rejects_malformed_legacy_vector_before_related_search(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    """A corrupt persisted vector cannot become a related-search query."""
+
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    underflow = np.nextafter(np.float32(0.0), np.float32(1.0))
+    canary = "CANARY_LEGACY_VECTOR_VALUE_MUST_NOT_LEAK"
+    invalid_backend_values = (
+        np.zeros((1, 4), dtype=np.float32),
+        np.full((1, 4), underflow, dtype=np.float32),
+        np.full((1, 4), 1e308, dtype=np.float64),
+        np.full((1, 4), 3e38, dtype=np.float32),
+        np.asarray([[1.0, 0.0, np.inf, 0.0]]),
+        np.ones(4, dtype=np.float32),
+        np.ones((1, 3), dtype=np.float32),
+        np.ones((2, 4), dtype=np.float32),
+        np.ones((1, 4), dtype=np.bool_),
+        np.ones((1, 4), dtype=np.complex64),
+        np.asarray([[canary] * 4], dtype=object),
+        np.asarray([[canary] * 4]),
+        [[1.0, 0.0, 0.0, 0.0]],
+    )
+    fake_index = SimpleNamespace(get_items=MagicMock())
+    before = _vector_artifact_snapshot(vector_dir)
+
+    with patch.object(
+        store,
+        "_reload_index_for_update_locked",
+        return_value=fake_index,
+    ):
+        for backend_value in invalid_backend_values:
+            fake_index.get_items.return_value = backend_value
+            with patch.object(store, "search_doc") as search_doc:
+                with pytest.raises(PKVRuntimeError) as raised:
+                    vector = store.get_doc_vector(1)
+                    search_doc(vector, k=2)
+
+            assert raised.value.code is ErrorCode.RETRIEVAL_METADATA_INCONSISTENT
+            assert raised.value.stage == "document_vector_read"
+            assert raised.value.recoverable is True
+            assert str(raised.value) == "文档向量索引内容不一致"
+            search_doc.assert_not_called()
+
+    assert canary not in caplog.text
+    assert _vector_artifact_snapshot(vector_dir) == before
+
+
+def test_get_doc_vector_projects_valid_backend_row_to_owned_float32(tmp_path: Path):
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    backend_value = np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64)
+    fake_index = SimpleNamespace(get_items=MagicMock(return_value=backend_value))
+
+    with patch.object(
+        store,
+        "_reload_index_for_update_locked",
+        return_value=fake_index,
+    ):
+        result = store.get_doc_vector(1)
+
+    assert result is not None
+    assert result.dtype == np.float32
+    assert result.shape == (4,)
+    assert result.flags.c_contiguous
+    assert not np.shares_memory(result, backend_value)
+
+
+def test_batch_chunk_indices_are_frozen_before_vector_preflight(tmp_path: Path):
+    """Caller mutation cannot split encoded labels from the persisted mapping."""
+
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    chunk_indices = [0, 1]
+    vectors = np.asarray(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    entered_preflight = threading.Event()
+    release_preflight = threading.Event()
+    original_preflight = store._preflight_vector_write
+
+    def blocking_preflight(candidate, *, batch_size=None):
+        assert batch_size == 2
+        entered_preflight.set()
+        assert release_preflight.wait(timeout=10)
+        return original_preflight(candidate, batch_size=batch_size)
+
+    with (
+        patch.object(
+            store,
+            "_preflight_vector_write",
+            side_effect=blocking_preflight,
+        ),
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        future = executor.submit(
+            store.add_chunk_vectors,
+            1,
+            chunk_indices,
+            vectors,
+        )
+        assert entered_preflight.wait(timeout=10)
+        chunk_indices[:] = [7]
+        release_preflight.set()
+        assert future.result(timeout=20) == 2
+
+    metadata = json.loads(
+        (vector_dir / "chunk_vectors_metadata.json").read_text(encoding="utf-8")
+    )
+    assert metadata["id_mapping"] == {
+        "10000": [1, 0],
+        "10001": [1, 1],
+    }
+    assert store.get_index_stats()["chunk_count"] == 2
+    assert store.get_chunk_indices_for_entry(1) == [0, 1]
+    assert list(vector_dir.glob(".*.pair-transaction.json")) == []
+
+
+@pytest.mark.parametrize(
+    ("chunk_indices", "vectors"),
+    (
+        ([0, 1], np.ones(4, dtype=np.float32)),
+        ([0, 1], np.ones((2, 3), dtype=np.float32)),
+        ([0, 1], np.ones((1, 4), dtype=np.float32)),
+        ([0, 1], np.ones((3, 4), dtype=np.float32)),
+        ([], np.empty((0, 3), dtype=np.float32)),
+    ),
+    ids=("rank", "dimension", "too_few_rows", "too_many_rows", "empty_dim"),
+)
+def test_batch_vector_write_rejects_shape_dimension_and_cardinality_before_writes(
+    tmp_path: Path,
+    chunk_indices,
+    vectors: np.ndarray,
+):
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+
+    _assert_vector_write_rejected_before_side_effects(
+        store,
+        vector_dir,
+        lambda: store.add_chunk_vectors(1, chunk_indices, vectors),
+    )
+
+
+@pytest.mark.parametrize(
+    ("knowledge_id", "chunk_index", "match"),
+    (
+        (True, 0, "knowledge_id 必须为正整数"),
+        (1.0, 0, "knowledge_id 必须为正整数"),
+        (1, False, "chunk_index 必须为整数"),
+        (1, 0.0, "chunk_index 必须为整数"),
+    ),
+)
+def test_single_chunk_write_rejects_non_exact_identifiers_before_writes(
+    tmp_path: Path,
+    knowledge_id,
+    chunk_index,
+    match: str,
+):
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+
+    _assert_vector_write_rejected_before_side_effects(
+        store,
+        vector_dir,
+        lambda: store.add_chunk_vector(
+            knowledge_id,
+            chunk_index,
+            np.ones(4, dtype=np.float32),
+        ),
+        expected_exception=ValueError,
+        match=match,
+    )
+
+
+@pytest.mark.parametrize(
+    ("knowledge_id", "chunk_indices", "match"),
+    (
+        (True, [0, 1], "knowledge_id 必须为正整数"),
+        (1, (0, 1), "chunk_indices 必须是整数列表"),
+        (1, [0, True], "chunk_indices 必须是整数列表"),
+        (1, [0, 1.0], "chunk_indices 必须是整数列表"),
+        (1, [0, 0], "chunk_indices 不能重复"),
+        (
+            1,
+            [0, VectorStore.MAX_CHUNK_INDEX + 1],
+            "chunk_index 超出编码范围",
+        ),
+    ),
+)
+def test_batch_chunk_write_rejects_invalid_index_contract_before_writes(
+    tmp_path: Path,
+    knowledge_id,
+    chunk_indices,
+    match: str,
+):
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    vectors = np.ones((2, 4), dtype=np.float32)
+
+    _assert_vector_write_rejected_before_side_effects(
+        store,
+        vector_dir,
+        lambda: store.add_chunk_vectors(knowledge_id, chunk_indices, vectors),
+        expected_exception=ValueError,
+        match=match,
+    )
+
+
+def test_vector_write_preflight_preserves_valid_cast_and_empty_batch_behavior(
+    tmp_path: Path,
+):
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+
+    store.add_doc_vector(1, np.asarray([1, 0, 0, 0], dtype=np.int64))
+    store.add_chunk_vector(1, 0, np.asarray([0, 1, 0, 0], dtype=np.float64))
+    assert store.add_chunk_vectors(
+        1,
+        [1, 2],
+        np.asarray(
+            [
+                [0, 0, 1, 0],
+                [0, 0, 0, 1],
+            ],
+            dtype=np.float64,
+        ),
+    ) == 2
+    before_empty = _vector_artifact_snapshot(vector_dir)
+    with patch.object(store, "_index_pair_lock") as pair_lock:
+        assert store.add_chunk_vectors(
+            1,
+            [],
+            np.empty((0, 4), dtype=np.float32),
+        ) == 0
+    pair_lock.assert_not_called()
+
+    assert _vector_artifact_snapshot(vector_dir) == before_empty
+    assert store.get_index_stats()["doc_count"] == 1
+    assert store.get_chunk_indices_for_entry(1) == [0, 1, 2]
+
+
 @pytest.mark.parametrize(
     "delete_method",
     ["delete_vectors_for_entry", "delete_chunk_vectors_for_entry"],
@@ -1208,8 +1704,131 @@ def test_stale_instance_chunk_search_filters_latest_active_mapping(tmp_path: Pat
     ]
 
 
-def test_search_chunk_skips_non_finite_mapping_values(tmp_path: Path):
-    """畸形 Infinity mapping 不应触发 int() OverflowError 使搜索崩溃。"""
+def test_chunk_exact_mapping_validation_is_cached_for_unchanged_pair(
+    tmp_path: Path,
+):
+    """首次查询做 exact-set 探测，稳定 pair 的后续查询恢复普通 top-k。"""
+    store = VectorStore(tmp_path / "vectors", dim=4)
+    query = np.array([1, 0, 0, 0], dtype=np.float32)
+    store.add_chunk_vector(1, 0, query)
+    store.add_chunk_vector(2, 0, np.array([0, 1, 0, 0], dtype=np.float32))
+    store.add_chunk_vector(3, 0, np.array([0, 0, 1, 0], dtype=np.float32))
+    real_query = store._knn_query_active
+
+    with patch.object(store, "_knn_query_active", wraps=real_query) as query_active:
+        first = store.search_chunk(query, k=1)
+        second = store.search_chunk(query, k=1)
+
+    assert first[0][:2] == (1, 0)
+    assert second[0][:2] == (1, 0)
+    assert [call.args[2] for call in query_active.call_args_list] == [4, 1]
+    assert store._validated_chunk_pair_key is not None
+
+
+def test_chunk_validation_cache_invalidates_on_same_instance_metadata_corruption(
+    tmp_path: Path,
+):
+    """metadata bytes 变化必须清空 cache，并重新 exact-set fail closed。"""
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    query = np.array([1, 0, 0, 0], dtype=np.float32)
+    store.add_chunk_vector(1, 0, query)
+    store.add_chunk_vector(2, 0, np.array([0, 1, 0, 0], dtype=np.float32))
+    store.add_chunk_vector(3, 0, np.array([0, 0, 1, 0], dtype=np.float32))
+    assert store.search_chunk(query, k=1)[0][:2] == (1, 0)
+    assert store._validated_chunk_pair_key is not None
+
+    metadata_path = vector_dir / "chunk_vectors_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["id_mapping"].pop("30000")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(PKVRuntimeError) as raised:
+        store.search_chunk(query, k=1)
+
+    assert raised.value.code is ErrorCode.RETRIEVAL_METADATA_INCONSISTENT
+    assert store._validated_chunk_pair_key is None
+
+
+def test_chunk_validation_cache_revalidates_changed_index_identity(
+    tmp_path: Path,
+):
+    """逻辑内容相同但 index identity 变化时也必须重新 exact-set 校验。"""
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    query = np.array([1, 0, 0, 0], dtype=np.float32)
+    store.add_chunk_vector(1, 0, query)
+    store.add_chunk_vector(2, 0, np.array([0, 1, 0, 0], dtype=np.float32))
+    store.add_chunk_vector(3, 0, np.array([0, 0, 1, 0], dtype=np.float32))
+    assert store.search_chunk(query, k=1)[0][:2] == (1, 0)
+    original_key = store._validated_chunk_pair_key
+
+    index_path = vector_dir / "chunk_vectors.idx"
+    replacement_path = vector_dir / "chunk_vectors.replacement"
+    replacement_path.write_bytes(index_path.read_bytes())
+    os.replace(replacement_path, index_path)
+    real_query = store._knn_query_active
+
+    with patch.object(store, "_knn_query_active", wraps=real_query) as query_active:
+        results = store.search_chunk(query, k=1)
+
+    assert results[0][:2] == (1, 0)
+    assert query_active.call_args.args[2] == 4
+    assert store._validated_chunk_pair_key is not None
+    assert store._validated_chunk_pair_key != original_key
+
+
+def test_reload_rejects_index_identity_change_during_hnsw_load(tmp_path: Path):
+    """load 前后文件状态不一致时不得把旧内存索引绑定到新 cache key。"""
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    query = np.ones(4, dtype=np.float32)
+    store.add_chunk_vector(1, 0, query)
+    index_path = vector_dir / "chunk_vectors.idx"
+    before = store._index_file_state(index_path)
+    after = (*before[:3], before[3] + 1, before[4])
+
+    with patch.object(store, "_index_file_state", side_effect=[before, after]):
+        with pytest.raises(PKVRuntimeError) as raised:
+            store.search_chunk(query, k=1)
+
+    assert raised.value.code is ErrorCode.PATH_STATE_UNDETERMINED
+    assert store._validated_chunk_pair_key is None
+
+
+def test_chunk_cache_rejects_unvalidated_second_metadata_snapshot(
+    tmp_path: Path,
+):
+    """A 合法而 B 指纹漂移时必须失败，且不得保留旧 cache。"""
+    vector_dir = tmp_path / "vectors"
+    store = VectorStore(vector_dir, dim=4)
+    query = np.ones(4, dtype=np.float32)
+    store.add_chunk_vector(1, 0, query)
+    assert store.search_chunk(query, k=1)[0][:2] == (1, 0)
+    assert store._validated_chunk_pair_key is not None
+
+    metadata, _ = store._load_metadata_snapshot("chunk_vectors")
+    drifted_metadata = json.loads(json.dumps(metadata))
+    drifted_metadata[VectorStore.EMBEDDING_FINGERPRINT_V2_KEY][
+        "embedding_model"
+    ] = "CANARY_UNVALIDATED_MODEL"
+    drifted_bytes = json.dumps(drifted_metadata).encode("utf-8")
+
+    with patch.object(
+        store,
+        "_load_metadata_snapshot",
+        return_value=(drifted_metadata, drifted_bytes),
+    ):
+        with pytest.raises(PKVRuntimeError) as raised:
+            store.search_chunk(query, k=1)
+
+    assert raised.value.code is ErrorCode.RETRIEVAL_METADATA_INCONSISTENT
+    assert "CANARY_UNVALIDATED_MODEL" not in str(raised.value)
+    assert store._validated_chunk_pair_key is None
+
+
+def test_search_chunk_rejects_non_finite_mapping_values(tmp_path: Path):
+    """畸形 Infinity mapping 必须以稳定错误 fail closed。"""
     vector_dir = tmp_path / "vectors"
     store = VectorStore(vector_dir, dim=4)
     store.add_chunk_vector(1, 0, np.ones(4, dtype=np.float32))
@@ -1218,7 +1837,31 @@ def test_search_chunk_skips_non_finite_mapping_values(tmp_path: Path):
     metadata["id_mapping"]["10000"] = [float("inf"), 0]
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
-    assert store.search_chunk(np.ones(4, dtype=np.float32), k=1) == []
+    with pytest.raises(PKVRuntimeError) as raised:
+        store.search_chunk(np.ones(4, dtype=np.float32), k=1)
+
+    assert raised.value.code is ErrorCode.RETRIEVAL_METADATA_INCONSISTENT
+    assert raised.value.stage == "chunk_index_metadata"
+
+
+def test_read_only_vector_store_rejects_missing_pair_without_recreating_it(
+    tmp_path: Path,
+):
+    """只读打开不得把丢失 pair 重新发布为空索引。"""
+    vector_dir = tmp_path / "vectors"
+    VectorStore(vector_dir, dim=4)
+    index_path = vector_dir / "doc_vectors.idx"
+    metadata_path = vector_dir / "doc_vectors_metadata.json"
+    index_path.unlink()
+    metadata_path.unlink()
+
+    with pytest.raises(PKVRuntimeError) as raised:
+        VectorStore(vector_dir, dim=4, allow_index_creation=False)
+
+    assert raised.value.code is ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE
+    assert raised.value.stage == "vector_index_pair_load"
+    assert not index_path.exists()
+    assert not metadata_path.exists()
 
 
 def test_stale_reader_search_sees_latest_doc_and_chunk_adds_and_deletes(

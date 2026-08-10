@@ -12,12 +12,14 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List
 
 from src.gui.styles import theme_colors
+from src.relations.citations import sanitize_public_source_url
 
 logger = logging.getLogger("pkv.gui.utils.knowledge_ref")
 
@@ -185,7 +187,7 @@ def build_knowledge_reference(
     knowledge_id = entry.get("knowledge_id", 0)
     title = entry.get("title", "")
     source_type = entry.get("source_type", "")
-    source_url = entry.get("source_url", "")
+    source_url = sanitize_public_source_url(entry.get("source_url", ""))
     summary = entry.get("summary_one_sentence", "") or entry.get(
         "summary_100_words", ""
     )
@@ -253,7 +255,15 @@ def format_reference_card_html(ref: KnowledgeReference) -> str:
     """
     colors = theme_colors.get_current_colors()
     truncated_marker = " (已截断)" if ref.is_truncated else ""
-    source_info = f" | {ref.source_type}" if ref.source_type else ""
+    safe_title = html.escape(str(ref.title), quote=True)
+    safe_source_type = html.escape(str(ref.source_type), quote=True)
+    safe_summary = html.escape(
+        str(ref.summary[:100] if ref.summary else "(无摘要)"),
+        quote=True,
+    )
+    safe_knowledge_id = html.escape(str(ref.knowledge_id), quote=True)
+    safe_token_count = html.escape(str(ref.token_count), quote=True)
+    source_info = f" | {safe_source_type}" if safe_source_type else ""
 
     return f"""
     <div style="
@@ -264,11 +274,11 @@ def format_reference_card_html(ref: KnowledgeReference) -> str:
         border-radius: 4px;
         color: {colors['msg_fg']};
     ">
-        <strong>📎 引用: {ref.title}</strong>{source_info}<br>
+        <strong>📎 引用: {safe_title}</strong>{source_info}<br>
         <span style="color: {colors['ref_card_meta']}; font-size: 12px;">
-            ID: {ref.knowledge_id} | ~{ref.token_count} tokens{truncated_marker}
+            ID: {safe_knowledge_id} | ~{safe_token_count} tokens{truncated_marker}
         </span><br>
-        <em style="color: {colors['ref_card_summary']};">{ref.summary[:100] if ref.summary else '(无摘要)'}</em>
+        <em style="color: {colors['ref_card_summary']};">{safe_summary}</em>
     </div>
     """
 

@@ -41,8 +41,10 @@ async def _call_tool(
 
 def _assert_error_payload(payload: Dict[str, Any], expected_substr: str | None = None) -> None:
     assert payload.get("success") is False
+    assert payload.get("terminal") == "error"
     assert isinstance(payload.get("error"), str)
     assert payload["error"].strip()
+    assert isinstance(payload.get("issues"), list) and payload["issues"]
     if expected_substr:
         assert expected_substr in payload["error"]
 
@@ -58,6 +60,9 @@ def _assert_archive_success(payload: Dict[str, Any]) -> int:
     assert required_fields <= set(payload)
     assert "file_path" not in payload
     assert payload["success"] is True
+    assert payload["terminal"] in {"success", "degraded"}
+    assert isinstance(payload["warnings"], list)
+    assert isinstance(payload["issues"], list)
     assert isinstance(payload["title"], str) and payload["title"].strip()
     assert isinstance(payload["tags"], list)
 
@@ -79,11 +84,13 @@ def _assert_stored_markdown_is_isolated(
 
 def _assert_search_payload(data: Dict[str, Any]) -> None:
     assert isinstance(data, dict)
-    assert set(data) == {"total", "strategy_used", "results"}
+    assert set(data) == {"status", "strategy", "total", "results", "issues"}
+    assert data["status"] in {"success", "no_hits"}
     assert isinstance(data["total"], int)
     assert not isinstance(data["total"], bool)
-    assert data["strategy_used"] == "bm25"
+    assert data["strategy"] == "bm25"
     assert isinstance(data["results"], list)
+    assert data["issues"] == []
     assert data["total"] == len(data["results"])
 
 
@@ -157,7 +164,7 @@ async def test_archive_url_invalid_format(
         timeout_s=10.0,
     )
     data = _parse_tool_content(result)
-    _assert_error_payload(data, expected_substr="URL scheme")
+    _assert_error_payload(data, expected_substr="URL 格式无效")
 
     after_count = store.count_entries()
     assert after_count == before_count
@@ -219,7 +226,9 @@ async def test_archive_text_length_limit(archive_mcp_server):
         timeout_s=10.0,
     )
     data = _parse_tool_content(result)
-    _assert_error_payload(data, expected_substr="超过限制")
+    _assert_error_payload(data, expected_substr="工作流配置无效")
+    assert data["issues"][0]["code"] == "workflow_config_invalid"
+    assert data["issues"][0]["stage"] == "text_validation"
 
 
 @pytest.mark.network

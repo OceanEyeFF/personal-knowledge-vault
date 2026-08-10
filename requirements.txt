@@ -20,11 +20,10 @@ python-frontmatter==1.1.0  # YAML Front Matter 解析
 # AI Services
 openai>=1.55.3,<2          # OpenAI API (Embedding) — >=1.55.3 修复 httpx 0.28+ 兼容性
 httpx>=0.27,<1             # HTTP 客户端 (用于 DeepSeek API)
+urllib3>=2.2,<3            # URL 归档的 DNS-pinned 安全传输
 
-
-# Web Scraping (Phase 1 需要)
-playwright==1.48.0         # 网页自动化 (Python 3.13 兼容)
-requests==2.31.0           # HTTP 请求
+# Operations scripts
+requests==2.31.0           # scripts/audit_rearchive_urls.py
 
 # MCP Server (Phase 2A)
 mcp[cli]>=1.6.0            # MCP Python SDK (含 FastMCP + CLI 调试工具)

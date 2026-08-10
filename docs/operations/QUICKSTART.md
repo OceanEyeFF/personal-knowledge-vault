@@ -3,7 +3,7 @@
 > 当前版本快速启动指南
 > 适用于想先把系统跑起来，再决定从 CLI、MCP 还是 GUI 进入的用户
 
-**最后更新**: 2026-03-06
+**最后更新**: 2026-08-07
 
 ---
 
@@ -12,7 +12,7 @@
 完成本指南后，你将得到一个可运行的 PKV 本地环境，包含：
 
 - CLI 入口
-- MCP Server 入口
+- MCP Server stdio 入口
 - GUI 桌面入口
 - 本地数据目录（Markdown / SQLite / 向量索引 / 日志）
 
@@ -26,10 +26,12 @@
 - Python 3.11+
 - Git
 
-### 必需 API 配置
+### 可选 Provider 配置
 
-- `ai.llm.api_key`：用于摘要、标签、部分 AI 能力
-- `ai.embedding.api_key`：用于 Embedding
+- `ai.llm.*`：仅在用户手动使用摘要、标签或 Chat 等 Provider-backed 能力时需要
+- `ai.embedding.*`：仅在用户手动使用向量/混合检索或生成 Embedding 时需要
+
+BM25、浏览、MCP stdio 能力发现及默认自动化验证均不需要真实 API Key。项目默认验证必须离线，只使用 `.data-test` 隔离根和合成数据，不连接真实 Provider，也不读取真实 Vault。
 
 ---
 
@@ -53,7 +55,7 @@
 notepad config/local.yaml
 ```
 
-`config/local.yaml` 已被 Git 忽略。填入至少以下内容：
+`config/local.yaml` 已被 Git 忽略。只有需要 Provider-backed 能力时才填写以下内容：
 
 ```yaml
 ai:
@@ -126,11 +128,7 @@ stdio 模式：
 python -m src.mcp
 ```
 
-HTTP 模式：
-
-```bash
-python -m src.mcp.server --transport streamable-http --port 3000
-```
+M13 Developer Preview 只支持 stdio；`streamable-http` 与 Bearer Token 认证未进入发布面，不能作为启动或部署方式。
 
 适用场景：
 
@@ -138,6 +136,8 @@ python -m src.mcp.server --transport streamable-http --port 3000
 - Codex
 - Cursor
 - 其他 MCP Client
+
+已发现的 `find_bridges`、`timeline_of`、`contrast` 仍是 `partial-v1`：响应会继续声明 `implementation_level=partial` 并给出 `limitation_notes`，不能按 full 语义理解。
 
 ### 5.3 GUI
 
@@ -150,7 +150,7 @@ python -m src.gui
 适用场景：
 
 - 浏览知识条目
-- 搜索结果检查
+- BM25 搜索结果检查
 - 归档状态查看
 - 配置和调试
 

@@ -4,12 +4,11 @@ MCP 辅助工具
 提供序列化、字段转换、安全验证等通用函数。
 """
 
-import ipaddress
 import logging
-import os
-import re
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from typing import Any, Dict, List, Tuple
+
+from src.processors.safe_fetch import is_forbidden_hostname, parse_http_target
+from src.runtime.errors import ErrorCode, PKVRuntimeError
 
 logger = logging.getLogger("pkv.mcp")
 
@@ -107,10 +106,6 @@ def clamp_param(value: int, min_val: int, max_val: int) -> int:
 # 安全验证函数（M9 新增）
 # ============================================================
 
-# HTTP Bearer Token 认证（从环境变量读取，不硬编码）
-_MCP_AUTH_TOKEN: Optional[str] = os.environ.get("PKV_MCP_AUTH_TOKEN", "")
-
-
 def validate_url(url: str) -> Tuple[bool, str]:
     """验证 URL 格式是否合法。
 
@@ -129,15 +124,11 @@ def validate_url(url: str) -> Tuple[bool, str]:
         return False, "URL 不能为空"
 
     try:
-        parsed = urlparse(url.strip())
+        parse_http_target(url)
+    except PKVRuntimeError as exc:
+        return False, str(exc)
     except Exception:
-        return False, f"URL 解析失败: {url}"
-
-    if parsed.scheme not in ("http", "https"):
-        return False, f"URL scheme 必须是 http 或 https，当前: {parsed.scheme or '(空)'}"
-
-    if not parsed.netloc:
-        return False, f"URL 缺少有效的域名或 IP: {url}"
+        return False, "URL 解析失败"
 
     return True, ""
 
@@ -166,19 +157,14 @@ def is_private_ip(hostname: str) -> bool:
     if hostname.lower() in ("localhost", "localhost."):
         return True
 
-    try:
-        addr = ipaddress.ip_address(hostname)
-        return addr.is_private or addr.is_loopback or addr.is_link_local
-    except ValueError:
-        # 不是有效 IP，可能是域名，检查常见的内网域名后缀
-        lower_host = hostname.lower()
-        if lower_host.endswith((".local", ".internal", ".lan")):
-            return True
-        return False
+    return is_forbidden_hostname(hostname)
 
 
 def validate_url_security(url: str) -> Tuple[bool, str]:
-    """综合验证 URL 格式和安全性（合并格式 + 内网检查）。
+    """兼容投影：将稳定错误对象转换为历史 ``(bool, message)``。
+
+    此处只做无需 DNS 的前置判断；实际 DNS 全量地址检查、每跳重定向
+    复验和固定 peer 连接由 ``SafeFetcher`` 在网络边界完成。
 
     Args:
         url: 待验证的 URL
@@ -186,19 +172,46 @@ def validate_url_security(url: str) -> Tuple[bool, str]:
     Returns:
         (is_valid, error_message)
     """
-    valid, error = validate_url(url)
-    if not valid:
-        logger.warning(f"[安全] URL 格式验证失败: {error} (url={url!r})")
-        return False, error
+    failure = validate_url_security_result(url)
+    if failure is None:
+        return True, ""
+    logger.warning("[安全] URL 前置验证拒绝: code=%s", failure.code.value)
+    return False, str(failure)
 
-    parsed = urlparse(url.strip())
-    hostname = parsed.hostname or ""
 
-    if is_private_ip(hostname):
-        logger.warning(f"[安全] SSRF 拦截: 禁止访问内网地址 {hostname} (url={url!r})")
-        return False, f"禁止访问内网地址: {hostname}"
+def validate_url_security_result(url: str) -> PKVRuntimeError | None:
+    """Return a stable DNS-free URL-policy failure, or ``None`` when accepted.
 
-    return True, ""
+    Hostname DNS is intentionally not resolved here: resolving in an adapter and
+    then reconnecting by hostname would recreate a DNS-rebinding race.  The
+    processor's ``SafeFetcher`` performs resolution and connection atomically via
+    a ``PinnedTarget`` and can additionally report ``SSRF_RESOLUTION_FAILED``.
+    """
+
+    try:
+        target = parse_http_target(url)
+    except PKVRuntimeError as exc:
+        return PKVRuntimeError(
+            exc.code,
+            str(exc),
+            stage="url_preflight",
+            recoverable=exc.recoverable,
+        )
+    except Exception:
+        return PKVRuntimeError(
+            ErrorCode.URL_INVALID,
+            "URL 解析失败",
+            stage="url_preflight",
+            recoverable=False,
+        )
+    if is_forbidden_hostname(target.hostname):
+        return PKVRuntimeError(
+            ErrorCode.SSRF_TARGET_FORBIDDEN,
+            "禁止访问内网地址或其他非公网目标",
+            stage="url_preflight",
+            recoverable=False,
+        )
+    return None
 
 
 def validate_text_length(text: str, max_length: int = 100000) -> Tuple[bool, str]:
@@ -219,29 +232,3 @@ def validate_text_length(text: str, max_length: int = 100000) -> Tuple[bool, str
         return False, f"文本长度 {len(text)} 超过限制 {max_length} 字符"
 
     return True, ""
-
-
-def validate_http_auth(request_headers: Dict[str, str]) -> bool:
-    """验证 HTTP 请求的 Bearer Token。
-
-    安全默认原则：
-    - 未配置 PKV_MCP_AUTH_TOKEN 时，拒绝所有 HTTP 请求
-    - stdio 模式不需要调用此函数（天然安全）
-
-    Args:
-        request_headers: HTTP 请求头字典
-
-    Returns:
-        True 表示认证通过
-    """
-    if not _MCP_AUTH_TOKEN:
-        # 未配置 Token 时拒绝所有 HTTP 请求（安全默认）
-        logger.warning("[安全] HTTP 认证拒绝: PKV_MCP_AUTH_TOKEN 未配置")
-        return False
-
-    auth_header = request_headers.get("Authorization", "")
-    if auth_header != f"Bearer {_MCP_AUTH_TOKEN}":
-        logger.warning("[安全] HTTP 认证失败: Bearer Token 不匹配")
-        return False
-
-    return True

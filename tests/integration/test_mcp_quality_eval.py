@@ -53,7 +53,7 @@ def test_mcp_quality_baseline_is_deterministic_and_offline(
         for task, check in report.failed_checks
     }
     assert failures == set()
-    assert sum(len(task.checks) for task in report.tasks) == 119
+    assert sum(len(task.checks) for task in report.tasks) == 151
 
 
 def test_mcp_quality_report_can_hide_tool_outputs(tmp_path: Path) -> None:
@@ -185,10 +185,14 @@ def test_chunk_fixture_distinguishes_queries(tmp_path: Path) -> None:
         beta_only = scenario.chunk_searcher.search_chunks("chunk-beta-only Beta")
         unknown = scenario.chunk_searcher.search_chunks("ordinary unmatched query")
 
-    assert [item.metadata["chunk_id"] for item in alpha_delta] == [101, 401, 301]
-    assert [item.metadata["chunk_id"] for item in beta_only] == [201]
-    assert alpha_delta[0].metadata["chunk_text"] != beta_only[0].metadata["chunk_text"]
-    assert unknown == []
+    assert [item.metadata["chunk_id"] for item in alpha_delta.results] == [101, 401, 301]
+    assert [item.metadata["chunk_id"] for item in beta_only.results] == [201]
+    assert (
+        alpha_delta.results[0].metadata["chunk_text"]
+        != beta_only.results[0].metadata["chunk_text"]
+    )
+    assert unknown.status == "no_hits"
+    assert unknown.results == ()
 
 
 def test_phase_b_citations_resolve_and_runtime_contracts_execute(
@@ -562,6 +566,8 @@ def test_entry_resources_enforce_vault_boundary_and_real_errors(
                     {"knowledge_id": str(knowledge_id)},
                 )
                 assert detail["content"] == "(内容不可用)"
+                assert detail["status"] == "degraded"
+                assert detail["issues"]
                 scenario._assert_no_absolute_paths(detail)
                 assert "secret" not in json.dumps(detail, ensure_ascii=False)
 
@@ -569,7 +575,10 @@ def test_entry_resources_enforce_vault_boundary_and_real_errors(
                 "get_entry",
                 {"knowledge_id": str(outside_file)},
             )
-            assert invalid == {"error": "无效的 knowledge_id，需要数字"}
+            assert invalid["status"] == "invalid"
+            assert invalid["error"] == "检索参数无效"
+            assert invalid["issues"][0]["code"] == "retrieval_invalid_query"
+            assert invalid["issues"][0]["stage"] == "knowledge_id_validation"
             scenario._assert_no_absolute_paths(invalid)
 
             collected = await scenario.call_tool(

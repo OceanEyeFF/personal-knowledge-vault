@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -36,7 +37,6 @@ MOCK_SETTINGS = {
     "embedding_api_key": "test-embedding-key",
     "embedding_base_url": "https://embedding.example.com/v1",
     "theme": "",
-    "search_strategy": "auto",
 }
 
 MOCK_STATS = {
@@ -74,7 +74,6 @@ def mock_config():
     config.db_path = ".data-test/db/test.db"
     config.vault_dir = ".data-test/vault"
     config.vector_index_dir = ".data-test/vectors"
-    config.get.return_value = "auto"
     return config
 
 
@@ -125,10 +124,25 @@ class TestSettingsViewStructure:
         assert settings_view._theme_combo.count() == 2  # 明亮 / 暗色
 
     def test_has_strategy_combo(self, settings_view):
-        """包含检索策略下拉框。"""
+        """检索策略只读显示 Developer Preview 的真实 BM25 能力。"""
         assert settings_view._strategy_combo is not None
         assert isinstance(settings_view._strategy_combo, QComboBox)
-        assert settings_view._strategy_combo.count() == 4  # 自动/BM25/向量/混合
+        assert settings_view._strategy_combo.count() == 1
+        assert settings_view._strategy_combo.currentText() == "BM25（固定）"
+        assert not settings_view._strategy_combo.isEnabled()
+        public_text = " ".join([
+            settings_view._strategy_combo.itemText(index)
+            for index in range(settings_view._strategy_combo.count())
+        ])
+        public_text += " " + settings_view._strategy_description.text()
+        assert "BM25" in public_text
+        assert "Developer Preview" in public_text
+        assert "自动" not in " ".join(
+            settings_view._strategy_combo.itemText(index)
+            for index in range(settings_view._strategy_combo.count())
+        )
+        assert "向量" not in settings_view._strategy_combo.currentText()
+        assert "混合" not in settings_view._strategy_combo.currentText()
 
     def test_has_save_button(self, settings_view):
         """包含保存按钮。"""
@@ -213,9 +227,10 @@ class TestSettingsViewData:
             assert sentinel not in llm_display
             assert sentinel not in embedding_display
 
-    def test_strategy_default_is_auto(self, settings_view):
-        """默认检索策略为"自动"。"""
-        assert settings_view._strategy_combo.currentIndex() == 0  # "自动"
+    def test_strategy_is_fixed_to_bm25(self, settings_view):
+        """GUI 搜索策略固定为唯一 BM25 项。"""
+        assert settings_view._strategy_combo.currentIndex() == 0
+        assert settings_view._strategy_combo.currentText() == "BM25（固定）"
 
     def test_theme_combo_defaults_to_light(self, settings_view):
         """主题下拉框默认选中"明亮"。"""
@@ -243,7 +258,8 @@ class TestSettingsViewModel:
             assert isinstance(settings, dict)
             assert "llm_api_key" in settings
             assert "embedding_api_key" in settings
-            assert "search_strategy" in settings
+            assert "search_strategy" not in settings
+            mock_config.get.assert_not_called()
 
     def test_save_writes_local_yaml(self, tmp_path, mock_config):
         """save_settings 写入 config/local.yaml。"""
@@ -271,6 +287,7 @@ class TestSettingsViewModel:
                                 ),
                                 "embedding_api_key": "new-embedding-key",
                                 "embedding_base_url": "https://new-embedding.example.com/v1",
+                                "search_strategy": "hybrid",
                             })
                     finally:
                         config_mod._config_instance = original
@@ -288,9 +305,10 @@ class TestSettingsViewModel:
                 data["ai"]["embedding"]["base_url"]
                 == "https://new-embedding.example.com/v1"
             )
+            assert "retrieval" not in data
 
     def test_bulk_save_failure_leaves_existing_yaml_unchanged(
-        self, tmp_path, mock_config, qtbot
+        self, tmp_path, mock_config, qtbot, caplog
     ):
         """多字段写入只有一个原子提交点，底层失败时原文件不变。"""
         local_file = tmp_path / "local.yaml"
@@ -309,20 +327,39 @@ class TestSettingsViewModel:
             with patch.object(vm, "_find_local_config_file", return_value=local_file):
                 with patch(
                     "src.gui.viewmodels.settings_viewmodel.set_yaml_config_values",
-                    side_effect=OSError("simulated atomic failure"),
+                    side_effect=OSError(
+                        r"C:\private\config\local.yaml "
+                        "api_key=SETTINGS-SECRET-CANARY"
+                    ),
                 ) as bulk_update:
-                    with qtbot.waitSignal(vm.error_occurred, timeout=1000):
+                    caplog.set_level(
+                        logging.ERROR,
+                        logger="pkv.gui.viewmodels.settings",
+                    )
+                    with qtbot.waitSignal(
+                        vm.error_occurred,
+                        timeout=1000,
+                    ) as blocker:
                         vm.save_settings(
                             {
                                 "llm_api_key": "new-llm-key",
                                 "embedding_api_key": "new-embedding-key",
-                                "search_strategy": "hybrid",
                             }
                         )
 
         bulk_update.assert_called_once()
         saved.assert_not_called()
         assert local_file.read_bytes() == original
+        assert blocker.args[0] == (
+            "设置保存失败（错误代码：settings_save_failed）。"
+            "请检查用户配置文件权限后重试。"
+        )
+        assert "SETTINGS-SECRET-CANARY" not in blocker.args[0]
+        assert "private" not in blocker.args[0]
+        assert "SETTINGS-SECRET-CANARY" not in caplog.text
+        assert "private" not in caplog.text
+        assert "settings_save_failed" in caplog.text
+        assert "OSError" in caplog.text
 
     def test_save_emits_success_signal(self, tmp_path, mock_config, qtbot):
         """保存成功后发射 settings_saved 信号。"""
@@ -340,6 +377,23 @@ class TestSettingsViewModel:
                         vm.save_settings({"llm_api_key": "test"})
                 finally:
                     config_mod._config_instance = original
+
+    def test_obsolete_search_strategy_is_ignored_without_writing(
+        self, mock_config, qtbot
+    ):
+        """历史调用方提交 vector/hybrid 也不得写入无效配置键。"""
+        with patch(
+            "src.gui.viewmodels.settings_viewmodel.get_config",
+            return_value=mock_config,
+        ):
+            from src.gui.viewmodels.settings_viewmodel import SettingsViewModel
+
+            vm = SettingsViewModel()
+            with patch.object(vm, "_update_local_config") as update:
+                with qtbot.waitSignal(vm.settings_saved, timeout=1000):
+                    vm.save_settings({"search_strategy": "vector"})
+
+        update.assert_not_called()
 
     def test_unchanged_redacted_base_url_is_skipped_and_not_written(
         self, tmp_path, mock_config, qtbot
@@ -380,7 +434,7 @@ class TestSettingsViewModel:
         persisted = local_file.read_text(encoding="utf-8")
         data = yaml.safe_load(persisted)
         assert data["ai"]["llm"]["base_url"] == endpoint
-        assert data["retrieval"]["default_strategy"] == "hybrid"
+        assert "retrieval" not in data
         assert "已隐藏" not in persisted
 
     @pytest.mark.parametrize(
@@ -442,6 +496,63 @@ class TestSettingsViewModel:
         assert "original-secret" not in blocker.args[0]
         assert not local_file.exists()
 
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://evil.example/v1",
+            "http://localhost:8000/v1",
+            "javascript:alert(1)",
+            "https://",
+            "https://example.com:99999/v1",
+            "https://example.com/v1\r\napi_key=SETTINGS-URL-CANARY",
+        ],
+    )
+    def test_save_rejects_provider_endpoint_that_factory_cannot_use(
+        self,
+        endpoint,
+        mock_config,
+        qtbot,
+        caplog,
+    ):
+        """Settings and production construction share one endpoint boundary."""
+        from src.gui.viewmodels.settings_viewmodel import (
+            SettingsViewModel,
+            _INVALID_URL_ERROR,
+        )
+
+        vm = SettingsViewModel()
+        saved = MagicMock()
+        vm.settings_saved.connect(saved)
+        with patch.object(vm, "_update_local_config") as update:
+            with qtbot.waitSignal(vm.error_occurred, timeout=1000) as blocker:
+                with caplog.at_level(
+                    "ERROR",
+                    logger="pkv.gui.viewmodels.settings",
+                ):
+                    vm.save_settings({"llm_base_url": endpoint})
+
+        update.assert_not_called()
+        saved.assert_not_called()
+        assert blocker.args == [_INVALID_URL_ERROR]
+        assert "settings_endpoint_invalid" in caplog.text
+        assert endpoint not in blocker.args[0]
+        assert "SETTINGS-URL-CANARY" not in caplog.text
+
+    def test_save_accepts_numeric_loopback_http_provider_endpoint(
+        self,
+        qtbot,
+    ):
+        """The shared provider rule retains explicit local test harnesses."""
+        from src.gui.viewmodels.settings_viewmodel import SettingsViewModel
+
+        vm = SettingsViewModel()
+        endpoint = "http://127.0.0.1:8000/v1"
+        with patch.object(vm, "_update_local_config") as update:
+            with qtbot.waitSignal(vm.settings_saved, timeout=1000):
+                vm.save_settings({"embedding_base_url": endpoint})
+
+        update.assert_called_once_with({"ai.embedding.base_url": endpoint})
+
     def test_view_submits_only_edited_base_urls(self, settings_view):
         """View 层不提交未编辑 endpoint，普通 URL 编辑仍可保存。"""
         with patch.object(settings_view._vm, "save_settings") as save_settings:
@@ -450,6 +561,7 @@ class TestSettingsViewModel:
         first_payload = save_settings.call_args.args[0]
         assert "llm_base_url" not in first_payload
         assert "embedding_base_url" not in first_payload
+        assert "search_strategy" not in first_payload
 
         settings_view._llm_url_input.setText(
             "https://new-llm.example/v1?region=cn&route=primary"
@@ -462,6 +574,21 @@ class TestSettingsViewModel:
             "https://new-llm.example/v1?region=cn&route=primary"
         )
         assert "embedding_base_url" not in second_payload
+        assert "search_strategy" not in second_payload
+
+    def test_view_rejects_untrusted_error_message_canary(self, settings_view):
+        """即使错误信号被污染，UI 和 View 日志也只保留固定消息。"""
+        canary = (
+            r"C:\private\config\local.yaml "
+            "Authorization: Bearer VIEW-SECRET-CANARY"
+        )
+
+        settings_view._on_save_error(canary)
+
+        public_text = settings_view._status_label.text()
+        assert "settings_save_failed" in public_text
+        assert "VIEW-SECRET-CANARY" not in public_text
+        assert "private" not in public_text
 
 
 # ============================================================

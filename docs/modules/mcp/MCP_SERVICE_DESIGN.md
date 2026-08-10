@@ -2,17 +2,19 @@
 
 > Personal Knowledge Vault - Model Context Protocol 服务端设计
 >
-> **文档版本**: v1.1
+> **文档版本**: v1.2
 > **创建日期**: 2026-02-16
-> **最后更新**: 2026-07-29 (对齐 Phase B 引用与 Resource 合同)
+> **最后更新**: 2026-08-07 (对齐 M13 W2 stdio-only 发布合同)
 > **作者**: 幽浮喵 (猫娘工程师)
 > **目标版本**: v0.7.0
 
-> **当前代码补注（2026-07-29）**：
+> **当前代码补注（2026-08-07）**：
 > - 本文主体仍保留 `v0.7.0` 设计稿结构；当前代码真相以 `README.md`、`docs/overview/当前事实基线-2026-03.md` 与 `src/mcp/tools.py` 为准。
 > - 当前 MCP 代码基线已扩展为 `14` 个 Tool，其中 `query_subgraph`、`explain_relation`、`collect_evidence`、`find_bridges`、`timeline_of`、`contrast` 已落地。
-> - `find_bridges`、`timeline_of`、`contrast` 仍属于 `partial`：当前分别补入 `graph_bridge_signal`、`structured_time_fields`、`relation_graph_signal` 等受限推理信号。
+> - `find_bridges`、`timeline_of`、`contrast` 仍属于 `partial-v1`，公开 `implementation_level=partial`：当前分别补入 `graph_bridge_signal`、`structured_time_fields`、`relation_graph_signal` 等受限推理信号。
 > - 当前已注册 `9` 条 Resource；chunk、metadata field 和 relation locator 都可直接读取。公开 MCP 的结构化字段不返回本机文件路径，写入 Tool 以 `pkv://entries/{id}` locator 回传新条目；entry Markdown 正文保持原文，不做内容级路径替换。
+> - M13 Developer Preview 只发布 MCP stdio。HTTP transport、监听端口和 Bearer Token 均已从当前入口移除；非 stdio 请求会在读取应用配置、bootstrap 数据或 bind 前 fail-closed。
+> - 默认验证离线，只使用合成数据与 `.data-test` 隔离根，不连接真实 Provider、不读取真实 API key 或真实 Vault。
 
 ---
 
@@ -32,7 +34,7 @@
 - **只读优先**：首期以查询能力为主，写入操作需确认
 - **现有复用**：直接调用 `src/` 下的现有模块，不重复实现
 - **标准协议**：严格遵循 MCP 规范（2025-11-05 版本）
-- **轻量部署**：支持 stdio 和 streamable-http 两种传输方式
+- **轻量部署**：M13 仅支持由本地 MCP Client 管理的 stdio
 
 ---
 
@@ -55,9 +57,11 @@ AI Agent 可调用的操作能力：
 | `query_subgraph` | 查询关系子图 | knowledge_id, depth?, relation_types?, max_nodes? | 节点、边和截断状态 | **P1** |
 | `explain_relation` | 解释两条目关系 | source_knowledge_id, target_knowledge_id, max_depth? | 最短关系路径与证据 | **P1** |
 | `collect_evidence` | 聚合可引用证据 | question, top_k? | 文档/chunk/关系证据 | **P1** |
-| `find_bridges` | 发现局部图桥接候选 | seed_knowledge_id, top_k? | partial bridge 线索 | **P1** |
-| `timeline_of` | 查询弱时间线 | topic, top_k? | partial timeline 线索 | **P1** |
-| `contrast` | 比较两个主题 | topic_a, topic_b, top_k? | partial contrast 线索 | **P1** |
+| `find_bridges` | 发现局部图桥接候选 | seed_knowledge_id, top_k? | partial-v1 bridge 线索 | **P1** |
+| `timeline_of` | 查询弱时间线 | topic, top_k? | partial-v1 timeline 线索 | **P1** |
+| `contrast` | 比较两个主题 | topic_a, topic_b, top_k? | partial-v1 contrast 线索 | **P1** |
+
+W2 adapter 合同要求 12 个只读 Tool 都返回稳定 `status` 与 `issues`，不能把底层异常伪装成空结果。检索类状态使用 `success/no_hits/invalid/error/degraded`；`degraded` 可以携带仍可用的部分结果，但必须带机器可读 issue。三个探索 Tool 的响应还必须保留 `implementation_level=partial` 和 `limitation_notes`，不得宣称 full。
 
 ### 2.2 Resources（资源）
 
@@ -102,7 +106,7 @@ AI Agent 可读取的静态/动态数据：
 │  └────────────────┬─────────────────────────┘   │
 └───────────────────┼─────────────────────────────┘
                     │ MCP Protocol
-                    │ (stdio / streamable-http)
+                    │ (stdio)
                     ↓
 ┌────────────────────────────────────────────────┐
 │            PKV MCP Server (新增)                │
@@ -150,7 +154,7 @@ src/mcp/
 | 传输方式 | 场景 | 优先级 |
 |---------|------|--------|
 | **stdio** | Claude Code 本地集成 | **P0** |
-| **streamable-http** | 远程 / Web 集成 | **P1** |
+| HTTP / Web | M13 不支持；未来必须重新立项并验证真实 transport 认证 | **后置** |
 
 ---
 
@@ -186,19 +190,12 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="PKV MCP Server")
     parser.add_argument(
-        "--transport", choices=["stdio", "streamable-http"],
+        "--transport", choices=["stdio"],
         default="stdio", help="传输方式"
     )
-    parser.add_argument("--port", type=int, default=3000, help="HTTP 端口")
     args = parser.parse_args()
-
-    if args.transport == "stdio":
-        mcp.run(transport="stdio")
-    else:
-        mcp.run(
-            transport="streamable-http",
-            port=args.port,
-        )
+    # 实际入口在任何 config/runtime bootstrap/bind 前拒绝非 stdio 参数。
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
@@ -226,11 +223,11 @@ from typing import Optional
 
 from src.mcp.server import mcp  # 从 server 模块获取共享的 FastMCP 实例
 from src.retrieval import QueryRouter, BM25Retriever, VectorRetriever, HybridRetriever
-from src.retrieval.result import SearchResult
+from src.retrieval.result import SearchResponse, SearchResult
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.markdown_store import MarkdownStore
 from src.workflow.engine import WorkflowEngine
-from src.ai.openai_client import OpenAIClient
+from src.ai.provider_factory import create_embedder
 from src.utils.config import get_config
 
 config = get_config()
@@ -246,7 +243,7 @@ config = get_config()
 # 为什么不能每次请求重建？
 # - VectorRetriever 需要加载 hnswlib 索引文件到内存，首次加载约 1-3s
 # - QueryRouter 内部创建 BM25Retriever + HybridRetriever，重复创建浪费资源
-# - OpenAIClient（Embedder）内部维护 HTTP 连接池，复用可减少连接开销
+# - Embedder 只能由 production provider factory 按需构造；BM25 路径不创建 Provider
 # ============================================================
 
 _sqlite_store: Optional[SQLiteStore] = None
@@ -274,11 +271,10 @@ def _get_query_router() -> QueryRouter:
     """获取 QueryRouter 单例（内含 BM25 + HybridRetriever + VectorStore）"""
     global _query_router
     if _query_router is None:
-        embedder = OpenAIClient(config)
         _query_router = QueryRouter(
             db_path=config.db_path,
             vector_index_dir=config.vector_index_dir,
-            embedder=embedder,
+            embedder_factory=lambda: create_embedder(config),
         )
     return _query_router
 
@@ -300,54 +296,39 @@ def _do_search_knowledge(
     query: str, strategy: str, top_k: int,
     source_type: Optional[str], tag: Optional[str],
 ) -> dict:
-    """同步搜索实现，由 anyio.to_thread.run_sync 在 threadpool 中执行。
+    """同步搜索实现；始终返回五态 envelope。"""
+    if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
+        response = SearchResponse.invalid(
+            "top_k 必须是正整数", strategy=strategy, stage="top_k_validation"
+        )
+        return _serialize_search_response(response, source_type=source_type, tag=tag)
 
-    接口对齐说明：
-    - QueryRouter.search() 不支持外部传入 strategy，内部根据分词数自动路由
-    - 若用户指定 strategy != "auto"，则绕过 QueryRouter 直接实例化对应 Retriever
-    - SearchResult 字段：knowledge_id, title, score, highlight, metadata
-      其中 source_type/tags/file_path 等在 metadata dict 中
-    """
-    router = _get_query_router()
-
+    top_k = min(top_k, 50)
     if strategy == "auto":
-        # 直接使用 QueryRouter.search()，内部自动路由 BM25/Hybrid
-        results = router.search(query, limit=top_k)
+        response = _get_query_router().search(query, limit=top_k)
     elif strategy == "bm25":
         retriever = BM25Retriever(config.db_path)
-        results = retriever.search(query, limit=top_k)
+        response = retriever.search(query, limit=top_k)
     elif strategy == "vector":
-        embedder = OpenAIClient(config)
-        retriever = VectorRetriever(config.db_path, config.vector_index_dir, embedder)
-        results = retriever.search(query, limit=top_k)
-    else:  # hybrid
-        embedder = OpenAIClient(config)
-        retriever = HybridRetriever(config.db_path, config.vector_index_dir, embedder)
-        results = retriever.search(query, limit=top_k)
+        retriever = VectorRetriever(
+            config.db_path,
+            config.vector_index_dir,
+            embedder_factory=lambda: create_embedder(config),
+        )
+        response = retriever.search(query, limit=top_k)
+    elif strategy == "hybrid":
+        retriever = HybridRetriever(
+            config.db_path,
+            config.vector_index_dir,
+            embedder_factory=lambda: create_embedder(config),
+        )
+        response = retriever.search(query, limit=top_k)
+    else:
+        response = SearchResponse.invalid("不支持的检索策略", strategy=str(strategy))
 
-    # 后过滤：检索层不支持 source_type/tag 过滤，在结果层过滤
-    # 注意：tags 在 metadata 中是逗号分隔字符串，需 _parse_tags_string() 转换
-    if source_type:
-        results = [r for r in results if r.metadata.get("source_type") == source_type]
-    if tag:
-        results = [r for r in results if tag in _parse_tags_string(r.metadata.get("tags", ""))]
-
-    return {
-        "total": len(results),
-        "strategy_used": strategy,
-        "results": [
-            {
-                "knowledge_id": r.knowledge_id,
-                "title": r.title,
-                "abstract": r.highlight,  # SearchResult.highlight 是摘要/snippet
-                "score": round(r.score, 4),
-                "tags": _parse_tags_string(r.metadata.get("tags", "")),
-                "source_type": r.metadata.get("source_type", ""),
-                "archived_at": r.metadata.get("archived_at", ""),
-            }
-            for r in results
-        ],
-    }
+    # serializer 保留 response.strategy（实际执行策略）、status 和稳定 issues；
+    # source/tag 后过滤不能把原始 error/degraded 重写成 no_hits。
+    return _serialize_search_response(response, source_type=source_type, tag=tag)
 
 
 @mcp.tool()
@@ -368,7 +349,7 @@ async def search_knowledge(
         tag: 按标签过滤
 
     Returns:
-        包含搜索结果列表的字典，每项包含 title, abstract, score, tags, source_type
+        固定五态 envelope：status, strategy, total, results, issues
     """
     # anyio.to_thread.run_sync 在独立线程中执行阻塞操作，不阻塞事件循环
     return await anyio.to_thread.run_sync(
@@ -391,13 +372,21 @@ async def get_entry(knowledge_id: str) -> dict:
         # knowledge_id 在数据库中是 INTEGER，MCP 层接收 str，需转换
         entry = store.query_by_id(int(knowledge_id))
         if not entry:
-            return {"error": f"未找到条目: {knowledge_id}"}
+            return {"status": "no_hits", "issues": [], "error": "未找到条目"}
         md_store = _get_markdown_store()
         loaded_entry = md_store.load(entry.get("file_path", ""))
         content = loaded_entry.content if loaded_entry else "(content unavailable)"
+        issues = [] if loaded_entry else [{
+            "code": "resource_not_readable",
+            "message": "条目正文不可读取",
+            "stage": "entry_content_read",
+            "recoverable": True,
+        }]
         # 注意：DB 中无 abstract 列，用 summary_one_sentence 代替
         # 注意：DB 中 tags/keywords 是逗号分隔字符串，需转换为列表
         return {
+            "status": "success" if loaded_entry else "degraded",
+            "issues": issues,
             "knowledge_id": entry["knowledge_id"],
             "title": entry["title"],
             "abstract": entry.get("summary_one_sentence", ""),
@@ -425,6 +414,8 @@ async def list_tags() -> dict:
         store = _get_sqlite_store()
         tags = store.get_all_tags_with_count()
         return {
+            "status": "success" if tags else "no_hits",
+            "issues": [],
             "total_tags": len(tags),
             "tags": [{"name": t["name"], "count": t["count"]} for t in tags],
         }
@@ -464,6 +455,8 @@ async def list_entries(
         )
         total = store.count_entries(source_type=source_type, tag=tag)
         return {
+            "status": "success" if total else "no_hits",
+            "issues": [],
             "total": total, "page": page, "per_page": _per_page,
             "total_pages": (total + _per_page - 1) // _per_page,
             "entries": [
@@ -500,20 +493,9 @@ async def archive_url(url: str) -> dict:
     engine = WorkflowEngine()
     result = await engine.execute_async(
         workflow_name="archive-url",
-        input_data={"url": url},
+        input_data={"url": url, "skip_review": True, "skip_sharpen": True},
     )
-
-    if result.success:
-        return {
-            "success": True,
-            "knowledge_id": result.data.get("knowledge_id", ""),
-            "title": result.data.get("title", ""),
-            "entry_locator": f"pkv://entries/{result.data.get('knowledge_id', '')}",
-            "tags": result.data.get("tags", []),
-            "abstract": result.data.get("abstract", ""),
-        }
-    else:
-        return {"success": False, "error": (result.errors[0] if result.errors else "归档失败")}
+    return _workflow_result_payload(result, include_abstract=True)
 
 
 @mcp.tool()
@@ -528,21 +510,19 @@ async def archive_text(text: str, title: str = "") -> dict:
         归档结果，包含生成的 knowledge_id 和文件路径
     """
     engine = WorkflowEngine()
+    # TextFallbackProcessor 先构造 Entry；此处省略解析代码
     result = await engine.execute_async(
         workflow_name="archive-text",
-        input_data={"text": text, "title": title},
+        input_data={
+            "text": text,
+            "title": entry.title,
+            "entry": entry,
+            "content": entry.content,
+            "skip_review": True,
+            "skip_sharpen": True,
+        },
     )
-
-    if result.success:
-        return {
-            "success": True,
-            "knowledge_id": result.data.get("knowledge_id", ""),
-            "title": result.data.get("title", ""),
-            "entry_locator": f"pkv://entries/{result.data.get('knowledge_id', '')}",
-            "tags": result.data.get("tags", []),
-        }
-    else:
-        return {"success": False, "error": (result.errors[0] if result.errors else "归档失败")}
+    return _workflow_result_payload(result, title_fallback=entry.title)
 
 
 @mcp.tool()
@@ -554,9 +534,11 @@ async def get_stats() -> dict:
     """
     def _fetch():
         store = _get_sqlite_store()
-        return store.get_statistics()
+        return {"status": "success", "issues": [], **store.get_statistics()}
     return await anyio.to_thread.run_sync(_fetch)
 ```
+
+`_workflow_result_payload()` 必须验证 `success == (terminal != "error")`，逐一保留 `success/degraded/error`、稳定 `issues` 与降级 `warnings`，并移除本机路径和底层异常原文。写入 Tool 不得用 `if result.success` 把 `degraded` 重新解释为无警告成功。
 
 ### 4.3 Resource 实现
 
@@ -722,24 +704,9 @@ def idea_sharpen(content: str, entry_id: str = "") -> str:
 
 Windows 客户端通过 `run-windows.ps1` 固定使用 `py311-private`。Provider 配置由该工作目录下 Git 忽略的 `config/local.yaml` 提供，不放入 MCP 客户端 JSON。
 
-### 5.2 HTTP 方式（远程访问）
+### 5.2 不支持的远程方式
 
-```powershell
-# 先按“HTTP 认证”一节无回显注入令牌，再启动服务
-.\scripts\run-windows.ps1 python -m src.mcp.server --transport streamable-http --port 3000
-```
-
-客户端配置：
-
-```json
-{
-  "mcpServers": {
-    "personal-knowledge-vault": {
-      "url": "http://localhost:3000/mcp"
-    }
-  }
-}
-```
+M13 不提供 HTTP URL、监听端口或远程客户端配置。不要把历史设计稿中的 Web 部署方式当作当前能力；唯一受支持的客户端接入方式是上一节的 stdio 子进程配置。
 
 ---
 
@@ -781,11 +748,11 @@ class SQLiteStore:
 - **只读操作** (search, get, list): 无需额外确认
 - **写入操作** (archive_url, archive_text):
   - stdio 模式：AI Agent 自行决策（用户已授权）
-  - HTTP 模式：**必须**启用 Bearer Token 认证（见 7.4）
+  - HTTP 模式：M13 不支持，入口在运行时初始化前拒绝
 
 ### 7.2 输入验证
 
-- URL 归档：验证 URL 格式，拒绝内网地址（`127.*`, `10.*`, `192.168.*`, `172.16-31.*`）
+- URL 归档：入口验证 scheme/host/port；每次 DNS 解析、固定 IP 连接、redirect 和页面子资源抓取都重新拒绝 loopback/private/link-local/reserved 等非公网目标。连接固定 IP 时仍保留原 Host、TLS SNI 与证书 hostname 校验，防止 DNS rebinding 与跨跳绕过
 - 文本归档：限制最大长度（100,000 字符）
 - 搜索查询：复用现有 AI 安全防护（Prompt 注入检测）
 
@@ -795,67 +762,18 @@ class SQLiteStore:
 - `per_page` 最大值：100
 - 单次归档超时：120 秒
 
-### 7.4 HTTP 传输认证方案（M9 实现）
+### 7.4 Transport 发布边界
 
-> ⚠️ streamable-http 模式直接暴露在网络上，**无认证 = 任何人都能操作你的知识库**。
-
-**实现方案**：基于环境变量的 Bearer Token 认证
-
-```python
-# src/mcp/utils.py — HTTP 认证中间件
-
-import os
-from functools import wraps
-
-# 从环境变量读取 Token（不硬编码）
-MCP_AUTH_TOKEN = os.environ.get("PKV_MCP_AUTH_TOKEN", "")
-
-
-def validate_http_auth(request_headers: dict) -> bool:
-    """验证 HTTP 请求的 Bearer Token"""
-    if not MCP_AUTH_TOKEN:
-        # 未配置 Token 时拒绝所有 HTTP 请求（安全默认）
-        return False
-    auth_header = request_headers.get("Authorization", "")
-    return auth_header == f"Bearer {MCP_AUTH_TOKEN}"
-```
-
-**配置方式**：
-
-```powershell
-# HTTP 模式必需；无回显读取，令牌不会写入命令历史。
-$secureToken = Read-Host "PKV_MCP_AUTH_TOKEN" -AsSecureString
-$env:PKV_MCP_AUTH_TOKEN = [Net.NetworkCredential]::new("", $secureToken).Password
-Remove-Variable secureToken
-
-# 启动 HTTP 服务
-.\scripts\run-windows.ps1 python -m src.mcp.server --transport streamable-http --port 3000
-```
-
-**客户端配置**：
-
-```json
-{
-  "mcpServers": {
-    "personal-knowledge-vault": {
-      "url": "http://localhost:3000/mcp",
-      "headers": {
-        "Authorization": "Bearer <由客户端秘密存储注入>"
-      }
-    }
-  }
-}
-```
-
-令牌应由客户端的秘密存储或未纳入版本控制的本机配置注入；不要把实际值写入命令、截图或可提交的 JSON。
-
-**安全默认原则**：
-- 未设置 `PKV_MCP_AUTH_TOKEN` 时，HTTP 模式**拒绝所有请求**
-- stdio 模式**不做认证**（进程由用户本地启动，天然安全）
+- stdio 是 M13 唯一 transport，由本地客户端创建并管理子进程。
+- HTTP/Bearer 旧原型不是当前安全合同；代码中没有可启用的认证 helper 或 Token 环境变量。
+- 非 stdio 参数必须在应用配置、runtime bootstrap、数据目录副作用与 socket bind 之前拒绝。
+- 若后续将 HTTP 纳入发布面，需要重新设计真实 transport middleware、认证/授权、来源与代理边界，并建立独立协议矩阵；不能只恢复历史示例。
 
 ---
 
 ## 8. 测试计划
+
+默认门禁只运行离线 unit/integration/blackbox/e2e fixture，通过 `scripts/run-test.ps1` 使用唯一 `.data-test/<scenario>`。测试不得读取真实 key、调用真实 Provider、访问真实网络或真实 Vault；涉及 URL/Provider 的路径使用可控 doubles。MCP 协议矩阵以真实 stdio JSON-RPC 子进程覆盖能力发现和完整调用。
 
 ### 8.1 单元测试
 
@@ -921,7 +839,9 @@ anyio>=4.0.0          # 异步 I/O 工具库（FastMCP 自身已依赖，通常�
 
 ---
 
-## 10. 实施路线
+## 10. 历史 M8/M9 实施路线
+
+> 下列 checkbox 是设计阶段留下的任务清单，不代表当前完成状态，也不是 M13 W2 验收证据。当前运行 manifest 为 14 Tool（12 只读 + 2 写入）、9 Resource、3 Prompt；W2 状态以本文开头的现行补注、真实注册清单和离线门禁为准。
 
 ### M8: 只读服务 (v0.7.0-alpha)
 
@@ -939,7 +859,7 @@ anyio>=4.0.0          # 异步 I/O 工具库（FastMCP 自身已依赖，通常�
 - [ ] 实现 Prompts: `search_and_summarize`, `knowledge_qa`
 - [ ] 实现 P2 Tools: `get_related`
 - [ ] 实现 P2 Prompts: `idea_sharpen`
-- [ ] streamable-http 传输支持
+- [x] 明确冻结为 stdio-only；HTTP/Bearer 后置且不进入 M13 Artifact
 - [ ] Claude Desktop / Cursor 配置文档
 - [ ] 安全加固（输入验证、长度限制）
 - [ ] 集成测试
@@ -955,7 +875,6 @@ MCP Server 复用项目现有的 `src/utils/logger.py` 日志基础设施：
 | 传输模式 | stdout | stderr | 日志文件 |
 |---------|--------|--------|---------|
 | **stdio** | ❌ 被 MCP 协议占用 | ✅ 可输出日志（客户端可捕获） | ✅ `.data/logs/pkv-mcp.log` |
-| **HTTP** | ✅ 可输出日志 | ✅ 可输出日志 | ✅ `.data/logs/pkv-mcp.log` |
 
 **关键约束**：stdio 模式下 **stdout 是 MCP 协议通道**，绝对不能 `print()`，只能用 `logger` 写到 stderr 或文件。
 
@@ -964,7 +883,6 @@ MCP Server 复用项目现有的 `src/utils/logger.py` 日志基础设施：
 import logging
 logger = logging.getLogger("pkv.mcp")
 # stdio 模式：日志输出到 stderr + 文件
-# HTTP 模式：日志输出到 stdout + 文件
 ```
 
 ### 11.2 进程管理
@@ -974,26 +892,16 @@ logger = logging.getLogger("pkv.mcp")
 - 进程崩溃后客户端自动重启（取决于客户端实现）
 - **无需额外的进程管理工具**
 
-**HTTP 模式**（需手动管理）：
-```bash
-# 前台运行（开发/调试）
-python -m src.mcp.server --transport streamable-http --port 3000
-
-# 后台运行（生产）
-nohup python -m src.mcp.server --transport streamable-http --port 3000 &
-
-# 健康检查（可选，M9+ 实现）
-# GET http://localhost:3000/health → {"status": "ok"}
-```
+不存在受支持的 HTTP 后台服务或健康检查端点；不要为 M13 配置进程守护、端口或反向代理。
 
 ### 11.3 常见错误排查
 
 | 现象 | 原因 | 解决方式 |
 |------|------|---------|
 | Claude Code 无法发现 Tool | MCP Server 未启动或配置错误 | 检查 `claude_desktop_config.json` 中的 `cwd` 和 `command` |
-| Tool 调用返回空结果 | 数据库为空或路径错误 | 检查 YAML 的 `storage.db_path` 或进程级 `DB_PATH` 覆盖 |
+| Tool 没有可用结果 | 可能是 `no_hits`、`degraded`、`invalid` 或 `error` | 先检查 `status` / `issues`；只有 `no_hits` 表示请求成功但无命中 |
 | 归档超时 | 网络不通或 AI API 超时 | 检查 `config/local.yaml` 的 `ai.llm.*` / `ai.embedding.*` |
-| HTTP 模式 401 | Token 未配置或不匹配 | 检查 `PKV_MCP_AUTH_TOKEN` 环境变量 |
+| 非 stdio transport 被拒绝 | M13 只发布 stdio | 改用本地 MCP Client 的 stdio 子进程配置 |
 | "冻结"无响应 | 同步阻塞了事件循环 | 检查所有 handler 是否使用了 `async def` + `anyio.to_thread.run_sync()` |
 
 ### 11.4 MCP SDK 升级路径

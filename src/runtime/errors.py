@@ -6,7 +6,7 @@ from enum import Enum
 
 
 class ErrorCode(str, Enum):
-    """Machine-readable W1 errors.
+    """Machine-readable runtime errors.
 
     GUI, CLI, MCP and Workflow adapters may change presentation, but must not
     erase or reinterpret these codes.
@@ -35,6 +35,27 @@ class ErrorCode(str, Enum):
     STORAGE_VECTOR_FAILED = "storage_vector_failed"
     STORAGE_COMPENSATION_FAILED = "storage_compensation_failed"
     STORAGE_REPAIR_REQUIRED = "storage_repair_required"
+    WORKFLOW_CONFIG_INVALID = "workflow_config_invalid"
+    WORKFLOW_STEP_FAILED = "workflow_step_failed"
+    WORKFLOW_CONDITION_INVALID = "workflow_condition_invalid"
+    WORKFLOW_PROCESSOR_UNKNOWN = "workflow_processor_unknown"
+    RETRIEVAL_INVALID_QUERY = "retrieval_invalid_query"
+    RETRIEVAL_BACKEND_FAILED = "retrieval_backend_failed"
+    RETRIEVAL_INDEX_UNAVAILABLE = "retrieval_index_unavailable"
+    RETRIEVAL_METADATA_INCONSISTENT = "retrieval_metadata_inconsistent"
+    PROVIDER_CONFIG_INVALID = "provider_config_invalid"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    PROVIDER_PROTOCOL_FAILED = "provider_protocol_failed"
+    URL_INVALID = "url_invalid"
+    SSRF_TARGET_FORBIDDEN = "ssrf_target_forbidden"
+    SSRF_RESOLUTION_FAILED = "ssrf_resolution_failed"
+    SSRF_REDIRECT_LIMIT = "ssrf_redirect_limit"
+    PROCESSOR_RESOURCE_LIMIT = "processor_resource_limit"
+    TRANSPORT_UNSUPPORTED = "transport_unsupported"
+    CHAT_BUSY = "chat_busy"
+    CHAT_PROVIDER_FAILED = "chat_provider_failed"
+    CHAT_SAVE_FAILED = "chat_save_failed"
+    CHAT_STATE_CONFLICT = "chat_state_conflict"
 
 
 class OperationStatus(str, Enum):

@@ -1,0 +1,120 @@
+# Machine-checkable projection only. The linked route remains the sole scope,
+# dependency and DoD truth source; if this registry drifts, the route wins.
+schema_version: pkv.m13.w2.contracts.v1
+truth_source: docs/overview/阶段开发路线与依赖-2026-03.md#84-w2已发布功能合同
+
+status_vocabulary:
+  supported: [success, no_hits, invalid, error, degraded]
+  workflow_terminal: [success, degraded, error]
+  chat_terminal: [completed, stopped, error]
+
+capabilities:
+  - contract_id: workflow.archive_url.v1
+    support_level: supported
+    surfaces: [cli, gui, mcp_stdio]
+    semantic_owner: workflow_yaml_integration
+    fixture: tests/fixtures/w2/workflow/v1
+    fault_injections: [returned_error, step_exception, processor_failure, storage_terminal]
+    oracle: ordered_steps_on_error_trigger_condition_processor_route
+    w4_scenario: w4.url_archive_ssrf_rejection.v1
+    state: source_verified
+
+  - contract_id: workflow.archive_text.v1
+    support_level: supported
+    surfaces: [gui, mcp_stdio]
+    semantic_owner: workflow_yaml_integration
+    fixture: tests/fixtures/w2/workflow/v1
+    fault_injections: [provider_failure, returned_error, step_exception, storage_terminal]
+    oracle: ordered_steps_continue_warning_and_fail_stop
+    w4_scenario: w4.offline_text_archive.v1
+    state: source_verified
+
+  - contract_id: retrieval.bm25.v1
+    support_level: supported
+    surfaces: [cli, gui, mcp_stdio]
+    semantic_owner: retrieval_response_contract
+    fixture: tests/fixtures/w2/retrieval/v1
+    fault_injections: [invalid_query, fts_failure, metadata_failure]
+    oracle: five_state_response_and_truthful_adapters
+    w4_scenario: w4.bm25_search.v1
+    state: source_verified
+
+  - contract_id: retrieval.semantic.v1
+    support_level: supported
+    surfaces: [cli, mcp_stdio]
+    semantic_owner: retrieval_response_contract
+    fixture: tests/fixtures/w2/retrieval/v1
+    fault_injections: [provider_failure, index_unavailable, metadata_inconsistent, single_branch_failure]
+    oracle: vector_and_hybrid_five_state_response
+    w4_scenario: w4.semantic_provider_unavailable.v1
+    state: source_verified
+
+  - contract_id: mcp.stdio.v1
+    support_level: supported
+    surfaces: [mcp_stdio]
+    semantic_owner: mcp_stdio_blackbox
+    fixture: tests/fixtures/w2/mcp/v1
+    fault_injections: [provider_failure, ssrf_rejection, tool_error]
+    oracle: discover_and_invoke_all_fourteen_published_tools
+    w4_scenario: w4.mcp_stdio_call.v1
+    state: source_verified
+
+  - contract_id: mcp.exploration.partial-v1
+    support_level: partial-v1
+    surfaces: [mcp_stdio]
+    semantic_owner: mcp_fixed_quality_eval
+    fixture: evals/mcp_quality/tasks.v1.yaml
+    fault_injections: [empty_topology, missing_time, no_overlap]
+    oracle: implementation_level_partial_and_existing_gold_unchanged
+    w4_scenario: w4.mcp_stdio_call.v1
+    state: source_verified
+
+  - contract_id: gui.chat.v1
+    support_level: supported
+    surfaces: [gui]
+    semantic_owner: chat_viewmodel_state_machine
+    fixture: tests/fixtures/w2/chat/v1
+    fault_injections: [session_switch, double_send, stop, provider_failure, save_failure]
+    oracle: one_request_one_session_one_terminal_atomic_turn
+    w4_scenario: w4.chat_loopback.v1
+    state: source_verified
+
+  - contract_id: gui.search_bm25.v1
+    support_level: supported
+    surfaces: [gui]
+    semantic_owner: gui_search_adapter
+    fixture: tests/fixtures/w2/retrieval/v1
+    fault_injections: [no_hits, invalid_query, fts_failure]
+    oracle: gui_distinguishes_result_empty_invalid_and_error
+    w4_scenario: w4.bm25_search.v1
+    state: source_verified
+
+  - contract_id: workflow.search_yaml.v1
+    support_level: unsupported
+    surfaces: []
+    semantic_owner: release_scope_registry
+    fixture: tests/contracts/m13_w2.v1.yaml
+    fault_injections: [resource_manifest_drift]
+    oracle: absent_from_release_resource_allowlist_and_active_docs
+    w4_scenario: null
+    state: source_verified
+
+  - contract_id: mcp.http.v1
+    support_level: deferred
+    surfaces: []
+    semantic_owner: release_scope_registry
+    fixture: tests/contracts/m13_w2.v1.yaml
+    fault_injections: [transport_selection]
+    oracle: rejected_before_runtime_bootstrap_or_socket_bind
+    w4_scenario: null
+    state: defined
+
+  - contract_id: chat.loopback_harness.v1
+    support_level: deferred
+    surfaces: []
+    semantic_owner: w3_external_harness
+    fixture: tests/contracts/m13_w2.v1.yaml
+    fault_injections: [success_stream, stopped_stream, provider_error]
+    oracle: external_harness_not_in_release_payload
+    w4_scenario: w4.chat_loopback.v1
+    state: defined

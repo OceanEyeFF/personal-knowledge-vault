@@ -56,8 +56,12 @@ def make_config_loader(config: dict) -> Callable[[str], dict]:
 async def test_workflow_engine_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """WorkflowEngine should execute steps and merge state."""
     workflow_config = {
+        "schema_version": 1,
         "name": "demo",
-        "steps": ["add", "add"],
+        "steps": [
+            {"id": "add-1", "type": "add", "config": {}, "on_error": "fail"},
+            {"id": "add-2", "type": "add", "config": {}, "on_error": "fail"},
+        ],
     }
 
     monkeypatch.setattr(engine_module, "get_workflow_config", make_config_loader(workflow_config))
@@ -75,8 +79,9 @@ async def test_workflow_engine_success(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_workflow_engine_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """WorkflowEngine should collect step errors."""
     workflow_config = {
+        "schema_version": 1,
         "name": "demo",
-        "steps": [{"id": "fail", "type": "fail"}],
+        "steps": [{"id": "fail", "type": "fail", "config": {}, "on_error": "fail"}],
     }
 
     monkeypatch.setattr(engine_module, "get_workflow_config", make_config_loader(workflow_config))
@@ -93,8 +98,11 @@ async def test_workflow_engine_error(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_workflow_engine_collects_step_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     """WorkflowEngine should append errors returned by steps."""
     workflow_config = {
+        "schema_version": 1,
         "name": "demo",
-        "steps": [{"id": "warn", "type": "warn"}],
+        "steps": [
+            {"id": "warn", "type": "warn", "config": {}, "on_error": "continue"}
+        ],
     }
 
     monkeypatch.setattr(engine_module, "get_workflow_config", make_config_loader(workflow_config))
@@ -103,6 +111,8 @@ async def test_workflow_engine_collects_step_errors(monkeypatch: pytest.MonkeyPa
     engine = WorkflowEngine(reload_config=True)
     result = await engine.execute_async("demo", {})
 
-    assert result.success is False
-    assert "soft failure" in result.errors
+    assert result.success is True
+    assert result.terminal == "degraded"
+    assert result.errors == []
+    assert "soft failure" in result.warnings
     assert result.data["value"] == 42

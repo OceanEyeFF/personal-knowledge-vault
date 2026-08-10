@@ -10,10 +10,12 @@
 
 ### 核心理念
 
-- **配置驱动**: 工作流定义在 YAML 文件中，易于扩展和修改
+- **配置驱动**: 工作流只从真实、带 `schema_version` 的 YAML 文件加载；不存在内嵌 steps 回退
 - **步骤编排**: 顺序执行步骤，支持条件跳过和错误处理
 - **上下文传递**: 通过 `WorkflowContext` 在步骤间传递数据
-- **可观测性**: 记录详细日志，支持进度追踪
+- **可观测性**: 通过 `terminal/errors/warnings/issues/logs` 区分成功、降级和失败
+
+M13 当前只支持 `archive-url.yaml` 与 `archive-text.yaml`。`search.yaml` 不受支持；搜索由 Retrieval 层及其 CLI/MCP adapter 直接执行。YAML 缺失、版本/字段非法、未知 step 或不可执行 condition 会在任何 step 副作用前 fail-closed。
 
 ---
 
@@ -32,11 +34,13 @@ result = await engine.execute_async(
     input_data={"url": "https://mp.weixin.qq.com/xxx"}
 )
 
-if result.success:
+if result.terminal in {"success", "degraded"}:
     print("成功:", result.data)
     print("日志:", result.logs)
+    print("警告:", result.warnings)
 else:
     print("失败:", result.errors)
+print("机器可读问题:", result.issues)
 ```
 
 ### 同步执行
@@ -57,12 +61,13 @@ result = engine.execute(
 
 ```python
 class WorkflowEngine:
-    def __init__(self, reload_config: bool = False):
+    def __init__(self, reload_config: bool = False, step_registry=None):
         """
         初始化工作流引擎
 
         Args:
             reload_config: 是否每次执行都重新加载配置
+            step_registry: 可选的实例级 step registry；不会污染其他 Engine
         """
 
     async def execute_async(
@@ -242,13 +247,14 @@ class StoreStep(BaseStep):
 
 配置文件位置: `config/workflows/<workflow-name>.yaml`
 
-当前已有 3 个工作流配置:
+当前已有 2 个受支持工作流配置:
 
 | 工作流 | 配置文件 | 用途 | 调用者 |
 |--------|---------|------|--------|
 | `archive-url` | `archive-url.yaml` | 归档网页 | CLI `archive` + MCP `archive_url` |
 | `archive-text` | `archive-text.yaml` | 归档纯文本 (M9 新增) | MCP `archive_text` |
-| `search` | `search.yaml` | 搜索知识库 | CLI `search` + MCP `search_knowledge` |
+
+每个文件必须包含受支持的 `schema_version`、与文件名一致的 `name` 和非空 `steps`。schema 对顶层、step、config、condition 与 trigger 字段执行严格校验；未知字段不会被静默忽略。
 
 **archive-text 与 archive-url 的区别**:
 - `archive-text` 跳过 `fetch_content` 步骤(文本由 MCP Tool 层预构建 Entry)
@@ -264,19 +270,13 @@ class StoreStep(BaseStep):
 在步骤间传递数据:
 
 ```python
-@dataclass
 class WorkflowContext:
-    state: State                # 当前状态（字典）
+    state: State                # 当前状态容器
     logs: List[str]             # 日志记录
-    initial_input: Dict[str, Any]  # 初始输入
 
     def log(self, message: str):
         """记录日志"""
         self.logs.append(message)
-
-    def update(self, data: Dict[str, Any]):
-        """更新状态"""
-        self.state.update(data)
 ```
 
 ---
@@ -288,20 +288,25 @@ class WorkflowContext:
 ```python
 @dataclass
 class WorkflowResult:
-    success: bool               # 是否成功
+    success: bool               # terminal != "error"
+    terminal: str               # success / degraded / error
     data: Dict[str, Any]        # 输出数据（State 的最终状态）
-    errors: List[str]           # 错误信息
+    errors: List[str]           # 仅致命错误
+    warnings: List[str]         # on_error: continue 等已继续问题
+    issues: List[dict]          # 稳定 code/message/severity/recoverable 等字段
     logs: List[str]             # 日志记录
 ```
+
+`success` 只是与终态一致的兼容布尔值；adapter 必须以 `terminal` 和 `issues` 做分支。`degraded` 表示工作流继续并产生可用数据，但绝不能被展示成无警告的完整成功。
 
 ---
 
 ### State (状态字典)
 
-继承自 `dict`，用于在步骤间传递数据:
+封装内部字典并提供 `get/set/has/to_dict`，用于在步骤间传递数据:
 
 ```python
-class State(dict):
+class State:
     """
     工作流状态字典
 
@@ -313,7 +318,7 @@ class State(dict):
     """
     def to_dict(self) -> Dict[str, Any]:
         """转换为普通字典"""
-        return dict(self)
+        return dict(self._data)
 ```
 
 详细规范: [docs/refactor/Workflow数据模型规范.md](../../docs/refactor/Workflow数据模型规范.md)
@@ -345,12 +350,16 @@ class State(dict):
 
 最终输出: WorkflowResult(
     success=True,
+    terminal="success",  # 若 continue 路径产生 warning，则为 degraded
     data={
         "url": "...",
         "entry": ...,
         "markdown_path": "...",
         "knowledge_id": "..."
     },
+    errors=[],
+    warnings=[],
+    issues=[],
     logs=[...]
 )
 ```
@@ -368,7 +377,12 @@ class State(dict):
   → 保存到 Markdown/SQLite/Vector
   → 输出: {"markdown_path": "...", "knowledge_id": "..."}
 
-最终输出: WorkflowResult(success=True, ...)
+最终输出: WorkflowResult(
+    success=True,
+    terminal="success" 或 "degraded",
+    warnings=[...],
+    issues=[...],
+)
 ```
 
 ---
@@ -418,15 +432,22 @@ U1/G8 阻塞。其余交互脚本也只由用户按文件说明手动执行，�
 ### Q1: 如何添加新的工作流？
 
 ```yaml
-# 1. 创建配置文件 config/workflows/my-workflow.yaml
+# 1. 创建严格 v1 配置文件 config/workflows/my-workflow.yaml
+schema_version: 1
 name: my-workflow
 description: "我的自定义工作流"
 steps:
   - id: step1
     type: fetch_content
+    config: {processor: auto, url_key: url, timeout: 30, retry: 0}
+    on_error: fail
   - id: step2
     type: my_custom_step
+    config: {}
+    on_error: fail
+```
 
+```python
 # 2. 注册自定义步骤（如果需要）
 from src.workflow import WorkflowEngine
 
@@ -437,40 +458,38 @@ engine.register_step("my_custom_step", MyCustomStep)
 result = await engine.execute_async("my-workflow", {"url": "..."})
 ```
 
+M13 发布物只承诺 bundled 的 `archive-url` / `archive-text`；自定义 workflow 属开发扩展，仍必须通过同一个 fail-closed schema，不能依赖内嵌或默认配置回退。
+
 ### Q2: 如何跳过某个步骤？
 
-方法 1: 在步骤类中重写 `should_skip()`:
-
-```python
-class MyStep(BaseStep):
-    def should_skip(self, context: WorkflowContext) -> bool:
-        return context.state.get("skip_my_step", False)
-```
-
-方法 2: 在配置中使用 `condition`:
+引擎没有通用 `should_skip()` 或顶层 step `condition` 合同。当前条件执行由具体步骤负责：`idea_sharpen` 可在其 `config` 内使用安全表达式 `condition` 或 `trigger_rules`；`review_entry` 由 adapter 通过 `skip_review` 显式跳过。
 
 ```yaml
-steps:
-  - id: analyze
-    type: ai_analyze
-    condition: "word_count > 1000"
+  - id: idea_sharpen
+    type: idea_sharpen
+    config:
+      condition: "content_length > 1000"
+    on_error: continue
 ```
 
 ### Q3: 如何处理步骤执行失败？
 
-引擎会捕获异常并记录到 `WorkflowResult.errors`:
+引擎会按 `on_error` 把异常聚合为致命 error 或可恢复 warning，并始终保留稳定 issue:
 
 ```python
 result = await engine.execute_async("archive-url", {"url": "..."})
 
-if not result.success:
+if result.terminal == "error":
     print("错误:", result.errors)
-    print("日志:", result.logs)
+elif result.terminal == "degraded":
+    print("降级:", result.warnings)
+print("机器可读问题:", result.issues)
+print("日志:", result.logs)
 ```
 
 配置级别的错误处理 (`on_error`):
-- `fail` (默认): 步骤失败则终止整个工作流
-- `continue`: 步骤失败时跳过，继续后续步骤（archive-text 的 ai_analyze 使用此策略）
+- `fail`: 步骤失败则终止整个工作流
+- `continue`: 步骤失败时记录稳定 warning/issue，继续后续步骤，并以 `degraded` 终态返回（archive-text 的 ai_analyze 使用此策略）
 
 ### Q4: 如何在步骤间传递数据？
 
@@ -513,6 +532,7 @@ result = await engine.execute_async("archive-text", {"entry": entry})
 | `engine.py` | 工作流引擎核心 |
 | `models.py` | State/Context/Result 数据模型 |
 | `steps.py` | 内置步骤实现 |
+| `config_schema.py` | 版本化 YAML 严格 schema 与 preflight 校验 |
 
 ### 配置文件
 
@@ -520,7 +540,6 @@ result = await engine.execute_async("archive-text", {"entry": entry})
 |------|------|
 | `config/workflows/archive-url.yaml` | 归档网页工作流配置 |
 | `config/workflows/archive-text.yaml` | 归档文本工作流配置 (M9 新增) |
-| `config/workflows/search.yaml` | 搜索工作流配置 |
 
 ### 测试文件
 

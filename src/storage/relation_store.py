@@ -48,7 +48,10 @@ class RelationStore:
             conn.commit()
         except Exception as e:
             conn.rollback()
-            logger.error(f"关系数据库操作失败: {e}")
+            logger.error(
+                "关系数据库操作失败: error_type=%s",
+                type(e).__name__,
+            )
             raise
         finally:
             conn.close()

@@ -1,10 +1,8 @@
-"""
-测试工作流配置加载功能
+"""手动检查 M13 W2 发布工作流配置。
 
-验证:
-1. config/workflows/*.yaml 文件能否正确加载
-2. config.yaml 中的 workflows 配置能否正确加载
-3. 简化语法是否能正确规范化
+本脚本只读取 bundled 配置，不执行工作流、不访问网络，也不写入 Vault。
+当前发布合同只包含 ``archive-url.yaml`` 与 ``archive-text.yaml``；不存在
+``search.yaml`` 或 ``config.yaml`` 内嵌 steps fallback。
 """
 
 import sys
@@ -15,88 +13,45 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.utils.config import Config
+from src.runtime.layout import RuntimeLayout
 
 
 def test_workflow_config_loading():
-    """测试工作流配置加载"""
-    config = Config()
+    """检查两份版本化 YAML，并确认未发布的 search 工作流 fail-closed。"""
+    layout = RuntimeLayout.resolve(
+        resources_root=project_root,
+    )
+    config = Config(layout=layout)
+    for workflow_name in ("archive-url", "archive-text"):
+        workflow = config.get_workflow_config(workflow_name)
+        assert workflow.get("schema_version") == 1
+        assert workflow.get("name") == workflow_name
+        steps = workflow.get("steps")
+        assert isinstance(steps, list) and steps
+        assert all(
+            isinstance(step, dict)
+            and step.get("id")
+            and step.get("type")
+            and step.get("on_error") in {"fail", "continue"}
+            for step in steps
+        )
+        print(
+            f"[OK] {workflow_name}.yaml: "
+            f"schema=1, steps={len(steps)}"
+        )
 
-    print("=" * 60)
-    print("测试 1: 加载 archive-url.yaml")
-    print("=" * 60)
+    alias = config.get_workflow_config("archive_url")
+    assert alias.get("name") == "archive-url"
+    print("[OK] archive_url 仅作为文件名别名解析到 archive-url.yaml")
+
     try:
-        archive_config = config.get_workflow_config("archive-url")
-        print(f"[OK] 成功加载 archive-url 配置")
-        print(f"   - 名称: {archive_config.get('name')}")
-        print(f"   - 描述: {archive_config.get('description')}")
-        print(f"   - 步骤数量: {len(archive_config.get('steps', []))}")
+        config.get_workflow_config("search")
+    except FileNotFoundError:
+        print("[OK] search 工作流未发布，加载请求按合同拒绝")
+    else:
+        raise AssertionError("未发布的 search 工作流不应被加载")
 
-        steps = archive_config.get("steps", [])
-        print(f"\n   步骤列表:")
-        for i, step in enumerate(steps, 1):
-            step_id = step.get("id", "unknown")
-            step_type = step.get("type", "unknown")
-            print(f"     {i}. {step_id} (type: {step_type})")
-
-    except Exception as e:
-        print(f"[FAIL] 加载失败: {e}")
-        import traceback
-        traceback.print_exc()
-
-    print("\n" + "=" * 60)
-    print("测试 2: 加载 search.yaml")
-    print("=" * 60)
-    try:
-        search_config = config.get_workflow_config("search")
-        print(f"[OK] 成功加载 search 配置")
-        print(f"   - 名称: {search_config.get('name')}")
-        print(f"   - 描述: {search_config.get('description')}")
-        print(f"   - 步骤数量: {len(search_config.get('steps', []))}")
-
-        steps = search_config.get("steps", [])
-        print(f"\n   步骤列表:")
-        for i, step in enumerate(steps, 1):
-            step_id = step.get("id", "unknown")
-            step_type = step.get("type", "unknown")
-            print(f"     {i}. {step_id} (type: {step_type})")
-
-    except Exception as e:
-        print(f"[FAIL] 加载失败: {e}")
-        import traceback
-        traceback.print_exc()
-
-    print("\n" + "=" * 60)
-    print("测试 3: 加载 config.yaml 中的 archive_url (简化语法)")
-    print("=" * 60)
-    try:
-        # 这应该从 config.yaml 中加载并规范化
-        legacy_config = config.get_workflow_config("archive_url")
-        print(f"[OK] 成功加载并规范化 archive_url 配置")
-        print(f"   - 名称: {legacy_config.get('name')}")
-
-        steps = legacy_config.get("steps", [])
-        print(f"   - 步骤数量: {len(steps)}")
-        print(f"\n   规范化后的步骤列表:")
-        for i, step in enumerate(steps, 1):
-            if isinstance(step, dict):
-                step_id = step.get("id", "unknown")
-                step_type = step.get("type", "unknown")
-                print(f"     {i}. {step_id} (type: {step_type})")
-            else:
-                print(f"     {i}. {step} (未规范化)")
-
-    except Exception as e:
-        print(f"[FAIL] 加载失败: {e}")
-        import traceback
-        traceback.print_exc()
-
-    print("\n" + "=" * 60)
-    print("测试总结")
-    print("=" * 60)
-    print("[OK] 配置加载功能正常工作")
-    print("   - YAML 文件优先级高于 config.yaml")
-    print("   - 简化语法能正确规范化为完整格式")
-    print("   - 步骤 ID 和 type 映射正确")
+    print("[OK] 未使用 config.yaml 内嵌 steps fallback")
 
 
 if __name__ == "__main__":

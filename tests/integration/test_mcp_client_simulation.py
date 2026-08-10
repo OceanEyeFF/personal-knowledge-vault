@@ -381,6 +381,8 @@ def archive_stub(populated_env):
             data={
                 "knowledge_id": knowledge_id,
                 "title": entry.title,
+                "status": "ready",
+                "core_committed": True,
                 "file_path": str(md_path),
                 "tags": entry.tags,
                 "summary_one_sentence": entry.summary_one_sentence,
@@ -403,7 +405,9 @@ async def test_scenario_1_search_flow(mcp_patches, populated_env):
     simulator = MCPClientSimulator(mcp)
 
     result = await simulator.search_and_display("AI 工作流", strategy="bm25", top_k=5)
-    assert result.get("strategy_used") == "bm25"
+    assert result.get("status") == "success"
+    assert result.get("strategy") == "bm25"
+    assert result.get("issues") == []
     assert result["total"] == len(result["results"])
     assert result["total"] >= 2
 

@@ -4,7 +4,8 @@
 设置来源：
 - API Key 及 Base URL: config/local.yaml
 - 主题: QSettings（由 MainWindow 管理）
-- 检索策略: config.yaml
+
+Developer Preview 的 GUI 搜索固定使用 BM25，不在设置中暴露无效策略。
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ from typing import Any, Dict, Optional
 
 from PySide6.QtCore import QObject, Signal
 
+from src.ai.provider_factory import validate_provider_base_url
+from src.runtime.errors import PKVRuntimeError
 from src.utils.config import (
     Config,
     get_config,
@@ -31,7 +34,6 @@ _CONFIG_KEY_MAP: Dict[str, str] = {
     "llm_base_url": "ai.llm.base_url",
     "embedding_api_key": "ai.embedding.api_key",
     "embedding_base_url": "ai.embedding.base_url",
-    "search_strategy": "retrieval.default_strategy",
 }
 _BASE_URL_SETTING_KEYS = {"llm_base_url", "embedding_base_url"}
 _HIDDEN_URL_MARKER = "已隐藏"
@@ -44,6 +46,36 @@ _REDACTED_URL_ERROR = (
     "Base URL 包含脱敏占位符，未保存；"
     "请输入不含认证信息的完整 URL，或直接编辑用户数据目录中的 config/local.yaml"
 )
+_INVALID_URL_ERROR = (
+    "Base URL 格式或传输协议无效；远程地址必须使用 HTTPS，"
+    "HTTP 仅允许数字 loopback 地址"
+)
+_INVALID_SETTING_VALUE_ERROR = "设置值格式无效，未保存"
+SETTINGS_SAVE_FAILED_CODE = "settings_save_failed"
+SETTINGS_SAVE_FAILED_MESSAGE = (
+    "设置保存失败（错误代码：settings_save_failed）。"
+    "请检查用户配置文件权限后重试。"
+)
+_CREDENTIAL_URL_ERROR_CODE = "settings_endpoint_credentials_forbidden"
+_REDACTED_URL_ERROR_CODE = "settings_redacted_endpoint_invalid"
+_INVALID_URL_ERROR_CODE = "settings_endpoint_invalid"
+_INVALID_SETTING_VALUE_ERROR_CODE = "settings_value_invalid"
+SETTINGS_PUBLIC_ERROR_MESSAGES = frozenset({
+    SETTINGS_SAVE_FAILED_MESSAGE,
+    _CREDENTIAL_URL_ERROR,
+    _REDACTED_URL_ERROR,
+    _INVALID_URL_ERROR,
+    _INVALID_SETTING_VALUE_ERROR,
+})
+
+
+class _SettingsInputError(ValueError):
+    """Known safe validation failure with a stable adapter code."""
+
+    def __init__(self, code: str, public_message: str) -> None:
+        super().__init__(public_message)
+        self.code = code
+        self.public_message = public_message
 
 
 class SettingsViewModel(QObject):
@@ -85,7 +117,6 @@ class SettingsViewModel(QObject):
             - embedding_api_key: Embedding API Key
             - embedding_base_url: Embedding API Base URL
             - theme: 当前主题（从 QSettings 读取，此处返回空字符串占位）
-            - search_strategy: 检索策略（auto / bm25 / vector / hybrid）
         """
         config = get_config()
         llm_base_url = self._base_url_for_display(
@@ -100,7 +131,6 @@ class SettingsViewModel(QObject):
             "embedding_api_key": config.embd_api_key or "",
             "embedding_base_url": embedding_base_url,
             "theme": "",  # 主题由 MainWindow.current_theme 管理
-            "search_strategy": config.get("retrieval.default_strategy", "auto") or "auto",
         }
 
     def save_settings(self, settings: Dict[str, Any]) -> None:
@@ -115,11 +145,22 @@ class SettingsViewModel(QObject):
             settings: 设置字典（与 load_settings 返回格式一致）。
         """
         try:
+            if type(settings) is not dict:
+                raise _SettingsInputError(
+                    _INVALID_SETTING_VALUE_ERROR_CODE,
+                    _INVALID_SETTING_VALUE_ERROR,
+                )
             # 收集需要写入 local.yaml 的更新项
             updates: Dict[str, str] = {}
             for setting_key, config_key in _CONFIG_KEY_MAP.items():
                 if setting_key in settings:
-                    value = str(settings[setting_key]).strip()
+                    raw_value = settings[setting_key]
+                    if type(raw_value) is not str:
+                        raise _SettingsInputError(
+                            _INVALID_SETTING_VALUE_ERROR_CODE,
+                            _INVALID_SETTING_VALUE_ERROR,
+                        )
+                    value = raw_value.strip()
                     if setting_key in _BASE_URL_SETTING_KEYS:
                         protected_display = self._protected_base_url_displays.get(
                             setting_key
@@ -130,9 +171,22 @@ class SettingsViewModel(QObject):
                         if _HIDDEN_URL_MARKER in value or (
                             value == _UNDISPLAYABLE_URL_PLACEHOLDER
                         ):
-                            raise ValueError(_REDACTED_URL_ERROR)
+                            raise _SettingsInputError(
+                                _REDACTED_URL_ERROR_CODE,
+                                _REDACTED_URL_ERROR,
+                            )
                         if url_contains_credentials(value):
-                            raise ValueError(_CREDENTIAL_URL_ERROR)
+                            raise _SettingsInputError(
+                                _CREDENTIAL_URL_ERROR_CODE,
+                                _CREDENTIAL_URL_ERROR,
+                            )
+                        try:
+                            validate_provider_base_url(value)
+                        except PKVRuntimeError as exc:
+                            raise _SettingsInputError(
+                                _INVALID_URL_ERROR_CODE,
+                                _INVALID_URL_ERROR,
+                            ) from exc
                     updates[config_key] = value
 
             if not updates:
@@ -150,9 +204,18 @@ class SettingsViewModel(QObject):
             self.settings_saved.emit()
 
         except Exception as exc:
-            error_msg = f"保存设置失败: {exc}"
-            logger.error(error_msg)
-            self.error_occurred.emit(error_msg)
+            if isinstance(exc, _SettingsInputError):
+                code = exc.code
+                public_message = exc.public_message
+            else:
+                code = SETTINGS_SAVE_FAILED_CODE
+                public_message = SETTINGS_SAVE_FAILED_MESSAGE
+            logger.error(
+                "设置保存失败: code=%s, error_type=%s",
+                code,
+                type(exc).__name__,
+            )
+            self.error_occurred.emit(public_message)
 
     # ------------------------------------------------------------------
     # 内部方法
@@ -195,4 +258,4 @@ class SettingsViewModel(QObject):
         else:
             # Compatibility seam for an explicitly injected test/admin config.
             set_yaml_config_values(config_path, updates)
-        logger.debug("本机配置文件已更新: %s", config_path)
+        logger.debug("本机配置文件已更新")

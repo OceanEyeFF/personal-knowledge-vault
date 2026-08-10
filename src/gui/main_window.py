@@ -355,8 +355,19 @@ class MainWindow(QMainWindow):
             entry: 知识条目字典（来自 SQLiteStore）。
             content: 条目全文内容。
         """
+        raw_knowledge_id = (
+            entry.get("knowledge_id") if type(entry) is dict else None
+        )
+        knowledge_id = (
+            raw_knowledge_id
+            if type(raw_knowledge_id) is int and raw_knowledge_id > 0
+            else "unknown"
+        )
+        content_length = len(content) if type(content) is str else 0
         logger.info(
-            f"📤 路由知识条目到 AI 对话: {entry.get('title', '')}"
+            "路由知识条目到 AI 对话: knowledge_id=%s content_length=%d",
+            knowledge_id,
+            content_length,
         )
         # 切换到对话视图
         self.switch_to_chat()
@@ -402,7 +413,11 @@ class MainWindow(QMainWindow):
             self.set_status(f"已切换主题: {'明亮' if theme == 'light' else '暗色'}")
             logger.info(f"已应用主题: {theme}")
         except Exception as exc:
-            logger.error(f"应用主题失败 ({theme}): {exc}")
+            logger.error(
+                "应用主题失败: theme=%s, error_type=%s",
+                theme,
+                type(exc).__name__,
+            )
 
     # ------------------------------------------------------------------
     # 状态栏消息
@@ -506,7 +521,10 @@ class MainWindow(QMainWindow):
         try:
             self.save_settings()
         except Exception as exc:
-            logger.error("关闭时保存窗口状态失败: %s", exc)
+            logger.error(
+                "关闭时保存窗口状态失败: error_type=%s",
+                type(exc).__name__,
+            )
         super().closeEvent(event)
 
     # ------------------------------------------------------------------

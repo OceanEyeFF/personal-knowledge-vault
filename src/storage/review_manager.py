@@ -10,7 +10,7 @@
 import json
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +19,12 @@ from src.utils.logger import get_logger
 from src.storage.sqlite_connection import connect_existing_sqlite
 
 logger = get_logger(__name__)
+
+
+def _review_id_for_log(review_id: object) -> int | str:
+    """Return a single-line identifier without rendering untrusted objects."""
+
+    return review_id if type(review_id) is int else "invalid"
 
 
 @dataclass
@@ -91,7 +97,7 @@ class ReviewManager:
             db_path = config.db_path
         self.db_path = Path(db_path)
         self._verify_tables()
-        logger.info(f"ReviewManager 初始化: {self.db_path}")
+        logger.info("ReviewManager 初始化完成")
 
     @contextmanager
     def _get_connection(self):
@@ -115,7 +121,10 @@ class ReviewManager:
             conn.commit()
         except Exception as e:
             conn.rollback()
-            logger.error(f"ReviewManager 数据库操作失败: {e}")
+            logger.error(
+                "ReviewManager 数据库操作失败: error_type=%s",
+                type(e).__name__,
+            )
             raise
         finally:
             conn.close()
@@ -214,7 +223,7 @@ class ReviewManager:
                 operator="system",
             )
 
-        logger.info(f"审核条目已创建: review_id={review_id}")
+        logger.info("审核条目已创建: review_id=%s", _review_id_for_log(review_id))
         return review_id
 
     def get_review(self, review_id: int) -> Optional[ReviewItem]:
@@ -233,7 +242,10 @@ class ReviewManager:
             ).fetchone()
 
         if row is None:
-            logger.debug(f"审核条目不存在: review_id={review_id}")
+            logger.debug(
+                "审核条目不存在: review_id=%s",
+                _review_id_for_log(review_id),
+            )
             return None
 
         return self._row_to_item(row)
@@ -258,7 +270,10 @@ class ReviewManager:
             warn_msg=f"审核条目不存在，无法更新摘要: review_id={review_id}",
         )
         if ok:
-            logger.debug(f"用户摘要已更新: review_id={review_id}")
+            logger.debug(
+                "用户摘要已更新: review_id=%s",
+                _review_id_for_log(review_id),
+            )
         return ok
 
     def update_user_tags(self, review_id: int, tags: List[str]) -> bool:
@@ -272,7 +287,8 @@ class ReviewManager:
         Returns:
             True 表示更新成功，False 表示条目不存在
         """
-        tags_str = ",".join(t.strip() for t in tags if t.strip())
+        normalized_tags = [tag.strip() for tag in tags if tag.strip()]
+        tags_str = ",".join(normalized_tags)
         ok = self._update_field(
             review_id,
             sql="UPDATE review_queue SET user_tags = ?, review_version = review_version + 1 WHERE review_id = ?",
@@ -282,7 +298,11 @@ class ReviewManager:
             warn_msg=f"审核条目不存在，无法更新标签: review_id={review_id}",
         )
         if ok:
-            logger.debug(f"用户标签已更新: review_id={review_id}, tags={tags_str}")
+            logger.debug(
+                "用户标签已更新: review_id=%s, tag_count=%s",
+                _review_id_for_log(review_id),
+                len(normalized_tags),
+            )
         return ok
 
     def add_user_comment(self, review_id: int, comment: str) -> bool:
@@ -303,7 +323,10 @@ class ReviewManager:
             ).fetchone()
 
             if row is None:
-                logger.warning(f"审核条目不存在，无法添加评论: review_id={review_id}")
+                logger.warning(
+                    "审核条目不存在，无法添加评论: review_id=%s",
+                    _review_id_for_log(review_id),
+                )
                 return False
 
             existing = row["user_comments"] or ""
@@ -324,7 +347,10 @@ class ReviewManager:
                 details=json.dumps({"comment": comment[:200]}, ensure_ascii=False),
             )
 
-        logger.debug(f"用户评论已追加: review_id={review_id}")
+        logger.debug(
+            "用户评论已追加: review_id=%s",
+            _review_id_for_log(review_id),
+        )
         return True
 
     def record_regeneration(
@@ -353,7 +379,10 @@ class ReviewManager:
             ).fetchone()
 
             if row is None:
-                logger.warning(f"审核条目不存在，无法记录重生成: review_id={review_id}")
+                logger.warning(
+                    "审核条目不存在，无法记录重生成: review_id=%s",
+                    _review_id_for_log(review_id),
+                )
                 return False
 
             count = (row["regeneration_count"] or 0) + 1
@@ -399,7 +428,11 @@ class ReviewManager:
                 operator="system",
             )
 
-        logger.info(f"AI 重新生成已记录: review_id={review_id}, count={count}")
+        logger.info(
+            "AI 重新生成已记录: review_id=%s, count=%s",
+            _review_id_for_log(review_id),
+            count,
+        )
         return True
 
     def approve_review(self, review_id: int) -> bool:
@@ -418,11 +451,14 @@ class ReviewManager:
                 (review_id,),
             )
             if result.rowcount == 0:
-                logger.warning(f"审核条目不存在，无法通过: review_id={review_id}")
+                logger.warning(
+                    "审核条目不存在，无法通过: review_id=%s",
+                    _review_id_for_log(review_id),
+                )
                 return False
             self._add_history(conn, review_id, action="approve", details=json.dumps({}))
 
-        logger.info(f"审核已通过: review_id={review_id}")
+        logger.info("审核已通过: review_id=%s", _review_id_for_log(review_id))
         return True
 
     def reject_review(self, review_id: int) -> bool:
@@ -441,7 +477,10 @@ class ReviewManager:
                 (review_id,),
             )
             if result.rowcount == 0:
-                logger.warning(f"审核条目不存在，无法拒绝: review_id={review_id}")
+                logger.warning(
+                    "审核条目不存在，无法拒绝: review_id=%s",
+                    _review_id_for_log(review_id),
+                )
                 return False
             self._add_history(
                 conn,
@@ -450,7 +489,10 @@ class ReviewManager:
                 details=json.dumps({"moved_to": "draft"}, ensure_ascii=False),
             )
 
-        logger.info(f"审核已拒绝，存入草稿区: review_id={review_id}")
+        logger.info(
+            "审核已拒绝，存入草稿区: review_id=%s",
+            _review_id_for_log(review_id),
+        )
         return True
 
     def get_history(self, review_id: int) -> List[Dict[str, Any]]:
@@ -522,14 +564,21 @@ class ReviewManager:
         """
         ok = self._update_field(
             review_id,
-            sql="UPDATE review_queue SET review_status = 'pending', review_version = review_version + 1 WHERE review_id = ? AND review_status = 'draft'",
+            sql=(
+                "UPDATE review_queue SET review_status = 'pending', "
+                "review_version = review_version + 1 "
+                "WHERE review_id = ? AND review_status = 'draft'"
+            ),
             params=(review_id,),
             action="restore",
             details=json.dumps({"from_status": "draft", "to_status": "pending"}, ensure_ascii=False),
             warn_msg=f"无法恢复草稿: review_id={review_id}（不存在或状态不是 draft）",
         )
         if ok:
-            logger.info(f"草稿已恢复为待审核: review_id={review_id}")
+            logger.info(
+                "草稿已恢复为待审核: review_id=%s",
+                _review_id_for_log(review_id),
+            )
         return ok
 
     # ------------------------------------------------------------------
@@ -555,7 +604,10 @@ class ReviewManager:
         with self._get_connection() as conn:
             result = conn.execute(sql, params)
             if result.rowcount == 0:
-                logger.warning(warn_msg)
+                logger.warning(
+                    "审核条目更新未命中: review_id=%s",
+                    _review_id_for_log(review_id),
+                )
                 return False
             self._add_history(conn, review_id, action=action, details=details, operator=operator)
         return True

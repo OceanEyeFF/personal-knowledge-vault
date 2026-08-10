@@ -13,6 +13,35 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### M13 W2：已发布功能源代码合同（2026-08-07）
+
+- Workflow 运行时合同收口到真实、版本化的 `archive-url.yaml` / `archive-text.yaml`：
+  严格校验 schema、step 顺序、trigger、condition、`on_error` 与 processor route，并公开
+  `success/degraded/error` 终态；`search.yaml` 明确不受支持。
+- Retrieval 统一 `success/no_hits/invalid/error/degraded` 五态，BM25/Vector/Hybrid/Auto
+  及 GUI、CLI、MCP adapter 不再把底层错误或降级伪装成空结果/成功。BM25 不构造
+  Provider，语义路径按需创建 Provider 并在索引访问前校验数量、顺序、维度和数值边界。
+- MCP 发布面冻结为 stdio-only，非 stdio transport 在 bootstrap/绑定前拒绝；14 Tools、
+  9 Resources、3 Prompts 的发现/调用、公开 envelope、证据 locator、聚合守恒和稳定错误
+  语义已形成 source-level 合同。URL 归档覆盖 DNS、连接目标、redirect、subresource 的
+  SSRF 重校验，拒绝路径不产生存储副作用。
+- GUI Chat 将 session 切换、双发、停止、Provider/save 失败收口到互斥的
+  `completed/stopped/error`；turn 原子持久化、知识引用、URL 上下文和保存到知识库均走
+  正常 Provider/Workflow seam，源码不含内置 fake/test mode；release payload 的同一结论仍待
+  W3/W4 Artifact 扫描证明。
+- `tests/contracts/m13_w2.v1.yaml` 中受支持、`partial-v1` 与明确 unsupported 的源代码能力
+  已登记为 `source_verified`。`mcp.http.v1` 与 W3 主责的外置
+  `chat.loopback_harness.v1` 仍为 `defined`；全部 W4 handoff 保持 `artifact_pending`。
+- Phase C fresh run 通过 16/16 tasks、151/151 checks（119 项版本化声明式检查 + 32 项
+  自动公开 envelope 检查）、`overall=1.0`、全部维度 `1.0`、0 failed、
+  `targets_met=true`。2026-07-31 的 119-check 记录保留为历史声明式基线。
+- fresh 默认离线全量为 `3475 passed, 20 skipped, 9 deselected`；MCP coverage gate 为
+  `755 passed, 5 deselected`，`src.mcp=95.33%`（门槛 `95%`）。
+- 四条冻结工作流的独立 SubAgent 复审未发现确定性 P0/P1。历史 Vector 非 seed 候选的
+  全量语义扫描按 fresh-install 范围外 P2 后置，不改变当前 fail-closed 合同。
+- W2 已完成，W3 可以开始；W3 可复现 Artifact、外置 deterministic loopback harness 与
+  W4 Artifact E2E/发布审查尚未完成，当前没有 `artifact_verified` 结论。
+
 ### M13 W1：运行时布局与数据安全底座（2026-08-02；2026-08-07 安全复审）
 
 - 新增 `src/runtime/`：`RuntimeLayout` 将 bundled 只读资源与单一用户数据根分离，
@@ -41,7 +70,7 @@
 - 新增 `packaging/runtime-resources.json` 只读资源 allowlist，明确排除密钥、`.env`、
   local config、数据库、Vault、vector、日志与临时文件。
 - 新增/扩展 RuntimeLayout、bootstrap、Vault、migration、跨存储故障注入、Vector 崩溃恢复、
-  adapter 终态和 manifest 自动化合同；PI/DeepSeek 与独立 SubAgent 复审后未留确定性 P0/P1。
+  adapter 终态和 manifest 自动化合同；独立 SubAgent 复审后未留确定性 P0/P1。
   全部验证仅使用 `.data-test` 与合成数据，未访问真实 `.data/`。
 - 冻结后离线验收：unit `1583 passed, 19 skipped`；integration/blackbox/e2e
   `277 passed, 9 deselected`。Windows symlink 权限与 POSIX-only 合同按原因跳过，live 用例由

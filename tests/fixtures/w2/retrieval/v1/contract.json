@@ -1,0 +1,63 @@
+{
+  "schema_version": "pkv.retrieval.fixture.v1",
+  "embedding_dimension": 3,
+  "corpus": [
+    {
+      "knowledge_id": 101,
+      "title": "Alpha Systems",
+      "tokens": ["alpha", "systems"],
+      "vector": [1.0, 0.0, 0.0]
+    },
+    {
+      "knowledge_id": 202,
+      "title": "Beta Graphs",
+      "tokens": ["beta", "graphs"],
+      "vector": [0.0, 1.0, 0.0]
+    },
+    {
+      "knowledge_id": 303,
+      "title": "Alpha Beta Bridge",
+      "tokens": ["alpha", "beta", "bridge"],
+      "vector": [0.7, 0.7, 0.0]
+    }
+  ],
+  "ranked_inputs": {
+    "bm25_ids": [101, 303],
+    "vector_hits": [
+      [303, 0.01],
+      [202, 0.2]
+    ]
+  },
+  "hybrid_status_matrix": [
+    {
+      "case_id": "both_success",
+      "bm25": "success",
+      "vector": "success",
+      "expected": "success"
+    },
+    {
+      "case_id": "both_no_hits",
+      "bm25": "no_hits",
+      "vector": "no_hits",
+      "expected": "no_hits"
+    },
+    {
+      "case_id": "vector_error",
+      "bm25": "success",
+      "vector": "error",
+      "expected": "degraded"
+    },
+    {
+      "case_id": "bm25_error",
+      "bm25": "error",
+      "vector": "success",
+      "expected": "degraded"
+    },
+    {
+      "case_id": "double_error",
+      "bm25": "error",
+      "vector": "error",
+      "expected": "error"
+    }
+  ]
+}

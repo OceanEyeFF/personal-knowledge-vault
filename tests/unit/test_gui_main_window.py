@@ -142,6 +142,39 @@ def test_database_initialization_uses_runtime_db_path(tmp_path):
     mock_config.get.assert_not_called()
 
 
+def test_uncaught_exception_handler_never_logs_value_or_traceback(
+    main_window,
+    caplog,
+    capsys,
+):
+    """Release exception diagnostics expose only a fixed code/type allowlist."""
+    from src.gui import app as gui_app
+
+    sentinel = "uncaught-secret\r\napi_key=DO-NOT-LOG"
+    secret_error_type = type(
+        f"InjectedError\r\n{sentinel}",
+        (Exception,),
+        {},
+    )
+    previous_hook = sys.excepthook
+    try:
+        try:
+            raise secret_error_type(sentinel)
+        except secret_error_type as exc:
+            gui_app.setup_exception_handler(main_window)
+            with caplog.at_level("ERROR", logger="pkv.gui.app"):
+                sys.excepthook(type(exc), exc, exc.__traceback__)
+    finally:
+        sys.excepthook = previous_hook
+
+    captured = capsys.readouterr()
+    assert "code=gui_uncaught_exception" in caplog.text
+    assert "error_type=Exception" in caplog.text
+    assert sentinel not in caplog.text
+    assert sentinel not in captured.out
+    assert sentinel not in captured.err
+
+
 def test_settings_saved_refreshes_chat_provider_config(qtbot):
     """设置保存成功后，主窗口应刷新已初始化的 ChatViewModel 配置。"""
     with patch(
@@ -154,6 +187,29 @@ def test_settings_saved_refreshes_chat_provider_config(qtbot):
         window._settings_view.settings_saved.emit()
 
     reload_provider_config.assert_called_once_with()
+
+
+def test_send_to_chat_log_uses_only_safe_metadata(main_window, caplog):
+    """Untrusted titles and content never cross the GUI logging boundary."""
+    sentinel = "route-secret\r\napi_key=DO-NOT-LOG"
+    entry = {
+        "knowledge_id": 41,
+        "title": sentinel,
+    }
+    content = f"body:{sentinel}"
+
+    with patch.object(
+        main_window._chat_view,
+        "start_session_with_reference",
+    ) as start_session, caplog.at_level("INFO", logger="pkv.gui.mainwindow"):
+        main_window._on_send_to_chat(entry, content)
+
+    start_session.assert_called_once_with(entry, content)
+    assert main_window._stacked.currentIndex() == 3
+    assert "knowledge_id=41" in caplog.text
+    assert f"content_length={len(content)}" in caplog.text
+    assert "route-secret" not in caplog.text
+    assert "api_key" not in caplog.text
 
 
 # ============================================================

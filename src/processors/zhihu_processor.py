@@ -4,15 +4,14 @@ Zhihu content processor.
 
 from __future__ import annotations
 
-import asyncio
 import re
 from typing import Dict, List, Optional
 
 from bs4 import BeautifulSoup, Tag
-from playwright.async_api import async_playwright
-import requests
 
 from src.processors.base import BaseProcessor
+from src.processors.safe_fetch import SafeFetcher, describe_url_target, parse_http_target
+from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.storage.markdown_store import Entry
 from src.utils.config import get_config
 from src.utils.logger import get_logger
@@ -27,6 +26,10 @@ _LOGIN_WALL_MARKERS = [
     "登录即可查看",
 ]
 
+_ZHIHU_CONTENT_HOSTS = frozenset(
+    {"zhihu.com", "www.zhihu.com", "zhuanlan.zhihu.com"}
+)
+
 
 class ZhihuProcessor(BaseProcessor):
     """Processor for Zhihu questions and posts.
@@ -35,7 +38,12 @@ class ZhihuProcessor(BaseProcessor):
     用于绕过知乎登录墙获取完整内容。
     """
 
-    def __init__(self, timeout: float = 20.0, user_agent: Optional[str] = None):
+    def __init__(
+        self,
+        timeout: float = 20.0,
+        user_agent: Optional[str] = None,
+        safe_fetcher: SafeFetcher | None = None,
+    ):
         """
         Initialize the processor.
 
@@ -45,6 +53,10 @@ class ZhihuProcessor(BaseProcessor):
         """
         config = get_config()
         self.timeout = timeout
+        self._init_safe_fetcher(
+            timeout_seconds=timeout,
+            safe_fetcher=safe_fetcher,
+        )
         self.user_agent = user_agent or config.get(
             "processors.zhihu.user_agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -55,7 +67,11 @@ class ZhihuProcessor(BaseProcessor):
     @classmethod
     def can_handle(cls, url: str) -> bool:
         """Return True for Zhihu URLs."""
-        return "zhihu.com" in url
+        try:
+            hostname = parse_http_target(url).hostname
+        except Exception:
+            return False
+        return hostname in _ZHIHU_CONTENT_HOSTS
 
     async def process(self, url: str) -> Entry:
         """
@@ -67,10 +83,10 @@ class ZhihuProcessor(BaseProcessor):
         Returns:
             Entry with extracted content.
         """
-        logger.info("ZhihuProcessor processing url=%s", url)
+        logger.info("ZhihuProcessor processing target=%s", describe_url_target(url))
         html = await self._fetch_html(url)
         if not html:
-            raise ValueError(f"Empty HTML content for url={url}")
+            raise ValueError("Empty HTML content returned by target")
 
         # 登录墙检测
         if self._is_login_wall(html):
@@ -115,53 +131,40 @@ class ZhihuProcessor(BaseProcessor):
         )
         entry.metadata = metadata
 
-        logger.info("ZhihuProcessor completed url=%s title=%s", url, title)
+        logger.info(
+            "ZhihuProcessor completed target=%s content_length=%s",
+            describe_url_target(url),
+            len(markdown),
+        )
         return entry
 
     async def _fetch_html(self, url: str) -> str:
-        """Fetch HTML using Playwright with a requests fallback."""
-        try:
-            return await self._fetch_with_playwright(url)
-        except Exception as exc:
-            logger.warning("Playwright fetch failed, fallback to requests: %s", exc)
-            return await self._fetch_with_requests(url)
-
-    async def _fetch_with_playwright(self, url: str) -> str:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-            context = await browser.new_context(user_agent=self.user_agent)
-
-            # Cookie 注入
-            if self._cookie_str:
-                cookies = self._parse_cookie_str(self._cookie_str, ".zhihu.com")
-                await context.add_cookies(cookies)
-                logger.info("已注入知乎 Cookie (%d 个)", len(cookies))
-
-            page = await context.new_page()
-            await page.goto(url, wait_until="networkidle", timeout=int(self.timeout * 1000))
-            html = await page.content()
-            await browser.close()
-            return html
+        """Fetch HTML through the only published, DNS-pinned transport."""
+        return await self._fetch_with_requests(url)
 
     async def _fetch_with_requests(self, url: str) -> str:
+        """Compatibility name for the SSRF-safe HTTP fetch path."""
         headers = {"User-Agent": self.user_agent}
         if self._cookie_str:
+            target = parse_http_target(url)
+            hostname = target.hostname
+            if hostname not in _ZHIHU_CONTENT_HOSTS:
+                raise PKVRuntimeError(
+                    ErrorCode.SSRF_TARGET_FORBIDDEN,
+                    "禁止向非知乎域名发送 Cookie",
+                    stage="network_policy",
+                    recoverable=False,
+                )
+            if target.scheme != "https":
+                raise PKVRuntimeError(
+                    ErrorCode.SSRF_TARGET_FORBIDDEN,
+                    "禁止通过非 HTTPS 请求发送 Cookie",
+                    stage="network_policy",
+                    recoverable=False,
+                )
             headers["Cookie"] = self._cookie_str
-
-        def _request() -> str:
-            response = requests.get(url, headers=headers, timeout=self.timeout)
-            response.raise_for_status()
-            response.encoding = response.apparent_encoding or response.encoding
-            return response.text
-
-        try:
-            return await asyncio.to_thread(_request)
-        except requests.RequestException as exc:
-            logger.error("Failed to fetch url=%s error=%s", url, exc)
-            raise ValueError(f"Failed to fetch url={url}: {exc}") from exc
+        response = await self._fetch_public_url(url, headers=headers)
+        return response.text
 
     def _extract_metadata(self, soup: BeautifulSoup) -> Dict[str, str]:
         """Extract metadata using Zhihu-specific selectors."""

@@ -16,7 +16,7 @@ from src.relations.evidence_service import EvidenceCollectionService
 from src.relations.exploration_service import ExplorationService
 from src.relations.extractors import RelationBackfillService
 from src.relations.query_service import RelationQueryService
-from src.retrieval.result import SearchResult
+from src.retrieval.result import SearchResponse, SearchResult
 from src.storage.markdown_store import MarkdownStore
 from src.storage.relation_store import RelationStore
 from src.storage.sqlite_store import SQLiteStore
@@ -68,7 +68,7 @@ class OfflineQueryRouter:
         self.aliases = aliases
         self.entries = entries
 
-    def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+    def search(self, query: str, limit: int = 10) -> SearchResponse:
         if query == "__contract_event_time__":
             keys = ["alpha_id"]
         elif query == "__contract_published_at__":
@@ -104,7 +104,7 @@ class OfflineQueryRouter:
             for alias, (field_name, value) in LEGACY_TIMES.items():
                 if result.knowledge_id == self.aliases[alias]:
                     result.metadata[field_name] = value
-        return results
+        return SearchResponse.completed(results, strategy="offline_fixture")
 
     def _result(self, knowledge_id: int, score: float) -> SearchResult:
         entry = self.entries[knowledge_id]
@@ -130,11 +130,11 @@ class OfflineChunkSearcher:
         self.aliases = aliases
         self.entries = entries
 
-    def search_chunks(self, query: str, limit: int = 10) -> list[SearchResult]:
+    def search_chunks(self, query: str, limit: int = 10) -> SearchResponse:
         if "chunk-search-error" in query:
             raise RuntimeError("offline injected chunk failure")
         if "chunk-no-hits" in query:
-            return []
+            return SearchResponse.completed((), strategy="offline_chunk_fixture")
 
         if query == "__contract_outside_chunk__":
             rows = [
@@ -157,7 +157,7 @@ class OfflineChunkSearcher:
                 ("beta_id", *CHUNK_FIXTURES["beta_id"], 0.95)
             ]
         else:
-            return []
+            return SearchResponse.completed((), strategy="offline_chunk_fixture")
 
         results: list[SearchResult] = []
         for key, chunk_id, chunk_index, chunk_text, score in rows[:limit]:
@@ -181,7 +181,7 @@ class OfflineChunkSearcher:
                     },
                 )
             )
-        return results
+        return SearchResponse.completed(results, strategy="offline_chunk_fixture")
 
 
 class EvidenceFacade:
@@ -1080,7 +1080,17 @@ class OfflineMcpScenario:
             {"knowledge_id": str(self.resource_boundary_fixtures["outside_path"])},
         )
         self._assert_no_absolute_paths(invalid_entry)
-        if invalid_entry.get("error") != "无效的 knowledge_id，需要数字":
+        invalid_issues = invalid_entry.get("issues")
+        invalid_issue = (
+            invalid_issues[0]
+            if type(invalid_issues) is list and len(invalid_issues) == 1
+            else {}
+        )
+        if (
+            invalid_entry.get("status") != "invalid"
+            or invalid_issue.get("code") != "retrieval_invalid_query"
+            or invalid_issue.get("stage") != "knowledge_id_validation"
+        ):
             raise AssertionError("get_entry invalid id 未受控拒绝")
 
         collected = await self.call_tool(

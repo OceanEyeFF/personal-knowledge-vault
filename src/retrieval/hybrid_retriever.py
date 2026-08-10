@@ -1,182 +1,269 @@
-"""
-混合检索器
+"""Hybrid BM25/vector retrieval with observable branch degradation."""
 
-结合 BM25 和向量检索，使用 RRF 融合算法
-"""
+from __future__ import annotations
 
-from typing import List, Dict, Optional
-from pathlib import Path
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Dict, Optional
 
 from src.ai.embedder import Embedder
-from src.utils.logger import get_logger
-from src.retrieval.result import SearchResult
 from src.retrieval.bm25_retriever import BM25Retriever
+from src.retrieval.result import (
+    RetrievalIssue,
+    SearchResponse,
+    SearchResult,
+    is_strict_search_response,
+)
 from src.retrieval.vector_retriever import VectorRetriever
+from src.runtime.errors import ErrorCode
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class HybridRetriever:
-    """
-    混合检索器
-
-    并行执行 BM25 和向量检索，使用 RRF 算法融合结果
-    """
+    """Run BM25 and vector branches in parallel and fuse healthy results."""
 
     def __init__(
         self,
         db_path: Path,
         vector_index_dir: Path,
-        embedder: Embedder,
+        embedder: Embedder | None = None,
         bm25_weight: float = 0.4,
         vector_weight: float = 0.6,
         rrf_k: int = 60,
-    ):
-        """
-        初始化混合检索器
-
-        Args:
-            db_path: 数据库文件路径
-            vector_index_dir: 向量索引目录
-            embedder: 向量化工具
-            bm25_weight: BM25 权重
-            vector_weight: 向量权重
-            rrf_k: RRF 算法常数
-        """
+        *,
+        embedder_factory: Callable[[], Embedder] | None = None,
+    ) -> None:
         self.bm25_retriever = BM25Retriever(db_path)
-        self.vector_retriever = VectorRetriever(db_path, vector_index_dir, embedder)
+        self.vector_retriever = VectorRetriever(
+            db_path,
+            vector_index_dir,
+            embedder,
+            embedder_factory=embedder_factory,
+        )
         self.bm25_weight = bm25_weight
         self.vector_weight = vector_weight
         self.rrf_k = rrf_k
 
-    def search(self, query: str, limit: int = 10) -> List[SearchResult]:
-        """
-        执行混合检索
+    def search(self, query: str, limit: int = 10) -> SearchResponse:
+        """Return success/no_hits/invalid/error/degraded without branch masking."""
 
-        Args:
-            query: 查询文本
-            limit: 返回结果数量
+        if not isinstance(query, str) or not query.strip():
+            logger.debug("查询文本为空，拒绝混合检索")
+            return SearchResponse.invalid("查询文本不能为空", strategy="hybrid")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            logger.debug("混合检索 limit 非法: %r", limit)
+            return SearchResponse.invalid(
+                "limit 必须是正整数",
+                strategy="hybrid",
+                stage="limit_validation",
+            )
 
-        Returns:
-            搜索结果列表，按融合分数降序排列
-        """
-        if not query or not query.strip():
-            logger.debug("查询文本为空，返回空结果")
-            return []
+        candidate_k = max(limit * 2, 20)
+        responses: dict[str, SearchResponse] = {}
 
         try:
-            # 并行执行两种检索
-            candidate_k = max(limit * 2, 20)  # 获取更多候选结果
-
-            bm25_results = []
-            vector_results = []
-
             with ThreadPoolExecutor(max_workers=2) as executor:
-                # 提交并行任务
-                future_bm25 = executor.submit(
-                    self.bm25_retriever.search, query, candidate_k
-                )
-                future_vector = executor.submit(
-                    self.vector_retriever.search, query, candidate_k
-                )
+                futures = {
+                    executor.submit(self.bm25_retriever.search, query, candidate_k): "bm25",
+                    executor.submit(self.vector_retriever.search, query, candidate_k): "vector",
+                }
+                for future in as_completed(futures):
+                    branch = futures[future]
+                    try:
+                        response = future.result()
+                    except Exception as exc:
+                        issue = RetrievalIssue.from_exception(
+                            exc,
+                            fallback_code=ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                            public_message=f"{branch} 检索分支不可用",
+                            stage=f"hybrid_{branch}_branch",
+                            recoverable=True,
+                        )
+                        logger.error(
+                            "混合检索分支抛出异常: branch=%s, error_type=%s",
+                            branch,
+                            issue.cause_type,
+                        )
+                        response = SearchResponse.failed_response(
+                            issue,
+                            strategy=branch,
+                        )
 
-                # 等待完成
-                for future in as_completed([future_bm25, future_vector]):
-                    if future == future_bm25:
-                        bm25_results = future.result()
-                    elif future == future_vector:
-                        vector_results = future.result()
-
-            # 处理边界情况
-            if not bm25_results and not vector_results:
-                logger.info("BM25 和向量检索均无结果")
-                return []
-            if not bm25_results:
-                logger.info("BM25 无结果，使用向量检索结果")
-                return vector_results[:limit]
-            if not vector_results:
-                logger.info("向量检索无结果，使用 BM25 结果")
-                return bm25_results[:limit]
-
-            # RRF 融合
-            fused_results = self._rrf_fuse(
-                bm25_results, vector_results, top_k=limit
+                    contract_valid = is_strict_search_response(response)
+                    strategy_matches = contract_valid and response.strategy == branch
+                    if not strategy_matches:
+                        logger.error(
+                            "混合检索分支响应合同无效: branch=%s, "
+                            "contract_valid=%s, strategy_match=%s",
+                            branch,
+                            contract_valid,
+                            strategy_matches,
+                        )
+                        response = SearchResponse.failed_response(
+                            RetrievalIssue(
+                                code=ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                                message=f"{branch} 检索分支返回无效响应",
+                                stage=f"hybrid_{branch}_protocol",
+                                recoverable=True,
+                                cause_type=(
+                                    "SearchStrategyMismatch"
+                                    if contract_valid
+                                    else "InvalidSearchResponse"
+                                ),
+                            ),
+                            strategy=branch,
+                        )
+                    responses[branch] = response
+        except Exception as exc:
+            issue = RetrievalIssue.from_exception(
+                exc,
+                fallback_code=ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                public_message="混合检索执行失败",
+                stage="hybrid_executor",
+                recoverable=True,
+            )
+            logger.error(
+                "混合检索执行器失败: error_type=%s",
+                issue.cause_type,
+            )
+            return SearchResponse.failed_response(
+                issue,
+                strategy="hybrid",
             )
 
-            logger.info(
-                f"混合检索完成: BM25={len(bm25_results)}, "
-                f"Vector={len(vector_results)}, 融合={len(fused_results)}"
-            )
-            return fused_results
+        # Iterate in fixed branch order; completion timing must not reorder
+        # public issues or change the aggregate state.
+        ordered = (responses["bm25"], responses["vector"])
+        unhealthy = tuple(
+            response
+            for response in ordered
+            if response.status in {"invalid", "error", "degraded"}
+        )
+        issues = tuple(issue for response in unhealthy for issue in response.issues)
 
-        except Exception as e:
-            logger.error(f"混合检索失败: {e}", exc_info=True)
-            return []
+        if len(unhealthy) == 2:
+            if all(response.status == "invalid" for response in unhealthy):
+                return SearchResponse(
+                    status="invalid",
+                    strategy="hybrid",
+                    issues=issues,
+                )
+            has_usable_results = any(response.results for response in ordered)
+            has_trusted_completion = any(
+                response.status in {"success", "no_hits"}
+                for response in ordered
+            )
+            has_partial_trust = any(
+                response.status == "degraded" for response in ordered
+            )
+            if (
+                not has_usable_results
+                and not has_trusted_completion
+                and not has_partial_trust
+            ):
+                logger.error("BM25 与向量分支均未完整完成且无可用结果")
+                return SearchResponse(
+                    status="error",
+                    strategy="hybrid",
+                    issues=issues,
+                )
+
+        bm25_results = responses["bm25"].results
+        vector_results = responses["vector"].results
+        try:
+            combined = self._combine_results(bm25_results, vector_results, limit)
+        except Exception as exc:
+            issue = RetrievalIssue.from_exception(
+                exc,
+                fallback_code=ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                public_message="混合检索结果融合失败",
+                stage="hybrid_fusion",
+                recoverable=True,
+            )
+            logger.error(
+                "混合检索结果融合失败: error_type=%s",
+                issue.cause_type,
+            )
+            return SearchResponse.failed_response(
+                issue,
+                strategy="hybrid",
+            )
+
+        if unhealthy:
+            logger.warning(
+                "混合检索降级: incomplete_strategies=%s, result_count=%s",
+                ",".join(response.strategy for response in unhealthy),
+                len(combined),
+            )
+            return SearchResponse.degraded_response(
+                combined,
+                issues,
+                strategy="hybrid",
+            )
+
+        logger.info(
+            "混合检索完成: BM25=%s, Vector=%s, 融合=%s",
+            len(bm25_results),
+            len(vector_results),
+            len(combined),
+        )
+        return SearchResponse.completed(combined, strategy="hybrid")
+
+    def _combine_results(
+        self,
+        bm25_results: Sequence[SearchResult],
+        vector_results: Sequence[SearchResult],
+        limit: int,
+    ) -> tuple[SearchResult, ...]:
+        if not bm25_results:
+            return tuple(vector_results[:limit])
+        if not vector_results:
+            return tuple(bm25_results[:limit])
+        return tuple(self._rrf_fuse(bm25_results, vector_results, top_k=limit))
 
     def _rrf_fuse(
         self,
-        bm25_results: List[SearchResult],
-        vector_results: List[SearchResult],
+        bm25_results: Sequence[SearchResult],
+        vector_results: Sequence[SearchResult],
         top_k: int,
-    ) -> List[SearchResult]:
-        """
-        使用 RRF (Reciprocal Rank Fusion) 融合两个结果列表
+    ) -> list[SearchResult]:
+        """Fuse two ranked lists; exact tie/merge hardening remains P1."""
 
-        RRF 公式: score = sum(weight_i / (k + rank_i))
-
-        Args:
-            bm25_results: BM25 检索结果
-            vector_results: 向量检索结果
-            top_k: 返回结果数量
-
-        Returns:
-            融合后的结果列表
-        """
-        # 构建排名映射
-        bm25_ranks = {r.knowledge_id: (rank + 1) for rank, r in enumerate(bm25_results)}
+        bm25_ranks = {r.knowledge_id: rank + 1 for rank, r in enumerate(bm25_results)}
         vector_ranks = {
-            r.knowledge_id: (rank + 1) for rank, r in enumerate(vector_results)
+            r.knowledge_id: rank + 1 for rank, r in enumerate(vector_results)
         }
+        all_ids = set(bm25_ranks) | set(vector_ranks)
 
-        # 收集所有候选 ID
-        all_ids = set(bm25_ranks.keys()) | set(vector_ranks.keys())
-
-        # 计算 RRF 分数
         rrf_scores: Dict[int, float] = {}
         for knowledge_id in all_ids:
             score = 0.0
-
-            # BM25 贡献
             if knowledge_id in bm25_ranks:
-                rank = bm25_ranks[knowledge_id]
-                score += self.bm25_weight / (self.rrf_k + rank)
-
-            # 向量贡献
+                score += self.bm25_weight / (
+                    self.rrf_k + bm25_ranks[knowledge_id]
+                )
             if knowledge_id in vector_ranks:
-                rank = vector_ranks[knowledge_id]
-                score += self.vector_weight / (self.rrf_k + rank)
-
+                score += self.vector_weight / (
+                    self.rrf_k + vector_ranks[knowledge_id]
+                )
             rrf_scores[knowledge_id] = score
 
-        # 按 RRF 分数排序
-        sorted_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
-
-        # 构建融合结果
-        # 使用字典快速查找
+        sorted_ids = sorted(rrf_scores.items(), key=lambda item: item[1], reverse=True)
         id_to_bm25 = {r.knowledge_id: r for r in bm25_results}
         id_to_vector = {r.knowledge_id: r for r in vector_results}
 
-        fused_results = []
+        fused_results: list[SearchResult] = []
         for knowledge_id, rrf_score in sorted_ids[:top_k]:
-            # 合并结果（优先使用 BM25 的元数据）
-            bm25_result = id_to_bm25.get(knowledge_id)
-            vector_result = id_to_vector.get(knowledge_id)
-
-            merged_result = self._merge_result(bm25_result, vector_result, rrf_score)
-            if merged_result:
-                fused_results.append(merged_result)
-
+            merged = self._merge_result(
+                id_to_bm25.get(knowledge_id),
+                id_to_vector.get(knowledge_id),
+                rrf_score,
+            )
+            if merged is not None:
+                fused_results.append(merged)
         return fused_results
 
     @staticmethod
@@ -185,40 +272,24 @@ class HybridRetriever:
         vector_result: Optional[SearchResult],
         rrf_score: float,
     ) -> Optional[SearchResult]:
-        """
-        合并两个检索结果
-
-        Args:
-            bm25_result: BM25 结果（可能为 None）
-            vector_result: 向量结果（可能为 None）
-            rrf_score: RRF 融合分数
-
-        Returns:
-            合并后的结果，创建新的 SearchResult 对象
-        """
-        # 至少有一个结果
         if bm25_result is None and vector_result is None:
             return None
 
-        # 选择主结果（优先 BM25）
         primary = bm25_result if bm25_result is not None else vector_result
         secondary = vector_result if bm25_result is not None else bm25_result
+        assert primary is not None
 
-        # 合并元数据（创建新字典）
         merged_metadata = dict(primary.metadata)
         if secondary is not None:
             for key, value in secondary.metadata.items():
                 if key not in merged_metadata or merged_metadata[key] in (None, "", []):
                     merged_metadata[key] = value
-
-        # 添加 RRF 分数
         merged_metadata["rrf_score"] = rrf_score
 
-        # 创建新的 SearchResult（不修改原对象）
         return SearchResult(
             knowledge_id=primary.knowledge_id,
             title=primary.title or (secondary.title if secondary else ""),
-            score=min(rrf_score, 1.0),  # 确保在 [0.0, 1.0] 范围内
+            score=min(rrf_score, 1.0),
             highlight=primary.highlight or (secondary.highlight if secondary else ""),
             metadata=merged_metadata,
         )

@@ -36,7 +36,7 @@ def test_fixed_taskset_has_required_size_and_coverage() -> None:
 
     tasks = payload["tasks"]
     assert len(tasks) == 16
-    assert sum(len(task["assertions"]) + 4 for task in tasks) == 119
+    assert sum(len(task["assertions"]) + 4 for task in tasks) == 151
     assert payload["policy"] == {
         "mode": "threshold_enforced",
         "ci_contract": "schema_all_checks_and_thresholds",

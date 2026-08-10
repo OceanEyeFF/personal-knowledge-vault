@@ -14,6 +14,7 @@ class TestWorkflowYamlConfig:
     def test_archive_url_contains_review_entry(self):
         """archive-url.yaml 应包含 review_entry 步骤。"""
         cfg = yaml.safe_load(Path("config/workflows/archive-url.yaml").read_text(encoding="utf-8"))
+        assert cfg["schema_version"] == 1
         step_ids = [s["id"] for s in cfg["steps"]]
         assert "review_entry" in step_ids
 
@@ -34,6 +35,7 @@ class TestWorkflowYamlConfig:
     def test_archive_text_contains_review_entry(self):
         """archive-text.yaml 应包含 review_entry 步骤。"""
         cfg = yaml.safe_load(Path("config/workflows/archive-text.yaml").read_text(encoding="utf-8"))
+        assert cfg["schema_version"] == 1
         step_ids = [s["id"] for s in cfg["steps"]]
         assert "review_entry" in step_ids
 
@@ -75,7 +77,7 @@ class TestWorkflowEngineRegistry:
             assert step_type in registry, f"缺少标准步骤: {step_type}"
 
     def test_register_step_adds_to_registry(self):
-        """register_step 方法应能动态添加步骤到注册表。"""
+        """register_step 方法应只添加到当前引擎实例。"""
         import src.workflow.engine as engine_module
         from src.workflow.steps import BaseStep
 
@@ -83,16 +85,10 @@ class TestWorkflowEngineRegistry:
             async def execute(self, context):
                 return {}
 
-        original_registry = dict(engine_module._STEP_REGISTRY)
-        try:
-            engine = engine_module.WorkflowEngine.__new__(engine_module.WorkflowEngine)
-            engine.register_step("dummy_test_step", DummyStep)
-            assert "dummy_test_step" in engine_module._STEP_REGISTRY
-            assert engine_module._STEP_REGISTRY["dummy_test_step"] is DummyStep
-        finally:
-            # 清理：还原注册表
-            engine_module._STEP_REGISTRY.clear()
-            engine_module._STEP_REGISTRY.update(original_registry)
+        engine = engine_module.WorkflowEngine()
+        engine.register_step("dummy_test_step", DummyStep)
+        assert engine._step_registry["dummy_test_step"] is DummyStep
+        assert "dummy_test_step" not in engine_module._STEP_REGISTRY
 
 
 class TestStoreStepReviewRejectedGuard:
@@ -127,3 +123,19 @@ class TestStoreStepReviewRejectedGuard:
         result = asyncio.run(step.execute(ctx))
         # 无 entry 会走 error 路径，但不是因为 review_rejected
         assert result.get("review_rejected") is not True
+
+    def test_store_step_blocks_pending_timeout_review(self):
+        """review_blocked=True 时不得绕过人工审核入库。"""
+        from src.workflow.models import WorkflowContext
+        from src.workflow.steps import StoreStep
+
+        step = StoreStep(
+            step_id="store_entry",
+            config={"targets": ["markdown", "sqlite"]},
+        )
+        result = asyncio.run(
+            step.execute(WorkflowContext(initial_state={"review_blocked": True}))
+        )
+
+        assert result["review_blocked"] is True
+        assert result["errors"] == ["审核未完成，存储步骤已跳过"]

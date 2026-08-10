@@ -40,11 +40,22 @@
   Tool、参数和 chunk query 并确认评分失败。
 - runner 经过 FastMCP `list_tools` / `call_tool`，使用临时 SQLite/Vault 与确定性检索 fixture。
 - `tests/unit/test_mcp_quality_scorer.py` 固定任务/评分契约。
-- `tests/integration/test_mcp_quality_eval.py` 固定 16 条任务、119 项检查的期望合同、报告 schema 与 `targets_met` 门禁；2026-07-31 的 S4c 受控定向、integration、全量及 MCP coverage 复验均已通过。
+- `tests/integration/test_mcp_quality_eval.py` 固定 16 条任务、119 项版本化声明式检查、32 项自动公开 envelope 检查、报告 schema 与 `targets_met` 门禁；当前总数为 151。2026-07-31 的 119-check 结果保留为历史声明式基线。
 - 当前策略为 `threshold_enforced`；CLI 使用 `--enforce-thresholds`
   将任务集阈值作为退出码门禁。
 - 所有公开评测路径入口都会在读写或创建前拒绝生产 `.data`。
 - 运行方式见 `docs/operations/MCP最小评测闭环.md`；临时 JSON 结果只写入 `.data-test`。
+
+### M13 W2 source verification
+
+- `tests/contracts/m13_w2.v1.yaml` 是详细路线的机器可检查投影：受支持、`partial-v1` 与明确 unsupported 的源代码能力当前为 `source_verified`。
+- `mcp.http.v1` 与由 W3 主责的 `chat.loopback_harness.v1` 仍为 `defined`；`m13_w4_handoffs.v1.yaml` 中全部场景必须保持 `artifact_pending`，源码树测试不得升级为 Artifact 证据。
+- Workflow、Retrieval、MCP、GUI Chat 分别由唯一 owner、版本化 fixture、故障注入与稳定 oracle 覆盖；adapter 必须保留下游 `invalid/error/degraded`，不得改写为空结果或成功。
+- Chat 的 W4 测试响应只能来自 W3 交付、release payload 外的 deterministic loopback harness，并经正常 Provider 配置接入；源码和 Artifact 不得包含隐藏 fake/test mode。
+- 2026-08-07 fresh 默认离线全量为 `3475 passed, 20 skipped, 9 deselected`；skip 均为当前 Windows 主机缺少 symlink 权限或 POSIX-only 合同，deselect 为离线入口排除 live 用例。
+- 同一收口工作树的 MCP coverage gate 为 `755 passed, 5 deselected`，`src.mcp` 为 1671 statements / 78 miss / `95.33%`，达到 `95%` 门槛。
+- 2026-08-07 Phase C fresh run 为 16/16 tasks、151/151 checks（119 项声明式 + 32 项自动公开 envelope）、`overall=1.0`、全部维度 `1.0`、0 failed、`targets_met=true`。
+- W2 四条冻结工作流的独立复审未发现确定性 P0/P1；W3/W4 尚未完成，当前没有 `artifact_verified` 结论。
 
 ---
 
@@ -63,6 +74,7 @@
 | `test_mcp_resources.py` | MCP Resource/Template handler |
 | `test_mcp_prompts.py` | MCP Prompt 模板 |
 | `test_mcp_security.py` | MCP 安全验证（SSRF/Auth） |
+| `test_w2_contract_registry.py` | W2 capability state、fixture 与 W4 Artifact handoff 边界 |
 
 **覆盖率**: 不在静态文档中维护易漂移的百分比；以当前受控覆盖率命令及其报告为准。
 
@@ -143,7 +155,9 @@ Layer 1: 单元测试 (最快, Mock 隔离)
     tests/unit/test_mcp_tools.py        -- Tool handler 函数直接调用
     tests/unit/test_mcp_resources.py    -- Resource handler 函数直接调用
     tests/unit/test_mcp_prompts.py      -- Prompt 模板参数和输出
-    tests/unit/test_mcp_security.py     -- validate_url, is_private_ip, validate_text_length, validate_http_auth
+    tests/unit/test_mcp_security.py     -- URL preflight/SSRF/公开脱敏/文本长度（无 HTTP auth API）
+    tests/unit/test_safe_fetch.py       -- DNS pinning、redirect、peer IP、Host/SNI/hostname 与大小上限
+    tests/unit/test_mcp_server_w2.py    -- stdio-only 参数与 bootstrap/bind 前拒绝
 
 Layer 2: 进程内集成 (中速, FastMCP)
     tests/integration/test_mcp_functional.py  -- mcp.call_tool(), mcp.read_resource()
@@ -384,6 +398,15 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 
 ## 变更记录 (Changelog)
 
+### 2026-08-07 (M13 W2 源代码功能合同收口)
+
+- Workflow、Retrieval、MCP、GUI Chat 四线已完成 source verification 与独立 P0/P1 复审。
+- capability registry 的源代码能力升级为 `source_verified`；HTTP/harness deferred 能力仍为 `defined`，W4 handoff 仍为 `artifact_pending`。
+- fresh 默认离线全量为 `3475 passed, 20 skipped, 9 deselected`；MCP coverage gate 为 `755 passed, 5 deselected`、`src.mcp=95.33%`（门槛 `95%`）。
+- Phase C fresh run 达到 `16/16 tasks`、`151/151 checks`（119 声明式 + 32 自动公开 envelope）、`overall=1.0`、全部维度 `1.0`、0 failed、`targets_met=true`。
+- 默认验证继续经 `scripts/run-test.ps1` 使用独立 `.data-test`，未选择 network/manual，未连接真实 Provider，未读取真实 API key 或 Vault。
+- W2 已完成，W3 可以开始；W3/W4 与 Artifact E2E 尚未完成。
+
 ### 2026-07-31 (P0 主线离线收口最终证据)
 
 - 冻结工作树的默认离线全量经 `scripts/run-test.ps1` 通过：`1684 passed, 1 skipped, 9 deselected`。
@@ -446,6 +469,6 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-07-31
+**最后更新**: 2026-08-07
 
 *本文档由 Claude Code 自动生成*

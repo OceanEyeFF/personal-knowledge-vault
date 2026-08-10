@@ -15,7 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.relations.evidence_service import EvidenceCollectionService  # noqa: E402
 from src.relations.exploration_service import ExplorationService  # noqa: E402
 from src.relations.models import CollectedEvidenceItem, RelationExplanationResult, TimelinePoint  # noqa: E402
-from src.retrieval.result import SearchResult  # noqa: E402
+from src.retrieval.result import SearchResponse, SearchResult  # noqa: E402
 from src.storage.markdown_store import Entry  # noqa: E402
 
 
@@ -24,7 +24,7 @@ class StubQueryRouter:
         self.results = results
 
     def search(self, query: str, limit: int = 10):
-        return self.results[:limit]
+        return SearchResponse.completed(self.results[:limit], strategy="stub")
 
 
 class StubSQLiteStore:
@@ -99,7 +99,10 @@ class StubChunkSearcher:
         self.results = results
 
     def search_chunks(self, query: str, limit: int = 10):
-        return self.results[:limit]
+        return SearchResponse.completed(
+            self.results[:limit],
+            strategy="stub_chunks",
+        )
 
 
 def _make_item(

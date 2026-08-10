@@ -1,7 +1,7 @@
 """全文搜索视图。
 
 提供基于 BM25Retriever（SQLite FTS5）的知识库搜索界面：
-- 搜索区域：关键词输入框 + 策略选择 + 搜索按钮
+- 搜索区域：关键词输入框 + BM25 发布策略 + 搜索按钮
 - 结果区域：结果表格（EntryTableModel）+ 数量标签
 - 预览区域：选中结果的 Markdown 内容预览
 
@@ -14,7 +14,8 @@ src.gui.utils.preview_loader 复用。
 from __future__ import annotations
 
 import logging
-from typing import Optional
+import re
+from typing import TYPE_CHECKING, Any, Optional
 
 from PySide6.QtCore import QModelIndex, Qt
 from PySide6.QtWidgets import (
@@ -32,18 +33,21 @@ from PySide6.QtWidgets import (
 )
 
 from src.gui.models.entry_model import EntryTableModel
+from src.gui.utils.search_response_contract import is_strict_search_response
+
+if TYPE_CHECKING:
+    from src.retrieval.result import RetrievalIssue, SearchResponse
 
 logger = logging.getLogger("pkv.gui.search")
+
+_PREVIEW_ADAPTER_ERROR = "preview_adapter_error"
 
 # ============================================================
 # 搜索策略选项
 # ============================================================
 
 _STRATEGY_OPTIONS: list[tuple[str, str]] = [
-    ("自动", "auto"),
     ("BM25", "bm25"),
-    ("向量", "vector"),
-    ("混合", "hybrid"),
 ]
 
 
@@ -54,16 +58,15 @@ _STRATEGY_OPTIONS: list[tuple[str, str]] = [
 class SearchView(QWidget):
     """全文搜索视图。
 
-    包含搜索输入区域、结果列表和详情预览三个区域。
-    搜索默认使用 BM25Retriever（策略选择为"向量"或"混合"时
-    在 M10 阶段仍使用 BM25，向量检索将在后续里程碑中集成）。
+    包含搜索输入区域、结果列表和详情预览三个区域。M13 发布面仅公开
+    已具备完整错误语义的 BM25；向量/混合检索不会以假选项出现。
 
     存储实例通过 src.gui.stores 延迟获取，预览逻辑通过
     src.gui.utils.preview_loader 与 BrowserView 共享复用。
 
     Attributes:
         _SPLITTER_SIZES: 搜索结果区分割器初始尺寸（结果:预览，单位像素）。
-        _last_results: 最近一次搜索的 SearchResult 列表。
+        _last_results: 最近一次搜索的 SearchResult 元组。
     """
 
     # 搜索结果区分割器初始尺寸（结果:预览，单位像素）
@@ -76,7 +79,7 @@ class SearchView(QWidget):
             parent: Qt 父部件。
         """
         super().__init__(parent)
-        self._last_results: list = []
+        self._last_results: tuple = ()
         self._init_ui()
         self._connect_signals()
 
@@ -186,6 +189,11 @@ class SearchView(QWidget):
         self._preview_title.setProperty("class", "panel-header")
         layout.addWidget(self._preview_title)
 
+        self._preview_status_label = QLabel(self)
+        self._preview_status_label.setWordWrap(True)
+        self._preview_status_label.hide()
+        layout.addWidget(self._preview_status_label)
+
         self._preview_text = QTextEdit(self)
         self._preview_text.setReadOnly(True)
         self._preview_text.setPlaceholderText("选择搜索结果以查看详情...")
@@ -210,50 +218,125 @@ class SearchView(QWidget):
     def do_search(self) -> None:
         """执行全文搜索并更新结果列表。
 
-        使用 BM25Retriever 进行 FTS5 全文搜索（M10 阶段）。
-        搜索结果转换为 EntryTableModel 兼容的字典格式。
+        使用 BM25Retriever 进行 FTS5 全文搜索，并严格区分 success、
+        no_hits、invalid、error 与 degraded。错误不允许伪装成零命中。
         """
         query = self.search_input.text().strip()
         if not query:
-            self._result_count_label.setText("请输入搜索关键词")
-            self._result_model.update_entries([])
+            self._clear_results()
+            self._result_count_label.setText("查询无效：请输入搜索关键词")
             return
 
         try:
             from src.gui.stores import get_bm25_retriever
             retriever = get_bm25_retriever()
-            results = retriever.search(query, limit=50)
-            self._last_results = results
+            response = retriever.search(query, limit=50)
+            if not self._is_strict_response(response):
+                raise TypeError("BM25Retriever 返回了非 SearchResponse 结果")
 
-            # 将 SearchResult 转换为 dict 格式（兼容 EntryTableModel）
-            entries = []
-            for result in results:
-                meta = result.metadata or {}
-                entries.append({
-                    "knowledge_id": result.knowledge_id,
-                    "title": result.title,
-                    "source_type": meta.get("source_type", ""),
-                    "tags": meta.get("tags", ""),
-                    "word_count": meta.get("word_count", 0),  # 从 metadata 中取真实字数
-                    "archived_at": meta.get("archived_at", ""),
-                    "file_path": meta.get("file_path", ""),
-                    "score": result.score,
-                    "highlight": result.highlight,
-                })
-
-            self._result_model.update_entries(entries)
-            count = len(results)
-            self._result_count_label.setText(
-                f'搜索 "{query}" — 找到 {count} 条结果'
-            )
-            # 清空预览
-            self._preview_text.clear()
-            self._preview_title.setText("详情")
-            logger.info(f"搜索 '{query}' 完成，找到 {count} 条结果")
+            self._render_response(query, response)
         except Exception as exc:
-            logger.error(f"搜索失败: {exc}", exc_info=True)
-            self._result_count_label.setText(f"搜索失败: {exc}")
-            self._result_model.update_entries([])
+            # 不把 provider、数据库路径或凭据等底层异常原文暴露到 UI。
+            logger.error("搜索 adapter 异常: type=%s", type(exc).__name__)
+            self._clear_results()
+            self._result_count_label.setText("搜索失败：服务暂不可用（错误代码：adapter_error）")
+
+    def _render_response(self, query: str, response: "SearchResponse") -> None:
+        """按严格五态渲染检索响应，不依赖隐式 list/bool 兼容。"""
+
+        self._clear_results()
+
+        if response.status == "no_hits":
+            self._result_count_label.setText(f'搜索 "{query}" — 未找到匹配结果')
+            logger.info("BM25 搜索完成: status=no_hits, query_length=%d", len(query))
+            return
+
+        if response.status == "invalid":
+            self._result_count_label.setText(
+                f"查询无效（错误代码：{self._issue_codes(response.issues)}）"
+            )
+            logger.warning("BM25 搜索拒绝无效查询")
+            return
+
+        if response.status == "error":
+            self._result_count_label.setText(
+                "搜索失败：服务暂不可用"
+                f"（错误代码：{self._issue_codes(response.issues)}）"
+            )
+            logger.warning("BM25 搜索失败: codes=%s", self._issue_codes(response.issues))
+            return
+
+        results = response.results
+        self._last_results = results
+
+        # 将 SearchResult 转换为 dict 格式（兼容 EntryTableModel）
+        entries = []
+        for result in results:
+            meta = result.metadata or {}
+            entries.append({
+                "knowledge_id": result.knowledge_id,
+                "title": result.title,
+                "source_type": meta.get("source_type", ""),
+                "tags": meta.get("tags", ""),
+                "word_count": meta.get("word_count", 0),
+                "archived_at": meta.get("archived_at", ""),
+                "file_path": meta.get("file_path", ""),
+                "score": result.score,
+                "highlight": result.highlight,
+            })
+
+        self._result_model.update_entries(entries)
+        count = len(results)
+        if response.status == "degraded":
+            self._result_count_label.setText(
+                "搜索降级："
+                f"显示 {count} 条可用结果"
+                f"（问题代码：{self._issue_codes(response.issues)}）"
+            )
+            logger.warning(
+                "BM25 搜索降级: result_count=%d, codes=%s",
+                count,
+                self._issue_codes(response.issues),
+            )
+            return
+
+        self._result_count_label.setText(f'搜索 "{query}" — 找到 {count} 条结果')
+        logger.info("BM25 搜索完成: status=success, result_count=%d", count)
+
+    def _clear_results(self) -> None:
+        """清空上一次结果和预览，避免错误态残留旧数据。"""
+
+        self._last_results = ()
+        self._result_model.update_entries([])
+        self._preview_text.clear()
+        self._preview_title.setText("详情")
+        self._set_preview_status("success")
+
+    @staticmethod
+    def _issue_codes(issues: tuple["RetrievalIssue", ...]) -> str:
+        """只向界面公开稳定代码，不回显可能含敏感信息的异常消息。"""
+
+        codes = []
+        for issue in issues:
+            raw_code = getattr(getattr(issue, "code", None), "value", None)
+            code = (
+                raw_code
+                if isinstance(raw_code, str)
+                and re.fullmatch(r"[a-z0-9_]{1,64}", raw_code)
+                else "retrieval_error"
+            )
+            if code not in codes:
+                codes.append(code)
+        return ", ".join(codes) if codes else "unknown"
+
+    @staticmethod
+    def _is_strict_response(response: Any) -> bool:
+        """Validate the five-state contract and bind it to the BM25 seam."""
+
+        return (
+            is_strict_search_response(response)
+            and response.strategy == "bm25"
+        )
 
     # ------------------------------------------------------------------
     # 结果选中处理
@@ -280,6 +363,7 @@ class SearchView(QWidget):
         """
         title = entry.get("title", "未知标题")
         self._preview_title.setText(f"详情: {title[:40]}")
+        self._set_preview_status("success")
 
         # 构建预览内容前缀（搜索摘要 + 元数据）
         preview_parts: list[str] = []
@@ -303,20 +387,101 @@ class SearchView(QWidget):
         # 使用 preview_loader 加载 Markdown 正文
         try:
             from src.gui.stores import get_markdown_store
-            from src.gui.utils.preview_loader import load_entry_preview
+            from src.gui.utils.preview_loader import (
+                is_strict_preview_outcome,
+                load_entry_preview_outcome,
+            )
+
             md_store = get_markdown_store()
-            full_content = load_entry_preview(entry, md_store)
-            # 若 full_content 非空，追加到预览
-            if full_content and full_content.strip():
+            outcome = load_entry_preview_outcome(entry, md_store)
+            if not is_strict_preview_outcome(outcome):
+                raise TypeError("预览加载器返回了无效结果")
+
+            if outcome.status == "error":
+                code, cause_type = self._preview_issue_diagnostics(outcome.issue)
+                self._set_preview_status("error", code)
+                self._preview_text.setPlainText("预览内容暂不可用。")
+                logger.error(
+                    "搜索预览失败: code=%s, error_type=%s",
+                    code,
+                    cause_type,
+                )
+                return
+
+            if outcome.status == "degraded":
+                code, cause_type = self._preview_issue_diagnostics(outcome.issue)
+                self._set_preview_status("degraded", code)
+                logger.warning(
+                    "搜索预览降级: code=%s, error_type=%s",
+                    code,
+                    cause_type,
+                )
+            elif outcome.status != "success":
+                raise ValueError("未知预览终态")
+
+            if outcome.content.strip():
                 preview_parts.append("\n---\n\n")
-                preview_parts.append(full_content)
+                preview_parts.append(outcome.content)
         except Exception as exc:
-            logger.warning(f"加载 Markdown 预览失败: {exc}")
+            cause_type = self._safe_preview_cause_type(type(exc).__name__)
+            logger.error(
+                "搜索预览 adapter 异常: code=%s, error_type=%s",
+                _PREVIEW_ADAPTER_ERROR,
+                cause_type,
+            )
+            self._set_preview_status("error", _PREVIEW_ADAPTER_ERROR)
+            self._preview_text.setPlainText("预览内容暂不可用。")
+            return
 
         if preview_parts:
             self._preview_text.setPlainText("".join(preview_parts))
         else:
             self._preview_text.setPlainText("（无内容）")
+
+    def _set_preview_status(self, status: str, code: str = "") -> None:
+        """Render an explicit preview terminal state using fixed public text."""
+
+        if status == "success":
+            self._preview_status_label.clear()
+            self._preview_status_label.hide()
+            return
+        if status == "degraded":
+            text = (
+                "预览降级：Markdown 正文不可用，以下显示安全摘要"
+                f"（问题代码：{code}）"
+            )
+        else:
+            text = f"预览失败：正文不可用（错误代码：{code}）"
+        self._preview_status_label.setProperty("previewStatus", status)
+        self._preview_status_label.setText(text)
+        self._preview_status_label.show()
+
+    @staticmethod
+    def _preview_issue_diagnostics(issue: Any) -> tuple[str, str]:
+        """Extract only bounded identifiers from a structured preview issue."""
+
+        raw_code = getattr(getattr(issue, "code", None), "value", None)
+        code = (
+            raw_code
+            if isinstance(raw_code, str)
+            and re.fullmatch(r"[a-z0-9_]{1,64}", raw_code)
+            else _PREVIEW_ADAPTER_ERROR
+        )
+        cause_type = SearchView._safe_preview_cause_type(
+            getattr(issue, "cause_type", None)
+        )
+        return code, cause_type
+
+    @staticmethod
+    def _safe_preview_cause_type(value: Any) -> str:
+        """Bound a diagnostic type name before it reaches public logs."""
+
+        return (
+            value
+            if isinstance(value, str)
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,95}", value)
+            else "PreviewUnavailable"
+        )
 
     # ------------------------------------------------------------------
     # 公开方法（供 MainWindow 调用）

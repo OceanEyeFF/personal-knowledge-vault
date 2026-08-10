@@ -53,12 +53,20 @@ def test_ai_chat_can_handle_file(
     deepseek_html_path: Path,
     deepseek_md_path: Path,
 ):
-    """can_handle should recognize AI chat export files."""
-    assert AIChatProcessor.can_handle(str(chatgpt_html_path))
-    assert AIChatProcessor.can_handle(str(chatgpt_md_path))
-    assert AIChatProcessor.can_handle(str(deepseek_html_path))
-    assert AIChatProcessor.can_handle(str(deepseek_md_path))
+    """can_handle classifies content and never dereferences path-shaped input."""
+    paths = (
+        chatgpt_html_path,
+        chatgpt_md_path,
+        deepseek_html_path,
+        deepseek_md_path,
+    )
+    assert all(not AIChatProcessor.can_handle(str(path)) for path in paths)
+    assert all(
+        AIChatProcessor.can_handle(path.read_text(encoding="utf-8"))
+        for path in paths
+    )
     assert not AIChatProcessor.can_handle("https://example.com")
+    assert not AIChatProcessor.can_handle("HTTPS://EXAMPLE.COM/export.json")
 
 
 def test_ai_chat_can_handle_text():
@@ -70,15 +78,51 @@ def test_ai_chat_can_handle_text():
     assert AIChatProcessor.can_handle(deepseek_text)
 
 
+@pytest.mark.asyncio
+async def test_ai_chat_process_text_never_probes_local_filesystem():
+    raw = "**You**: Hello\n**ChatGPT**: Hi"
+    processor = AIChatProcessor(deepseek_client=_mock_deepseek())
+    with (
+        patch.object(
+            Path,
+            "exists",
+            side_effect=AssertionError("implicit path probe"),
+        ) as exists,
+        patch(
+            "src.processors.ai_chat_processor.read_local_text_file",
+            side_effect=AssertionError("implicit file read"),
+        ) as reader,
+    ):
+        entry = await processor.process_text(raw)
+
+    exists.assert_not_called()
+    reader.assert_not_called()
+    assert entry.source_url is None
+    assert "Hello" in entry.content
+
+
 def test_ai_chat_can_handle_edge_cases(tmp_path: Path):
-    """can_handle should reject blank input and handle read errors."""
+    """can_handle rejects blanks without probing a path-shaped raw value."""
     assert not AIChatProcessor.can_handle("   ")
 
     sample_path = tmp_path / "sample.html"
     sample_path.write_text("<div data-turn='user'>Hi</div>", encoding="utf-8")
 
-    with patch.object(Path, "read_text", side_effect=OSError("boom")):
+    with (
+        patch.object(
+            Path,
+            "exists",
+            side_effect=AssertionError("classification path probe"),
+        ) as exists,
+        patch(
+            "src.processors.ai_chat_processor.read_local_text_file",
+            side_effect=AssertionError("classification file read"),
+        ) as reader,
+    ):
         assert not AIChatProcessor.can_handle(str(sample_path))
+
+    exists.assert_not_called()
+    reader.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -88,11 +132,11 @@ async def test_ai_chat_process_chatgpt_html(chatgpt_html_path: Path):
 
     with patch("src.processors.ai_chat_processor.DeepSeekClient") as mock_client_cls:
         mock_client_cls.return_value = _mock_deepseek()
-        entry = await processor.process(str(chatgpt_html_path))
+        entry = await processor.process_file(chatgpt_html_path)
 
     assert entry.title == "AI 对话 - Project Planning"
     assert entry.source_type == "ai_chat"
-    assert entry.source_url == str(chatgpt_html_path)
+    assert entry.source_url is None
     assert entry.summary_100_words == "Mock summary"
     assert entry.tags == ["tag1", "tag2", "tag3"]
     assert "## 对话摘要" in entry.content
@@ -106,6 +150,7 @@ async def test_ai_chat_process_chatgpt_html(chatgpt_html_path: Path):
     assert metadata.get("format") == "html"
     assert metadata.get("message_count") == 3
     assert metadata.get("participants") == ["ChatGPT", "You"]
+    assert metadata.get("source_url") is None
 
 
 @pytest.mark.asyncio
@@ -115,11 +160,11 @@ async def test_ai_chat_process_chatgpt_md(chatgpt_md_path: Path):
 
     with patch("src.processors.ai_chat_processor.DeepSeekClient") as mock_client_cls:
         mock_client_cls.return_value = _mock_deepseek()
-        entry = await processor.process(str(chatgpt_md_path))
+        entry = await processor.process_file(chatgpt_md_path)
 
     assert entry.title == "AI 对话 - Summarize the plan"
     assert entry.source_type == "ai_chat"
-    assert entry.source_url == str(chatgpt_md_path)
+    assert entry.source_url is None
     assert entry.summary_100_words == "Mock summary"
     assert "Summarize the plan" in entry.content
     assert "Focus on tests and delivery" in entry.content
@@ -138,11 +183,11 @@ async def test_ai_chat_process_deepseek_html(deepseek_html_path: Path):
 
     with patch("src.processors.ai_chat_processor.DeepSeekClient") as mock_client_cls:
         mock_client_cls.return_value = _mock_deepseek()
-        entry = await processor.process(str(deepseek_html_path))
+        entry = await processor.process_file(deepseek_html_path)
 
     assert entry.title == "AI 对话 - DeepSeek Session"
     assert entry.source_type == "ai_chat"
-    assert entry.source_url == str(deepseek_html_path)
+    assert entry.source_url is None
     assert entry.summary_100_words == "Mock summary"
     assert "**用户**:" in entry.content
     assert "**DeepSeek AI**:" in entry.content
@@ -162,11 +207,11 @@ async def test_ai_chat_process_deepseek_md(deepseek_md_path: Path):
 
     with patch("src.processors.ai_chat_processor.DeepSeekClient") as mock_client_cls:
         mock_client_cls.return_value = _mock_deepseek()
-        entry = await processor.process(str(deepseek_md_path))
+        entry = await processor.process_file(deepseek_md_path)
 
     assert entry.title == "AI 对话 - Outline the checklist"
     assert entry.source_type == "ai_chat"
-    assert entry.source_url == str(deepseek_md_path)
+    assert entry.source_url is None
     assert entry.summary_100_words == "Mock summary"
     assert "Outline the checklist" in entry.content
     assert "verify coverage" in entry.content
@@ -187,7 +232,10 @@ async def test_ai_chat_load_content_errors():
         await processor._load_content("   ")
 
     with pytest.raises(FileNotFoundError):
-        await processor._load_content("missing_export.html")
+        await processor._load_content("missing_export.html", allow_local_file=True)
+
+    with pytest.raises(FileNotFoundError):
+        await processor.process_file("missing-export-without-known-suffix")
 
 
 def test_ai_chat_helper_methods():
@@ -250,7 +298,7 @@ async def test_ai_chat_process_empty_fallback(tmp_path: Path):
     html_path.write_text("<html><body><div data-turn='system'></div></body></html>", encoding="utf-8")
 
     processor = AIChatProcessor()
-    entry = await processor.process(str(html_path))
+    entry = await processor.process_file(html_path)
 
     assert entry.title == "AI 对话 - empty_chat"
     assert entry.summary_100_words == "对话内容为空。"

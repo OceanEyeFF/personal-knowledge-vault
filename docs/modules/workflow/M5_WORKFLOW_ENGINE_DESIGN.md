@@ -2,6 +2,8 @@
 
 > **历史设计稿，不可作为当前执行 Runbook**：本文保留 M5 当时的设计与命令快照，其中的裸 `pytest`、`python -c`、GUI/人工命令均不适用于当前 Agent 自动化。当前测试入口与安全边界以 [`tests/CLAUDE.md`](../../../tests/CLAUDE.md) 与 [`.ai-safety-rules.md`](../../../.ai-safety-rules.md) 为准。
 
+> **M13 W2 现行边界**：运行时只接受磁盘上的真实、版本化 YAML，目前支持 `config/workflows/archive-url.yaml` 与 `config/workflows/archive-text.yaml`。缺失、未知或 schema 非法的工作流必须在执行任何步骤前失败；不得从 `config.raw.workflows`、内嵌字典或其他默认值回退。`search.yaml` 不在支持面。默认验证必须离线，使用替身 Provider 与合成数据，不要求真实 API Key。下文所有 `config.yaml` / `config.raw["workflows"]`、live 测试和 API Key 示例仅用于解释 M5 的历史演进，不代表当前接口或门禁。
+
 ## 设计原则
 
 - **KISS 原则**: 复用现有抽象，最小化新文件

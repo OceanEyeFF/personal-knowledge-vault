@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -26,6 +27,49 @@ from PySide6.QtWidgets import (
 )
 
 logger = logging.getLogger("pkv.gui.stats")
+
+
+def _is_nonnegative_int(value: Any) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _is_strict_statistics(value: Any) -> bool:
+    if type(value) is not dict:
+        return False
+    if not {"total_entries", "by_source_type", "top_tags"}.issubset(value):
+        return False
+    if not _is_nonnegative_int(value["total_entries"]):
+        return False
+
+    by_source = value["by_source_type"]
+    if type(by_source) is not list:
+        return False
+    source_names: set[str] = set()
+    source_total = 0
+    for item in by_source:
+        if type(item) is not tuple or len(item) != 2:
+            return False
+        name, count = item
+        if type(name) is not str or not name or not _is_nonnegative_int(count):
+            return False
+        if name in source_names:
+            return False
+        source_names.add(name)
+        source_total += count
+    if source_total != value["total_entries"]:
+        return False
+
+    top_tags = value["top_tags"]
+    if type(top_tags) is not list:
+        return False
+    for item in top_tags:
+        if type(item) is not dict:
+            return False
+        name = item.get("name")
+        count = item.get("count")
+        if type(name) is not str or not name or not _is_nonnegative_int(count):
+            return False
+    return True
 
 
 # ============================================================
@@ -134,11 +178,17 @@ class StatsView(QWidget):
         try:
             from src.gui.stores import get_sqlite_store
             store = get_sqlite_store()
-            self._stats = store.get_statistics()
+            stats = store.get_statistics()
+            if not _is_strict_statistics(stats):
+                raise TypeError("statistics projection contract violation")
+            self._stats = copy.deepcopy(stats)
             self._render_stats()
             logger.debug("统计数据已刷新")
         except Exception as exc:
-            logger.warning(f"加载统计数据失败: {exc}")
+            logger.warning(
+                "加载统计数据失败: error_type=%s",
+                type(exc).__name__,
+            )
             self._stats = None
             self._render_error()
 

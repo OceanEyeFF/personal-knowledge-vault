@@ -90,10 +90,10 @@
 构建一个以 **AI 协作**为核心的个人知识管理系统,通过**工作流编排**实现灵活的内容归档与智能检索:
 
 - **AI-First**: 以 Claude Code/CodeX 作为智能协作伙伴,支持人机协作的知识处理
-- **工作流驱动**: 一切操作皆工作流,可编排、可观测、可中断
+- **工作流驱动归档**: 真实版本化 YAML 编排 URL/文本归档；搜索由 Retrieval 层直接执行
 - **智能检索**: 根据内容特点自动选择 BM25/向量/混合检索策略
 - **本地优先**: 数据完全掌控,Markdown 主存储,SQLite+hnswlib 辅助索引
-- **成本可控**: 智能策略节省 85% API 成本
+- **成本可控**: BM25 路径不构造 Provider，向量/混合能力按需启用
 - **安全可靠**: 测试环境隔离、自动备份、数据库增量迁移
 - **MCP 开放**: 通过 MCP 协议将知识库暴露给任意 AI Agent
 - **桌面 GUI**: PySide6 桌面应用,AI 对话与知识浏览一体化
@@ -108,18 +108,20 @@
 
 系统采用工作流引擎编排各模块,每种内容类型对应独立的处理 Pipeline,深度由内容复杂度决定而非架构强制。通过测试环境隔离和数据库版本管理确保生产数据安全。MCP 服务层使 AI Agent 可直接搜索、归档和管理知识库。GUI 桌面应用提供完整的知识浏览、搜索、归档和 AI 对话功能。
 
+M13 当前支持边界：MCP 只发布 stdio，不发布 HTTP/Bearer；Workflow 只加载 `config/workflows/` 下真实、版本化的 `archive-url.yaml` 与 `archive-text.yaml`，不支持 `search.yaml`；GUI 发布搜索只保证 BM25。向量/混合检索由 CLI/MCP 显式策略消费，并在实际需要时才构造 Provider。默认自动化必须离线，只使用合成数据和隔离数据根，不读取真实 key、Provider 或 Vault。
+
 ### 技术栈
 
 - **语言**: Python 3.11+ (推荐 Conda 环境)
 - **GUI 框架**: PySide6 (Qt6) + qasync (asyncio 集成)
 - **CLI 框架**: Click 8.0+ (Rich 终端界面)
-- **MCP 框架**: FastMCP (mcp SDK) -- stdio / streamable-http 双传输
+- **MCP 框架**: FastMCP (mcp SDK) -- M13 Developer Preview 仅发布 stdio
 - **存储**: Markdown (YAML Front Matter) + SQLite (FTS5) + hnswlib (向量索引)
 - **AI 服务**: DeepSeek (摘要/标签/对话) + OpenAI (Embedding)
 - **检索**: BM25 + 向量检索 + 混合策略 (RRF 算法)
 - **分词**: jieba (中文分词)
 - **渲染**: markdown2 + Pygments (Markdown/代码高亮)
-- **安全**: SSRF 防护 + 文本长度验证 + Bearer Token 认证
+- **安全**: URL 全链路 SSRF 重校验 + 文本长度验证 + 离线测试隔离
 
 ### 架构分层
 
@@ -136,10 +138,10 @@
 │  + Rich 终端界面 (进度条/表格/面板)      │
 ├─────────────────────────────────────────┤
 │  MCP 服务层 (src/mcp/)        [M8+M9]  │
-│  + 8 Tools (5只读 + 3写入/关联)         │
-│  + 4 Resources (条目全文/元数据/标签/统计)│
+│  + 14 Tools (12只读 + 2写入)            │
+│  + 9 Resources (正文/chunk/关系/统计等)  │
 │  + 3 Prompts (搜索总结/知识问答/思想磨砺)│
-│  + 安全层 (SSRF/文本验证/Bearer Auth)   │
+│  + 安全层 (SSRF 重校验/文本验证)        │
 └─────────────────┬───────────────────────┘
                   ↓
 ┌─────────────────────────────────────────┐
@@ -235,7 +237,7 @@ graph TD
 | ------ | ------ | ------ | ------ |
 | **GUI 桌面应用** | `src/gui/` | PySide6 桌面界面 -- 浏览/搜索/归档/AI对话/统计/设置 | [CLAUDE.md](./src/gui/CLAUDE.md) |
 | **CLI 交互层** | `src/cli/` | Click 命令行界面、Rich 终端 UI | [CLAUDE.md](./src/cli/CLAUDE.md) |
-| **MCP 服务层** | `src/mcp/` | MCP Server -- 8 Tool + 4 Resource + 3 Prompt + 安全加固 | [CLAUDE.md](./src/mcp/CLAUDE.md) |
+| **MCP 服务层** | `src/mcp/` | MCP stdio -- 14 Tool + 9 Resource + 3 Prompt + 安全加固 | [CLAUDE.md](./src/mcp/CLAUDE.md) |
 | **工作流引擎** | `src/workflow/` | 编排步骤、进度追踪、错误处理 | [CLAUDE.md](./src/workflow/CLAUDE.md) |
 | **内容处理器** | `src/processors/` | 插件化内容抓取与解析(微信/知乎/聊天/AI 聊天/文本回退) | [CLAUDE.md](./src/processors/CLAUDE.md) |
 | **检索引擎** | `src/retrieval/` | BM25/向量/混合检索与智能路由 | [CLAUDE.md](./src/retrieval/CLAUDE.md) |
@@ -373,7 +375,7 @@ conda activate py311-private
 1. 禁止直接操作生产数据 (`.data/`)
 2. 强制使用测试环境 (`run-test.ps1`)
 3. 重要变更前必须备份 (`backup-data.ps1`)
-4. MCP: SSRF 防护 + 文本长度验证 + Bearer Token
+4. MCP: stdio-only + URL 全链路 SSRF 重校验 + 文本验证；HTTP/Bearer 不在 M13 发布面
 5. pytest 先经 offline pytest bootstrap，再使用根 conftest；CLI/MCP 使用 offline entrypoint
 6. Direct Python 仅允许仓库模块/脚本并由 FT7 同进程保护；不是 OS sandbox；非 Python Direct 仍须经 wrapper，但不属于 Python G0、不保证离线
 

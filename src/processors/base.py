@@ -7,13 +7,15 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Mapping, Optional
 
 from bs4 import BeautifulSoup
 import html2text
 
 from src.storage.markdown_store import Entry
 from src.utils.logger import get_logger
+
+from .safe_fetch import SafeFetcher, SafeResponse
 
 logger = get_logger(__name__)
 
@@ -40,6 +42,38 @@ class ExtractedMetadata:
 
 class BaseProcessor(ABC):
     """Base class for content processors."""
+
+    def _init_safe_fetcher(
+        self,
+        *,
+        timeout_seconds: float,
+        safe_fetcher: SafeFetcher | None = None,
+    ) -> None:
+        """Install the single SSRF-safe network seam used by URL processors."""
+
+        self._safe_fetcher = safe_fetcher or SafeFetcher(
+            timeout_seconds=timeout_seconds
+        )
+
+    async def _fetch_public_url(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        max_response_bytes: int | None = None,
+    ) -> SafeResponse:
+        """Fetch through the DNS-pinned transport and require a 2xx/3xx result."""
+
+        fetcher = getattr(self, "_safe_fetcher", None)
+        if fetcher is None:
+            raise RuntimeError("processor safe fetcher is not initialized")
+        response = await fetcher.fetch(
+            url,
+            headers=headers,
+            max_response_bytes=max_response_bytes,
+        )
+        response.raise_for_status()
+        return response
 
     @classmethod
     @abstractmethod

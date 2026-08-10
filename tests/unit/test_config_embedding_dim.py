@@ -452,7 +452,10 @@ def test_config_persists_runtime_embedding_dim(tmp_path: Path, monkeypatch) -> N
 
     reloaded_config = Config(str(base_path))
     assert reloaded_config.embedding_dim == 2560
-    assert reloaded_config.runtime_embedding_dim_path == data_dir / "runtime" / "embedding_dim.json"
+    assert (
+        reloaded_config.runtime_embedding_dim_path
+        == data_dir / "runtime" / "embedding_dim.json"
+    )
 
 
 def test_config_rejects_hardlinked_runtime_embedding_cache(
@@ -512,8 +515,7 @@ def test_embedding_fingerprints_hash_credential_bearing_base_url(
         "embedding_dim": "2560",
     }
     rotated_endpoint = (
-        "https://rotated-user:rotated-password@embd.example/v1"
-        "?api_key=rotated-query"
+        "https://rotated-user:rotated-password@embd.example/v1" "?api_key=rotated-query"
     )
     assert endpoint_contract_sha256(rotated_endpoint) == expected_hash
 
@@ -605,20 +607,15 @@ def test_endpoint_contract_credentials_are_all_covered_by_display_redaction() ->
 def test_endpoint_contract_keeps_path_and_noncredential_fragment_values() -> None:
     assert endpoint_contract_sha256(
         "https://embd.example/v1?region=cn#route=alpha"
-    ) != endpoint_contract_sha256(
-        "https://embd.example/v2?region=cn#route=alpha"
-    )
+    ) != endpoint_contract_sha256("https://embd.example/v2?region=cn#route=alpha")
     assert endpoint_contract_sha256(
         "https://embd.example/v1?region=cn#route=alpha"
-    ) != endpoint_contract_sha256(
-        "https://embd.example/v1?region=cn#route=beta"
-    )
+    ) != endpoint_contract_sha256("https://embd.example/v1?region=cn#route=beta")
 
 
 def test_path_matrix_credentials_use_separate_display_and_contract_rules() -> None:
     endpoint = (
-        "https://embd.example/v1;api_key=matrix-secret;region=north"
-        "?routing=primary"
+        "https://embd.example/v1;api_key=matrix-secret;region=north" "?routing=primary"
     )
     rotated_secret = endpoint.replace("matrix-secret", "rotated-secret")
     changed_region = endpoint.replace("region=north", "region=south")
@@ -692,6 +689,48 @@ def test_non_object_runtime_embedding_cache_is_safely_invalidated(
 
     assert config.embedding_dim is None
     assert runtime_path.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.parametrize(
+    "invalid_dim",
+    [
+        pytest.param(True, id="bool"),
+        pytest.param(1.5, id="float"),
+        pytest.param("1", id="string"),
+        pytest.param(0, id="zero"),
+        pytest.param(-1, id="negative"),
+        pytest.param(65_537, id="too-large"),
+        pytest.param([], id="list"),
+        pytest.param({}, id="object"),
+        pytest.param(None, id="null"),
+    ],
+)
+def test_matching_runtime_cache_rejects_non_exact_or_out_of_range_dimension(
+    tmp_path: Path,
+    monkeypatch,
+    invalid_dim,
+) -> None:
+    monkeypatch.delenv("DATA_DIR", raising=False)
+    base_path = tmp_path / "config.yaml"
+    data_dir = tmp_path / "data"
+    _write_config(base_path, data_dir, embd_dim="auto")
+    initial = Config(str(base_path))
+    runtime_path = initial.runtime_embedding_dim_path
+    runtime_path.parent.mkdir(parents=True)
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "embedding_dim": invalid_dim,
+                "fingerprint": initial.embedding_runtime_fingerprint,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = Config(str(base_path))
+
+    assert config.embedding_dim_is_auto is True
+    assert config.embedding_dim is None
 
 
 def test_config_invalidates_runtime_dim_when_model_changes(

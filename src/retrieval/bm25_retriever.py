@@ -8,9 +8,10 @@ from pathlib import Path
 import sqlite3
 
 from src.storage.sqlite_store import FTS_TABLE_NAME, SQLiteStore
+from src.runtime.errors import ErrorCode
 from src.utils.text_utils import TextProcessor
 from src.utils.logger import get_logger
-from src.retrieval.result import SearchResponse, SearchResult
+from src.retrieval.result import RetrievalIssue, SearchResponse, SearchResult
 
 logger = get_logger(__name__)
 
@@ -41,41 +42,75 @@ class BM25Retriever:
             limit: 返回结果数量
 
         Returns:
-            检索响应；通过 status 区分 success/no_results/invalid_query/error
+            检索响应；通过 status 区分 success/no_hits/invalid/error
         """
-        if not query or not query.strip():
-            logger.debug("查询文本为空，返回空结果")
-            return SearchResponse(results=[], status="invalid_query")
+        if not isinstance(query, str) or not query.strip():
+            logger.debug("查询文本为空，拒绝检索")
+            return SearchResponse.invalid("查询文本不能为空", strategy="bm25")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            logger.debug("检索 limit 非法: type=%s", type(limit).__name__)
+            return SearchResponse.invalid(
+                "limit 必须是正整数",
+                strategy="bm25",
+                stage="limit_validation",
+            )
 
         try:
             # 构建 FTS5 查询
             match_query = self._build_match_query(query)
             if not match_query:
-                logger.warning(f"查询 '{query}' 分词后为空，无法执行 BM25 检索")
-                return SearchResponse(results=[], status="invalid_query")
+                logger.warning(
+                    "查询分词后为空，无法执行 BM25 检索: query_length=%s",
+                    len(query),
+                )
+                return SearchResponse.invalid(
+                    "查询分词后没有可检索 token",
+                    strategy="bm25",
+                )
 
             with self.store.get_connection() as conn:
                 results = self._execute_match_query(conn, match_query, limit, "strict")
                 relaxed_query = self._build_relaxed_match_query(query)
                 if not results and relaxed_query and relaxed_query != match_query:
                     logger.info(
-                        "BM25 严格查询无结果，尝试放宽查询: query='%s', relaxed='%s'",
-                        query,
-                        relaxed_query,
+                        "BM25 严格查询无结果，尝试放宽查询: "
+                        "query_length=%s, strict_tokens=%s, relaxed_tokens=%s",
+                        len(query),
+                        len(match_query.split()),
+                        len(relaxed_query.split()),
                     )
                     results = self._execute_match_query(conn, relaxed_query, limit, "relaxed_or")
 
-            logger.info(f"BM25 检索完成: 查询='{query}', 结果数={len(results)}")
-            status = "success" if results else "no_results"
-            return SearchResponse(results=results, status=status)
+            logger.info(
+                "BM25 检索完成: query_length=%s, result_count=%s",
+                len(query),
+                len(results),
+            )
+            return SearchResponse.completed(results, strategy="bm25")
 
         except Exception as e:
-            logger.error(f"BM25 检索失败: {e}", exc_info=True)
-            return SearchResponse(
-                results=[],
-                status="error",
-                error_message=str(e),
-                error_type=type(e).__name__,
+            logger.error(
+                "BM25 检索失败: error_type=%s",
+                type(e).__name__,
+            )
+            metadata_failure = isinstance(e, (IndexError, KeyError))
+            return SearchResponse.failed_response(
+                RetrievalIssue.from_exception(
+                    e,
+                    fallback_code=(
+                        ErrorCode.RETRIEVAL_METADATA_INCONSISTENT
+                        if metadata_failure
+                        else ErrorCode.RETRIEVAL_BACKEND_FAILED
+                    ),
+                    public_message=(
+                        "BM25 检索结果元数据不一致"
+                        if metadata_failure
+                        else "BM25 检索后端不可用"
+                    ),
+                    stage="bm25_metadata" if metadata_failure else "bm25_backend",
+                    recoverable=True,
+                ),
+                strategy="bm25",
             )
 
     def _build_match_query(self, query: str) -> str:
@@ -190,11 +225,9 @@ class BM25Retriever:
         Returns:
             清理后的 token
         """
-        # 移除 FTS5 特殊字符和裸操作符，避免用户输入破坏 MATCH 语法。
-        special_chars = '"*'
-        for char in special_chars:
-            token = token.replace(char, "")
-        token = token.strip()
+        # MATCH 的列过滤、括号、引号和布尔操作符都有独立语义。
+        # 只保留 Unicode 字母/数字/下划线，确保用户文本永远只是 token。
+        token = "".join(char for char in token.strip() if char.isalnum() or char == "_")
         if token.upper() in {"AND", "OR", "NOT", "NEAR"}:
             return ""
         return token

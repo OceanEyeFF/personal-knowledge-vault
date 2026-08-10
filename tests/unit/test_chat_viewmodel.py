@@ -16,11 +16,89 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from openai import DefaultAsyncHttpxClient as SDKDefaultAsyncHttpxClient
+
+
+def _list_session_row(**overrides):
+    row = {
+        "session_id": "session-1",
+        "title": "对话 1",
+        "created_at": "2026-08-07 10:00:00",
+        "updated_at": "2026-08-07 10:01:00",
+        "total_tokens": 12,
+        "round_count": 2,
+        "is_archived": 0,
+        "knowledge_id": None,
+        "summary": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def _list_session_row_without(field):
+    row = _list_session_row()
+    row.pop(field)
+    return row
+
+
+def _kb_session_row(session_id, title, messages, **overrides):
+    row = {
+        "session_id": session_id,
+        "title": title,
+        "messages": messages,
+        "total_tokens": 0,
+        "round_count": 0,
+    }
+    row.update(overrides)
+    return row
+
+
+def _kb_success_payload(
+    knowledge_id=73,
+    *,
+    terminal="success",
+    status="ready",
+    **overrides,
+):
+    payload = {
+        "knowledge_id": knowledge_id,
+        "title": "保存的对话",
+        "file_path": "vault/saved-chat.md",
+        "status": status,
+        "operation_id": f"{knowledge_id:032x}",
+        "core_committed": True,
+        "do_not_retry": True,
+        "repair_actions": (
+            ["rebuild_vectors_for_entry"] if status == "degraded" else []
+        ),
+        "workflow_terminal": terminal,
+        "workflow_warnings": (
+            ["工作流存在降级警告"] if terminal == "degraded" else []
+        ),
+        "workflow_issues": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _url_completion_data(knowledge_id, *, status="ready", **overrides):
+    data = {
+        "knowledge_id": knowledge_id,
+        "status": status,
+        "operation_id": f"{knowledge_id:032x}",
+        "core_committed": True,
+        "do_not_retry": True,
+        "repair_actions": (
+            ["rebuild_vectors_for_entry"] if status == "degraded" else []
+        ),
+    }
+    data.update(overrides)
+    return data
 
 
 # Mock 所有外部依赖，避免真实初始化
@@ -29,16 +107,46 @@ def mock_dependencies(monkeypatch):
     """Mock Config 和 SQLiteStore，避免真实 DB 初始化"""
     mock_config = MagicMock()
     mock_config.db_path = ".data-test/db/runtime.db"
-    mock_config.get.return_value = ":memory:"
     mock_config.llm_api_key = "fake-api-key"
+    mock_config.llm_provider = "openai_compatible"
     mock_config.llm_base_url = "https://llm.example/v1"
     mock_config.llm_model = "configured-model"
+    mock_config.llm_max_tokens = 2000
+    mock_config.llm_temperature = 0.7
+    mock_config.llm_timeout_seconds = 30.0
+    mock_config.llm_max_retries = 2
+
+    config_attributes = {
+        "ai.llm.api_key": "llm_api_key",
+        "ai.llm.provider": "llm_provider",
+        "ai.llm.base_url": "llm_base_url",
+        "ai.llm.model": "llm_model",
+        "ai.llm.max_tokens": "llm_max_tokens",
+        "ai.llm.temperature": "llm_temperature",
+        "ai.llm.timeout_seconds": "llm_timeout_seconds",
+        "ai.llm.max_retries": "llm_max_retries",
+    }
+
+    def get_config_value(key, default=None):
+        attribute = config_attributes.get(key)
+        return getattr(mock_config, attribute) if attribute else default
+
+    mock_config.get.side_effect = get_config_value
 
     mock_store = MagicMock()
     mock_store.create_session.return_value = None
     mock_store.get_session.return_value = None
     mock_store.list_sessions.return_value = []
-    mock_store.update_session.return_value = None
+
+    def update_session(**payload):
+        mock_store.get_session.return_value = {
+            "session_id": payload["session_id"],
+            "messages": payload["messages"],
+            "total_tokens": payload["total_tokens"],
+            "round_count": payload["round_count"],
+        }
+
+    mock_store.update_session.side_effect = update_session
     mock_store.delete_session.return_value = True
     mock_store.archive_session.return_value = None
 
@@ -65,7 +173,7 @@ def test_initialization_uses_runtime_db_path(viewmodel, mock_dependencies) -> No
     mock_dependencies["config"].get.assert_not_called()
 
 
-def test_reload_provider_config_updates_cached_values(
+def test_reload_provider_config_replaces_source_for_next_snapshot(
     viewmodel, mock_dependencies
 ) -> None:
     """设置保存后应刷新下一次对话请求使用的 Provider 配置。"""
@@ -76,9 +184,13 @@ def test_reload_provider_config_updates_cached_values(
 
     viewmodel.reload_provider_config()
 
-    assert viewmodel.api_key == "updated-key"
-    assert viewmodel.base_url == "https://updated.example.com/v1"
-    assert viewmodel.model == "updated-model"
+    from src.ai.provider_factory import chat_settings_from_config
+
+    assert viewmodel.config is config
+    settings = chat_settings_from_config(viewmodel.config)
+    assert settings.api_key == "updated-key"
+    assert settings.base_url == "https://updated.example.com/v1"
+    assert settings.model == "updated-model"
 
 
 # ===================================================================
@@ -189,6 +301,7 @@ class TestLoadSession:
     def test_load_existing_session(self, viewmodel, mock_dependencies) -> None:
         """加载已有会话"""
         mock_dependencies["store"].get_session.return_value = {
+            "session_id": "test-session-id",
             "messages": [{"role": "user", "content": "hello"}],
             "total_tokens": 100,
             "round_count": 2,
@@ -206,6 +319,7 @@ class TestLoadSession:
     ) -> None:
         """加载会话时发射 session_loaded 信号"""
         mock_dependencies["store"].get_session.return_value = {
+            "session_id": "signal-test",
             "messages": [],
             "total_tokens": 0,
             "round_count": 0,
@@ -237,10 +351,17 @@ class TestListSessions:
     def test_list_with_sessions(self, viewmodel, mock_dependencies) -> None:
         """有会话时返回列表"""
         mock_dependencies["store"].list_sessions.return_value = [
-            {"session_id": "s1", "title": "对话1"},
-            {"session_id": "s2", "title": "对话2"},
+            _list_session_row(session_id="s1", title="对话1"),
+            _list_session_row(
+                session_id="s2",
+                title="对话2",
+                is_archived=1,
+                knowledge_id=42,
+                summary="摘要",
+            ),
         ]
         result = viewmodel.list_sessions()
+        assert result is not None
         assert len(result) == 2
 
     def test_list_archived(self, viewmodel, mock_dependencies) -> None:
@@ -248,11 +369,158 @@ class TestListSessions:
         viewmodel.list_sessions(is_archived=True)
         mock_dependencies["store"].list_sessions.assert_called_with(is_archived=True)
 
-    def test_list_sessions_error(self, viewmodel, mock_dependencies) -> None:
-        """列出会话异常返回空列表"""
-        mock_dependencies["store"].list_sessions.side_effect = RuntimeError("DB error")
-        result = viewmodel.list_sessions()
-        assert result == []
+    def test_list_sessions_error(
+        self, viewmodel, mock_dependencies, qtbot
+    ) -> None:
+        """空列表必须伴随安全可见错误，不能伪装成 no sessions。"""
+        sentinel = "database-path-secret"
+        mock_dependencies["store"].list_sessions.side_effect = RuntimeError(sentinel)
+        with qtbot.waitSignal(viewmodel.error_occurred, timeout=1000) as blocker:
+            result = viewmodel.list_sessions()
+        assert result is None
+        assert blocker.args == ["列出会话失败，请检查本地数据库状态"]
+        assert sentinel not in blocker.args[0]
+
+    @pytest.mark.parametrize(
+        "projection",
+        [
+            None,
+            (),
+            MappingProxyType({}),
+            [MappingProxyType(_list_session_row())],
+            [_list_session_row_without("summary")],
+            [_list_session_row(extra_field="unexpected")],
+            [_list_session_row(session_id="")],
+            [_list_session_row(title="   ")],
+            [_list_session_row(created_at=None)],
+            [_list_session_row(updated_at=[])],
+            [_list_session_row(total_tokens=True)],
+            [_list_session_row(total_tokens=-1)],
+            [_list_session_row(round_count=True)],
+            [_list_session_row(round_count=-1)],
+            [_list_session_row(is_archived=True)],
+            [_list_session_row(is_archived=2)],
+            [_list_session_row(knowledge_id=True)],
+            [_list_session_row(knowledge_id=0)],
+            [_list_session_row(summary=["session-list-canary-secret"])],
+        ],
+        ids=[
+            "none-root",
+            "tuple-root",
+            "mapping-root",
+            "mapping-row",
+            "missing-field",
+            "extra-field",
+            "empty-id",
+            "blank-title",
+            "created-at-type",
+            "updated-at-type",
+            "bool-total-tokens",
+            "negative-total-tokens",
+            "bool-round-count",
+            "negative-round-count",
+            "bool-archived",
+            "invalid-archived",
+            "bool-knowledge-id",
+            "invalid-knowledge-id",
+            "summary-type-canary",
+        ],
+    )
+    def test_malformed_projection_is_failure_not_empty(
+        self,
+        projection,
+        viewmodel,
+        mock_dependencies,
+        qtbot,
+        caplog,
+    ) -> None:
+        mock_dependencies["store"].list_sessions.return_value = projection
+
+        with caplog.at_level(logging.ERROR, logger="pkv.gui.viewmodels.chat"):
+            with qtbot.waitSignal(
+                viewmodel.error_occurred,
+                timeout=1000,
+            ) as blocker:
+                result = viewmodel.list_sessions()
+
+        assert result is None
+        assert blocker.args == ["列出会话失败，请检查本地数据库状态"]
+        assert "session-list-canary-secret" not in blocker.args[0]
+        assert "session-list-canary-secret" not in caplog.text
+
+    def test_rejects_non_boolean_archive_filter(
+        self,
+        viewmodel,
+        mock_dependencies,
+        qtbot,
+    ) -> None:
+        with qtbot.waitSignal(viewmodel.error_occurred, timeout=1000):
+            assert viewmodel.list_sessions(is_archived=1) is None
+        mock_dependencies["store"].list_sessions.assert_not_called()
+
+
+class TestSessionSidebarProjection:
+    """侧栏只在完整投影通过验证后执行替换。"""
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            (),
+            MappingProxyType({}),
+            [
+                _list_session_row(
+                    summary=["sidebar-session-list-canary-secret"]
+                )
+            ],
+        ],
+        ids=["tuple-root", "mapping-root", "malformed-row"],
+    )
+    def test_malformed_projection_preserves_existing_rows(
+        self,
+        malformed,
+        qtbot,
+    ) -> None:
+        from src.gui.views.chat_view import SessionSidebar
+
+        sidebar = SessionSidebar()
+        qtbot.addWidget(sidebar)
+        assert sidebar.load_sessions([_list_session_row()]) is True
+        old_text = sidebar.session_list.item(0).text()
+        old_id = sidebar.session_list.item(0).data(256)
+
+        assert sidebar.load_sessions(malformed) is False
+        assert sidebar.session_list.count() == 1
+        assert sidebar.session_list.item(0).text() == old_text
+        assert sidebar.session_list.item(0).data(256) == old_id
+
+    def test_exact_empty_projection_clears_existing_rows(self, qtbot) -> None:
+        from src.gui.views.chat_view import SessionSidebar
+
+        sidebar = SessionSidebar()
+        qtbot.addWidget(sidebar)
+        assert sidebar.load_sessions([_list_session_row()]) is True
+        assert sidebar.load_sessions([]) is True
+        assert sidebar.session_list.count() == 0
+
+    def test_backend_exception_keeps_sidebar_unchanged(
+        self,
+        viewmodel,
+        mock_dependencies,
+        qtbot,
+    ) -> None:
+        from src.gui.views.chat_view import ChatView, SessionSidebar
+
+        sidebar = SessionSidebar()
+        qtbot.addWidget(sidebar)
+        assert sidebar.load_sessions([_list_session_row()]) is True
+        mock_dependencies["store"].list_sessions.side_effect = RuntimeError(
+            "sidebar-backend-canary-secret"
+        )
+        view = SimpleNamespace(viewmodel=viewmodel, sidebar=sidebar)
+
+        assert ChatView._load_sessions(view) is False
+        assert sidebar.session_list.count() == 1
+        assert sidebar.session_list.item(0).data(256) == "session-1"
 
 
 # ===================================================================
@@ -263,11 +531,11 @@ class TestListSessions:
 class TestStopStream:
     """停止流式输出测试"""
 
-    def test_sets_stop_flag(self, viewmodel) -> None:
-        """设置停止标志"""
+    def test_stop_without_active_request_is_noop(self, viewmodel) -> None:
+        """无活动请求时停止是幂等 no-op。"""
         assert viewmodel._stop_flag is False
-        viewmodel.stop_stream()
-        assert viewmodel._stop_flag is True
+        assert viewmodel.stop_stream() is False
+        assert viewmodel._stop_flag is False
 
 
 # ===================================================================
@@ -315,6 +583,19 @@ class TestDeleteCurrentSession:
         assert viewmodel.current_session_id == "current-id"
         assert viewmodel.current_messages == [{"role": "user", "content": "hi"}]
         assert viewmodel.current_total_tokens == 50
+
+    def test_rejects_deleting_active_request_session(
+        self, viewmodel, mock_dependencies, qtbot
+    ) -> None:
+        viewmodel.current_session_id = "active-id"
+        viewmodel._active_request = MagicMock(session_id="active-id")
+
+        with qtbot.waitSignal(viewmodel.error_occurred, timeout=1000) as blocker:
+            result = viewmodel.delete_session("active-id")
+
+        assert result is False
+        assert "chat_state_conflict" in blocker.args[0]
+        mock_dependencies["store"].delete_session.assert_not_called()
 
 
 # ===================================================================
@@ -397,48 +678,58 @@ class TestSendMessage:
     """发送消息测试（async）"""
 
     def test_send_without_session(self, viewmodel, qtbot) -> None:
-        """无当前会话时发射 error_occurred"""
+        """无当前会话时发射带稳定 code 的 Chat error。"""
         viewmodel.current_session_id = None
 
         # 直接调用内部 async 逻辑
         loop = asyncio.new_event_loop()
         try:
             # send_message 是 @asyncSlot 装饰的，直接调用其 coro
-            with qtbot.waitSignal(viewmodel.error_occurred, timeout=1000):
+            with qtbot.waitSignal(
+                viewmodel.chat_request_rejected, timeout=1000
+            ) as blocker:
                 loop.run_until_complete(
                     viewmodel.send_message.__wrapped__(viewmodel, "hello")
                 )
         finally:
             loop.close()
+        assert blocker.args[0] == ""
+        assert blocker.args[2] == "chat_state_conflict"
 
-    def test_send_without_api_key(self, viewmodel, qtbot) -> None:
+    def test_send_without_api_key(
+        self, viewmodel, mock_dependencies, qtbot
+    ) -> None:
         """无 API Key 时发射 error_occurred"""
         viewmodel.current_session_id = "test-id"
-        viewmodel.api_key = None
+        mock_dependencies["config"].llm_api_key = None
 
         loop = asyncio.new_event_loop()
         try:
-            with qtbot.waitSignal(viewmodel.error_occurred, timeout=1000):
+            with qtbot.waitSignal(
+                viewmodel.chat_request_rejected, timeout=1000
+            ) as blocker:
                 loop.run_until_complete(
                     viewmodel.send_message.__wrapped__(viewmodel, "hello")
                 )
         finally:
             loop.close()
+        assert blocker.args[2] == "provider_config_invalid"
 
     def test_send_message_stream_success(self, viewmodel, mock_dependencies) -> None:
         """流式发送成功"""
         viewmodel.current_session_id = "test-id"
-        viewmodel.api_key = "fake-key"
 
         # 构造 Mock stream
         mock_chunk1 = MagicMock()
         mock_chunk1.choices = [MagicMock()]
         mock_chunk1.choices[0].delta.content = "Hello"
+        mock_chunk1.choices[0].finish_reason = None
         mock_chunk1.usage = None
 
         mock_chunk2 = MagicMock()
         mock_chunk2.choices = [MagicMock()]
         mock_chunk2.choices[0].delta.content = " World"
+        mock_chunk2.choices[0].finish_reason = "stop"
         mock_chunk2.usage = None
 
         # 最后一个 chunk 包含 usage
@@ -508,9 +799,9 @@ class TestSendMessage:
     ) -> None:
         """AsyncOpenAI 最终请求正确追加 path，并保留重复/空 query。"""
         viewmodel.current_session_id = "test-id"
-        viewmodel.api_key = "fake-key"
-        viewmodel.model = "configured-model"
-        viewmodel.base_url = (
+        viewmodel.config.llm_api_key = "fake-key"
+        viewmodel.config.llm_model = "configured-model"
+        viewmodel.config.llm_base_url = (
             "https://chat.example/v1?region_code=north&region_code=south"
             "&flag=&routing_key=primary#client-only"
         )
@@ -518,7 +809,7 @@ class TestSendMessage:
         event_stream = (
             'data: {"id":"chatcmpl-1","object":"chat.completion.chunk",'
             '"created":1,"model":"configured-model","choices":['
-            '{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+            '{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
             'data: {"id":"chatcmpl-1","object":"chat.completion.chunk",'
             '"created":1,"model":"configured-model","choices":[],"usage":'
             '{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}\n\n'
@@ -564,7 +855,6 @@ class TestSendMessage:
     def test_send_message_exception(self, viewmodel, qtbot, caplog) -> None:
         """Provider 异常只向日志和 GUI 暴露固定安全消息。"""
         viewmodel.current_session_id = "test-id"
-        viewmodel.api_key = "fake-key"
         sentinel = "chat-provider-response-secret"
 
         mock_client = MagicMock()
@@ -585,7 +875,7 @@ class TestSendMessage:
                     logger="pkv.gui.viewmodels.chat",
                 ):
                     with qtbot.waitSignal(
-                        viewmodel.error_occurred, timeout=1000
+                        viewmodel.chat_request_failed, timeout=1000
                     ) as blocker:
                         loop.run_until_complete(
                             viewmodel.send_message.__wrapped__(viewmodel, "test")
@@ -593,11 +883,12 @@ class TestSendMessage:
         finally:
             loop.close()
 
-        assert blocker.args == [
+        assert blocker.args[2] == "chat_provider_failed"
+        assert blocker.args[3] == (
             "发送消息失败，请检查 LLM Provider 配置或网络连接"
-        ]
+        )
         assert sentinel not in caplog.text
-        assert sentinel not in blocker.args[0]
+        assert sentinel not in blocker.args[3]
 
 
 # ===================================================================
@@ -621,15 +912,15 @@ class TestSaveSession:
 
         mock_dependencies["store"].update_session.assert_called_once()
 
-    def test_save_error_no_raise(self, viewmodel, mock_dependencies) -> None:
-        """保存异常不抛出"""
+    def test_save_error_propagates(self, viewmodel, mock_dependencies) -> None:
+        """保存异常必须传播，禁止上层误发 completed。"""
         viewmodel.current_session_id = "test-id"
         mock_dependencies["store"].update_session.side_effect = RuntimeError("err")
 
         loop = asyncio.new_event_loop()
         try:
-            # 不应抛异常
-            loop.run_until_complete(viewmodel._save_session())
+            with pytest.raises(RuntimeError, match="err"):
+                loop.run_until_complete(viewmodel._save_session())
         finally:
             loop.close()
 
@@ -692,14 +983,15 @@ class TestSaveSessionToKnowledgeBase:
     def test_formats_messages_excludes_system_and_emits_success(
         self, viewmodel, mock_dependencies, qtbot
     ) -> None:
-        mock_dependencies["store"].get_session.return_value = {
-            "title": "设计复盘",
-            "messages": [
+        mock_dependencies["store"].get_session.return_value = _kb_session_row(
+            "session-1",
+            "设计复盘",
+            [
                 {"role": "system", "content": "不得归档的隐藏上下文"},
                 {"role": "user", "content": "问题一"},
                 {"role": "assistant", "content": "回答一"},
             ],
-        }
+        )
         worker = MagicMock()
 
         with patch(
@@ -722,16 +1014,17 @@ class TestSaveSessionToKnowledgeBase:
         worker.start.assert_called_once_with()
         success_callback = worker.finished_ok.connect.call_args.args[0]
         with qtbot.waitSignal(viewmodel.session_saved_to_kb, timeout=1000) as blocker:
-            success_callback({"knowledge_id": 73})
+            success_callback(_kb_success_payload(73))
         assert blocker.args == ["session-1", 73]
 
     def test_worker_error_is_forwarded_with_session_id(
         self, viewmodel, mock_dependencies, qtbot
     ) -> None:
-        mock_dependencies["store"].get_session.return_value = {
-            "title": "失败样例",
-            "messages": [{"role": "user", "content": "hello"}],
-        }
+        mock_dependencies["store"].get_session.return_value = _kb_session_row(
+            "session-2",
+            "失败样例",
+            [{"role": "user", "content": "hello"}],
+        )
         worker = MagicMock()
 
         with patch(
@@ -745,13 +1038,143 @@ class TestSaveSessionToKnowledgeBase:
             viewmodel.session_save_to_kb_failed, timeout=1000
         ) as blocker:
             error_callback("存储失败")
-        assert blocker.args == ["session-2", "存储失败"]
+        assert blocker.args == [
+            "session-2",
+            "归档失败（错误代码：workflow_step_failed，阶段：workflow）",
+        ]
+
+    def test_degraded_save_emits_visible_warning(
+        self, viewmodel, mock_dependencies, qtbot
+    ) -> None:
+        mock_dependencies["store"].get_session.return_value = _kb_session_row(
+            "session-degraded",
+            "降级样例",
+            [{"role": "user", "content": "hello"}],
+        )
+        worker = MagicMock()
+        with patch(
+            "src.gui.viewmodels.archive_viewmodel.ArchiveWorker",
+            return_value=worker,
+        ):
+            assert viewmodel.save_session_to_knowledge_base("session-degraded")
+
+        success_callback = worker.finished_ok.connect.call_args.args[0]
+        with qtbot.waitSignal(
+            viewmodel.session_save_to_kb_warning, timeout=1000
+        ) as blocker:
+            success_callback(
+                _kb_success_payload(
+                    88,
+                    terminal="degraded",
+                    status="degraded",
+                )
+            )
+        assert blocker.args[0] == "session-degraded"
+        assert "repair=rebuild_vectors_for_entry" in blocker.args[1]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            _kb_success_payload(0),
+            _kb_success_payload(True),
+            _kb_success_payload(73, terminal="error"),
+            _kb_success_payload(73, core_committed=False),
+            _kb_success_payload(73, terminal="success", status="degraded"),
+            MappingProxyType(_kb_success_payload(73)),
+        ],
+        ids=[
+            "empty",
+            "zero-id",
+            "bool-id",
+            "error-terminal",
+            "core-not-committed",
+            "success-degraded-status",
+            "mapping-subclass",
+        ],
+    )
+    def test_malformed_worker_success_payload_is_fail_closed(
+        self,
+        viewmodel,
+        mock_dependencies,
+        payload,
+    ) -> None:
+        mock_dependencies["store"].get_session.return_value = _kb_session_row(
+            "session-invalid-success",
+            "失败样例",
+            [{"role": "user", "content": "hello"}],
+        )
+        worker = MagicMock()
+        successes = []
+        failures = []
+        warnings = []
+        viewmodel.session_saved_to_kb.connect(
+            lambda *args: successes.append(tuple(args))
+        )
+        viewmodel.session_save_to_kb_failed.connect(
+            lambda *args: failures.append(tuple(args))
+        )
+        viewmodel.session_save_to_kb_warning.connect(
+            lambda *args: warnings.append(tuple(args))
+        )
+
+        with patch(
+            "src.gui.viewmodels.archive_viewmodel.ArchiveWorker",
+            return_value=worker,
+        ):
+            assert viewmodel.save_session_to_knowledge_base(
+                "session-invalid-success"
+            )
+
+        success_callback = worker.finished_ok.connect.call_args.args[0]
+        success_callback(payload)
+
+        assert successes == []
+        assert warnings == []
+        assert failures == [
+            ("session-invalid-success", "保存对话到知识库失败")
+        ]
+
+    def test_structured_worker_failure_is_safe_and_not_duplicated(
+        self, viewmodel, mock_dependencies
+    ) -> None:
+        mock_dependencies["store"].get_session.return_value = _kb_session_row(
+            "session-failure",
+            "失败样例",
+            [{"role": "user", "content": "hello"}],
+        )
+        worker = MagicMock()
+        failures = []
+        viewmodel.session_save_to_kb_failed.connect(
+            lambda *args: failures.append(tuple(args))
+        )
+        with patch(
+            "src.gui.viewmodels.archive_viewmodel.ArchiveWorker",
+            return_value=worker,
+        ):
+            assert viewmodel.save_session_to_knowledge_base("session-failure")
+
+        structured_callback = worker.finished_failure.connect.call_args.args[0]
+        legacy_callback = worker.finished_err.connect.call_args.args[0]
+        structured_callback(
+            {
+                "safe_message": "归档失败（错误代码：workflow_step_failed）",
+                "issues": [{"message": "raw-secret"}],
+            }
+        )
+        legacy_callback("legacy duplicate")
+        assert failures == [
+            (
+                "session-failure",
+                "归档失败（错误代码：workflow_step_failed，阶段：workflow）",
+            )
+        ]
 
     @pytest.mark.parametrize(
         ("session", "expected_error"),
         [
             (None, "会话不存在"),
-            ({"title": "空", "messages": []}, "会话无对话内容"),
+            (_kb_session_row("session-3", "空", []), "会话无对话内容"),
         ],
         ids=["missing-session", "empty-messages"],
     )
@@ -774,17 +1197,107 @@ class TestSaveSessionToKnowledgeBase:
     def test_rejects_malformed_message_json(
         self, viewmodel, mock_dependencies, qtbot
     ) -> None:
-        mock_dependencies["store"].get_session.return_value = {
-            "title": "损坏会话",
-            "messages": "{not-json",
-        }
+        mock_dependencies["store"].get_session.return_value = _kb_session_row(
+            "session-4",
+            "损坏会话",
+            "{not-json",
+        )
         with qtbot.waitSignal(
             viewmodel.session_save_to_kb_failed, timeout=1000
         ) as blocker:
             result = viewmodel.save_session_to_knowledge_base("session-4")
         assert result is False
         assert blocker.args[0] == "session-4"
-        assert blocker.args[1].startswith("保存对话失败:")
+        assert blocker.args[1] == "保存对话失败，请检查本地存储状态"
+
+    def test_wrong_identity_or_custom_fields_never_construct_worker(
+        self,
+        viewmodel,
+        mock_dependencies,
+        qtbot,
+    ) -> None:
+        class StringCanary:
+            calls = 0
+
+            def __str__(self):
+                self.calls += 1
+                return "SAVE-KB-SECRET"
+
+        title_canary = StringCanary()
+        content_canary = StringCanary()
+        corrupt_sessions = [
+            _kb_session_row(
+                "wrong-session",
+                "wrong identity",
+                [{"role": "user", "content": "hello"}],
+            ),
+            _kb_session_row(
+                "session-strict",
+                title_canary,
+                [{"role": "user", "content": "hello"}],
+            ),
+            _kb_session_row(
+                "session-strict",
+                "bad content",
+                [{"role": "user", "content": content_canary}],
+            ),
+        ]
+
+        with patch(
+            "src.gui.viewmodels.archive_viewmodel.ArchiveWorker",
+        ) as worker_class:
+            for corrupt in corrupt_sessions:
+                mock_dependencies["store"].get_session.return_value = corrupt
+                with qtbot.waitSignal(
+                    viewmodel.session_save_to_kb_failed,
+                    timeout=1000,
+                ) as blocker:
+                    assert viewmodel.save_session_to_knowledge_base(
+                        "session-strict"
+                    ) is False
+                assert blocker.args == [
+                    "session-strict",
+                    "保存对话失败，请检查本地存储状态",
+                ]
+
+        worker_class.assert_not_called()
+        assert title_canary.calls == 0
+        assert content_canary.calls == 0
+
+    def test_second_save_is_rejected_while_worker_is_running(
+        self,
+        viewmodel,
+        mock_dependencies,
+        qtbot,
+    ) -> None:
+        mock_dependencies["store"].get_session.return_value = _kb_session_row(
+            "session-busy",
+            "busy",
+            [{"role": "user", "content": "hello"}],
+        )
+        worker = MagicMock()
+        worker.isRunning.return_value = True
+
+        with patch(
+            "src.gui.viewmodels.archive_viewmodel.ArchiveWorker",
+            return_value=worker,
+        ) as worker_class:
+            assert viewmodel.save_session_to_knowledge_base("session-busy") is True
+            with qtbot.waitSignal(
+                viewmodel.session_save_to_kb_failed,
+                timeout=1000,
+            ) as blocker:
+                assert viewmodel.save_session_to_knowledge_base(
+                    "session-busy"
+                ) is False
+
+        assert blocker.args == [
+            "session-busy",
+            "已有保存任务正在进行，请稍后重试",
+        ]
+        worker_class.assert_called_once()
+        assert mock_dependencies["store"].get_session.call_count == 1
+
 
 class TestArchiveUrlAndInjectCompletion:
     """URL 归档工作流完成分支。"""
@@ -799,7 +1312,11 @@ class TestArchiveUrlAndInjectCompletion:
 
         mock_result = MagicMock()
         mock_result.success = True
-        mock_result.data = {"knowledge_id": 99}
+        mock_result.terminal = "success"
+        mock_result.data = _url_completion_data(99)
+        mock_result.errors = []
+        mock_result.warnings = []
+        mock_result.issues = []
 
         mock_engine = MagicMock()
         mock_engine.execute_async = AsyncMock(return_value=mock_result)
@@ -830,12 +1347,11 @@ class TestArchiveUrlAndInjectCompletion:
         }
         mock_result = MagicMock()
         mock_result.success = True
-        mock_result.data = {
-            "knowledge_id": 100,
-            "status": "ready",
-            "do_not_retry": True,
-            "repair_actions": [],
-        }
+        mock_result.terminal = "success"
+        mock_result.data = _url_completion_data(100)
+        mock_result.errors = []
+        mock_result.warnings = []
+        mock_result.issues = []
         mock_engine = MagicMock()
         mock_engine.execute_async = AsyncMock(return_value=mock_result)
         warning_handler = MagicMock()
@@ -866,6 +1382,9 @@ class TestArchiveUrlAndInjectCompletion:
 
         mock_result = MagicMock()
         mock_result.success = False
+        mock_result.terminal = "error"
+        mock_result.data = {}
+        mock_result.issues = []
         mock_result.errors = ["抓取失败"]
 
         mock_engine = MagicMock()
@@ -885,3 +1404,87 @@ class TestArchiveUrlAndInjectCompletion:
                     )
             finally:
                 loop.close()
+
+    def test_workflow_degraded_is_visible_and_skip_review_is_set(
+        self, viewmodel, mock_dependencies, qtbot
+    ) -> None:
+        mock_dependencies["store"].query_by_url.return_value = None
+        mock_dependencies["store"].query_by_id.return_value = {
+            "knowledge_id": 101,
+            "title": "Degraded article",
+        }
+        mock_result = MagicMock(
+            success=True,
+            terminal="degraded",
+            errors=[],
+            warnings=["index warning"],
+            issues=[],
+            data=_url_completion_data(101),
+        )
+        mock_engine = MagicMock()
+        mock_engine.execute_async = AsyncMock(return_value=mock_result)
+
+        with patch(
+            "src.workflow.engine.WorkflowEngine",
+            return_value=mock_engine,
+        ):
+            loop = asyncio.new_event_loop()
+            try:
+                with qtbot.waitSignal(
+                    viewmodel.url_archive_warning, timeout=1000
+                ) as blocker:
+                    loop.run_until_complete(
+                        viewmodel.archive_url_and_inject.__wrapped__(
+                            viewmodel,
+                            "https://example.com/degraded",
+                        )
+                    )
+            finally:
+                loop.close()
+
+        assert "workflow_terminal=degraded" in blocker.args[1]
+        assert mock_engine.execute_async.await_args.args[1]["skip_review"] is True
+
+    def test_workflow_fatal_does_not_expose_raw_errors(
+        self, viewmodel, mock_dependencies, qtbot
+    ) -> None:
+        sentinel = "workflow-provider-secret"
+        mock_dependencies["store"].query_by_url.return_value = None
+        mock_result = MagicMock(
+            success=False,
+            terminal="error",
+            errors=[sentinel],
+            warnings=[],
+            issues=[
+                {
+                    "code": "workflow_step_failed",
+                    "stage": "fetch",
+                }
+            ],
+            data={},
+        )
+        mock_engine = MagicMock()
+        mock_engine.execute_async = AsyncMock(return_value=mock_result)
+
+        with patch(
+            "src.workflow.engine.WorkflowEngine",
+            return_value=mock_engine,
+        ):
+            loop = asyncio.new_event_loop()
+            try:
+                with qtbot.waitSignal(
+                    viewmodel.url_archive_failed, timeout=1000
+                ) as blocker:
+                    loop.run_until_complete(
+                        viewmodel.archive_url_and_inject.__wrapped__(
+                            viewmodel,
+                            "https://example.com/fatal",
+                        )
+                    )
+            finally:
+                loop.close()
+
+        assert blocker.args[1] == (
+            "归档失败（错误代码：workflow_step_failed，阶段：fetch）"
+        )
+        assert sentinel not in blocker.args[1]

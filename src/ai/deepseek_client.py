@@ -8,14 +8,21 @@ OpenAI-compatible LLM API 客户端
 
 import json
 import time
+from dataclasses import replace
 from typing import List, Optional, Dict
 from urllib.parse import urlsplit, urlunsplit
 import httpx
 
-from src.runtime.layout import open_user_file_nofollow
+from src.ai.provider_factory import (
+    ChatProviderSettings,
+    chat_settings_from_config,
+    safe_provider_usage_count,
+    validate_chat_provider_settings,
+    validate_provider_base_url,
+)
+from src.runtime.layout import RuntimeLayout, open_user_file_nofollow
 from src.utils.config import (
     get_config,
-    redact_url_credentials,
     suppress_unsafe_http_transport_logs,
 )
 from src.utils.logger import get_logger
@@ -52,8 +59,11 @@ class DeepSeekClient:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: float = 30.0,
-        max_retries: int = 3,
+        timeout: Optional[float] = None,
+        max_retries: Optional[int] = None,
+        *,
+        settings: ChatProviderSettings | None = None,
+        layout: RuntimeLayout | None = None,
     ):
         """
         初始化 DeepSeek 客户端
@@ -65,31 +75,51 @@ class DeepSeekClient:
             timeout: 请求超时时间（秒）
             max_retries: 最大重试次数
         """
-        config = get_config()
+        if settings is None:
+            config = get_config()
+            effective_settings = chat_settings_from_config(config)
+            effective_settings = replace(
+                effective_settings,
+                api_key=(effective_settings.api_key if api_key is None else api_key),
+                base_url=(
+                    effective_settings.base_url if base_url is None else base_url
+                ),
+                model=effective_settings.model if model is None else model,
+                timeout_seconds=(
+                    effective_settings.timeout_seconds if timeout is None else timeout
+                ),
+                max_retries=(
+                    effective_settings.max_retries
+                    if max_retries is None
+                    else max_retries
+                ),
+            )
+            effective_layout = layout or config.layout
+        else:
+            if any(
+                value is not None
+                for value in (api_key, base_url, model, timeout, max_retries)
+            ):
+                raise TypeError("settings 不能与单独的 Provider 参数同时传入")
+            effective_settings = settings
+            effective_layout = layout or RuntimeLayout.resolve()
 
-        self.api_key = api_key or config.llm_api_key
-        if not self.api_key:
-            raise ValueError("LLM API Key 未配置，请检查用户数据目录中的 config/local.yaml")
+        validate_chat_provider_settings(effective_settings)
 
-        self.base_url = _strip_trailing_url_path_slashes(
-            base_url or config.llm_base_url
-        )
-        self.model = model or config.llm_model
-        self.timeout = timeout
-        self.max_retries = max_retries
+        self.api_key = effective_settings.api_key
+        self.base_url = _strip_trailing_url_path_slashes(effective_settings.base_url)
+        self.model = effective_settings.model
+        self.timeout = effective_settings.timeout_seconds
+        self.max_retries = effective_settings.max_retries
         suppress_unsafe_http_transport_logs()
 
         # 加载 Prompt 模板
-        self._layout = config.layout
+        self._layout = effective_layout
         self._prompts_dir = self._layout.prompts_dir
         self._summarize_prompt = self._load_prompt("summarize.txt")
         self._extract_tags_prompt = self._load_prompt("extract_tags.txt")
 
-        display_base_url = redact_url_credentials(self.base_url) or "已配置（URL 格式不可解析）"
-        logger.info(
-            f"DeepSeek 客户端初始化成功: "
-            f"model={self.model}, base_url={display_base_url}"
-        )
+        logger.info("Provider 客户端初始化成功: component=llm status=ready")
 
     def _load_prompt(self, filename: str) -> str:
         """
@@ -139,6 +169,7 @@ class DeepSeekClient:
         Raises:
             Exception: API 调用失败
         """
+        validate_provider_base_url(self.base_url)
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -153,7 +184,8 @@ class DeepSeekClient:
 
         url = _append_transport_resource(self.base_url, "chat/completions")
 
-        for attempt in range(1, self.max_retries + 1):
+        total_attempts = self.max_retries + 1
+        for attempt in range(1, total_attempts + 1):
             try:
                 with httpx.Client(timeout=self.timeout) as client:
                     response = client.post(url, headers=headers, json=payload)
@@ -165,24 +197,44 @@ class DeepSeekClient:
 
                     # 记录 token 使用情况
                     usage = result.get("usage", {})
+                    if type(usage) is not dict:
+                        usage = {}
+                    prompt_tokens = safe_provider_usage_count(
+                        usage.get("prompt_tokens")
+                    )
+                    completion_tokens = safe_provider_usage_count(
+                        usage.get("completion_tokens")
+                    )
+                    total_tokens = safe_provider_usage_count(usage.get("total_tokens"))
                     logger.info(
-                        f"DeepSeek API 调用成功: "
-                        f"prompt_tokens={usage.get('prompt_tokens', 0)}, "
-                        f"completion_tokens={usage.get('completion_tokens', 0)}, "
-                        f"total_tokens={usage.get('total_tokens', 0)}"
+                        "Provider 调用成功: component=llm "
+                        "prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+                        prompt_tokens if prompt_tokens is not None else "unknown",
+                        (
+                            completion_tokens
+                            if completion_tokens is not None
+                            else "unknown"
+                        ),
+                        total_tokens if total_tokens is not None else "unknown",
                     )
 
                     return content
 
                 elif response.status_code == 429:
                     # API 限流，指数退避重试
-                    wait_time = 2 ** attempt
-                    logger.warning(f"DeepSeek API 限流，{wait_time}秒后重试 (第 {attempt}/{self.max_retries} 次)")
+                    if attempt == total_attempts:
+                        break
+                    wait_time = 2**attempt
+                    logger.warning(
+                        f"DeepSeek API 限流，{wait_time}秒后重试 (第 {attempt}/{self.max_retries} 次)"
+                    )
                     time.sleep(wait_time)
                     continue
 
                 elif response.status_code >= 500:
                     # 服务器错误，重试
+                    if attempt == total_attempts:
+                        break
                     logger.warning(
                         f"DeepSeek API 服务器错误 ({response.status_code})，"
                         f"重试中 (第 {attempt}/{self.max_retries} 次)"
@@ -192,27 +244,29 @@ class DeepSeekClient:
 
                 else:
                     # 其他错误，直接抛出
-                    error_msg = (
-                        f"DeepSeek API 调用失败: status={response.status_code}"
-                    )
+                    error_msg = f"DeepSeek API 调用失败: status={response.status_code}"
                     logger.error(error_msg)
                     raise Exception(error_msg)
 
             except httpx.TimeoutException:
-                logger.warning(f"DeepSeek API 请求超时，重试中 (第 {attempt}/{self.max_retries} 次)")
-                if attempt == self.max_retries:
-                    raise Exception(f"DeepSeek API 请求超时 (已重试 {self.max_retries} 次)")
+                if attempt == total_attempts:
+                    raise Exception(
+                        f"DeepSeek API 请求超时 (已重试 {self.max_retries} 次)"
+                    )
+                logger.warning(
+                    f"DeepSeek API 请求超时，重试中 (第 {attempt}/{self.max_retries} 次)"
+                )
                 time.sleep(1)
 
             except httpx.NetworkError as exc:
+                if attempt == total_attempts:
+                    raise Exception("DeepSeek API 网络错误") from None
                 logger.warning(
                     "DeepSeek API 网络错误: error_type=%s，重试中 (第 %s/%s 次)",
                     type(exc).__name__,
                     attempt,
                     self.max_retries,
                 )
-                if attempt == self.max_retries:
-                    raise Exception("DeepSeek API 网络错误") from None
                 time.sleep(1)
 
             except Exception as exc:
@@ -257,11 +311,11 @@ class DeepSeekClient:
         # 构建 Prompt
         prompt = self._summarize_prompt.format(content=content)
 
-        messages = [
-            {"role": "user", "content": prompt}
-        ]
+        messages = [{"role": "user", "content": prompt}]
 
-        logger.info(f"开始生成摘要: content_length={len(content)}, max_words={max_words}")
+        logger.info(
+            f"开始生成摘要: content_length={len(content)}, max_words={max_words}"
+        )
 
         # 调用 API
         summary = self._call_api(
@@ -308,9 +362,7 @@ class DeepSeekClient:
         # 构建 Prompt
         prompt = self._extract_tags_prompt.format(content=content)
 
-        messages = [
-            {"role": "user", "content": prompt}
-        ]
+        messages = [{"role": "user", "content": prompt}]
 
         logger.info(f"开始提取标签: content_length={len(content)}, num_tags={num_tags}")
 
@@ -349,7 +401,7 @@ class DeepSeekClient:
             import re
 
             # 匹配 JSON 数组模式: ["tag1", "tag2", "tag3"]
-            json_array_match = re.search(r'\[.*?\]', response, re.DOTALL)
+            json_array_match = re.search(r"\[.*?\]", response, re.DOTALL)
             if json_array_match:
                 try:
                     json_str = json_array_match.group(0)

@@ -16,8 +16,10 @@ sys.path.insert(0, str(project_root))
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from bs4 import BeautifulSoup
 
 from src.processors.wechat_processor import WechatProcessor
+from src.processors.safe_fetch import SafeResponse
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.runtime.layout import RuntimeLayout
 
@@ -33,6 +35,9 @@ def test_wechat_can_handle():
     """can_handle should recognize Wechat URLs."""
     assert WechatProcessor.can_handle("https://mp.weixin.qq.com/s/test")
     assert not WechatProcessor.can_handle("https://example.com")
+    assert not WechatProcessor.can_handle(
+        "https://evil.example/?next=mp.weixin.qq.com"
+    )
 
 
 @pytest.mark.asyncio
@@ -77,6 +82,18 @@ async def test_wechat_process_without_publish_time_keeps_published_at_empty():
     metadata = getattr(entry, "metadata", {})
     assert "published_time" not in metadata
     assert entry.published_at is None
+
+
+@pytest.mark.asyncio
+async def test_wechat_empty_response_error_does_not_echo_url_secret():
+    processor = WechatProcessor()
+    secret = "pkv-url-secret"
+
+    with patch.object(processor, "_fetch_html", new=AsyncMock(return_value="")):
+        with pytest.raises(ValueError) as exc_info:
+            await processor.process(f"https://mp.weixin.qq.com/s/test?token={secret}")
+
+    assert secret not in str(exc_info.value)
 
 
 # ============================================================
@@ -175,20 +192,362 @@ def test_wechat_image_write_failure_preserves_target_and_cleans_temp(
 
 @pytest.mark.asyncio
 async def test_wechat_download_image_uses_contract(tmp_path: Path):
-    """_download_image 通过合同写入临时图片并返回 file URI。"""
+    """内部下载 helper 通过合同写入临时图片；URI 不得进入公开正文。"""
     processor, layout = _processor_with_layout(tmp_path)
     layout.ensure_user_directories()
-    client = AsyncMock()
-    response = MagicMock()
-    response.content = b"image-bytes"
-    client.get = AsyncMock(return_value=response)
+    fetcher = MagicMock()
+    fetcher.fetch = AsyncMock(return_value=SafeResponse(
+        url="https://mp.weixin.qq.com/s/article/image.png",
+        status_code=200,
+        headers={"content-type": "image/png"},
+        content=b"image-bytes",
+    ))
+    processor._safe_fetcher = fetcher
 
-    uri = await processor._download_image(
-        client,
-        "https://mp.weixin.qq.com/s/article/image.png",
-    )
+    uri = await processor._download_image("https://mp.weixin.qq.com/s/article/image.png")
 
     assert uri.startswith("file:")
+    assert fetcher.fetch.await_args.kwargs["max_response_bytes"] == 20 * 1024 * 1024
     files = list(layout.tmp_dir.iterdir())
     assert len(files) == 1
     assert files[0].read_bytes() == b"image-bytes"
+
+
+@pytest.mark.asyncio
+async def test_wechat_entry_content_never_publishes_tmp_file_uri(tmp_path: Path):
+    private_root = tmp_path / "PRIVATE_TMP_CANARY"
+    private_root.mkdir()
+    processor, layout = _processor_with_layout(private_root)
+    secret = "WECHAT-IMAGE-QUERY-SECRET"
+    image_url = (
+        f"https://img.example/article.png?token={secret}&width=640#private-fragment"
+    )
+    html = (
+        "<html><head><title>Wechat image</title></head><body>"
+        f'<div id="js_content"><img alt="fixture" data-src="{image_url}"/></div>'
+        "</body></html>"
+    )
+    fetcher = MagicMock()
+    fetcher.fetch = AsyncMock(
+        return_value=SafeResponse(image_url, 200, {}, b"image-bytes")
+    )
+    processor._safe_fetcher = fetcher
+
+    with patch.object(processor, "_fetch_html", new=AsyncMock(return_value=html)):
+        entry = await processor.process("https://mp.weixin.qq.com/s/article")
+
+    assert (
+        "https://img.example/article.png?token=redacted&width=640"
+        in entry.content
+    )
+    rendered = entry.content
+    assert "file:" not in rendered.lower()
+    assert secret not in rendered
+    assert "private-fragment" not in rendered
+    assert str(layout.tmp_dir) not in rendered
+    assert layout.tmp_dir.as_uri() not in rendered
+    assert list(layout.tmp_dir.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_wechat_image_ssrf_denial_becomes_stable_processing_issue(
+    tmp_path: Path,
+    caplog,
+):
+    processor, layout = _processor_with_layout(tmp_path)
+    canary = "WECHAT-SSRF-PRIVATE-CANARY"
+    image_url = "https://public-looking.example/image.png"
+    html = (
+        "<html><head><title>Wechat image SSRF</title></head><body>"
+        f'<div id="js_content"><img data-src="{image_url}"/></div>'
+        "</body></html>"
+    )
+    fetcher = MagicMock()
+    fetcher.fetch = AsyncMock(
+        side_effect=PKVRuntimeError(
+            ErrorCode.SSRF_TARGET_FORBIDDEN,
+            f"forbidden {canary} C:\\private",
+            stage="network_policy",
+            recoverable=False,
+        )
+    )
+    processor._safe_fetcher = fetcher
+
+    with patch.object(processor, "_fetch_html", new=AsyncMock(return_value=html)):
+        entry = await processor.process("https://mp.weixin.qq.com/s/article")
+
+    assert entry.processing_issues == [
+        {
+            "code": ErrorCode.SSRF_TARGET_FORBIDDEN.value,
+            "message": "禁止访问内网地址或其他非公网目标",
+            "severity": "warning",
+            "recoverable": False,
+            "stage": "network_policy",
+        }
+    ]
+    assert image_url in entry.content
+    assert canary not in repr(entry.processing_issues)
+    assert canary not in caplog.text
+    assert r"C:\private" not in caplog.text
+    assert list(layout.tmp_dir.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_wechat_image_userinfo_rejection_is_not_full_success(
+    tmp_path: Path,
+    caplog,
+):
+    processor, layout = _processor_with_layout(tmp_path)
+    username = "WECHAT-IMAGE-URL-USER"
+    password = "WECHAT-IMAGE-URL-PASSWORD"
+    image_url = f"https://{username}:{password}@public.example/a.png"
+    html = (
+        "<html><head><title>Wechat image URL</title></head><body>"
+        f'<div id="js_content"><img data-src="{image_url}"/></div>'
+        "</body></html>"
+    )
+    fetcher = MagicMock()
+    fetcher.fetch = AsyncMock()
+    processor._safe_fetcher = fetcher
+
+    with patch.object(processor, "_fetch_html", new=AsyncMock(return_value=html)):
+        entry = await processor.process("https://mp.weixin.qq.com/s/article")
+
+    assert entry.processing_issues == [
+        {
+            "code": ErrorCode.URL_INVALID.value,
+            "message": "URL 格式无效",
+            "severity": "warning",
+            "recoverable": False,
+            "stage": "network_policy",
+        }
+    ]
+    fetcher.fetch.assert_not_awaited()
+    assert "https://public.example/a.png" in entry.content
+    assert username not in entry.content
+    assert password not in entry.content
+    assert username not in repr(entry.processing_issues)
+    assert password not in repr(entry.processing_issues)
+    assert username not in caplog.text
+    assert password not in caplog.text
+    assert list(layout.tmp_dir.iterdir()) == []
+
+
+def _image_container(urls: list[str]):
+    html = "<div>" + "".join(f'<img data-src="{url}"/>' for url in urls) + "</div>"
+    return BeautifulSoup(html, "lxml").find("div")
+
+
+def _assert_resource_limit_issue(issue: dict, *, stage: str, count: int, limit: int):
+    assert set(issue) == {
+        "code",
+        "message",
+        "severity",
+        "recoverable",
+        "stage",
+        "count",
+        "limit",
+    }
+    assert issue["code"] == ErrorCode.PROCESSOR_RESOURCE_LIMIT.value
+    assert issue["stage"] == stage
+    assert issue["count"] == count
+    assert issue["limit"] == limit
+    assert issue["severity"] == "warning"
+    assert issue["recoverable"] is False
+
+
+@pytest.mark.asyncio
+async def test_wechat_image_count_budget_stops_before_max_plus_one(tmp_path: Path):
+    processor, layout = _processor_with_layout(tmp_path)
+    processor.max_images = 2
+    processor.max_image_bytes = 10
+    processor.max_total_image_bytes = 20
+    secret = "pkv-image-secret"
+    fetcher = MagicMock()
+    fetcher.fetch = AsyncMock(
+        side_effect=[
+            SafeResponse("https://img.example/1.png", 200, {}, b"1"),
+            SafeResponse("https://img.example/2.png", 200, {}, b"2"),
+        ]
+    )
+    processor._safe_fetcher = fetcher
+    content = _image_container(
+        [
+            "https://img.example/1.png",
+            "https://img.example/2.png",
+            f"https://img.example/3.png?token={secret}",
+        ]
+    )
+
+    issues = await processor._download_images(
+        content,
+        base_url="https://mp.weixin.qq.com/s/article",
+    )
+
+    assert fetcher.fetch.await_count == 2
+    _assert_resource_limit_issue(
+        issues[0],
+        stage="wechat_image_count",
+        count=2,
+        limit=2,
+    )
+    assert secret not in repr(issues)
+    assert str(layout.tmp_dir) not in repr(issues)
+    published = repr(content)
+    assert "file:" not in published.lower()
+    assert secret not in published
+    assert "token=redacted" in published
+    assert all("data-src" not in img.attrs for img in content.find_all("img"))
+
+
+@pytest.mark.asyncio
+async def test_wechat_duplicate_image_url_is_fetched_once(tmp_path: Path):
+    processor, _layout = _processor_with_layout(tmp_path)
+    processor.max_images = 2
+    processor.max_image_bytes = 10
+    processor.max_total_image_bytes = 20
+    fetcher = MagicMock()
+    fetcher.fetch = AsyncMock(
+        return_value=SafeResponse(
+            "https://img.example/shared.png",
+            200,
+            {},
+            b"img",
+        )
+    )
+    processor._safe_fetcher = fetcher
+    content = _image_container(
+        ["https://img.example/shared.png", "https://img.example/shared.png"]
+    )
+
+    issues = await processor._download_images(
+        content,
+        base_url="https://mp.weixin.qq.com/s/article",
+    )
+
+    assert issues == []
+    assert fetcher.fetch.await_count == 1
+    image_sources = [img.get("src") for img in content.find_all("img")]
+    assert image_sources[0] == image_sources[1]
+    assert image_sources[0] == "https://img.example/shared.png"
+
+
+@pytest.mark.asyncio
+async def test_wechat_budget_stop_sanitizes_all_remaining_image_sources(tmp_path: Path):
+    processor, _layout = _processor_with_layout(tmp_path)
+    processor.max_images = 1
+    processor.max_image_bytes = 10
+    processor.max_total_image_bytes = 10
+    fetcher = MagicMock()
+    fetcher.fetch = AsyncMock(
+        return_value=SafeResponse("https://img.example/1.png", 200, {}, b"1")
+    )
+    processor._safe_fetcher = fetcher
+    secret = "UNFETCHED-IMAGE-SECRET"
+    content = _image_container(
+        [
+            "https://img.example/1.png",
+            f"https://img.example/2.png?To%4Ben={secret}",
+            "file:///C:/PRIVATE_PATH_CANARY/secret.png",
+        ]
+    )
+
+    issues = await processor._download_images(
+        content,
+        base_url="https://mp.weixin.qq.com/s/article",
+    )
+
+    assert fetcher.fetch.await_count == 1
+    _assert_resource_limit_issue(
+        issues[0],
+        stage="wechat_image_count",
+        count=1,
+        limit=1,
+    )
+    image_sources = [img.get("src") for img in content.find_all("img")]
+    assert image_sources == [
+        "https://img.example/1.png",
+        "https://img.example/2.png?To%4Ben=redacted",
+        None,
+    ]
+    rendered = repr(content)
+    assert "data-src" not in rendered
+    assert "file:" not in rendered.lower()
+    assert secret not in rendered
+    assert "PRIVATE_PATH_CANARY" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_wechat_cumulative_byte_budget_caps_next_fetch_and_stops(tmp_path: Path):
+    processor, layout = _processor_with_layout(tmp_path)
+    processor.max_images = 3
+    processor.max_image_bytes = 4
+    processor.max_total_image_bytes = 5
+    fetcher = MagicMock()
+    fetcher.fetch = AsyncMock(
+        side_effect=[
+            SafeResponse("https://img.example/1.png", 200, {}, b"123"),
+            SafeResponse("https://img.example/2.png", 200, {}, b"456"),
+        ]
+    )
+    processor._safe_fetcher = fetcher
+    content = _image_container(
+        [
+            "https://img.example/1.png",
+            "https://img.example/2.png",
+            "https://img.example/3.png",
+        ]
+    )
+
+    issues = await processor._download_images(
+        content,
+        base_url="https://mp.weixin.qq.com/s/article",
+    )
+
+    assert fetcher.fetch.await_count == 2
+    assert [
+        call.kwargs["max_response_bytes"]
+        for call in fetcher.fetch.await_args_list
+    ] == [4, 2]
+    _assert_resource_limit_issue(
+        issues[0],
+        stage="wechat_image_total_bytes",
+        count=5,
+        limit=5,
+    )
+    assert len(list(layout.tmp_dir.iterdir())) == 1
+
+
+@pytest.mark.asyncio
+async def test_wechat_failed_image_attempts_cannot_bypass_total_budget(tmp_path: Path):
+    processor, _layout = _processor_with_layout(tmp_path)
+    processor.max_images = 5
+    processor.max_image_bytes = 3
+    processor.max_total_image_bytes = 5
+    fetcher = MagicMock()
+    fetcher.fetch = AsyncMock(side_effect=[OSError("partial reset"), OSError("reset")])
+    processor._safe_fetcher = fetcher
+    content = _image_container(
+        [
+            "https://img.example/1.png",
+            "https://img.example/2.png",
+            "https://img.example/3.png",
+        ]
+    )
+
+    issues = await processor._download_images(
+        content,
+        base_url="https://mp.weixin.qq.com/s/article",
+    )
+
+    assert fetcher.fetch.await_count == 2
+    assert [
+        call.kwargs["max_response_bytes"]
+        for call in fetcher.fetch.await_args_list
+    ] == [3, 2]
+    _assert_resource_limit_issue(
+        issues[0],
+        stage="wechat_image_total_bytes",
+        count=5,
+        limit=5,
+    )

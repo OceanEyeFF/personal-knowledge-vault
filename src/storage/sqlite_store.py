@@ -158,7 +158,7 @@ class SQLiteStore:
         self.db_path = Path(db_path)
         self._conn: sqlite3.Connection | None = None
         self.text_processor = TextProcessor()  # 用于 FTS5 分词
-        logger.info(f"SQLite 存储初始化: {self.db_path}")
+        logger.info("SQLite 存储初始化完成")
 
     @contextmanager
     def get_connection(self):
@@ -175,9 +175,9 @@ class SQLiteStore:
             conn.execute("PRAGMA foreign_keys = ON")  # 启用外键约束
             yield conn
             conn.commit()
-        except Exception as e:
+        except Exception as exc:
             conn.rollback()
-            logger.error(f"数据库操作失败: {e}")
+            logger.error("数据库操作失败: error_type=%s", type(exc).__name__)
             raise
         finally:
             conn.close()
@@ -532,7 +532,7 @@ class SQLiteStore:
         cursor = conn.execute("PRAGMA foreign_key_check")
         fk_violations = cursor.fetchall()
         if fk_violations:
-            logger.warning(f"⚠️  发现外键约束违规: {fk_violations}")
+            logger.warning("⚠️  发现外键约束违规: count=%s", len(fk_violations))
         else:
             logger.info("✓ 外键约束检查通过")
 
@@ -542,7 +542,7 @@ class SQLiteStore:
         if integrity_result == "ok":
             logger.info("✓ 数据库完整性检查通过")
         else:
-            logger.warning(f"⚠️  数据库完整性问题: {integrity_result}")
+            logger.warning("⚠️  数据库完整性检查失败: status=invalid")
 
     def insert_entry(self, entry: Entry, file_path: str) -> int:
         """
@@ -713,7 +713,12 @@ class SQLiteStore:
             value.strip() for value in str(entry.tags or "").split(",") if value.strip()
         ]
         self._insert_tags(conn, knowledge_id, tag_values)
-        logger.info(f"插入知识条目: ID={knowledge_id}, title={entry.title}")
+        logger.info(
+            "插入知识条目: knowledge_id=%s source_type=%s content_length=%s",
+            knowledge_id,
+            entry.source_type,
+            len(entry.content or ""),
+        )
         return knowledge_id
 
     def _insert_tags(self, conn: sqlite3.Connection, knowledge_id: int, tags: list[str]):
@@ -992,9 +997,9 @@ class SQLiteStore:
                         relative_file_path=relative_file_path or "",
                         projection_sha256=projection_sha256,
                     )
-                logger.info(f"删除知识条目: knowledge_id={knowledge_id}")
+                logger.info("删除知识条目完成")
             else:
-                logger.warning(f"条目不存在: knowledge_id={knowledge_id}")
+                logger.warning("知识条目不存在，无法删除")
             return deleted
 
     def _decrement_tag_counts(self, conn: sqlite3.Connection, knowledge_id: int) -> None:
@@ -1055,8 +1060,8 @@ class SQLiteStore:
                 if row:
                     return dict(row)
                 return None
-        except Exception as e:
-            logger.error(f"根据来源 URL 查询失败: {e}")
+        except Exception as exc:
+            logger.error("根据来源 URL 查询失败: error_type=%s", type(exc).__name__)
             raise
 
     def list_entries(
@@ -1113,8 +1118,8 @@ class SQLiteStore:
                 cursor = conn.execute(query, tuple(params))
                 rows = cursor.fetchall()
                 return [dict(row) for row in rows]
-        except Exception as e:
-            logger.error(f"获取知识条目列表失败: {e}")
+        except Exception as exc:
+            logger.error("获取知识条目列表失败: error_type=%s", type(exc).__name__)
             raise
 
     def count_entries(self, source_type: str | None = None, tag: str | None = None) -> int:
@@ -1152,8 +1157,8 @@ class SQLiteStore:
                 cursor = conn.execute(query, tuple(params))
                 row = cursor.fetchone()
                 return row["cnt"] if row else 0
-        except Exception as e:
-            logger.error(f"获取知识条目数量失败: {e}")
+        except Exception as exc:
+            logger.error("获取知识条目数量失败: error_type=%s", type(exc).__name__)
             raise
 
     def count_entries_by_source_type(self) -> list[tuple[str, int]]:
@@ -1170,8 +1175,8 @@ class SQLiteStore:
                 )
                 rows = cursor.fetchall()
                 return [(row["source_type"], row["cnt"]) for row in rows]
-        except Exception as e:
-            logger.error(f"按来源类型统计失败: {e}")
+        except Exception as exc:
+            logger.error("按来源类型统计失败: error_type=%s", type(exc).__name__)
             raise
 
     def get_all_tags_with_count(self, limit: int = 0) -> list[dict[str, Any]]:
@@ -1195,8 +1200,8 @@ class SQLiteStore:
                 cursor = conn.execute(query, tuple(params))
                 rows = cursor.fetchall()
                 return [{"name": row["name"], "count": row["count"]} for row in rows]
-        except Exception as e:
-            logger.error(f"获取标签计数失败: {e}")
+        except Exception as exc:
+            logger.error("获取标签计数失败: error_type=%s", type(exc).__name__)
             raise
 
     def get_statistics(self) -> dict[str, Any]:
@@ -1212,8 +1217,8 @@ class SQLiteStore:
                 "by_source_type": self.count_entries_by_source_type(),
                 "top_tags": self.get_all_tags_with_count(limit=20)
             }
-        except Exception as e:
-            logger.error(f"获取统计信息失败: {e}")
+        except Exception as exc:
+            logger.error("获取统计信息失败: error_type=%s", type(exc).__name__)
             raise
 
     # ==========================================
@@ -1240,9 +1245,9 @@ class SQLiteStore:
                     """,
                     (session_id, title)
                 )
-            logger.info(f"✅ 创建会话: {session_id} - {title}")
+            logger.info("创建会话成功")
         except Exception as e:
-            logger.error(f"创建会话失败: {e}")
+            logger.error("创建会话失败: error_type=%s", type(e).__name__)
             raise
 
     def update_session(
@@ -1286,9 +1291,9 @@ class SQLiteStore:
                         session_id
                     )
                 )
-            logger.info(f"✅ 更新会话: {session_id} (轮数: {round_count}, Tokens: {total_tokens})")
+            logger.info("更新会话成功")
         except Exception as e:
-            logger.error(f"更新会话失败: {e}")
+            logger.error("更新会话失败: error_type=%s", type(e).__name__)
             raise
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
@@ -1326,7 +1331,7 @@ class SQLiteStore:
                 session_dict["messages"] = json.loads(session_dict["messages"])
                 return session_dict
         except Exception as e:
-            logger.error(f"获取会话失败: {e}")
+            logger.error("获取会话失败: error_type=%s", type(e).__name__)
             raise
 
     def list_sessions(
@@ -1364,7 +1369,7 @@ class SQLiteStore:
                 rows = cursor.fetchall()
                 return [dict(row) for row in rows]
         except Exception as e:
-            logger.error(f"列出会话失败: {e}")
+            logger.error("列出会话失败: error_type=%s", type(e).__name__)
             raise
 
     def delete_session(self, session_id: str) -> None:
@@ -1383,9 +1388,9 @@ class SQLiteStore:
                     "DELETE FROM chat_sessions WHERE session_id = ?",
                     (session_id,)
                 )
-            logger.info(f"✅ 删除会话: {session_id}")
+            logger.info("删除会话成功")
         except Exception as e:
-            logger.error(f"删除会话失败: {e}")
+            logger.error("删除会话失败: error_type=%s", type(e).__name__)
             raise
 
     def archive_session(self, session_id: str, is_archived: bool = True) -> None:
@@ -1411,9 +1416,9 @@ class SQLiteStore:
                     (1 if is_archived else 0, session_id)
                 )
             action = "归档" if is_archived else "取消归档"
-            logger.info(f"✅ {action}会话: {session_id}")
+            logger.info("%s会话成功", action)
         except Exception as e:
-            logger.error(f"归档会话失败: {e}")
+            logger.error("归档会话失败: error_type=%s", type(e).__name__)
             raise
 
     def link_session_to_knowledge(
@@ -1442,9 +1447,9 @@ class SQLiteStore:
                     """,
                     (knowledge_id, session_id)
                 )
-            logger.info(f"✅ 关联会话 {session_id} -> 知识条目 {knowledge_id}")
+            logger.info("关联会话与知识条目成功")
         except Exception as e:
-            logger.error(f"关联会话失败: {e}")
+            logger.error("关联会话失败: error_type=%s", type(e).__name__)
             raise
 
     def get_session_stats(self) -> dict[str, Any]:
@@ -1480,7 +1485,7 @@ class SQLiteStore:
                 row = cursor.fetchone()
                 return dict(row) if row else {}
         except Exception as e:
-            logger.error(f"获取会话统计失败: {e}")
+            logger.error("获取会话统计失败: error_type=%s", type(e).__name__)
             raise
 
     def get_all_sessions_stats(self) -> list[dict[str, Any]]:
@@ -1513,5 +1518,5 @@ class SQLiteStore:
                 rows = cursor.fetchall()
                 return [dict(row) for row in rows]
         except Exception as e:
-            logger.error(f"获取所有会话统计失败: {e}")
+            logger.error("获取所有会话统计失败: error_type=%s", type(e).__name__)
             raise

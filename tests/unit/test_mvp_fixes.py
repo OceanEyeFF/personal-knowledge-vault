@@ -4,19 +4,12 @@ MVP blocker regression tests.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from click.testing import CliRunner
 
 from src.cli import commands
 from src.processors.generic_processor import GenericProcessor
-
-
-@dataclass
-class _WorkflowResult:
-    success: bool
-    data: dict
-    errors: list[str] | None = None
+from src.storage.markdown_store import Entry
+from src.workflow.models import WorkflowResult
 
 
 def test_archive_quiet_skips_interactive_review(monkeypatch) -> None:
@@ -26,7 +19,21 @@ def test_archive_quiet_skips_interactive_review(monkeypatch) -> None:
         async def execute_async(self, workflow_name: str, input_data: dict):
             captured["workflow_name"] = workflow_name
             captured["input_data"] = input_data
-            return _WorkflowResult(success=True, data={"knowledge_id": 42})
+            entry = Entry(
+                title="Archived article",
+                source_type="generic",
+                source_url="https://example.com/article",
+            )
+            return WorkflowResult(
+                success=True,
+                terminal="success",
+                data={
+                    "knowledge_id": 42,
+                    "status": "ready",
+                    "core_committed": True,
+                    "entry": entry,
+                },
+            )
 
     monkeypatch.setattr(commands, "_load_config", lambda: object())
     monkeypatch.setattr(commands, "WorkflowEngine", FakeWorkflowEngine)

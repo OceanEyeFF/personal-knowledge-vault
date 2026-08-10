@@ -11,19 +11,54 @@ import pytest
 from openai import DefaultHttpxClient as SDKDefaultHttpxClient
 
 from src.ai.openai_client import OpenAIClient
+from src.runtime.errors import ErrorCode, PKVRuntimeError
+
+
+def _embedding_item(vector, *, index: int = 0):
+    return Mock(index=index, embedding=vector)
+
+
+def _assert_embedding_protocol_failure(action) -> PKVRuntimeError:
+    with pytest.raises(PKVRuntimeError) as captured:
+        action()
+    error = captured.value
+    assert error.code is ErrorCode.PROVIDER_PROTOCOL_FAILED
+    assert error.stage == "embedding_protocol"
+    assert error.recoverable is True
+    assert str(error) == "Embedding Provider 响应非法"
+    return error
 
 
 @pytest.fixture
 def mock_config():
     """Mock 配置"""
-    with patch('src.ai.openai_client.get_config') as mock:
+    with patch("src.ai.openai_client.get_config") as mock:
         config = Mock()
+        config.embd_provider = "openai_compatible"
         config.embd_api_key = "test-openai-key"
         config.embd_base_url = "https://api.openai.com/v1"
         config.embd_model = "text-embedding-3-small"
+        config.embd_timeout_seconds = 30.0
+        config.embd_max_retries = 3
         config.embedding_dim = 1536
         config.embedding_dim_is_auto = False
         config.set_runtime_embedding_dim = Mock()
+
+        config_attributes = {
+            "ai.embedding.provider": "embd_provider",
+            "ai.embedding.api_key": "embd_api_key",
+            "ai.embedding.base_url": "embd_base_url",
+            "ai.embedding.model": "embd_model",
+            "ai.embedding.dim": "embedding_dim",
+            "ai.embedding.timeout_seconds": "embd_timeout_seconds",
+            "ai.embedding.max_retries": "embd_max_retries",
+        }
+
+        def get_config_value(path, default=None):
+            attribute = config_attributes.get(path)
+            return getattr(config, attribute) if attribute else default
+
+        config.get.side_effect = get_config_value
         mock.return_value = config
         yield config
 
@@ -31,7 +66,7 @@ def mock_config():
 @pytest.fixture
 def client(mock_config):
     """创建测试客户端"""
-    with patch('src.ai.openai_client.OpenAI'):
+    with patch("src.ai.openai_client.OpenAI"):
         return OpenAIClient()
 
 
@@ -40,7 +75,7 @@ class TestOpenAIClientInit:
 
     def test_init_with_defaults(self, mock_config):
         """测试使用默认配置初始化"""
-        with patch('src.ai.openai_client.OpenAI') as mock_openai:
+        with patch("src.ai.openai_client.OpenAI") as mock_openai:
             client = OpenAIClient()
 
             assert client.api_key == "test-openai-key"
@@ -60,7 +95,7 @@ class TestOpenAIClientInit:
 
     def test_init_with_custom_params(self, mock_config):
         """测试使用自定义参数初始化"""
-        with patch('src.ai.openai_client.OpenAI'):
+        with patch("src.ai.openai_client.OpenAI"):
             client = OpenAIClient(
                 api_key="custom-key",
                 base_url="https://custom.api.com",
@@ -77,31 +112,146 @@ class TestOpenAIClientInit:
             assert client.timeout == 60.0
             assert client.max_retries == 5
 
-    def test_init_log_redacts_endpoint_credentials(self, mock_config, caplog):
-        """初始化 INFO 日志不得写入 endpoint 凭据。"""
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("embd_api_key", ""),
+            ("embd_model", ""),
+            ("embd_timeout_seconds", 0),
+            ("embd_timeout_seconds", True),
+            ("embd_max_retries", -1),
+            ("embd_max_retries", True),
+            ("embedding_dim", 0),
+            ("embedding_dim", True),
+        ],
+    )
+    def test_invalid_config_snapshot_fails_before_sdk_construction(
+        self, mock_config, field, value
+    ):
+        setattr(mock_config, field, value)
+
+        with (
+            patch("src.ai.openai_client.OpenAI") as sdk_client,
+            patch("src.ai.openai_client.DefaultHttpxClient") as http_client,
+        ):
+            with pytest.raises(PKVRuntimeError) as captured:
+                OpenAIClient()
+
+        assert captured.value.code is ErrorCode.PROVIDER_CONFIG_INVALID
+        sdk_client.assert_not_called()
+        http_client.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "override",
+        [
+            {"api_key": ""},
+            {"model": ""},
+            {"timeout": 0},
+            {"max_retries": True},
+            {"dimensions": 0},
+        ],
+    )
+    def test_invalid_explicit_override_is_revalidated_before_sdk_construction(
+        self, mock_config, override
+    ):
+        with patch("src.ai.openai_client.OpenAI") as sdk_client:
+            with pytest.raises(PKVRuntimeError) as captured:
+                OpenAIClient(**override)
+
+        assert captured.value.code is ErrorCode.PROVIDER_CONFIG_INVALID
+        sdk_client.assert_not_called()
+
+    def test_init_log_exposes_only_fixed_provider_metadata(self, mock_config, caplog):
+        """初始化日志不得写入 URL、model 或 API key。"""
+        sentinel = "openai-init-log-secret"
         endpoint = (
-            "https://log-user:log-password@embd.example/v1;pass=log-matrix"
-            "?api_key=log-query&passwd=log-passwd&session=log-session"
-            "&jsessionidsso=log-jsession-sso&phpsessid=log-php-session"
-            "#code=log-fragment&pwd=log-pwd"
+            f"https://embd.example/v1;token={sentinel}"
+            f"?api_key={sentinel}#fragment={sentinel}"
         )
 
-        with patch('src.ai.openai_client.OpenAI'), caplog.at_level(
-            "INFO", logger="src.ai.openai_client"
+        with (
+            patch("src.ai.openai_client.OpenAI"),
+            patch("src.ai.openai_client.DefaultHttpxClient"),
+            caplog.at_level("INFO", logger="src.ai.openai_client"),
         ):
-            OpenAIClient(base_url=endpoint)
+            OpenAIClient(
+                api_key=f"key-{sentinel}",
+                base_url=endpoint,
+                model=f"model-{sentinel}",
+            )
 
-        assert "embd.example" in caplog.text
-        assert "log-user" not in caplog.text
-        assert "log-password" not in caplog.text
-        assert "log-query" not in caplog.text
-        assert "log-fragment" not in caplog.text
-        assert "log-matrix" not in caplog.text
-        assert "log-passwd" not in caplog.text
-        assert "log-pwd" not in caplog.text
-        assert "log-session" not in caplog.text
-        assert "log-jsession-sso" not in caplog.text
-        assert "log-php-session" not in caplog.text
+        assert "component=embedding status=ready dimensions=1536" in caplog.text
+        assert "embd.example" not in caplog.text
+        assert sentinel not in caplog.text
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://provider.example/v1",
+            "http://localhost:43123/v1",
+            "https://user:password@provider.example/v1",
+            "https://provider.example/v1\r\nX-Api-Key: url-secret",
+            "ftp://provider.example/v1",
+            "not-a-provider-url",
+        ],
+    )
+    def test_invalid_endpoint_fails_before_sdk_client_construction(
+        self, mock_config, caplog, endpoint
+    ):
+        sentinel = "direct-embedding-key-secret"
+
+        with (
+            patch("src.ai.openai_client.OpenAI") as sdk_client,
+            patch("src.ai.openai_client.DefaultHttpxClient") as http_client,
+            caplog.at_level("DEBUG"),
+        ):
+            with pytest.raises(PKVRuntimeError) as captured:
+                OpenAIClient(api_key=sentinel, base_url=endpoint)
+
+        assert captured.value.code is ErrorCode.PROVIDER_CONFIG_INVALID
+        sdk_client.assert_not_called()
+        http_client.assert_not_called()
+        assert sentinel not in str(captured.value)
+        assert sentinel not in caplog.text
+        assert "url-secret" not in caplog.text
+
+    def test_numeric_loopback_http_remains_supported(self, mock_config):
+        with patch("src.ai.openai_client.OpenAI") as sdk_client:
+            client = OpenAIClient(base_url="http://127.0.0.1:43123/v1")
+
+        assert client.base_url == "http://127.0.0.1:43123/v1"
+        assert sdk_client.call_args.kwargs["base_url"] == ("http://127.0.0.1:43123/v1")
+
+    @pytest.mark.parametrize(
+        "provider",
+        ["fake", "unknown-provider-secret", "OPENAI_COMPATIBLE", True, None],
+    )
+    def test_unknown_provider_fails_before_url_or_sdk_construction(
+        self, mock_config, caplog, provider
+    ):
+        mock_config.embd_provider = provider
+        sentinel = "explicit-embedding-key-secret"
+
+        with (
+            patch("src.ai.provider_factory.validate_provider_base_url") as validate_url,
+            patch("src.ai.openai_client.OpenAI") as sdk_client,
+            patch("src.ai.openai_client.DefaultHttpxClient") as http_client,
+            caplog.at_level("DEBUG"),
+        ):
+            with pytest.raises(PKVRuntimeError) as captured:
+                OpenAIClient(
+                    api_key=sentinel,
+                    base_url="https://explicit.example/v1",
+                    model="explicit-model",
+                )
+
+        assert captured.value.code is ErrorCode.PROVIDER_CONFIG_INVALID
+        validate_url.assert_not_called()
+        sdk_client.assert_not_called()
+        http_client.assert_not_called()
+        assert sentinel not in str(captured.value)
+        assert sentinel not in caplog.text
+        assert "unknown-provider-secret" not in caplog.text
 
     def test_init_splits_base_url_query_from_sdk_path_and_drops_fragment(
         self, mock_config
@@ -152,8 +302,8 @@ class TestOpenAIClientInit:
         """真实 SDK/httpx 请求在 DEBUG 下也不能通过第三方 logger 泄密。"""
         sentinel = "native-transport-secret"
         endpoint = (
-            f"https://native-user:{sentinel}@embd.example/v1"
-            f";JSESSIONID={sentinel}?subscription-key={sentinel}&jwt={sentinel}"
+            f"https://embd.example/v1;JSESSIONID={sentinel}"
+            f"?subscription-key={sentinel}&jwt={sentinel}"
         )
         request_urls = []
 
@@ -195,10 +345,13 @@ class TestOpenAIClientInit:
             logging.getLogger(name).setLevel(logging.NOTSET)
 
         try:
-            with patch(
-                "src.ai.openai_client.DefaultHttpxClient",
-                side_effect=build_http_client,
-            ), caplog.at_level(logging.DEBUG):
+            with (
+                patch(
+                    "src.ai.openai_client.DefaultHttpxClient",
+                    side_effect=build_http_client,
+                ),
+                caplog.at_level(logging.DEBUG),
+            ):
                 client = OpenAIClient(base_url=endpoint)
                 client.embed("native log safety")
         finally:
@@ -209,29 +362,38 @@ class TestOpenAIClientInit:
         assert sentinel in request_urls[0]
         assert sentinel not in caplog.text
 
-    def test_init_without_api_key(self):
+    def test_init_without_api_key(self, mock_config):
         """测试没有 API Key 时抛出异常"""
-        with patch('src.ai.openai_client.get_config') as mock:
-            config = Mock()
-            config.embd_api_key = None
-            config.embd_base_url = "https://api.openai.com/v1"
-            config.embd_model = "text-embedding-3-small"
-            config.embedding_dim = 1536
-            config.embedding_dim_is_auto = False
-            mock.return_value = config
+        mock_config.embd_api_key = None
 
-            with pytest.raises(ValueError, match="Embedding API Key 未配置"):
-                OpenAIClient()
+        with pytest.raises(PKVRuntimeError) as captured:
+            OpenAIClient()
+
+        assert captured.value.code is ErrorCode.PROVIDER_CONFIG_INVALID
 
 
 class TestOpenAIEmbed:
     """测试单个文本 Embedding"""
 
+    def test_request_revalidates_endpoint_before_sdk_call(self, client, caplog):
+        sentinel = "mutated-embedding-key-secret"
+        client.api_key = sentinel
+        client.base_url = "http://remote.example/v1"
+
+        with caplog.at_level("DEBUG"):
+            with pytest.raises(PKVRuntimeError) as captured:
+                client.embed("must not dispatch")
+
+        assert captured.value.code is ErrorCode.PROVIDER_CONFIG_INVALID
+        client.client.embeddings.create.assert_not_called()
+        assert sentinel not in str(captured.value)
+        assert sentinel not in caplog.text
+
     def test_embed_success(self, client):
         """测试成功生成 Embedding"""
         # Mock API 响应
         mock_response = Mock()
-        mock_response.data = [Mock(embedding=[0.1] * 1536)]
+        mock_response.data = [_embedding_item([0.1] * 1536)]
         mock_response.usage = Mock(prompt_tokens=10, total_tokens=10)
 
         client.client.embeddings.create = Mock(return_value=mock_response)
@@ -246,23 +408,127 @@ class TestOpenAIEmbed:
             dimensions=1536,
         )
 
+    def test_success_usage_log_rejects_untrusted_sdk_values(self, client, caplog):
+        sentinel = "sdk-usage-api-key-secret\r\nInjected-Header"
+        mock_response = Mock()
+        mock_response.data = [_embedding_item([0.1] * 1536)]
+        mock_response.usage = Mock(
+            prompt_tokens=sentinel,
+            total_tokens=True,
+        )
+        client.client.embeddings.create = Mock(return_value=mock_response)
+
+        with caplog.at_level("INFO", logger="src.ai.openai_client"):
+            client.embed("usage log safety")
+
+        assert "prompt_tokens=unknown" in caplog.text
+        assert "total_tokens=unknown" in caplog.text
+        assert "sdk-usage-api-key-secret" not in caplog.text
+        assert "Injected-Header" not in caplog.text
+
     def test_embed_rejects_dimension_mismatch(self, client):
         """测试返回维度与配置不一致时抛出异常。"""
         mock_response = Mock()
-        mock_response.data = [Mock(embedding=[0.1] * 2560)]
+        mock_response.data = [_embedding_item([0.1] * 2560)]
         mock_response.usage = Mock(prompt_tokens=10, total_tokens=10)
 
         client.client.embeddings.create = Mock(return_value=mock_response)
 
-        with pytest.raises(ValueError, match="Embedding 维度不匹配"):
-            client.embed("dimension mismatch")
+        _assert_embedding_protocol_failure(lambda: client.embed("dimension mismatch"))
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            [],
+            [
+                _embedding_item([0.1] * 1536),
+                _embedding_item([0.2] * 1536, index=1),
+            ],
+            [_embedding_item([0.1] * 1536, index=1)],
+            [_embedding_item([0.1] * 1536, index=True)],
+        ],
+    )
+    def test_embed_rejects_invalid_cardinality_or_index(self, client, data):
+        response = Mock(data=data, usage=None)
+        client.client.embeddings.create = Mock(return_value=response)
+
+        _assert_embedding_protocol_failure(lambda: client.embed("invalid response"))
+
+    @pytest.mark.parametrize(
+        "invalid_value",
+        [
+            True,
+            "0.1",
+            pytest.param(10**10_000, id="huge-int"),
+            pytest.param(1e308, id="float32-overflow"),
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+        ],
+    )
+    def test_embed_rejects_non_exact_or_non_finite_vector_values(
+        self,
+        client,
+        invalid_value,
+    ):
+        vector = [0.1] * 1536
+        vector[0] = invalid_value
+        response = Mock(
+            data=[_embedding_item(vector)],
+            usage=None,
+        )
+        client.client.embeddings.create = Mock(return_value=response)
+
+        _assert_embedding_protocol_failure(lambda: client.embed("invalid vector"))
+
+    @pytest.mark.parametrize(
+        "vector",
+        [
+            pytest.param([0.0] * 1536, id="zero-norm"),
+            pytest.param([1e-30] * 1536, id="float32-norm-underflow"),
+            pytest.param([3e38] * 1536, id="float32-norm-overflow"),
+        ],
+    )
+    def test_embed_rejects_cosine_unsafe_vectors(self, client, vector):
+        client.client.embeddings.create = Mock(
+            return_value=Mock(
+                data=[_embedding_item(vector)],
+                usage=None,
+            )
+        )
+
+        _assert_embedding_protocol_failure(lambda: client.embed("unsafe vector"))
+
+    def test_embedding_protocol_failure_does_not_leak_vector_value(
+        self,
+        client,
+        caplog,
+    ):
+        sentinel = "embedding-vector-secret\r\nInjected-Header"
+        vector = [0.1] * 1536
+        vector[0] = sentinel
+        client.client.embeddings.create = Mock(
+            return_value=Mock(
+                data=[_embedding_item(vector)],
+                usage=None,
+            )
+        )
+
+        with caplog.at_level("ERROR", logger="src.ai.openai_client"):
+            error = _assert_embedding_protocol_failure(
+                lambda: client.embed("malformed vector")
+            )
+
+        assert sentinel not in str(error)
+        assert sentinel not in caplog.text
+        assert "Injected-Header" not in caplog.text
 
     def test_embed_retries_without_dimensions_when_backend_rejects_it(self, client):
         """测试后端不支持 dimensions 参数时回退重试。"""
         from openai import OpenAIError
 
         mock_response = Mock()
-        mock_response.data = [Mock(embedding=[0.1] * 1536)]
+        mock_response.data = [_embedding_item([0.1] * 1536)]
         mock_response.usage = Mock(prompt_tokens=10, total_tokens=10)
         client.client.embeddings.create = Mock(
             side_effect=[
@@ -286,16 +552,37 @@ class TestOpenAIEmbed:
             ),
         ]
 
+    def test_dimensions_fallback_log_does_not_expose_model(self, client, caplog):
+        sentinel = "fallback-model-secret"
+        client.model = sentinel
+        mock_response = Mock()
+        mock_response.data = [_embedding_item([0.1] * 1536)]
+        mock_response.usage = Mock(prompt_tokens=1, total_tokens=1)
+        client.client.embeddings.create = Mock(
+            side_effect=[
+                TypeError("unexpected keyword argument 'dimensions'"),
+                mock_response,
+            ]
+        )
+
+        with caplog.at_level("WARNING", logger="src.ai.openai_client"):
+            client.embed("fallback log safety")
+
+        assert "component=embedding parameter=dimensions status=retried" in (
+            caplog.text
+        )
+        assert sentinel not in caplog.text
+
     def test_embed_auto_detects_dimension_on_first_success(self, mock_config):
         """测试 auto 模式会锁定首次成功返回的真实维度。"""
         mock_config.embedding_dim = None
         mock_config.embedding_dim_is_auto = True
 
-        with patch('src.ai.openai_client.OpenAI'):
+        with patch("src.ai.openai_client.OpenAI"):
             client = OpenAIClient()
 
         mock_response = Mock()
-        mock_response.data = [Mock(embedding=[0.1] * 2560)]
+        mock_response.data = [_embedding_item([0.1] * 2560)]
         mock_response.usage = Mock(prompt_tokens=10, total_tokens=10)
         client.client.embeddings.create = Mock(return_value=mock_response)
 
@@ -308,6 +595,107 @@ class TestOpenAIEmbed:
             input="auto dimension text",
         )
         mock_config.set_runtime_embedding_dim.assert_called_once_with(2560)
+
+    @pytest.mark.parametrize(
+        "vector",
+        [[], [0.1] * 65_537],
+    )
+    def test_auto_dimension_rejects_out_of_bounds_before_locking(
+        self,
+        mock_config,
+        vector,
+    ):
+        mock_config.embedding_dim = None
+        mock_config.embedding_dim_is_auto = True
+        with patch("src.ai.openai_client.OpenAI"):
+            client = OpenAIClient()
+        client.client.embeddings.create = Mock(
+            return_value=Mock(
+                data=[_embedding_item(vector)],
+                usage=None,
+            )
+        )
+
+        _assert_embedding_protocol_failure(
+            lambda: client.embed("invalid auto dimension")
+        )
+
+        assert client.dimensions is None
+        assert client._auto_dimensions_pending is True
+        mock_config.set_runtime_embedding_dim.assert_not_called()
+
+    def test_resolve_dimensions_preserves_protocol_failure(self, mock_config):
+        mock_config.embedding_dim = None
+        mock_config.embedding_dim_is_auto = True
+        with patch("src.ai.openai_client.OpenAI"):
+            client = OpenAIClient()
+        client.client.embeddings.create = Mock(return_value=Mock(data=[], usage=None))
+
+        _assert_embedding_protocol_failure(client.resolve_dimensions)
+
+        assert client.dimensions is None
+        assert client._auto_dimensions_pending is True
+        mock_config.set_runtime_embedding_dim.assert_not_called()
+
+    @pytest.mark.parametrize("unsafe_kind", ["zero", "norm-overflow"])
+    def test_protocol_code_survives_retrieval_and_mcp_projection(
+        self,
+        client,
+        unsafe_kind,
+    ):
+        from threading import Lock
+        from types import SimpleNamespace
+
+        from src.ai.embedder import Embedder
+        from src.mcp.tools import _serialize_search_response
+        from src.retrieval.vector_retriever import VectorRetriever
+
+        vector = [0.0] * 1536 if unsafe_kind == "zero" else [3e38] * 1536
+        client.client.embeddings.create = Mock(
+            return_value=Mock(
+                data=[_embedding_item(vector)],
+                usage=None,
+            )
+        )
+        retriever = object.__new__(VectorRetriever)
+        retriever.embedder = Embedder(openai_client=client)
+        retriever._embedder_factory = None
+        retriever._embedder_lock = Lock()
+        retriever._embedder_dim = client.dim
+        vector_store = SimpleNamespace(
+            dim=1536,
+            add_doc_vector=Mock(),
+            add_chunk_vectors=Mock(),
+        )
+
+        response = retriever._embed_query(
+            "protocol canary",
+            vector_store,
+            strategy="vector",
+        )
+
+        assert response.status == "error"
+        assert len(response.issues) == 1
+        assert response.issues[0].code is ErrorCode.PROVIDER_PROTOCOL_FAILED
+        assert response.issues[0].stage == "embedding_protocol"
+        payload = _serialize_search_response(
+            response,
+            source_type=None,
+            tag=None,
+        )
+        assert payload["issues"] == [
+            {
+                "code": ErrorCode.PROVIDER_PROTOCOL_FAILED.value,
+                "message": "Provider 响应协议无效",
+                "stage": "embedding_protocol",
+                "recoverable": True,
+                "cause_type": "PKVRuntimeError",
+            }
+        ]
+        assert "3e+38" not in repr(response)
+        assert "3e+38" not in repr(payload)
+        vector_store.add_doc_vector.assert_not_called()
+        vector_store.add_chunk_vectors.assert_not_called()
 
     def test_auto_dimension_error_does_not_echo_provider_details(
         self, mock_config, caplog
@@ -339,11 +727,11 @@ class TestOpenAIEmbed:
         mock_config.embedding_dim = 2560
         mock_config.embedding_dim_is_auto = True
 
-        with patch('src.ai.openai_client.OpenAI'):
+        with patch("src.ai.openai_client.OpenAI"):
             client = OpenAIClient()
 
         mock_response = Mock()
-        mock_response.data = [Mock(embedding=[0.1] * 2560)]
+        mock_response.data = [_embedding_item([0.1] * 2560)]
         mock_response.usage = Mock(prompt_tokens=10, total_tokens=10)
         client.client.embeddings.create = Mock(return_value=mock_response)
 
@@ -372,9 +760,7 @@ class TestOpenAIEmbed:
 
         client.client.embeddings.create = Mock(
             side_effect=RateLimitError(
-                "Rate limit exceeded",
-                response=Mock(status_code=429),
-                body=None
+                "Rate limit exceeded", response=Mock(status_code=429), body=None
             )
         )
 
@@ -396,16 +782,12 @@ class TestOpenAIEmbed:
         """测试通用 OpenAI 错误"""
         from openai import OpenAIError
 
-        client.client.embeddings.create = Mock(
-            side_effect=OpenAIError("Unknown error")
-        )
+        client.client.embeddings.create = Mock(side_effect=OpenAIError("Unknown error"))
 
         with pytest.raises(Exception, match="OpenAI API 调用失败"):
             client.embed("text")
 
-    def test_embed_error_does_not_echo_endpoint_credentials(
-        self, client, caplog
-    ):
+    def test_embed_error_does_not_echo_endpoint_credentials(self, client, caplog):
         """SDK 异常中的 endpoint/API 凭据不得进入日志或公开异常。"""
         from openai import OpenAIError
 
@@ -435,9 +817,9 @@ class TestOpenAIEmbedBatch:
         # Mock API 响应
         mock_response = Mock()
         mock_response.data = [
-            Mock(embedding=[0.1] * 1536),
-            Mock(embedding=[0.2] * 1536),
-            Mock(embedding=[0.3] * 1536),
+            _embedding_item([0.1] * 1536),
+            _embedding_item([0.2] * 1536, index=1),
+            _embedding_item([0.3] * 1536, index=2),
         ]
         mock_response.usage = Mock(prompt_tokens=30, total_tokens=30)
 
@@ -453,6 +835,61 @@ class TestOpenAIEmbedBatch:
             dimensions=1536,
         )
 
+    @pytest.mark.parametrize(
+        "data",
+        [
+            [_embedding_item([0.1] * 1536)],
+            [
+                _embedding_item([0.1] * 1536, index=1),
+                _embedding_item([0.2] * 1536),
+            ],
+            [
+                _embedding_item([0.1] * 1536),
+                _embedding_item([0.2] * 1536, index=2),
+            ],
+        ],
+    )
+    def test_embed_batch_rejects_missing_or_misordered_items(self, client, data):
+        response = Mock(data=data, usage=None)
+        client.client.embeddings.create = Mock(return_value=response)
+
+        _assert_embedding_protocol_failure(
+            lambda: client.embed_batch(["first", "second"])
+        )
+
+    def test_embed_batch_rejects_float32_overflow_before_return(self, client):
+        response = Mock(
+            data=[
+                _embedding_item([0.1] * 1536),
+                _embedding_item([1e308] * 1536, index=1),
+            ],
+            usage=None,
+        )
+        client.client.embeddings.create = Mock(return_value=response)
+
+        _assert_embedding_protocol_failure(
+            lambda: client.embed_batch(["first", "second"])
+        )
+
+    @pytest.mark.parametrize(
+        "unsafe_vector",
+        [[0.0] * 1536, [3e38] * 1536],
+        ids=["zero-norm", "norm-overflow"],
+    )
+    def test_embed_batch_rejects_cosine_unsafe_vector(self, client, unsafe_vector):
+        response = Mock(
+            data=[
+                _embedding_item([0.1] * 1536),
+                _embedding_item(unsafe_vector, index=1),
+            ],
+            usage=None,
+        )
+        client.client.embeddings.create = Mock(return_value=response)
+
+        _assert_embedding_protocol_failure(
+            lambda: client.embed_batch(["first", "second"])
+        )
+
     def test_embed_batch_empty_list(self, client):
         """测试空列表时抛出异常"""
         with pytest.raises(ValueError, match="Embedding 文本列表不能为空"):
@@ -464,8 +901,8 @@ class TestOpenAIEmbedBatch:
 
         mock_response = Mock()
         mock_response.data = [
-            Mock(embedding=[0.1] * 1536),
-            Mock(embedding=[0.2] * 1536),
+            _embedding_item([0.1] * 1536),
+            _embedding_item([0.2] * 1536, index=1),
         ]
         mock_response.usage = Mock(prompt_tokens=20, total_tokens=20)
 
@@ -478,8 +915,8 @@ class TestOpenAIEmbedBatch:
 
         # 检查传递给 API 的文本
         call_args = client.client.embeddings.create.call_args
-        assert call_args[1]['input'] == ["text1", "text2"]
-        assert call_args[1]['dimensions'] == 1536
+        assert call_args[1]["input"] == ["text1", "text2"]
+        assert call_args[1]["dimensions"] == 1536
 
     def test_embed_batch_with_batching(self, client):
         """测试分批处理"""
@@ -489,8 +926,13 @@ class TestOpenAIEmbedBatch:
         # Mock API 响应
         def create_mock_response(batch_size):
             mock_response = Mock()
-            mock_response.data = [Mock(embedding=[0.1] * 1536) for _ in range(batch_size)]
-            mock_response.usage = Mock(prompt_tokens=batch_size * 10, total_tokens=batch_size * 10)
+            mock_response.data = [
+                _embedding_item([0.1] * 1536, index=index)
+                for index in range(batch_size)
+            ]
+            mock_response.usage = Mock(
+                prompt_tokens=batch_size * 10, total_tokens=batch_size * 10
+            )
             return mock_response
 
         client.client.embeddings.create = Mock(
@@ -513,14 +955,13 @@ class TestOpenAIEmbedBatch:
 
         mock_response = Mock()
         mock_response.data = [
-            Mock(embedding=[0.1] * 1536),
-            Mock(embedding=[0.2] * 2560),
+            _embedding_item([0.1] * 1536),
+            _embedding_item([0.2] * 2560, index=1),
         ]
         mock_response.usage = Mock(prompt_tokens=20, total_tokens=20)
         client.client.embeddings.create = Mock(return_value=mock_response)
 
-        with pytest.raises(ValueError, match="Embedding 维度不匹配"):
-            client.embed_batch(texts)
+        _assert_embedding_protocol_failure(lambda: client.embed_batch(texts))
 
     def test_embed_batch_retries_without_dimensions_when_backend_rejects_it(
         self, client
@@ -531,8 +972,8 @@ class TestOpenAIEmbedBatch:
         texts = ["text1", "text2"]
         mock_response = Mock()
         mock_response.data = [
-            Mock(embedding=[0.1] * 1536),
-            Mock(embedding=[0.2] * 1536),
+            _embedding_item([0.1] * 1536),
+            _embedding_item([0.2] * 1536, index=1),
         ]
         mock_response.usage = Mock(prompt_tokens=20, total_tokens=20)
         client.client.embeddings.create = Mock(
@@ -562,14 +1003,14 @@ class TestOpenAIEmbedBatch:
         mock_config.embedding_dim = None
         mock_config.embedding_dim_is_auto = True
 
-        with patch('src.ai.openai_client.OpenAI'):
+        with patch("src.ai.openai_client.OpenAI"):
             client = OpenAIClient()
 
         texts = ["text1", "text2"]
         mock_response = Mock()
         mock_response.data = [
-            Mock(embedding=[0.1] * 2560),
-            Mock(embedding=[0.2] * 2560),
+            _embedding_item([0.1] * 2560),
+            _embedding_item([0.2] * 2560, index=1),
         ]
         mock_response.usage = Mock(prompt_tokens=20, total_tokens=20)
         client.client.embeddings.create = Mock(return_value=mock_response)
@@ -591,7 +1032,7 @@ class TestOpenAIEmbedNumpy:
     def test_embed_numpy_success(self, client):
         """测试 numpy 格式 Embedding"""
         mock_response = Mock()
-        mock_response.data = [Mock(embedding=[0.1] * 1536)]
+        mock_response.data = [_embedding_item([0.1] * 1536)]
         mock_response.usage = Mock(prompt_tokens=10, total_tokens=10)
 
         client.client.embeddings.create = Mock(return_value=mock_response)
@@ -608,9 +1049,9 @@ class TestOpenAIEmbedNumpy:
 
         mock_response = Mock()
         mock_response.data = [
-            Mock(embedding=[0.1] * 1536),
-            Mock(embedding=[0.2] * 1536),
-            Mock(embedding=[0.3] * 1536),
+            _embedding_item([0.1] * 1536),
+            _embedding_item([0.2] * 1536, index=1),
+            _embedding_item([0.3] * 1536, index=2),
         ]
         mock_response.usage = Mock(prompt_tokens=30, total_tokens=30)
 
@@ -627,7 +1068,7 @@ class TestOpenAIEmbedNumpy:
         mock_embedding = [0.5, 0.3, 0.7] + [0.0] * 1533
 
         mock_response = Mock()
-        mock_response.data = [Mock(embedding=mock_embedding)]
+        mock_response.data = [_embedding_item(mock_embedding)]
         mock_response.usage = Mock(prompt_tokens=10, total_tokens=10)
 
         client.client.embeddings.create = Mock(return_value=mock_response)

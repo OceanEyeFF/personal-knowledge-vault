@@ -61,6 +61,15 @@ class State:
         """
         return key in self._data
 
+    def pop(self, key: str, default: Any = None) -> Any:
+        """Remove and return a transient state value.
+
+        Workflow capabilities are intentionally one-shot and must not be
+        copied into the public ``WorkflowResult.data`` mapping.
+        """
+
+        return self._data.pop(key, default)
+
     def to_dict(self) -> Dict[str, Any]:
         """
         转换为字典副本。
@@ -69,6 +78,15 @@ class State:
             状态字典
         """
         return dict(self._data)
+
+    def to_result_dict(self) -> Dict[str, Any]:
+        """Return adapter-facing state without transient capability entries."""
+
+        return {
+            key: value
+            for key, value in self._data.items()
+            if type(key) is not str or not key.startswith("_pkv_")
+        }
 
 
 class WorkflowContext:
@@ -99,9 +117,47 @@ class WorkflowContext:
 
 @dataclass
 class WorkflowResult:
-    """工作流执行结果。"""
+    """工作流执行结果。
+
+    ``errors``/``warnings`` 保留给人类可读 adapter；``issues`` 是稳定的
+    机器可读合同。``terminal`` 只能是 success/degraded/error，且必须与
+    ``success`` 一致。
+    """
 
     success: bool
     data: Dict[str, Any] = field(default_factory=dict)
     errors: List[str] = field(default_factory=list)
     logs: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    issues: List[Dict[str, Any]] = field(default_factory=list)
+    terminal: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        """推导并校验公开终态，避免 adapter 各自猜测结果语义。"""
+        if self.terminal is None:
+            if not self.success:
+                self.terminal = "error"
+            elif self.warnings:
+                self.terminal = "degraded"
+            else:
+                self.terminal = "success"
+
+        if self.terminal not in {"success", "degraded", "error"}:
+            raise ValueError(f"未知 Workflow 终态: {self.terminal}")
+        if self.success != (self.terminal != "error"):
+            raise ValueError(
+                "WorkflowResult.success 与 terminal 不一致: "
+                f"success={self.success}, terminal={self.terminal}"
+            )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return the stable adapter-facing representation."""
+        return {
+            "success": self.success,
+            "terminal": self.terminal,
+            "data": dict(self.data),
+            "errors": list(self.errors),
+            "warnings": list(self.warnings),
+            "issues": [dict(issue) for issue in self.issues],
+            "logs": list(self.logs),
+        }

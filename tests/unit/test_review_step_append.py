@@ -7,6 +7,7 @@ ReviewStep 单元测试 - Task 2 补充
 
 import asyncio
 import subprocess
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +15,7 @@ import pytest
 
 from src.storage.markdown_store import Entry
 from src.storage.review_manager import ReviewItem
+from src.runtime.layout import RuntimeLayout
 from src.workflow.models import WorkflowContext
 from src.workflow.steps import ReviewStep
 
@@ -304,6 +306,29 @@ class TestReviewStepViewHistory:
         assert result["review_status"] == "approved"
 
 
+def test_review_item_source_url_is_sanitized_before_persistence() -> None:
+    """Review rows must not retain URL credentials later rendered by Rich."""
+
+    manager_mock = _make_manager_mock(review_id=1)
+    step = _make_step(manager_mock=manager_mock)
+    secret_url = (
+        "https://user:pass@example.test/article;token=MATRIX-CANARY"
+        "?api_key=QUERY-CANARY&safe=ok#access_token=FRAGMENT-CANARY"
+    )
+    context = _make_context(entry=_make_entry(source_url=secret_url))
+
+    result = _run_menu(step, manager_mock, context, ["a"])
+
+    assert result["review_status"] == "approved"
+    created_item = manager_mock.create_review.call_args.args[0]
+    assert created_item.source_url.startswith("https://example.test/")
+    assert "safe=ok" in created_item.source_url
+    assert "user:pass" not in created_item.source_url
+    assert "MATRIX-CANARY" not in created_item.source_url
+    assert "QUERY-CANARY" not in created_item.source_url
+    assert "FRAGMENT-CANARY" not in created_item.source_url
+
+
 # ---------------------------------------------------------------------------
 # Task 2 补充：_open_editor 静态方法
 # ---------------------------------------------------------------------------
@@ -335,3 +360,35 @@ class TestOpenEditor:
         with patch("subprocess.call", side_effect=OSError("editor not found")):
             result = ReviewStep._open_editor("初始内容")
         assert result is None
+
+    def test_open_editor_temp_file_is_contained_and_removed(self, tmp_path):
+        """编辑明文只落在 RuntimeLayout tmp，正常退出后删除。"""
+
+        resources = tmp_path / "resources"
+        resources.mkdir()
+        layout = RuntimeLayout.resolve(
+            resources_root=resources,
+            user_data_root=tmp_path / "user-data",
+            environment={},
+        )
+        observed_paths = []
+
+        def fake_subprocess_call(command):
+            editor_path = command[1]
+            observed_paths.append(editor_path)
+            assert editor_path.parent == layout.tmp_dir
+            editor_path.write_text("已安全修改", encoding="utf-8")
+            return 0
+
+        with (
+            patch(
+                "src.workflow.steps.get_config",
+                return_value=SimpleNamespace(layout=layout),
+            ),
+            patch("subprocess.call", side_effect=fake_subprocess_call),
+        ):
+            result = ReviewStep._open_editor("REVIEW-PLAINTEXT-CANARY")
+
+        assert result == "已安全修改"
+        assert len(observed_paths) == 1
+        assert not observed_paths[0].exists()

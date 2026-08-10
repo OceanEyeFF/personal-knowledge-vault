@@ -3,8 +3,10 @@ Workflow steps unit tests.
 """
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent.parent
@@ -13,6 +15,8 @@ sys.path.insert(0, str(project_root))
 import numpy as np
 import pytest
 
+from src.runtime.errors import ErrorCode, PKVRuntimeError
+from src.processors.text_fallback_processor import TextFallbackProcessor
 from src.storage.coordinator import StorageCoordinator
 from src.storage.markdown_store import Entry, MarkdownStore
 from src.storage.migration_manager import MigrationManager
@@ -20,7 +24,13 @@ from src.storage.sqlite_store import SQLiteStore
 from src.workflow.models import WorkflowContext
 from src.utils.config import Config
 import src.workflow.steps as workflow_steps
-from src.workflow.steps import FetchStep, AnalyzeStep, IdeaSharpenStep, StoreStep
+from src.workflow.steps import (
+    AnalyzeStep,
+    FetchStep,
+    IdeaSharpenStep,
+    ReviewStep,
+    StoreStep,
+)
 
 
 class DummyProcessor:
@@ -122,6 +132,7 @@ def prompt_stub(_prompt: str) -> str:
     """Return a static prompt answer."""
     return "answer"
 
+
 @pytest.fixture
 def isolated_steps_config(
     tmp_path: Path,
@@ -143,8 +154,6 @@ def isolated_steps_config(
     config = Config(str(project_root / "config" / "config.yaml"))
     monkeypatch.setattr(workflow_steps, "get_config", lambda: config)
     return config
-
-
 
 
 @pytest.mark.asyncio
@@ -179,7 +188,15 @@ async def test_fetch_step_retry(monkeypatch: pytest.MonkeyPatch) -> None:
         """Fast sleep stub for retry tests."""
         return None
 
-    monkeypatch.setattr("src.workflow.steps.get_processor", get_failing_processor_stub)
+    selected_names: list[str] = []
+
+    def get_named_failing_processor(name: str) -> FailingProcessor:
+        selected_names.append(name)
+        return FailingProcessor()
+
+    monkeypatch.setattr(
+        "src.workflow.steps.get_processor_by_name", get_named_failing_processor
+    )
     monkeypatch.setattr("src.workflow.steps.asyncio.sleep", fast_sleep)
 
     context = WorkflowContext({"url": "https://example.com"})
@@ -188,6 +205,309 @@ async def test_fetch_step_retry(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert "errors" in result
     assert "抓取失败" in result["errors"][0]
+    assert selected_names == ["wechat", "wechat"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_step_explicit_processor_never_uses_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_names: list[str] = []
+
+    def select_named(name: str) -> DummyProcessor:
+        selected_names.append(name)
+        return DummyProcessor()
+
+    def reject_auto(_url: str):
+        raise AssertionError("explicit processor must not use auto routing")
+
+    monkeypatch.setattr("src.workflow.steps.get_processor_by_name", select_named)
+    monkeypatch.setattr("src.workflow.steps.get_processor", reject_auto)
+
+    result = await FetchStep(
+        step_id="fetch",
+        config={"processor": "generic", "timeout": 1},
+    ).execute(WorkflowContext({"url": "https://example.com"}))
+
+    assert result["title"] == "Dummy Title"
+    assert selected_names == ["generic"]
+
+
+def _text_processor() -> TextFallbackProcessor:
+    ai = MagicMock()
+    ai.summarize.return_value = "summary"
+    ai.extract_tags.return_value = ["note"]
+    return TextFallbackProcessor(deepseek_client=ai)
+
+
+@pytest.mark.asyncio
+async def test_fetch_step_cli_capability_reads_existing_note_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    note = tmp_path / "note.md"
+    note.write_text("# Trusted note\nImported body", encoding="utf-8")
+    processor = _text_processor()
+
+    async def select_local(_source: str):
+        return processor
+
+    monkeypatch.setattr(workflow_steps, "_auto_local_file_processor", select_local)
+    initial = {"url": str(note)}
+    workflow_steps._grant_cli_local_file_import(initial, str(note))
+    context = WorkflowContext(initial)
+
+    result = await FetchStep(step_id="fetch", config={"timeout": 2}).execute(context)
+
+    assert result["content"] == "# Trusted note\nImported body"
+    assert result["title"] == "Trusted note"
+    assert result["source_url"] is None
+    assert workflow_steps._CLI_LOCAL_FILE_IMPORT_KEY not in context.state.to_dict()
+
+
+def test_transient_cli_capability_is_never_projected_to_workflow_result_data() -> None:
+    initial = {"url": "note.md"}
+    workflow_steps._grant_cli_local_file_import(initial, "note.md")
+    context = WorkflowContext(initial)
+
+    assert workflow_steps._CLI_LOCAL_FILE_IMPORT_KEY in context.state.to_dict()
+    assert workflow_steps._CLI_LOCAL_FILE_IMPORT_KEY not in context.state.to_result_dict()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("forged", [True, "true", "trusted", ("token", "path")])
+async def test_fetch_step_forged_capability_never_reads_local_file(
+    forged: object,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "WORKFLOW-LOCAL-FILE-SECRET-CANARY"
+    note = tmp_path / "secret.md"
+    note.write_text(secret, encoding="utf-8")
+    processor = _text_processor()
+    monkeypatch.setattr(
+        workflow_steps,
+        "_literal_text_processor",
+        lambda _name, _text: processor,
+    )
+
+    def reject_registry(_url: str):
+        raise AssertionError("untrusted path must bypass auto registry")
+
+    monkeypatch.setattr(workflow_steps, "get_processor", reject_registry)
+    context = WorkflowContext(
+        {
+            "url": str(note),
+            workflow_steps._CLI_LOCAL_FILE_IMPORT_KEY: forged,
+        }
+    )
+    with monkeypatch.context() as path_guard:
+        path_guard.setattr(
+            Path,
+            "exists",
+            lambda _self: (_ for _ in ()).throw(
+                AssertionError("untrusted path existence probe")
+            ),
+        )
+        path_guard.setattr(
+            Path,
+            "read_text",
+            lambda _self, *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("untrusted local file read")
+            ),
+        )
+        result = await FetchStep(step_id="fetch", config={"timeout": 2}).execute(
+            context
+        )
+
+    assert result["content"] == str(note)
+    assert secret not in result["content"]
+    assert workflow_steps._CLI_LOCAL_FILE_IMPORT_KEY not in context.state.to_dict()
+
+
+@pytest.mark.asyncio
+async def test_fetch_step_capability_is_bound_to_original_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("FIRST SECRET", encoding="utf-8")
+    second.write_text("SECOND SECRET", encoding="utf-8")
+    processor = _text_processor()
+    monkeypatch.setattr(
+        workflow_steps,
+        "_literal_text_processor",
+        lambda _name, _text: processor,
+    )
+    initial = {"url": str(first)}
+    workflow_steps._grant_cli_local_file_import(initial, str(first))
+    initial["url"] = str(second)
+
+    with monkeypatch.context() as path_guard:
+        path_guard.setattr(
+            Path,
+            "read_text",
+            lambda _self, *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("path-bound capability reused for another source")
+            ),
+        )
+        result = await FetchStep(step_id="fetch", config={"timeout": 2}).execute(
+            WorkflowContext(initial)
+        )
+
+    assert result["content"] == str(second)
+    assert "SECOND SECRET" not in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_step_trusted_file_requires_explicit_file_processor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    note = tmp_path / "note.bin"
+    note.write_bytes(b"content")
+
+    async def select_local(_source: str):
+        return DummyProcessor()
+
+    monkeypatch.setattr(workflow_steps, "_auto_local_file_processor", select_local)
+    initial = {"url": str(note)}
+    workflow_steps._grant_cli_local_file_import(initial, str(note))
+
+    result = await FetchStep(step_id="fetch", config={"retry": 0}).execute(
+        WorkflowContext(initial)
+    )
+
+    assert result["errors"] == ["抓取失败"]
+    assert result["issues"][0]["code"] == ErrorCode.WORKFLOW_STEP_FAILED.value
+
+
+@pytest.mark.asyncio
+async def test_auto_local_file_classifier_uses_verified_content_not_path_probe(
+    tmp_path: Path,
+) -> None:
+    from src.processors.ai_chat_processor import AIChatProcessor
+    from src.processors.chat_processor import ChatProcessor
+
+    ai_chat = tmp_path / "conversation.md"
+    ai_chat.write_text("**You**: Hello\n**ChatGPT**: Hi", encoding="utf-8")
+    plain_note = tmp_path / "note.md"
+    plain_note.write_text("# Plain note\nBody", encoding="utf-8")
+    chat_log = tmp_path / "chat.txt"
+    chat_log.write_text("Alice 10:00\n\nHello", encoding="utf-8")
+
+    assert isinstance(
+        await workflow_steps._auto_local_file_processor(str(ai_chat)),
+        AIChatProcessor,
+    )
+    assert isinstance(
+        await workflow_steps._auto_local_file_processor(str(plain_note)),
+        TextFallbackProcessor,
+    )
+    assert isinstance(
+        await workflow_steps._auto_local_file_processor(str(chat_log)),
+        ChatProcessor,
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_step_logs_only_content_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Remote titles may flow in the result but never into default workflow logs."""
+
+    title_canary = "REMOTE-TITLE-SECRET-CANARY\r\napi_key=secret"
+
+    class CanaryProcessor:
+        async def process(self, url: str) -> Entry:
+            return Entry(
+                title=title_canary,
+                source_type="generic",
+                source_url=url,
+                content="safe body",
+            )
+
+    monkeypatch.setattr(
+        "src.workflow.steps.get_processor",
+        lambda _url: CanaryProcessor(),
+    )
+    caplog.set_level(logging.INFO, logger="src.workflow.models")
+    context = WorkflowContext({"url": "https://example.com"})
+
+    result = await FetchStep(step_id="fetch", config={}).execute(context)
+
+    assert result["title"] == title_canary
+    assert "title_length=" in "\n".join(context.logs)
+    assert title_canary not in "\n".join(context.logs)
+    assert "REMOTE-TITLE-SECRET-CANARY" not in caplog.text
+    assert "api_key=secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_fetch_step_projects_processor_resource_limit_as_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issue = {
+        "code": ErrorCode.PROCESSOR_RESOURCE_LIMIT.value,
+        "message": "页面图片达到资源预算，部分图片未下载",
+        "severity": "warning",
+        "recoverable": False,
+        "stage": "wechat_image_count",
+        "count": 2,
+        "limit": 2,
+    }
+
+    class ResourceLimitedProcessor(DummyProcessor):
+        async def process(self, url: str) -> Entry:
+            entry = await super().process(url)
+            entry.processing_issues = [issue]
+            return entry
+
+    monkeypatch.setattr(
+        "src.workflow.steps.get_processor",
+        lambda _url: ResourceLimitedProcessor(),
+    )
+
+    result = await FetchStep(step_id="fetch", config={}).execute(
+        WorkflowContext({"url": "https://example.com"})
+    )
+
+    assert result["warnings"] == [issue["message"]]
+    assert result["issues"] == [issue]
+
+
+@pytest.mark.asyncio
+async def test_fetch_step_does_not_retry_ssrf_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    class SecurityRejectingProcessor:
+        async def process(self, _url: str) -> Entry:
+            nonlocal calls
+            calls += 1
+            raise PKVRuntimeError(
+                ErrorCode.SSRF_RESOLUTION_FAILED,
+                "secret target detail",
+                stage="url_resolution",
+                recoverable=True,
+            )
+
+    monkeypatch.setattr(
+        "src.workflow.steps.get_processor",
+        lambda _url: SecurityRejectingProcessor(),
+    )
+    step = FetchStep(step_id="fetch", config={"retry": 3, "timeout": 1})
+
+    result = await step.execute(WorkflowContext({"url": "https://example.com"}))
+
+    assert calls == 1
+    assert result["errors"] == ["URL 安全校验失败"]
+    assert result["issues"][0]["code"] == ErrorCode.SSRF_RESOLUTION_FAILED.value
+    assert result["issues"][0]["recoverable"] is True
+    assert "secret target detail" not in str(result)
 
 
 @pytest.mark.asyncio
@@ -201,7 +521,11 @@ async def test_analyze_step_updates_entry(
         content="Some content",
     )
     context = WorkflowContext({"entry": entry})
-    step = AnalyzeStep(step_id="analyze", config={"tasks": ["summarize", "extract_tags"]}, deepseek_client=DummyDeepSeekClient())
+    step = AnalyzeStep(
+        step_id="analyze",
+        config={"tasks": ["summarize", "extract_tags"]},
+        deepseek_client=DummyDeepSeekClient(),
+    )
 
     result = await step.execute(context)
 
@@ -248,13 +572,17 @@ async def test_idea_sharpen_step_collects_answers(monkeypatch: pytest.MonkeyPatc
     """IdeaSharpenStep should collect answers via prompt."""
     monkeypatch.setattr("src.workflow.steps.Prompt.ask", prompt_stub)
 
+    async def reject_fake_timeout(*_args, **_kwargs):
+        raise AssertionError("published config without timeout must not call wait_for")
+
+    monkeypatch.setattr("src.workflow.steps.asyncio.wait_for", reject_fake_timeout)
+
     context = WorkflowContext({"content_length": 10})
     step = IdeaSharpenStep(
         step_id="sharpen",
         config={
             "questions": ["Q1", "Q2"],
             "condition": "content_length > 0",
-            "timeout": 1,
         },
     )
 
@@ -287,6 +615,7 @@ async def test_idea_sharpen_step_timeout(monkeypatch: pytest.MonkeyPatch) -> Non
 
     result = await step.execute(context)
     assert result["idea_sharpen"] == {}
+    assert result["warnings"]
 
 
 @pytest.mark.asyncio
@@ -301,7 +630,7 @@ async def test_idea_sharpen_step_no_questions() -> None:
 
 @pytest.mark.asyncio
 async def test_idea_sharpen_step_condition_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """IdeaSharpenStep should skip on condition parse error."""
+    """IdeaSharpenStep must reject invalid conditions instead of silent success."""
     monkeypatch.setattr("src.workflow.steps.Prompt.ask", prompt_stub)
 
     context = WorkflowContext({"content_length": 10})
@@ -310,8 +639,151 @@ async def test_idea_sharpen_step_condition_error(monkeypatch: pytest.MonkeyPatch
         config={"questions": ["Q1"], "condition": "invalid =="},
     )
 
-    result = await step.execute(context)
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        await step.execute(context)
+    assert exc_info.value.code is ErrorCode.WORKFLOW_CONDITION_INVALID
+
+
+@pytest.mark.asyncio
+async def test_idea_sharpen_condition_rejects_executable_syntax(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("src.workflow.steps.Prompt.ask", prompt_stub)
+    step = IdeaSharpenStep(
+        step_id="sharpen",
+        config={
+            "questions": ["Q1"],
+            "condition": "__import__('os').system('whoami')",
+        },
+    )
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        await step.execute(WorkflowContext({"content_length": 10}))
+    assert exc_info.value.code is ErrorCode.WORKFLOW_CONDITION_INVALID
+
+
+@pytest.mark.asyncio
+async def test_idea_sharpen_skip_flag_has_no_prompt_side_effect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_prompt(*_args, **_kwargs):
+        raise AssertionError("skip_sharpen must bypass prompts")
+
+    monkeypatch.setattr("src.workflow.steps.Prompt.ask", reject_prompt)
+    step = IdeaSharpenStep(
+        step_id="sharpen",
+        config={"questions": ["Q1"], "condition": "content_length > 0"},
+    )
+
+    result = await step.execute(
+        WorkflowContext({"content_length": 10, "skip_sharpen": True})
+    )
+
     assert result == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"content_length": 3001, "content": "plain", "content_type": "generic"},
+        {"content_length": 10, "content": "plain", "content_type": "wechat"},
+        {"content_length": 10, "content": "包含观点对比", "content_type": "generic"},
+    ],
+)
+async def test_idea_sharpen_trigger_rules_use_or_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+    state: dict,
+) -> None:
+    monkeypatch.setattr("src.workflow.steps.Prompt.ask", prompt_stub)
+    step = IdeaSharpenStep(
+        step_id="sharpen",
+        config={
+            "questions": ["Q1"],
+            "trigger_rules": [
+                {"content_length_gt": 3000},
+                {"content_type_in": ["wechat", "zhihu"]},
+                {"contains_keywords": ["观点对比", "立场分析"]},
+            ],
+        },
+    )
+
+    result = await step.execute(WorkflowContext(state))
+
+    assert result["idea_sharpen"] == {"Q1": "answer"}
+
+
+@pytest.mark.asyncio
+async def test_idea_sharpen_trigger_boundaries_all_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_prompt(*_args, **_kwargs):
+        raise AssertionError("false trigger set must not prompt")
+
+    monkeypatch.setattr("src.workflow.steps.Prompt.ask", reject_prompt)
+    step = IdeaSharpenStep(
+        step_id="sharpen",
+        config={
+            "questions": ["Q1"],
+            "trigger_rules": [
+                {"content_length_gt": 3000},
+                {"content_type_in": ["wechat", "zhihu"]},
+                {"contains_keywords": ["观点对比", "立场分析"]},
+            ],
+        },
+    )
+
+    result = await step.execute(
+        WorkflowContext(
+            {"content_length": 3000, "content": "plain", "content_type": "generic"}
+        )
+    )
+
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_idea_sharpen_unknown_trigger_fails_closed() -> None:
+    step = IdeaSharpenStep(
+        step_id="sharpen",
+        config={"questions": ["Q1"], "trigger_rules": [{"run_python": "pass"}]},
+    )
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        await step.execute(WorkflowContext({"content": "plain"}))
+    assert exc_info.value.code is ErrorCode.WORKFLOW_CONFIG_INVALID
+
+
+@pytest.mark.asyncio
+async def test_idea_sharpen_invalid_trigger_state_has_stable_error() -> None:
+    step = IdeaSharpenStep(
+        step_id="sharpen",
+        config={
+            "questions": ["Q1"],
+            "trigger_rules": [{"content_length_gt": 10}],
+        },
+    )
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        await step.execute(WorkflowContext({"content_length": "many"}))
+    assert exc_info.value.code is ErrorCode.WORKFLOW_CONDITION_INVALID
+
+
+@pytest.mark.asyncio
+async def test_published_idea_timeout_exception_is_not_silently_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_timeout(_prompt: str) -> str:
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr("src.workflow.steps.Prompt.ask", raise_timeout)
+    step = IdeaSharpenStep(
+        step_id="sharpen",
+        config={"questions": ["Q1"], "condition": "content_length > 0"},
+    )
+
+    with pytest.raises(asyncio.TimeoutError):
+        await step.execute(WorkflowContext({"content_length": 10}))
 
 
 @pytest.mark.asyncio
@@ -336,6 +808,155 @@ async def test_idea_sharpen_step_timeout_raises(monkeypatch: pytest.MonkeyPatch)
 
     with pytest.raises(asyncio.TimeoutError):
         await step.execute(context)
+
+
+@pytest.mark.asyncio
+async def test_review_timeout_with_published_skip_policy_blocks_storage() -> None:
+    manager = MagicMock()
+    manager.create_review.return_value = 7
+    step = ReviewStep(
+        step_id="review",
+        config={
+            "required": True,
+            "timeout": 1,
+            "skip_on_timeout": True,
+            "max_regenerations": 3,
+            "preview_chars": 100,
+        },
+        review_manager=manager,
+    )
+
+    async def timeout_review(*_args, **_kwargs):
+        raise asyncio.TimeoutError
+
+    step._interactive_review = timeout_review  # type: ignore[method-assign]
+    entry = Entry(title="pending", source_type="generic", content="content")
+    context = WorkflowContext({"entry": entry})
+
+    result = await step.execute(context)
+
+    assert result["review_status"] == "pending"
+    assert result["review_blocked"] is True
+    assert result["warnings"]
+    assert context.state.get("review_blocked") is True
+    manager.approve_review.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_required_review_missing_after_approval_stays_blocked() -> None:
+    manager = MagicMock()
+    manager.create_review.return_value = 8
+    manager.get_review.return_value = None
+    step = ReviewStep(
+        step_id="review",
+        config={
+            "required": True,
+            "timeout": 1,
+            "skip_on_timeout": True,
+            "max_regenerations": 3,
+            "preview_chars": 100,
+        },
+        review_manager=manager,
+    )
+
+    async def approve(*_args, **_kwargs):
+        return "approve"
+
+    step._interactive_review = approve  # type: ignore[method-assign]
+    context = WorkflowContext(
+        {"entry": Entry(title="pending", source_type="generic", content="content")}
+    )
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        await step.execute(context)
+
+    assert exc_info.value.code is ErrorCode.WORKFLOW_STEP_FAILED
+    assert context.state.get("review_blocked") is True
+
+
+@pytest.mark.asyncio
+async def test_required_review_create_failure_stays_blocked() -> None:
+    manager = MagicMock()
+    manager.create_review.side_effect = RuntimeError("private db path")
+    step = ReviewStep(
+        step_id="review",
+        config={
+            "required": True,
+            "timeout": 1,
+            "skip_on_timeout": True,
+            "max_regenerations": 3,
+            "preview_chars": 100,
+        },
+        review_manager=manager,
+    )
+    context = WorkflowContext(
+        {"entry": Entry(title="pending", source_type="generic", content="content")}
+    )
+
+    with pytest.raises(RuntimeError):
+        await step.execute(context)
+
+    assert context.state.get("review_blocked") is True
+
+
+@pytest.mark.asyncio
+async def test_published_review_without_timeout_avoids_fake_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MagicMock()
+    manager.create_review.return_value = 9
+    final_item = MagicMock()
+    final_item.get_effective_summary.return_value = "approved"
+    final_item.get_effective_tags.return_value = ["tag"]
+    final_item.user_comments = ""
+    manager.get_review.return_value = final_item
+    step = ReviewStep(
+        step_id="review",
+        config={"required": True, "max_regenerations": 3, "preview_chars": 100},
+        review_manager=manager,
+    )
+
+    async def approve(*_args, **_kwargs):
+        return "approve"
+
+    async def reject_fake_timeout(*_args, **_kwargs):
+        raise AssertionError("published config without timeout must not call wait_for")
+
+    step._interactive_review = approve  # type: ignore[method-assign]
+    monkeypatch.setattr("src.workflow.steps.asyncio.wait_for", reject_fake_timeout)
+    context = WorkflowContext(
+        {"entry": Entry(title="pending", source_type="generic", content="content")}
+    )
+
+    result = await step.execute(context)
+
+    assert result["review_status"] == "approved"
+    assert context.state.get("review_blocked") is False
+
+
+@pytest.mark.asyncio
+async def test_published_review_timeout_exception_is_not_auto_approved() -> None:
+    manager = MagicMock()
+    manager.create_review.return_value = 10
+    step = ReviewStep(
+        step_id="review",
+        config={"required": True, "max_regenerations": 3, "preview_chars": 100},
+        review_manager=manager,
+    )
+
+    async def timeout(*_args, **_kwargs):
+        raise asyncio.TimeoutError
+
+    step._interactive_review = timeout  # type: ignore[method-assign]
+    context = WorkflowContext(
+        {"entry": Entry(title="pending", source_type="generic", content="content")}
+    )
+
+    with pytest.raises(asyncio.TimeoutError):
+        await step.execute(context)
+
+    assert context.state.get("review_blocked") is True
+    manager.approve_review.assert_not_called()
 
 
 @pytest.mark.asyncio

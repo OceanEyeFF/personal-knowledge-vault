@@ -3,12 +3,14 @@
 > Personal Knowledge Vault - API Reference
 > 核心模块接口定义与数据流转协议
 
-**文档版本**: v2.2
+**文档版本**: v2.3
 **创建日期**: 2026-02-14
-**最后更新**: 2026-07-31
+**最后更新**: 2026-08-07
 **目标读者**: 开发者（AI Agent 仅作接口参考）
 
 > **执行边界**：本文 Python/CLI 片段主要说明公开接口，不是 Agent 可直接执行的 Runbook。AI 自动化只能使用 `scripts/run-test.ps1` 与合成 CAT-0 数据；会加载 `config/local.yaml` 的 config 命令、真实 URL archive、vector/hybrid 检索以及真实迁移均为 user-only，当前受 U1/G8（迁移另需 FT5）阻塞。当前可执行合同以 [`tests/CLAUDE.md`](../../tests/CLAUDE.md) 与 [`testing/真实数据验证Runbook.md`](./testing/真实数据验证Runbook.md) 为准。
+>
+> **M13 W2 接口边界**：Workflow 只加载真实、版本化的 `archive-url.yaml` 与 `archive-text.yaml`，不支持 `search.yaml`；Retrieval 返回显式五态 `SearchResponse`；GUI 发布搜索只保证 BM25；MCP 只发布 stdio，HTTP/Bearer 不受支持。三个探索 Tool 仍为 `partial-v1` / `implementation_level=partial`。
 
 ---
 
@@ -36,7 +38,7 @@
 执行指定的工作流。
 
 **参数**:
-- `workflow_name` (str): 工作流名称，对应 `config/workflows/{name}.yaml`
+- `workflow_name` (str): 当前只接受 `archive-url` / `archive-text`，对应真实、带 `schema_version` 的 YAML
 - `input_data` (dict): 输入数据，根据工作流类型不同而变化
 
 **返回**:
@@ -55,29 +57,30 @@ result = engine.execute(
     input_data={"url": "https://example.com/article"}
 )
 
-# 检查结果
-if result.success:
-    print(f"✅ 已归档: {result.data['entry_id']}")
+# 检查结果；degraded 仍成功产出，但必须展示 warnings/issues
+if result.terminal in {"success", "degraded"}:
+    print(f"✅ 已归档: {result.data['knowledge_id']}")
+    print(result.warnings, result.issues)
 else:
-    print(f"❌ 失败: {result.error}")
+    print(f"❌ 失败: {result.errors}")
 ```
 
 ---
 
-#### `register_step(step_type: str, step_class: Type[WorkflowStep])`
+#### `register_step(step_type: str, step_class: Type[BaseStep])`
 
 注册自定义工作流步骤。
 
 **参数**:
 - `step_type` (str): 步骤类型标识（在 YAML 中使用）
-- `step_class` (Type[WorkflowStep]): 步骤类（继承自 `WorkflowStep`）
+- `step_class` (Type[BaseStep]): 步骤类（继承自 `BaseStep`）；registry 属于 Engine 实例
 
 **示例**:
 
 ```python
-from src.workflow.steps.base import WorkflowStep
+from src.workflow.steps import BaseStep
 
-class CustomStep(WorkflowStep):
+class CustomStep(BaseStep):
     async def execute(self, context):
         # 自定义逻辑
         ...
@@ -93,26 +96,25 @@ engine.register_step("custom_action", CustomStep)
 
 #### 属性
 
-- `input_data` (dict): 初始输入数据
-- `state` (dict): 步骤间共享状态
-- `output` (dict): 最终输出数据
+- `state` (`State`): 步骤间共享状态容器
+- `logs` (`list[str]`): 工作流日志
 
-#### `update(key: str, value: Any)`
+#### `state.set(key: str, value: Any)`
 
 更新上下文状态。
 
 **示例**:
 
 ```python
-context.update("title", "我的文章标题")
-context.update("tags", ["技术", "编程"])
+context.state.set("title", "我的文章标题")
+context.state.set("tags", ["技术", "编程"])
 ```
 
 ---
 
 ## 内容处理器 API
 
-### ContentProcessor (抽象基类)
+### BaseProcessor (抽象基类)
 
 所有内容处理器必须实现此接口。
 
@@ -129,14 +131,15 @@ context.update("tags", ["技术", "编程"])
 **示例**:
 
 ```python
-class WechatProcessor(ContentProcessor):
-    def can_handle(self, url_or_text: str) -> bool:
+class WechatProcessor(BaseProcessor):
+    @classmethod
+    def can_handle(cls, url_or_text: str) -> bool:
         return "mp.weixin.qq.com" in url_or_text
 ```
 
 ---
 
-#### `async process(input: str) -> ProcessedContent`
+#### `async process(input: str) -> Entry`
 
 处理内容并返回结构化数据。
 
@@ -144,31 +147,31 @@ class WechatProcessor(ContentProcessor):
 - `input` (str): URL 或原始文本
 
 **返回**:
-- `ProcessedContent`: 处理后的内容（见[数据结构](#processedcontent)）
+- `Entry`: 处理后的知识条目
 
 **示例**:
 
 ```python
-async def process(self, url: str) -> ProcessedContent:
-    html = await self.fetch(url)
-    soup = BeautifulSoup(html, 'lxml')
+async def process(self, url: str) -> Entry:
+    response = await self._fetch_public_url(url, headers=self.headers)
+    soup = BeautifulSoup(response.text, "lxml")
 
-    return ProcessedContent(
-        title=soup.find('h1').text,
+    return Entry(
+        title=soup.find("h1").text,
+        source_type="wechat",
+        source_url=url,
         content=self._extract_markdown(soup),
-        metadata={
-            "source": url,
-            "author": soup.find('meta', {'name': 'author'})['content'],
-            "publish_date": self._parse_date(soup)
-        }
+        published_at=self._parse_date(soup),
     )
 ```
+
+`_fetch_public_url()` 是 BaseProcessor 提供的唯一 URL 网络 seam，底层使用 DNS-pinned `SafeFetcher`。页面、redirect 与图片等子资源不得使用 Playwright/requests/httpx 直连或降级。
 
 ---
 
 ### 辅助函数
 
-#### `get_processor(url_or_text: str) -> ContentProcessor`
+#### `get_processor(url_or_text: str) -> BaseProcessor`
 
 自动选择合适的处理器。
 
@@ -176,7 +179,7 @@ async def process(self, url: str) -> ProcessedContent:
 - `url_or_text` (str): URL 或文本
 
 **返回**:
-- `ContentProcessor`: 匹配的处理器实例
+- `BaseProcessor`: 匹配的处理器实例
 
 **抛出**:
 - `ValueError`: 没有合适的处理器
@@ -194,104 +197,41 @@ content = await processor.process(url)
 
 ## 检索引擎 API
 
-### HybridSearch
+### BM25Retriever / VectorRetriever / HybridRetriever / QueryRouter
 
-**职责**: 混合检索（BM25 + 向量）
-
-#### `search(query: str, top_k: int = 10, strategy: str = "auto") -> List[SearchResult]`
-
-执行混合检索。
-
-**参数**:
-- `query` (str): 用户查询
-- `top_k` (int): 返回结果数量，默认 10
-- `strategy` (str): 检索策略，可选 `"auto"` / `"bm25"` / `"vector"` / `"hybrid"`
-
-**返回**:
-- `List[SearchResult]`: 搜索结果列表（按相关性排序）
-
-**示例**:
+所有公开 `search(query: str, limit: int = 10)` 都同步返回 `SearchResponse`。构造器接收明确的 `db_path` / `vector_index_dir`；Vector、Hybrid 与 Router 可接收 `embedder_factory: Callable[[], Embedder]`，只有语义分支实际执行时才调用工厂。
 
 ```python
-from src.retrieval.hybrid_search import HybridSearch
+from pathlib import Path
+from src.retrieval import QueryRouter
 
-searcher = HybridSearch()
-
-results = searcher.search(
-    query="分布式系统的权衡",
-    top_k=5,
-    strategy="auto"  # 自动选择最优策略
+router = QueryRouter(
+    Path("isolated.db"),
+    Path("isolated-vectors"),
+    embedder_factory=application_embedder_factory,
 )
+response = router.search("分布式系统的权衡", limit=5)
 
-for result in results:
-    print(f"{result.title} (score: {result.score:.2f})")
-    print(f"  {result.snippet}")
+if response.status in {"success", "degraded"}:
+    for item in response.results:
+        print(item.title, item.score)
+elif response.status == "no_hits":
+    print("没有命中")
+else:
+    print([issue.to_dict() for issue in response.issues])
 ```
 
----
+五态语义：
 
-### BM25Search
+- `success`：至少一条结果且无 issue。
+- `no_hits`：检索正常完成但零命中。
+- `invalid`：查询或 limit 非法，携带 `RETRIEVAL_INVALID_QUERY`。
+- `error`：请求未成功执行，不携带部分结果。
+- `degraded`：部分能力失败，可保留可用结果，但必须携带 issue。
 
-**职责**: 关键词全文检索
+`SearchResponse` 不是列表，`if response:` 会抛出 `TypeError`。adapter 必须先检查 `status`；底层异常不得映射为空命中，公开 issue 不得包含异常原文、密钥或绝对路径。
 
-#### `search(query: str, top_k: int = 10) -> List[SearchResult]`
-
-BM25 关键词检索。
-
-**参数/返回**: 同 `HybridSearch.search`
-
-**实现细节**:
-
-```python
-# 伪代码
-class BM25Search:
-    def search(self, query: str, top_k: int = 10):
-        # 1. 使用 jieba 分词
-        tokens = jieba.lcut(query)
-
-        # 2. 查询 SQLite FTS5 虚拟表
-        results = self.db.execute("""
-            SELECT entry_id, bm25(entries_fts) as score
-            FROM entries_fts
-            WHERE entries_fts MATCH ?
-            ORDER BY score
-            LIMIT ?
-        """, (" ".join(tokens), top_k))
-
-        return [self._build_result(row) for row in results]
-```
-
----
-
-### VectorSearch
-
-**职责**: 向量语义检索
-
-#### `search(query: str, top_k: int = 10) -> List[SearchResult]`
-
-向量语义检索。
-
-**参数/返回**: 同 `HybridSearch.search`
-
-**实现细节**:
-
-```python
-# 伪代码
-class VectorSearch:
-    def search(self, query: str, top_k: int = 10):
-        # 1. 查询向量化
-        query_vector = self.embedder.embed(query)
-
-        # 2. HNSW 检索
-        labels, distances = self.index.knn_query(
-            query_vector,
-            k=top_k
-        )
-
-        # 3. 转换为 SearchResult
-        return [self._build_result(label, dist)
-                for label, dist in zip(labels[0], distances[0])]
-```
+M13 GUI 只保证 BM25；CLI/MCP 可显式选择 `bm25/vector/hybrid/auto`。后 3 种可能需要 Embedding Provider，默认离线验证不会构造或连接真实 Provider。
 
 ---
 
@@ -442,39 +382,29 @@ vector_store.add(entry.id, embedding)
 ```python
 @dataclass
 class Entry:
-    id: str                      # 唯一 ID（UUID）
     title: str                   # 标题
-    content: str                 # Markdown 内容
-    summary: str                 # AI 生成的摘要
-    tags: List[str]              # 标签列表
-    concepts: List[str]          # 概念列表
-    metadata: dict               # 元数据（来源、作者、时间等）
-    created_at: datetime         # 创建时间
-    updated_at: datetime         # 更新时间
-
-    # 可选字段
+    source_type: str             # wechat/zhihu/generic/chat/ai_chat/text
     source_url: Optional[str] = None
-    author: Optional[str] = None
-    publish_date: Optional[datetime] = None
+    event_time: Optional[str] = None
+    published_at: Optional[str] = None
+    archived_at: Optional[str] = None
+    tags: list = field(default_factory=list)
+    keywords: list = field(default_factory=list)
+    abstract: str = ""
+    summary_one_sentence: str = ""
+    summary_100_words: str = ""
+    search_strategy: str = "keyword"
+    word_count: int = 0
+    related_docs: list = field(default_factory=list)
+    reading_status: str = ""
+    rating: int = 0
+    notes: str = ""
+    content: str = ""
 ```
 
 ---
 
-### ProcessedContent
-
-内容处理器输出。
-
-```python
-@dataclass
-class ProcessedContent:
-    title: str                   # 标题
-    content: str                 # Markdown 格式内容
-    metadata: dict               # 元数据
-
-    # 可选字段
-    raw_html: Optional[str] = None     # 原始 HTML
-    images: List[str] = field(default_factory=list)  # 图片 URL 列表
-```
+Processors 直接返回 `Entry`，不存在独立的 `ProcessedContent` 公开类型。
 
 ---
 
@@ -485,14 +415,18 @@ class ProcessedContent:
 ```python
 @dataclass
 class SearchResult:
-    entry_id: str                # 条目 ID
+    knowledge_id: int            # 条目 ID
     title: str                   # 标题
-    snippet: str                 # 摘要/片段（高亮匹配部分）
     score: float                 # 相关性分数（0-1）
+    highlight: str               # 高亮片段
     metadata: dict               # 元数据
 
-    # 可选字段
-    highlights: List[str] = field(default_factory=list)  # 匹配的关键词
+@dataclass(frozen=True)
+class SearchResponse:
+    status: str                  # success/no_hits/invalid/error/degraded
+    results: tuple[SearchResult, ...]
+    strategy: str
+    issues: tuple[RetrievalIssue, ...]
 ```
 
 ---
@@ -504,68 +438,42 @@ class SearchResult:
 ```python
 @dataclass
 class WorkflowResult:
-    success: bool                # 是否成功
+    success: bool                # terminal != "error"
     data: dict                   # 输出数据
-    error: Optional[str] = None  # 错误信息（如果失败）
+    errors: List[str]            # 仅致命错误
     logs: List[str] = field(default_factory=list)  # 执行日志
+    warnings: List[str] = field(default_factory=list)
+    issues: List[dict] = field(default_factory=list)
+    terminal: str = "success"   # success/degraded/error
 ```
 
 ---
 
 ## 错误处理
 
-### 异常层次
+### 稳定错误合同
 
-```
-KnowledgeVaultError (基类)
-├── ProcessorError           # 内容处理错误
-│   ├── FetchError           # 网页抓取失败
-│   └── ParseError           # 解析失败
-├── StorageError             # 存储错误
-│   ├── DuplicateEntryError  # 重复条目
-│   └── FileNotFoundError    # 文件不存在
-├── RetrievalError           # 检索错误
-│   └── EmptyIndexError      # 索引为空
-└── WorkflowError            # 工作流错误
-    ├── StepFailedError      # 步骤执行失败
-    └── InvalidConfigError   # 配置错误
-```
+跨 Workflow、Retrieval、Provider、URL/SSRF、transport 与 Chat 的机器可读失败统一使用 `src.runtime.errors.ErrorCode`。需要抛出的边界使用 `PKVRuntimeError(code, safe_message, stage, recoverable)`；需要返回的 Retrieval/MCP 边界使用 `RetrievalIssue` 或同形 `issues[]`。原始异常文本可能包含路径、查询或凭据，只写私有日志，不能直接进入 adapter 响应。
 
 ---
 
 ### 错误处理示例
 
 ```python
-from src.exceptions import ProcessorError, FetchError
+from src.runtime.errors import PKVRuntimeError
 
 try:
     processor = get_processor(url)
     content = await processor.process(url)
-except FetchError as e:
-    # 网页抓取失败，提示用户手动粘贴
-    print(f"❌ 无法访问 URL: {e}")
-    print("请复制网页内容后使用 archive-text 命令")
-except ParseError as e:
-    # 解析失败，记录日志
-    logger.error(f"解析失败: {url}, 错误: {e}")
-except ProcessorError as e:
-    # 其他处理器错误
-    logger.error(f"处理器错误: {e}")
+except PKVRuntimeError as exc:
+    print(exc.code.value, str(exc))  # 只展示稳定安全文案
 ```
 
 ---
 
 ### 错误码规范
 
-| 错误码 | 含义 | HTTP 类比 |
-|--------|------|-----------|
-| `E1001` | URL 无法访问 | 404 |
-| `E1002` | 内容解析失败 | 422 |
-| `E2001` | 重复条目 | 409 |
-| `E2002` | 文件不存在 | 404 |
-| `E3001` | 索引为空 | 400 |
-| `E4001` | 工作流配置错误 | 500 |
-| `E4002` | 步骤执行失败 | 500 |
+当前枚举以 `src/runtime/errors.py` 为唯一实现真相源，包含 `WORKFLOW_*`、`RETRIEVAL_*`、`PROVIDER_*`、`URL_*`、`SSRF_*`、`TRANSPORT_*` 与 `CHAT_*` 家族。adapter 不得自行发明字符串错误码，也不得用 HTTP 状态类比替代领域终态。
 
 ---
 
@@ -575,12 +483,13 @@ except ProcessorError as e:
 
 ```python
 import asyncio
+from pathlib import Path
 from src.workflow.engine import WorkflowEngine
-from src.retrieval.hybrid_search import HybridSearch
+from src.retrieval import BM25Retriever
 
 async def main():
     engine = WorkflowEngine()
-    searcher = HybridSearch()
+    searcher = BM25Retriever(Path("isolated.db"))
 
     # 1. 归档网页
     result = await engine.execute_async(
@@ -588,24 +497,20 @@ async def main():
         input_data={"url": "https://example.com/article"}
     )
 
-    if result.success:
-        entry_id = result.data["entry_id"]
-        print(f"✅ 已归档: {entry_id}")
+    if result.terminal in {"success", "degraded"}:
+        knowledge_id = result.data["knowledge_id"]
+        print(f"✅ 已归档: {knowledge_id}", result.warnings)
     else:
-        print(f"❌ 归档失败: {result.error}")
+        print(f"❌ 归档失败: {result.errors}")
         return
 
-    # 2. 搜索内容
-    results = searcher.search(
-        query="分布式系统",
-        top_k=5,
-        strategy="hybrid"
-    )
+    # 2. 默认离线搜索使用 BM25
+    response = searcher.search("分布式系统", limit=5)
 
     print("\n🔍 搜索结果:")
-    for i, result in enumerate(results, 1):
-        print(f"{i}. {result.title} (score: {result.score:.2f})")
-        print(f"   {result.snippet}\n")
+    for i, item in enumerate(response.results, 1):
+        print(f"{i}. {item.title} (score: {item.score:.2f})")
+        print(f"   {item.highlight}\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -885,14 +790,14 @@ python -m src.main search "AI" --format json --limit 5
 ```
 
 **检索策略**:
-- `auto`: 自动选择（< 10 tokens → BM25, ≥ 10 → Vector）
+- `auto`: `QueryRouter` 自动选择（token 数低于配置阈值 → BM25，否则 → Hybrid）
 - `bm25`: 关键词检索（精确匹配）
 - `vector`: 语义检索（语义理解）
 - `hybrid`: 混合检索（RRF k=60）
 
 **集成接口**:
-- 使用 `QueryRouter.get_retriever(query)` 自动路由
-- 返回 `List[SearchResult]` 包含 `entry_id`, `title`, `snippet`, `score`
+- `auto` 调用 `QueryRouter.search(query, limit)`；显式策略调用对应 Retriever
+- 底层返回 `SearchResponse`；CLI 必须分别展示 `success/no_hits/invalid/error/degraded`，不能把错误当空结果
 
 ---
 

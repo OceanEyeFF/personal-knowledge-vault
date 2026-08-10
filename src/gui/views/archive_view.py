@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import Qt, Signal
@@ -29,7 +30,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.gui.viewmodels.archive_viewmodel import ArchiveViewModel
+from src.gui.viewmodels.archive_viewmodel import (
+    ArchiveViewModel,
+    sanitize_archive_failure,
+)
 
 logger = logging.getLogger("pkv.gui.archive")
 
@@ -225,6 +229,13 @@ class ArchiveView(QWidget):
         self._result_path_label.setWordWrap(True)
         layout.addWidget(self._result_path_label)
 
+        # 持久可见的降级/修复提示（不能只依赖瞬时对话框）
+        self._result_warning_label = QLabel("", self)
+        self._result_warning_label.setProperty("class", "text-warning")
+        self._result_warning_label.setWordWrap(True)
+        self._result_warning_label.setVisible(False)
+        layout.addWidget(self._result_warning_label)
+
         # "前往浏览"按钮
         self._navigate_btn = QPushButton("前往浏览", self)
         self._navigate_btn.setFixedWidth(100)
@@ -250,7 +261,7 @@ class ArchiveView(QWidget):
         self._vm.state_changed.connect(self._on_state_changed)
         self._vm.progress_text.connect(self._progress_label.setText)
         self._vm.result_ready.connect(self._on_result_ready)
-        self._vm.error_occurred.connect(self._on_error)
+        self._vm.failure_ready.connect(self._on_error)
 
     # ------------------------------------------------------------------
     # 归档触发
@@ -281,7 +292,7 @@ class ArchiveView(QWidget):
         """响应 ViewModel 状态变更，更新 UI 控件状态。
 
         Args:
-            state: 当前状态（"idle" / "running" / "success" / "error"）。
+            state: 当前状态（idle/running/success/degraded/error）。
         """
         if state == "running":
             # 禁用按钮，显示进度
@@ -289,7 +300,7 @@ class ArchiveView(QWidget):
             self._archive_text_btn.setEnabled(False)
             self._progress_area.setVisible(True)
             self._result_area.setVisible(False)
-        elif state == "success":
+        elif state in {"success", "degraded"}:
             # 启用按钮，隐藏进度（结果区在 _on_result_ready 中显示）
             self._archive_url_btn.setEnabled(True)
             self._archive_text_btn.setEnabled(True)
@@ -315,20 +326,54 @@ class ArchiveView(QWidget):
         kid = data.get("knowledge_id", "")
         file_path = data.get("file_path", "")
         status = data.get("status")
+        terminal = data.get("workflow_terminal", "success")
+        workflow_issues = data.get("workflow_issues") or []
+        issue_codes = self._issue_codes(workflow_issues)
+        storage_degraded = status == "degraded"
+        workflow_degraded = terminal == "degraded"
 
-        if status == "degraded":
-            # DEGRADED 仍是核心成功，但必须向用户可见地警告辅助索引需要修复。
-            repairs = "、".join(data.get("repair_actions") or [])
-            warning = (
-                "核心归档已完成，但辅助索引需要修复"
-                + (f"（修复动作: {repairs}）" if repairs else "（见日志）")
-                + "。请勿盲目重试归档。"
-            )
+        self._navigate_btn.setVisible(True)
+        self._result_warning_label.clear()
+        self._result_warning_label.setVisible(False)
+
+        if storage_degraded or workflow_degraded:
+            # DEGRADED 仍是核心成功，但辅助索引/可选步骤警告必须持续可见。
+            repair_tokens = []
+            for raw_action in data.get("repair_actions") or []:
+                candidate = str(raw_action)
+                repair_tokens.append(
+                    candidate
+                    if re.fullmatch(r"[A-Za-z0-9_.:-]{1,96}", candidate)
+                    else "repair_required"
+                )
+            repairs = "、".join(repair_tokens)
+            warning_parts = ["核心归档已完成，但本次结果处于降级状态。"]
+            if storage_degraded:
+                warning_parts.append(
+                    "辅助索引需要修复"
+                    + (f"（修复动作: {repairs}）" if repairs else "（见诊断日志）")
+                    + "。"
+                )
+            if workflow_degraded:
+                warning_parts.append(
+                    "部分可选工作流步骤未完成"
+                    + (f"（问题代码: {issue_codes}）" if issue_codes else "")
+                    + "。"
+                )
+            warning_parts.append("请勿盲目重试归档。")
+            warning = "".join(warning_parts)
             self._result_title_label.setText(f"归档成功（降级）: {title}")
             self._result_kid_label.setText(f"ID: {kid}")
             self._result_path_label.setText(f"文件: {file_path}")
+            self._result_warning_label.setText(warning)
+            self._result_warning_label.setVisible(True)
             self._result_area.setVisible(True)
-            logger.warning(f"归档降级: {warning}")
+            logger.warning(
+                "归档降级: storage=%s, workflow=%s, issue_codes=%s",
+                storage_degraded,
+                workflow_degraded,
+                issue_codes,
+            )
             QMessageBox.warning(self, "归档降级警告", warning)
             return
 
@@ -337,23 +382,73 @@ class ArchiveView(QWidget):
         self._result_path_label.setText(f"文件: {file_path}")
         self._result_area.setVisible(True)
 
-        logger.info(f"归档结果已展示: kid={kid}, title={title!r}")
+        safe_knowledge_id = (
+            kid if isinstance(kid, int) and not isinstance(kid, bool) else "unknown"
+        )
+        logger.info(
+            "归档结果已展示: knowledge_id=%s",
+            safe_knowledge_id,
+        )
 
-    def _on_error(self, message: str) -> None:
-        """响应归档错误，显示错误信息。
+    def _on_error(self, failure: Dict[str, Any] | str) -> None:
+        """响应结构化归档错误，只显示脱敏字段。
 
         Args:
-            message: 错误消息字符串。
+            failure: ViewModel 结构化失败；字符串仅用于旧调用方兼容。
         """
-        self._result_title_label.setText(f"归档失败")
+        if isinstance(failure, dict):
+            failure = sanitize_archive_failure(failure)
+            code = str(failure.get("code") or "workflow_step_failed")
+            stage = str(failure.get("stage") or "workflow")
+            recoverable = bool(failure.get("recoverable"))
+            message = str(failure.get("safe_message") or "归档失败")
+            operation_id = str(failure.get("operation_id") or "")
+            repairs = [str(item) for item in failure.get("repair_actions") or []]
+            do_not_retry = bool(failure.get("do_not_retry"))
+        else:
+            code = "workflow_step_failed"
+            stage = "workflow"
+            recoverable = False
+            message = "归档失败（错误代码：workflow_step_failed，阶段：workflow）"
+            operation_id = ""
+            repairs = []
+            do_not_retry = False
+
+        detail_parts = [f"错误代码: {code}", f"阶段: {stage}"]
+        detail_parts.append("问题排除后可重试" if recoverable else "需要先检查或修复")
+        if operation_id:
+            detail_parts.append(f"operation_id: {operation_id}")
+        if repairs:
+            detail_parts.append(f"修复动作: {', '.join(repairs)}")
+
+        self._result_title_label.setText("归档失败")
         self._result_kid_label.setText(message)
-        self._result_path_label.setText("")
+        self._result_path_label.setText("；".join(detail_parts))
+        self._result_warning_label.setText("请勿盲目重试归档。" if do_not_retry else "")
+        self._result_warning_label.setVisible(do_not_retry)
         self._result_area.setVisible(True)
         self._navigate_btn.setVisible(False)
 
-        logger.warning(f"归档失败: {message}")
+        logger.warning("归档失败: code=%s, stage=%s", code, stage)
 
-        QMessageBox.warning(self, "归档失败", message)
+        dialog_message = message + "\n\n" + "；".join(detail_parts)
+        if do_not_retry:
+            dialog_message += "\n\n请勿盲目重试归档。"
+        QMessageBox.warning(self, "归档失败", dialog_message)
 
-        # 恢复导航按钮可见性（为下次成功归档准备）
-        self._navigate_btn.setVisible(True)
+    @staticmethod
+    def _issue_codes(issues: list[Any]) -> str:
+        """Format unique stable workflow issue codes without raw messages."""
+
+        codes: list[str] = []
+        for issue in issues:
+            raw_code = issue.get("code") if isinstance(issue, dict) else getattr(issue, "code", None)
+            candidate = str(getattr(raw_code, "value", raw_code or ""))
+            code = (
+                candidate
+                if re.fullmatch(r"[a-z0-9_]{1,64}", candidate)
+                else "workflow_step_failed"
+            )
+            if code and code not in codes:
+                codes.append(code)
+        return ", ".join(codes)

@@ -1,13 +1,11 @@
 """
 MCP 安全验证单元测试
 
-测试 URL 验证、内网 IP 检测、文本长度限制和 HTTP Bearer Token 认证。
+测试 URL 前置验证、内网目标拒绝、错误脱敏与文本长度限制。
 """
 
 import sys
-import os
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -19,9 +17,10 @@ from src.mcp.utils import (
     validate_url,
     is_private_ip,
     validate_url_security,
+    validate_url_security_result,
     validate_text_length,
-    validate_http_auth,
 )
+from src.runtime.errors import ErrorCode
 
 
 # ============================================================
@@ -172,6 +171,29 @@ class TestValidateUrlSecurity:
         valid, error = validate_url_security("  https://example.com  ")
         assert valid is True
 
+    def test_stable_result_distinguishes_invalid_from_forbidden(self):
+        invalid = validate_url_security_result("ftp://example.com/file")
+        forbidden = validate_url_security_result("http://127.0.0.1/private")
+
+        assert invalid is not None
+        assert invalid.code is ErrorCode.URL_INVALID
+        assert invalid.stage == "url_preflight"
+        assert forbidden is not None
+        assert forbidden.code is ErrorCode.SSRF_TARGET_FORBIDDEN
+        assert forbidden.stage == "url_preflight"
+        assert validate_url_security_result("https://example.com/public") is None
+
+    def test_rejection_log_does_not_echo_url_query(self, caplog):
+        secret = "never-log-this-token"
+        valid, _error = validate_url_security(
+            f"http://127.0.0.1/private?token={secret}"
+        )
+
+        assert valid is False
+        assert secret not in caplog.text
+        assert "127.0.0.1" not in caplog.text
+        assert ErrorCode.SSRF_TARGET_FORBIDDEN.value in caplog.text
+
 
 # ============================================================
 # validate_text_length 测试
@@ -213,42 +235,3 @@ class TestValidateTextLength:
         text = "A" * 30
         valid, error = validate_text_length(text, max_length=50)
         assert valid is True
-
-
-# ============================================================
-# validate_http_auth 测试
-# ============================================================
-
-class TestValidateHttpAuth:
-    """HTTP Bearer Token 认证测试。"""
-
-    @patch("src.mcp.utils._MCP_AUTH_TOKEN", "test-secret-token")
-    def test_valid_token(self):
-        headers = {"Authorization": "Bearer test-secret-token"}
-        assert validate_http_auth(headers) is True
-
-    @patch("src.mcp.utils._MCP_AUTH_TOKEN", "test-secret-token")
-    def test_invalid_token(self):
-        headers = {"Authorization": "Bearer wrong-token"}
-        assert validate_http_auth(headers) is False
-
-    @patch("src.mcp.utils._MCP_AUTH_TOKEN", "test-secret-token")
-    def test_missing_auth_header(self):
-        headers = {}
-        assert validate_http_auth(headers) is False
-
-    @patch("src.mcp.utils._MCP_AUTH_TOKEN", "test-secret-token")
-    def test_non_bearer_auth(self):
-        headers = {"Authorization": "Basic dXNlcjpwYXNz"}
-        assert validate_http_auth(headers) is False
-
-    @patch("src.mcp.utils._MCP_AUTH_TOKEN", "")
-    def test_no_token_configured_rejects_all(self):
-        """未配置 Token 时，拒绝所有 HTTP 请求（安全默认）。"""
-        headers = {"Authorization": "Bearer anything"}
-        assert validate_http_auth(headers) is False
-
-    @patch("src.mcp.utils._MCP_AUTH_TOKEN", None)
-    def test_none_token_rejects_all(self):
-        headers = {"Authorization": "Bearer anything"}
-        assert validate_http_auth(headers) is False

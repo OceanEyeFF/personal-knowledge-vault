@@ -31,10 +31,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.gui.models.entry_model import EntryTableModel
+from src.gui.models.entry_model import EntryTableModel, validate_entry_rows
 from src.gui.models.tag_model import TagTreeModel
 
 logger = logging.getLogger("pkv.gui.browser")
+
+_TAGS_LOAD_FAILED = "browser_tags_load_failed"
+_ENTRY_COUNT_FAILED = "browser_entry_count_failed"
+_ENTRY_LIST_FAILED = "browser_entry_list_failed"
+_PREVIEW_ADAPTER_FAILED = "browser_preview_adapter_failed"
 
 
 # ============================================================
@@ -140,6 +145,12 @@ class BrowserView(QWidget):
         header.setProperty("class", "panel-header")
         layout.addWidget(header)
 
+        self._tag_status_label = QLabel("", self)
+        self._tag_status_label.setProperty("status", "error")
+        self._tag_status_label.setWordWrap(True)
+        self._tag_status_label.hide()
+        layout.addWidget(self._tag_status_label)
+
         # 标签树视图
         self._tag_model = TagTreeModel(self)
         self._tag_view = QTreeView(self)
@@ -166,6 +177,12 @@ class BrowserView(QWidget):
         self._entry_count_label = QLabel("条目")
         self._entry_count_label.setProperty("class", "panel-header")
         layout.addWidget(self._entry_count_label)
+
+        self._entry_status_label = QLabel("", self)
+        self._entry_status_label.setProperty("status", "error")
+        self._entry_status_label.setWordWrap(True)
+        self._entry_status_label.hide()
+        layout.addWidget(self._entry_status_label)
 
         # 条目表格视图
         self._entry_model = EntryTableModel([], self)
@@ -237,6 +254,11 @@ class BrowserView(QWidget):
         self._preview_title.setProperty("class", "panel-header")
         layout.addWidget(self._preview_title)
 
+        self._preview_status_label = QLabel("", self)
+        self._preview_status_label.setWordWrap(True)
+        self._preview_status_label.hide()
+        layout.addWidget(self._preview_status_label)
+
         # 预览文本框
         self._preview_text = QTextEdit(self)
         self._preview_text.setReadOnly(True)
@@ -275,17 +297,28 @@ class BrowserView(QWidget):
     def load_tags(self) -> None:
         """从 SQLiteStore 加载所有标签并更新 TagTreeModel。
 
-        忽略加载异常（如数据库不存在），显示空标签列表。
+        加载失败时保留最后一次成功数据并显示明确、稳定的错误状态。
         """
         try:
             from src.gui.stores import get_sqlite_store
             store = get_sqlite_store()
             tags = store.get_all_tags_with_count()
             self._tag_model.update_tags(tags)
-            logger.debug(f"已加载 {len(tags)} 个标签")
+            self._tag_view.setEnabled(True)
+            self._tag_status_label.clear()
+            self._tag_status_label.hide()
+            logger.debug("已加载 %s 个标签", len(tags))
         except Exception as exc:
-            logger.warning(f"加载标签失败: {exc}")
-            self._tag_model.update_tags([])
+            logger.error(
+                "标签加载失败: code=%s, error_type=%s",
+                _TAGS_LOAD_FAILED,
+                type(exc).__name__,
+            )
+            self._tag_view.setEnabled(False)
+            self._tag_status_label.setText(
+                f"标签加载失败（错误代码：{_TAGS_LOAD_FAILED}）"
+            )
+            self._tag_status_label.show()
 
     def load_entries(
         self,
@@ -299,21 +332,48 @@ class BrowserView(QWidget):
             page: 页码（从 0 开始）。
         """
         self._current_tag = tag
-        self._current_page = page
+        failure_code = _ENTRY_COUNT_FAILED
 
         try:
             from src.gui.stores import get_sqlite_store
             store = get_sqlite_store()
-            # 获取总数
-            self._total_count = store.count_entries(tag=tag)
-            # 获取当前页条目
-            offset = page * self.PAGE_SIZE
+
+            total_count = store.count_entries(tag=tag)
+            if (
+                not isinstance(total_count, int)
+                or isinstance(total_count, bool)
+                or total_count < 0
+            ):
+                raise TypeError("entry count contract violation")
+
+            requested_page = max(0, int(page))
+            total_pages = max(1, math.ceil(total_count / self.PAGE_SIZE))
+            resolved_page = min(requested_page, total_pages - 1)
+            offset = resolved_page * self.PAGE_SIZE
+            failure_code = _ENTRY_LIST_FAILED
             entries = store.list_entries(
                 limit=self.PAGE_SIZE,
                 offset=offset,
                 tag=tag,
             )
+            validate_entry_rows(entries)
+            expected_row_count = min(self.PAGE_SIZE, total_count - offset)
+            knowledge_ids = [entry["knowledge_id"] for entry in entries]
+            if (
+                offset < 0
+                or offset > total_count
+                or (total_count > 0 and offset >= total_count)
+                or len(entries) != expected_row_count
+                or len(set(knowledge_ids)) != len(knowledge_ids)
+            ):
+                raise TypeError("entry page contract violation")
+
+            self._total_count = total_count
+            self._current_page = resolved_page
             self._entry_model.update_entries(entries)
+            self._entry_view.setEnabled(True)
+            self._entry_status_label.clear()
+            self._entry_status_label.hide()
             self._update_pagination_ui()
 
             # 更新标题
@@ -321,12 +381,41 @@ class BrowserView(QWidget):
             self._entry_count_label.setText(
                 f"条目 {tag_label}（共 {self._total_count} 条）"
             )
-            logger.debug(f"已加载第 {page + 1} 页，{len(entries)} 条记录")
+            logger.debug(
+                "已加载第 %s 页，%s 条记录",
+                self._current_page + 1,
+                len(entries),
+            )
         except Exception as exc:
-            logger.error(f"加载条目失败: {exc}", exc_info=True)
-            self._entry_model.update_entries([])
-            self._total_count = 0
-            self._update_pagination_ui()
+            logger.error(
+                "条目加载失败: code=%s, error_type=%s",
+                failure_code,
+                type(exc).__name__,
+            )
+            self._render_entries_error(failure_code)
+
+    def _render_entries_error(self, code: str) -> None:
+        """清除不可信分页投影并呈现稳定的条目加载错误。"""
+
+        self._entry_model.update_entries([])
+        self._entry_view.clearSelection()
+        self._entry_view.setEnabled(False)
+        self._total_count = 0
+        self._current_page = 0
+        self._entry_count_label.setText("条目（加载失败）")
+        self._entry_status_label.setText(
+            f"条目加载失败（错误代码：{code}）"
+        )
+        self._entry_status_label.show()
+        self._page_label.setText("分页不可用")
+        self._prev_btn.setEnabled(False)
+        self._next_btn.setEnabled(False)
+        self._selected_entry = None
+        self._selected_content = ""
+        self._send_to_chat_btn.setEnabled(False)
+        self._preview_title.setText("预览")
+        self._preview_text.clear()
+        self._clear_preview_status()
 
     # ------------------------------------------------------------------
     # 事件处理
@@ -344,6 +433,7 @@ class BrowserView(QWidget):
         # 清空右侧预览
         self._preview_text.clear()
         self._preview_title.setText("预览")
+        self._clear_preview_status()
         # M12: 清除选中缓存
         self._selected_entry = None
         self._selected_content = ""
@@ -358,9 +448,8 @@ class BrowserView(QWidget):
         entry = self._entry_model.get_entry(index.row())
         if entry:
             self._selected_entry = entry
-            self._load_preview(entry)
-            # M12: 启用发送按钮
-            self._send_to_chat_btn.setEnabled(True)
+            preview_available = self._load_preview(entry)
+            self._send_to_chat_btn.setEnabled(preview_available)
 
     def _go_prev_page(self) -> None:
         """切换到上一页。"""
@@ -377,40 +466,86 @@ class BrowserView(QWidget):
     # 预览加载
     # ------------------------------------------------------------------
 
-    def _load_preview(self, entry: dict) -> None:
-        """加载条目的 Markdown 全文到预览区域。
-
-        使用 src.gui.utils.preview_loader.load_entry_preview 加载预览内容，
-        失败时由 preview_loader 自动降级到摘要显示。
+    def _load_preview(self, entry: dict) -> bool:
+        """加载结构化预览，并显式呈现完整、降级或失败状态。
 
         Args:
             entry: 条目字典（来自 EntryTableModel）。
+
+        Returns:
+            完整正文或安全摘要是否可供后续发送。
         """
         title = entry.get("title", "未知标题")
         self._preview_title.setText(f"预览: {title[:40]}")
 
         try:
             from src.gui.stores import get_markdown_store
-            from src.gui.utils.preview_loader import load_entry_preview
+            from src.gui.utils.preview_loader import (
+                is_strict_preview_outcome,
+                load_entry_preview_outcome,
+            )
             md_store = get_markdown_store()
-            content = load_entry_preview(entry, md_store)
-            self._preview_text.setPlainText(content)
-            # M12: 缓存预览内容供发送到对话使用
-            self._selected_content = content
+            outcome = load_entry_preview_outcome(entry, md_store)
+            if not is_strict_preview_outcome(outcome):
+                raise TypeError("preview loader contract violation")
+
+            if outcome.status == "success":
+                self._clear_preview_status()
+                self._preview_text.setPlainText(outcome.content)
+                self._selected_content = outcome.content
+                return True
+
+            issue = outcome.issue
+            if issue is None:
+                raise TypeError("preview issue missing")
+            code = issue.code.value
+            if outcome.status == "degraded":
+                self._show_preview_status(
+                    "degraded",
+                    f"预览已降级：正在显示安全摘要（错误代码：{code}）",
+                )
+                self._preview_text.setPlainText(outcome.content)
+                self._selected_content = outcome.content
+                return True
+
+            self._show_preview_status(
+                "error",
+                f"预览加载失败（错误代码：{code}）",
+            )
+            self._preview_text.setPlainText("（正文预览不可用）")
+            self._selected_content = ""
+            return False
         except Exception as exc:
-            logger.error(f"加载预览失败: {exc}", exc_info=True)
-            # 最终降级：显示基本元数据
-            lines = [
-                f"标题: {entry.get('title', '')}",
-                f"来源: {entry.get('source_type', '')}",
-                f"归档时间: {entry.get('archived_at', '')}",
-                "",
-                entry.get("summary_one_sentence", "") or "（无摘要）",
-            ]
-            fallback = "\n".join(lines)
-            self._preview_text.setPlainText(fallback)
-            # M12: 降级内容也缓存
-            self._selected_content = fallback
+            logger.error(
+                "预览 adapter 失败: code=%s, error_type=%s",
+                _PREVIEW_ADAPTER_FAILED,
+                type(exc).__name__,
+            )
+            self._show_preview_status(
+                "error",
+                f"预览加载失败（错误代码：{_PREVIEW_ADAPTER_FAILED}）",
+            )
+            self._preview_text.setPlainText("（正文预览不可用）")
+            self._selected_content = ""
+            return False
+
+    def _show_preview_status(self, status: str, message: str) -> None:
+        """显示固定的预览降级/错误提示。"""
+
+        self._preview_status_label.setProperty(
+            "status",
+            "error" if status == "error" else "muted",
+        )
+        self._preview_status_label.setText(message)
+        self._preview_status_label.show()
+        self._preview_status_label.style().unpolish(self._preview_status_label)
+        self._preview_status_label.style().polish(self._preview_status_label)
+
+    def _clear_preview_status(self) -> None:
+        """清除上一条预览的降级或错误提示。"""
+
+        self._preview_status_label.clear()
+        self._preview_status_label.hide()
 
     # ------------------------------------------------------------------
     # 公共刷新接口
@@ -453,8 +588,8 @@ class BrowserView(QWidget):
             self._confirm_and_delete(entry)
         elif action == chat_action:
             self._selected_entry = entry
-            self._load_preview(entry)
-            self._on_send_to_chat()
+            if self._load_preview(entry):
+                self._on_send_to_chat()
 
     def _confirm_and_delete(self, entry: dict) -> None:
         """弹出确认对话框，确认后执行三层删除。
@@ -553,8 +688,16 @@ class BrowserView(QWidget):
             logger.warning("未选中条目，无法发送到对话")
             return
 
-        title = self._selected_entry.get("title", "未知标题")
-        logger.info(f"📤 发送知识条目到 AI 对话: {title}")
+        raw_knowledge_id = self._selected_entry.get("knowledge_id")
+        knowledge_id = (
+            raw_knowledge_id
+            if isinstance(raw_knowledge_id, int) and not isinstance(raw_knowledge_id, bool)
+            else "unknown"
+        )
+        logger.info(
+            "发送知识条目到 AI 对话: knowledge_id=%s",
+            knowledge_id,
+        )
         self.send_to_chat_requested.emit(
             self._selected_entry,
             self._selected_content,

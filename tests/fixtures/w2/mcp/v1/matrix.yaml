@@ -1,0 +1,76 @@
+schema_version: pkv.m13.w2.mcp-fixture.v1
+
+# The order is part of the stdio oracle: discovery is followed by one protocol
+# invocation of every published readonly tool in a single client session.
+readonly_tools:
+  - name: search_knowledge
+    arguments: {query: AI, strategy: bm25, top_k: 3}
+    forbid_error: true
+  - name: get_entry
+    arguments: {knowledge_id: "1"}
+    forbid_error: true
+  - name: list_tags
+    arguments: {}
+    forbid_error: true
+  - name: list_entries
+    arguments: {page: 1, per_page: 3}
+    forbid_error: true
+  - name: get_stats
+    arguments: {}
+    forbid_error: true
+  - name: get_related
+    arguments: {knowledge_id: "1", limit: 2}
+    forbid_error: true
+  - name: query_subgraph
+    arguments: {knowledge_id: "1", depth: 1, max_nodes: 10}
+    forbid_error: true
+  - name: explain_relation
+    arguments:
+      source_knowledge_id: "1"
+      target_knowledge_id: "2"
+      max_depth: 2
+    forbid_error: true
+  - name: collect_evidence
+    arguments: {question: AI, top_k: 2, relation_max_depth: 1}
+    forbid_error: true
+  - name: find_bridges
+    arguments: {seed_knowledge_id: "1", top_k: 2, max_depth: 1}
+    forbid_error: true
+  - name: timeline_of
+    arguments: {topic: AI, top_k: 2, sort_order: asc}
+    forbid_error: true
+  - name: contrast
+    arguments: {topic_a: AI, topic_b: Python, top_k: 2}
+    forbid_error: true
+
+ssrf:
+  public_addresses:
+    ipv4: 93.184.216.34
+    ipv6: "2606:4700:4700::1111"
+  invalid_urls:
+    - {id: empty, value: "", error_code: url_invalid}
+    - {id: file_scheme, value: "file:///etc/passwd", error_code: url_invalid}
+    - {id: credentials, value: "https://user:secret@example.com/", error_code: url_invalid}
+    - {id: backslash_authority, value: "https://example.com\\@127.0.0.1/", error_code: url_invalid}
+    - {id: raw_space, value: "https://example.com/a b", error_code: url_invalid}
+    - {id: zero_port, value: "https://example.com:0/", error_code: url_invalid}
+    - {id: high_port, value: "https://example.com:65536/", error_code: url_invalid}
+    - {id: negative_port, value: "https://example.com:-1/", error_code: url_invalid}
+    - {id: text_port, value: "https://example.com:invalid/", error_code: url_invalid}
+  forbidden_addresses:
+    - {id: ipv4_loopback, value: 127.0.0.1, error_code: ssrf_target_forbidden}
+    - {id: ipv4_private_10, value: 10.0.0.1, error_code: ssrf_target_forbidden}
+    - {id: ipv4_private_172, value: 172.16.0.1, error_code: ssrf_target_forbidden}
+    - {id: ipv4_private_192, value: 192.168.1.1, error_code: ssrf_target_forbidden}
+    - {id: metadata_link_local, value: 169.254.169.254, error_code: ssrf_target_forbidden}
+    - {id: ipv4_unspecified, value: 0.0.0.0, error_code: ssrf_target_forbidden}
+    - {id: ipv4_multicast, value: 224.0.0.1, error_code: ssrf_target_forbidden}
+    - {id: ipv6_loopback, value: "::1", error_code: ssrf_target_forbidden}
+    - {id: ipv6_link_local, value: "fe80::1", error_code: ssrf_target_forbidden}
+    - {id: ipv6_unique_local, value: "fc00::1", error_code: ssrf_target_forbidden}
+    - {id: ipv4_mapped_loopback, value: "::ffff:127.0.0.1", error_code: ssrf_target_forbidden}
+  redirect:
+    first_url: https://first.example/start
+    second_url: https://second.example/final
+    private_location: http://127.0.0.1/admin
+    rebinding_url: https://rebind.example/start

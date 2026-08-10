@@ -23,10 +23,16 @@ from src.storage.sqlite_store import SQLiteStore  # noqa: E402
 from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
 
 
-def assert_stats_payload(payload: dict) -> None:
+def assert_stats_payload(payload: dict, *, expect_tool_envelope: bool = False) -> None:
     """Assert the canonical public statistics schema."""
 
-    assert set(payload) == {"total_entries", "by_source_type", "top_tags"}
+    expected_keys = {"total_entries", "by_source_type", "top_tags"}
+    if expect_tool_envelope:
+        expected_keys |= {"status", "issues"}
+    assert set(payload) == expected_keys
+    if expect_tool_envelope:
+        assert payload["status"] == "success"
+        assert payload["issues"] == []
     assert isinstance(payload["total_entries"], int)
     assert not isinstance(payload["total_entries"], bool)
     assert payload["total_entries"] >= 0
@@ -198,7 +204,7 @@ class TestToolsIntegration:
             from src.mcp.tools import get_stats
             result = await get_stats()
 
-        assert_stats_payload(result)
+        assert_stats_payload(result, expect_tool_envelope=True)
 
 
 class TestResourcesIntegration:

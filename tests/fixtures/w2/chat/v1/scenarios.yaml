@@ -1,0 +1,37 @@
+schema_version: 1
+contract: gui.chat.v1
+scenario_version: w2.chat.v1
+terminal_statuses:
+  - completed
+  - stopped
+  - error
+scenarios:
+  success:
+    user_message: "fixture-success"
+    events:
+      - content: "Hello"
+      - content: " W2"
+      - prompt_tokens: 4
+        completion_tokens: 2
+    expected_assistant: "Hello W2"
+    expected_terminal: completed
+  switch_session:
+    origin_session: session-a
+    visible_session: session-b
+    expected_persisted_session: session-a
+    expected_terminal: completed
+  double_send:
+    expected_rejection: chat_busy
+    active_request_remains_running: true
+  stop:
+    expected_terminal: stopped
+    persist_updates: 0
+    discard_entire_turn: true
+  provider_failure:
+    expected_terminal: error
+    expected_error_code: chat_provider_failed
+    persist_updates: 0
+  save_failure:
+    expected_terminal: error
+    expected_error_code: chat_save_failed
+    preserve_pre_turn_state: true

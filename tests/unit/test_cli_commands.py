@@ -4,6 +4,7 @@ Unit tests for CLI commands.
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,11 +13,15 @@ from typing import Any, List, Optional
 import pytest
 import yaml
 from click.testing import CliRunner
+from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 import src.cli.commands as commands
-from src.retrieval.result import SearchResult
+import src.workflow.steps as workflow_steps
+from src.retrieval.result import RetrievalIssue, SearchResponse, SearchResult
+from src.runtime.errors import ErrorCode, PKVRuntimeError
+from src.storage.markdown_store import Entry
 from src.workflow.models import WorkflowResult
 
 
@@ -33,6 +38,8 @@ class DummyConfig:
         self.local_config_path = base_path / "config" / "local.yaml"
         self.llm_api_key: Optional[str] = None
         self.embd_api_key: Optional[str] = None
+        self.llm_provider = "openai_compatible"
+        self.embd_provider = "openai_compatible"
         self.log_level = "INFO"
         self.llm_base_url = "https://api.deepseek.com/v1"
         self.llm_model = "deepseek-chat"
@@ -40,6 +47,8 @@ class DummyConfig:
         self.embd_model = "text-embedding-3-small"
         self.embedding_dim = 1536
         self.embedding_dim_is_auto = False
+        self.embd_timeout_seconds = 30.0
+        self.embd_max_retries = 2
         self._values = {
             "storage.vault_dir": str(self.vault_dir),
         }
@@ -47,6 +56,7 @@ class DummyConfig:
     def get(self, key: str, default: Any = None) -> Any:
         """Return a configuration value."""
         return self._values.get(key, default)
+
 
 class DummyStatus:
     """Minimal context manager for console.status."""
@@ -63,12 +73,14 @@ def _make_entry(
     source_url: str = "https://example.com",
     tags: Optional[List[str]] = None,
     summary: str = "summary text",
-) -> SimpleNamespace:
-    return SimpleNamespace(
+) -> Entry:
+    return Entry(
         title=title,
+        source_type="generic",
         source_url=source_url,
         tags=tags or ["tag-a"],
         summary_100_words=summary,
+        content="body",
     )
 
 
@@ -91,6 +103,10 @@ def _make_search_results() -> List[SearchResult]:
     ]
 
 
+def _completed_search(strategy: str = "bm25") -> SearchResponse:
+    return SearchResponse.completed(_make_search_results(), strategy=strategy)
+
+
 def _printed_strings(console_spy) -> List[str]:
     texts: List[str] = []
     for call in console_spy.call_args_list:
@@ -100,6 +116,70 @@ def _printed_strings(console_spy) -> List[str]:
             if isinstance(value, str):
                 texts.append(value)
     return texts
+
+
+def _public_cli_output(response, sink: io.StringIO) -> str:
+    stderr = getattr(response, "stderr", "")
+    return f"{sink.getvalue()}\n{response.output}\n{stderr}"
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_code"),
+    [
+        (["show", "1"], "cli_show_failed"),
+        (["list"], "cli_list_failed"),
+        (["config", "show"], "cli_config_read_failed"),
+        (["config", "get", "ai.llm.api_key"], "cli_config_get_failed"),
+        (
+            ["config", "set", "ai.llm.model", "safe-model"],
+            "cli_config_set_failed",
+        ),
+        (["stats"], "cli_stats_failed"),
+    ],
+)
+def test_cli_command_failures_are_stable_and_redacted(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    console_spy,
+    caplog,
+    args: list[str],
+    expected_code: str,
+) -> None:
+    """Public command failures must not echo paths, credentials, or exception text."""
+
+    canary = (
+        r"C:\private\vault.db"
+        " https://user:pass@example.test/path?access_token=CLI-SECRET-CANARY"
+    )
+    mocker.patch.object(commands, "_load_config", side_effect=RuntimeError(canary))
+    caplog.set_level("ERROR", logger="pkv.cli")
+
+    response = runner.invoke(commands.cli, args)
+
+    assert response.exit_code != 0
+    public_output = "\n".join(_printed_strings(console_spy))
+    combined = f"{public_output}\n{response.output}\n{caplog.text}"
+    assert expected_code in combined
+    assert "RuntimeError" in caplog.text
+    assert "CLI-SECRET-CANARY" not in combined
+    assert "user:pass" not in combined
+    assert "private" not in combined
+
+
+def _make_db_entry(**overrides: Any) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "knowledge_id": 3,
+        "title": "Entry",
+        "source_type": "webpage",
+        "source_url": "https://example.com/post",
+        "file_path": "vault/entry.md",
+        "archived_at": "2026-08-07 12:00:00",
+        "tags": "",
+        "keywords": "",
+        "summary_100_words": "",
+    }
+    entry.update(overrides)
+    return entry
 
 
 @pytest.fixture
@@ -138,7 +218,13 @@ def test_archive_command_success(
     entry = _make_entry(title="CLI Test", source_url=url)
     result = WorkflowResult(
         success=True,
-        data={"knowledge_id": 42, "file_path": "vault/test.md", "entry": entry},
+        data={
+            "knowledge_id": 42,
+            "status": "ready",
+            "core_committed": True,
+            "file_path": "vault/test.md",
+            "entry": entry,
+        },
         errors=[],
         logs=["ok"],
     )
@@ -163,6 +249,125 @@ def test_archive_command_success(
     )
 
 
+@pytest.mark.parametrize("use_absolute", [False, True], ids=["relative", "absolute"])
+def test_archive_existing_local_file_receives_one_shot_capability(
+    use_absolute: bool,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    note = tmp_path / "note.md"
+    note.write_text("# Imported note\nBody", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    source = str(note) if use_absolute else note.name
+    result = WorkflowResult(
+        success=True,
+        data={
+            "knowledge_id": 71,
+            "status": "ready",
+            "core_committed": True,
+            "file_path": "note.md",
+            "entry": _make_entry(source_url=source),
+        },
+    )
+    engine = mocker.MagicMock()
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    mocker.patch.object(commands.asyncio, "run", return_value=result)
+
+    response = runner.invoke(commands.cli, ["archive", source, "--quiet"])
+
+    assert response.exit_code == 0
+    payload = engine.execute_async.call_args.args[1]
+    capability = payload[workflow_steps._CLI_LOCAL_FILE_IMPORT_KEY]
+    assert payload["url"] == source
+    assert type(capability) is tuple
+    assert capability[0] is workflow_steps._CLI_LOCAL_FILE_IMPORT_TOKEN
+    assert capability[1] == source
+    assert capability is not True
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "https://example.com/note.md",
+        "HTTPS://example.com/note.md",
+        "file:///C:/private/note.md",
+        r"\\server\share\note.md",
+        "//server/share/note.md",
+        "smb://server/share/note.md",
+    ],
+)
+def test_archive_network_shapes_never_receive_local_file_capability_or_probe(
+    source: str,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    result = WorkflowResult(
+        success=True,
+        data={
+            "knowledge_id": 72,
+            "status": "ready",
+            "core_committed": True,
+            "file_path": "note.md",
+            "entry": _make_entry(source_url=source),
+        },
+    )
+    engine = mocker.MagicMock()
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    mocker.patch.object(commands.asyncio, "run", return_value=result)
+    validate = mocker.patch.object(
+        commands,
+        "validate_path_components",
+        side_effect=AssertionError("network-shaped input probed as local path"),
+    )
+    lstat = mocker.patch.object(
+        commands.os,
+        "lstat",
+        side_effect=AssertionError("network-shaped input lstat'ed"),
+    )
+
+    response = runner.invoke(commands.cli, ["archive", source, "--quiet"])
+
+    assert response.exit_code == 0
+    payload = engine.execute_async.call_args.args[1]
+    assert workflow_steps._CLI_LOCAL_FILE_IMPORT_KEY not in payload
+    validate.assert_not_called()
+    lstat.assert_not_called()
+
+
+def test_archive_unsafe_local_file_state_fails_without_publishing_path(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    source = r"C:\private\CLI-FILE-SECRET-CANARY\note.md"
+    engine = mocker.MagicMock()
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    mocker.patch.object(
+        commands,
+        "validate_path_components",
+        side_effect=PKVRuntimeError(
+            ErrorCode.DATA_ROOT_UNSAFE,
+            source,
+        ),
+    )
+
+    response = runner.invoke(commands.cli, ["archive", source])
+
+    assert response.exit_code != 0
+    engine.execute_async.assert_not_called()
+    published = "\n".join(_printed_strings(console_spy)) + response.output
+    assert "cli_archive_local_file_unsafe" in published
+    assert "CLI-FILE-SECRET-CANARY" not in published
+    assert source not in published
+
+
 def test_archive_command_with_skip_sharpen(
     runner: CliRunner,
     mocker: pytest.MockFixture,
@@ -171,7 +376,16 @@ def test_archive_command_with_skip_sharpen(
 ) -> None:
     """archive should pass skip_sharpen when flag is provided."""
     url = "https://example.com/skip"
-    result = WorkflowResult(success=True, data={"knowledge_id": 7, "file_path": "x"})
+    result = WorkflowResult(
+        success=True,
+        data={
+            "knowledge_id": 7,
+            "status": "ready",
+            "core_committed": True,
+            "file_path": "x",
+            "entry": _make_entry(source_url=url),
+        },
+    )
 
     engine = mocker.MagicMock()
     mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
@@ -192,7 +406,16 @@ def test_archive_command_with_manual_tags(
 ) -> None:
     """archive should forward manual tags to workflow input."""
     url = "https://example.com/tags"
-    result = WorkflowResult(success=True, data={"knowledge_id": 9, "file_path": "x"})
+    result = WorkflowResult(
+        success=True,
+        data={
+            "knowledge_id": 9,
+            "status": "ready",
+            "core_committed": True,
+            "file_path": "x",
+            "entry": _make_entry(source_url=url),
+        },
+    )
 
     engine = mocker.MagicMock()
     mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
@@ -226,6 +449,10 @@ def test_archive_command_failure(
     assert response.exit_code != 0
     engine.execute_async.assert_called_once()
     assert console_spy.call_count >= 1
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "boom" not in printed
+    assert "workflow_step_failed" in printed
+    assert "归档步骤未能完成" in printed
 
 
 def test_archive_command_committed_failure_warns_do_not_retry(
@@ -241,7 +468,7 @@ def test_archive_command_committed_failure_warns_do_not_retry(
         data={
             "knowledge_id": 7,
             "status": "repair_required",
-            "operation_id": "op-9",
+            "operation_id": "9" * 32,
             "core_committed": True,
             "do_not_retry": True,
             "repair_actions": ["repair_operation_journal"],
@@ -258,7 +485,7 @@ def test_archive_command_committed_failure_warns_do_not_retry(
 
     assert response.exit_code != 0
     printed = "\n".join(_printed_strings(console_spy))
-    assert "op-9" in printed
+    assert "9" * 32 in printed
     assert "repair_required" in printed
     assert "repair_operation_journal" in printed
     assert "请勿盲目重试" in printed
@@ -279,13 +506,24 @@ def test_archive_command_success_degraded_warns_repair(
             "knowledge_id": 3,
             "entry": entry,
             "status": "degraded",
-            "operation_id": "op-deg-1",
+            "operation_id": "d" * 32,
             "repair_actions": ["rebuild_vectors_for_entry"],
             "core_committed": True,
             "do_not_retry": True,
         },
         errors=[],
         logs=[],
+        warnings=["向量索引写入失败，核心归档已提交"],
+        issues=[
+            {
+                "code": "workflow_step_failed",
+                "message": "向量索引不可用",
+                "severity": "warning",
+                "recoverable": True,
+                "stage": "index",
+            }
+        ],
+        terminal="degraded",
     )
 
     engine = mocker.MagicMock()
@@ -296,10 +534,665 @@ def test_archive_command_success_degraded_warns_repair(
 
     assert response.exit_code == 0
     printed = "\n".join(_printed_strings(console_spy))
-    assert "op-deg-1" in printed
-    assert "辅助索引需要修复" in printed
+    assert "d" * 32 in printed
+    assert "degraded" in printed
+    assert "归档步骤已降级" in printed
+    assert "workflow_step_failed" in printed
+    assert "stage=index" in printed
+    assert "recoverable=true" in printed
+    assert "向量索引不可用" not in printed
+    assert "核心归档已提交" not in printed
     assert "rebuild_vectors_for_entry" in printed
     assert "请勿盲目重试" in printed
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    [
+        "op-sk-OPERATION-ID-SECRET-CANARY",
+        "api_key_OPERATION-ID-SECRET-CANARY",
+        "A" * 32,
+        "f" * 31,
+        True,
+    ],
+)
+def test_archive_operation_id_only_publishes_lowercase_uuid_hex(
+    operation_id: object,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    result = WorkflowResult(
+        success=False,
+        data={
+            "knowledge_id": 7,
+            "status": "repair_required",
+            "operation_id": operation_id,
+            "core_committed": True,
+            "do_not_retry": True,
+            "repair_actions": ["repair_operation_journal"],
+        },
+        errors=["backend detail"],
+    )
+    engine = mocker.MagicMock()
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    mocker.patch.object(commands.asyncio, "run", return_value=result)
+
+    response = runner.invoke(
+        commands.cli,
+        ["archive", "https://example.com/operation"],
+    )
+
+    assert response.exit_code != 0
+    published = "\n".join(_printed_strings(console_spy)) + response.output
+    assert "OPERATION-ID-SECRET-CANARY" not in published
+    assert "api_key_" not in published
+    assert "已隐藏" in published
+
+
+def test_archive_quiet_degraded_still_exposes_warning(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    result = WorkflowResult(
+        success=True,
+        data={
+            "knowledge_id": 8,
+            "status": "degraded",
+            "core_committed": True,
+            "entry": _make_entry(source_url="https://example.com/quiet"),
+        },
+        warnings=["辅助索引待修复"],
+        issues=[
+            {
+                "code": "workflow_step_failed",
+                "message": "辅助索引失败",
+                "severity": "warning",
+                "recoverable": True,
+            }
+        ],
+        terminal="degraded",
+    )
+    engine = mocker.MagicMock()
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    mocker.patch.object(commands.asyncio, "run", return_value=result)
+
+    response = runner.invoke(
+        commands.cli,
+        ["archive", "https://example.com/quiet", "--quiet"],
+    )
+
+    assert response.exit_code == 0
+    input_data = engine.execute_async.call_args.args[1]
+    assert input_data["skip_sharpen"] is True
+    assert input_data["skip_review"] is True
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "degraded" in printed
+    assert "归档步骤已降级" in printed
+    assert "workflow_step_failed" in printed
+    assert "辅助索引待修复" not in printed
+    assert "辅助索引失败" not in printed
+
+
+@pytest.mark.parametrize(
+    "variant",
+    (
+        "success_with_degraded_storage",
+        "core_not_committed",
+        "missing_core_committed",
+        "missing_entry",
+        "duck_typed_entry",
+        "invalid_entry_tags",
+    ),
+)
+def test_archive_rejects_incoherent_or_malformed_completed_projection_before_success(
+    variant: str,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    entry: object = _make_entry()
+    terminal = "success"
+    status = "ready"
+    core_committed = True
+    include_core_committed = True
+    warnings: list[str] = []
+    issues: list[dict[str, object]] = []
+
+    if variant == "success_with_degraded_storage":
+        status = "degraded"
+    elif variant == "core_not_committed":
+        core_committed = False
+    elif variant == "missing_core_committed":
+        include_core_committed = False
+    elif variant == "missing_entry":
+        entry = {}
+    elif variant == "duck_typed_entry":
+        entry = SimpleNamespace(
+            title="title",
+            source_url=None,
+            tags=["tag"],
+            summary_100_words="summary",
+        )
+    else:
+        assert type(entry) is Entry
+        entry.tags = [object()]
+
+    data: dict[str, object] = {
+        "knowledge_id": 42,
+        "status": status,
+        "entry": entry,
+    }
+    if include_core_committed:
+        data["core_committed"] = core_committed
+    result = WorkflowResult(
+        success=True,
+        terminal=terminal,
+        data=data,
+        warnings=warnings,
+        issues=issues,
+    )
+    engine = mocker.MagicMock()
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    mocker.patch.object(commands.asyncio, "run", return_value=result)
+
+    response = runner.invoke(commands.cli, ["archive", "https://example.com/item"])
+
+    assert response.exit_code != 0
+    published = "\n".join(_printed_strings(console_spy)) + response.output
+    assert "成功: 归档完成" not in published
+    assert "工作流终态: error" in published
+
+
+def test_archive_accepts_non_storage_degradation_with_ready_committed_storage(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    result = WorkflowResult(
+        success=True,
+        terminal="degraded",
+        data={
+            "knowledge_id": 42,
+            "status": "ready",
+            "core_committed": True,
+            "entry": _make_entry(),
+        },
+        warnings=["stable provider warning"],
+        issues=[
+            {
+                "code": "provider_unavailable",
+                "message": "stable provider warning",
+                "severity": "warning",
+                "recoverable": True,
+            }
+        ],
+    )
+    engine = mocker.MagicMock()
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    mocker.patch.object(commands.asyncio, "run", return_value=result)
+
+    response = runner.invoke(commands.cli, ["archive", "https://example.com/item"])
+
+    assert response.exit_code == 0
+    published = "\n".join(_printed_strings(console_spy)) + response.output
+    assert "归档以 degraded 终态完成" in published
+    assert "归档失败" not in published
+
+
+def test_archive_unknown_exception_does_not_echo_canary_or_path(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    logger_spy = mocker.patch.object(commands.logger, "error")
+    engine = mocker.MagicMock()
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    mocker.patch.object(
+        commands.asyncio,
+        "run",
+        side_effect=RuntimeError("CANARY C:\\private\\vault\\secret.txt"),
+    )
+
+    response = runner.invoke(
+        commands.cli,
+        ["archive", "https://example.com/failure"],
+    )
+
+    assert response.exit_code != 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "发生内部异常" in printed
+    assert "CANARY" not in printed
+    assert "C:\\private" not in printed
+    assert "secret.txt" not in printed
+    logged = repr(logger_spy.call_args_list)
+    assert "CANARY" not in logged
+    assert "C:\\private" not in logged
+    assert "secret.txt" not in logged
+
+
+@pytest.mark.parametrize(
+    ("terminal", "code", "stage", "recoverable", "expected_exit"),
+    [
+        ("success", ErrorCode.STORAGE_INDEX_FAILED, "sqlite_index", True, 0),
+        ("degraded", ErrorCode.STORAGE_VECTOR_FAILED, "vector_index", True, 0),
+        ("error", ErrorCode.STORAGE_REPAIR_REQUIRED, "storage_finalize", False, 1),
+    ],
+)
+def test_archive_terminal_never_publishes_upstream_canaries(
+    terminal: str,
+    code: ErrorCode,
+    stage: str,
+    recoverable: bool,
+    expected_exit: int,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    path_canary = r"C:\private\ARCHIVE_PATH_CANARY\vault.db"
+    query_canary = "ARCHIVE_QUERY_SECRET_CANARY"
+    secret_url = f"https://example.com/article?api_key={query_canary}"
+    api_key_canary = "sk-ARCHIVE-API-KEY-CANARY"
+    raw_diagnostic = f"{path_canary} {secret_url} {api_key_canary}"
+    severity = "error" if terminal == "error" else "warning"
+    data = {
+        "knowledge_id": 41,
+        "entry": _make_entry(title="Safe title", source_url=secret_url),
+        "file_path": path_canary,
+        "status": (
+            "repair_required"
+            if terminal == "error"
+            else "degraded"
+            if terminal == "degraded"
+            else "ready"
+        ),
+        "operation_id": {
+            "success": "a" * 32,
+            "degraded": "b" * 32,
+            "error": "c" * 32,
+        }[terminal],
+        "core_committed": True,
+        "do_not_retry": terminal in {"degraded", "error"},
+        "repair_actions": (
+            ["repair_operation_journal"]
+            if terminal == "error"
+            else ["rebuild_vectors_for_entry"]
+            if terminal == "degraded"
+            else []
+        ),
+    }
+    result = WorkflowResult(
+        success=terminal != "error",
+        terminal=terminal,
+        data=data,
+        errors=[raw_diagnostic] if terminal == "error" else [],
+        warnings=[raw_diagnostic] if terminal == "degraded" else [],
+        issues=(
+            [
+                {
+                    "code": code,
+                    "message": raw_diagnostic,
+                    "severity": severity,
+                    "stage": stage,
+                    "recoverable": recoverable,
+                }
+            ]
+            if terminal != "success"
+            else []
+        ),
+    )
+    engine = mocker.MagicMock()
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    mocker.patch.object(commands.asyncio, "run", return_value=result)
+    sink = io.StringIO()
+    mocker.patch.object(
+        commands,
+        "console",
+        Console(file=sink, force_terminal=False, color_system=None, width=160),
+    )
+
+    response = runner.invoke(commands.cli, ["archive", secret_url])
+
+    assert response.exit_code == expected_exit
+    published = _public_cli_output(response, sink)
+    assert path_canary not in published
+    assert "ARCHIVE_PATH_CANARY" not in published
+    assert query_canary not in published
+    assert api_key_canary not in published
+    if terminal != "success":
+        assert code.value in published
+        assert f"stage={stage}" in published
+        assert f"recoverable={str(recoverable).lower()}" in published
+    assert data["status"] in published
+    assert data["operation_id"] in published
+    for action in data["repair_actions"]:
+        assert action in published
+    if terminal != "error":
+        assert "已隐藏" in published
+
+
+def test_archive_issue_stage_step_and_cause_are_fixed_public_projections() -> None:
+    canary = "ARCHIVE-DIAGNOSTIC-SECRET-CANARY"
+
+    projected = commands._normalise_archive_issue(
+        {
+            "code": ErrorCode.WORKFLOW_STEP_FAILED,
+            "message": f"message-{canary}",
+            "severity": "warning",
+            "stage": f"stage-{canary}",
+            "step_id": f"step-{canary}",
+            "recoverable": "false",
+            "cause_type": f"cause-{canary}",
+        },
+        default_severity="warning",
+    )
+
+    assert projected == {
+        "code": ErrorCode.WORKFLOW_STEP_FAILED.value,
+        "message": "归档步骤已降级",
+        "severity": "warning",
+        "stage": "workflow",
+        "recoverable": False,
+        "step_id": "unknown_step",
+    }
+    assert canary not in repr(projected)
+
+    safe = commands._normalise_archive_issue(
+        {
+            "code": ErrorCode.WORKFLOW_STEP_FAILED,
+            "severity": "error",
+            "stage": "workflow_fetch",
+            "step_id": "fetch_content",
+            "recoverable": True,
+        },
+        default_severity="error",
+    )
+    assert safe["stage"] == "workflow_fetch"
+    assert safe["step_id"] == "fetch_content"
+    assert safe["recoverable"] is True
+
+
+@pytest.mark.parametrize(
+    "terminal_case",
+    ["missing", "none", "unknown", "non_string"],
+)
+def test_archive_invalid_or_missing_terminal_fails_closed(
+    terminal_case: str,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    terminal_canary = "TERMINAL-CONTRACT-SECRET-CANARY"
+    diagnostic_canary = r"C:\private\WORKFLOW-CONTRACT-CANARY\secret.key"
+    result = SimpleNamespace(
+        success=True,
+        data={
+            "status": "error",
+            "operation_id": "e" * 32,
+            "repair_actions": [],
+        },
+        errors=[diagnostic_canary],
+        warnings=[],
+        issues=[
+            {
+                "code": ErrorCode.WORKFLOW_STEP_FAILED,
+                "message": diagnostic_canary,
+                "severity": "error",
+                "stage": "upstream",
+                "recoverable": True,
+            }
+        ],
+    )
+    if terminal_case == "missing":
+        del result.data
+    elif terminal_case == "none":
+        result.terminal = None
+    elif terminal_case == "unknown":
+        result.terminal = f"success-{terminal_canary}"
+    elif terminal_case == "non_string":
+        result.terminal = {"value": terminal_canary}
+
+    engine = mocker.MagicMock()
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    mocker.patch.object(commands.asyncio, "run", return_value=result)
+    logger_spy = mocker.patch.object(commands.logger, "error")
+    sink = io.StringIO()
+    mocker.patch.object(
+        commands,
+        "console",
+        Console(file=sink, force_terminal=False, color_system=None, width=160),
+    )
+
+    response = runner.invoke(
+        commands.cli,
+        ["archive", "https://example.com/contract"],
+    )
+
+    assert response.exit_code != 0
+    published = _public_cli_output(response, sink)
+    assert "成功: 归档完成" not in published
+    assert "归档结果" not in published
+    assert "工作流终态: error" in published
+    assert "workflow_step_failed" in published
+    assert "stage=workflow_contract" in published
+    assert "recoverable=false" in published
+    assert terminal_canary not in published
+    assert diagnostic_canary not in published
+    logged = repr(logger_spy.call_args_list)
+    assert terminal_canary not in logged
+    assert diagnostic_canary not in logged
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        SimpleNamespace(
+            terminal="success",
+            success=False,
+            data={"knowledge_id": 1, "status": "ready"},
+            issues=(),
+            errors=(),
+            warnings=(),
+        ),
+        SimpleNamespace(
+            terminal="error",
+            success=True,
+            data={"status": "ready"},
+            issues=(),
+            errors=(),
+            warnings=(),
+        ),
+        SimpleNamespace(
+            terminal="success",
+            success=True,
+            data=None,
+            issues=(),
+            errors=(),
+            warnings=(),
+        ),
+        SimpleNamespace(
+            terminal="success",
+            success=True,
+            data={},
+            issues=(),
+            errors=(),
+            warnings=(),
+        ),
+        SimpleNamespace(
+            terminal="success",
+            success=True,
+            data={"knowledge_id": 0, "status": "ready"},
+            issues=(),
+            errors=(),
+            warnings=(),
+        ),
+        SimpleNamespace(
+            terminal="degraded",
+            success=True,
+            data={"knowledge_id": True, "status": "degraded"},
+            issues=(),
+            errors=(),
+            warnings=(),
+        ),
+    ],
+    ids=[
+        "success-terminal-false-bool",
+        "error-terminal-true-bool",
+        "non-dict-data",
+        "missing-knowledge-id",
+        "zero-knowledge-id",
+        "bool-knowledge-id",
+    ],
+)
+def test_archive_inconsistent_or_uncommitted_success_fails_closed(
+    result: SimpleNamespace,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    """A malformed terminal or missing committed identity never becomes success."""
+
+    sink = io.StringIO()
+    mocker.patch.object(
+        commands,
+        "console",
+        Console(file=sink, force_terminal=False, color_system=None),
+    )
+    mocker.patch.object(commands, "WorkflowEngine", return_value=mocker.MagicMock())
+    mocker.patch.object(commands.asyncio, "run", return_value=result)
+
+    response = runner.invoke(commands.cli, ["archive", "https://example.com/item"])
+
+    output = _public_cli_output(response, sink)
+    assert response.exit_code != 0
+    assert "workflow_step_failed" in output
+    assert "归档完成" not in output
+
+
+@pytest.mark.parametrize("terminal", ["success", "degraded"])
+@pytest.mark.parametrize(
+    "storage_status",
+    [pytest.param(None, id="missing"), "repair_required", "rejected", "unknown", True],
+)
+def test_archive_non_completed_storage_status_fails_closed(
+    terminal: str,
+    storage_status: object,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    """Fatal, missing, unknown, and non-string storage states cannot look complete."""
+
+    data: dict[str, object] = {"knowledge_id": 17}
+    if storage_status is not None:
+        data["status"] = storage_status
+    result = SimpleNamespace(
+        terminal=terminal,
+        success=True,
+        data=data,
+        issues=(),
+        errors=(),
+        warnings=(),
+    )
+    sink = io.StringIO()
+    mocker.patch.object(
+        commands,
+        "console",
+        Console(file=sink, force_terminal=False, color_system=None),
+    )
+    mocker.patch.object(commands, "WorkflowEngine", return_value=mocker.MagicMock())
+    mocker.patch.object(commands.asyncio, "run", return_value=result)
+
+    response = runner.invoke(commands.cli, ["archive", "https://example.com/item"])
+
+    output = _public_cli_output(response, sink)
+    assert response.exit_code != 0
+    assert "workflow_step_failed" in output
+    assert "归档完成" not in output
+
+
+@pytest.mark.parametrize(
+    ("terminal", "errors", "warnings", "issues"),
+    [
+        ("success", ["BACKEND-ERROR"], [], []),
+        ("success", [], ["hidden warning"], []),
+        (
+            "success",
+            [],
+            [],
+            [{"severity": "warning", "message": "hidden warning"}],
+        ),
+        ("degraded", [], [], []),
+        (
+            "degraded",
+            [],
+            ["warning"],
+            [{"severity": "error", "message": "hidden error"}],
+        ),
+        ("degraded", (), ["warning"], []),
+    ],
+    ids=[
+        "success-hides-errors",
+        "success-hides-warnings",
+        "success-hides-issues",
+        "degraded-without-diagnostic",
+        "degraded-hides-error-issue",
+        "diagnostics-must-be-exact-lists",
+    ],
+)
+def test_archive_inconsistent_completion_diagnostics_fail_closed(
+    terminal: str,
+    errors: object,
+    warnings: object,
+    issues: object,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    """A completed terminal cannot erase or contradict workflow diagnostics."""
+
+    result = SimpleNamespace(
+        terminal=terminal,
+        success=True,
+        data={"knowledge_id": 17, "status": "ready"},
+        errors=errors,
+        warnings=warnings,
+        issues=issues,
+    )
+    sink = io.StringIO()
+    mocker.patch.object(
+        commands,
+        "console",
+        Console(file=sink, force_terminal=False, color_system=None),
+    )
+    mocker.patch.object(commands, "WorkflowEngine", return_value=mocker.MagicMock())
+    mocker.patch.object(commands.asyncio, "run", return_value=result)
+
+    response = runner.invoke(commands.cli, ["archive", "https://example.com/item"])
+
+    output = _public_cli_output(response, sink)
+    assert response.exit_code != 0
+    assert "workflow_step_failed" in output
+    assert "归档完成" not in output
+    assert "BACKEND-ERROR" not in output
+
+
+def test_issue_text_never_falls_back_to_unknown_object_repr() -> None:
+    class UnsafeIssue:
+        def __str__(self) -> str:
+            return "CANARY C:\\private\\secret.txt"
+
+    rendered = commands._issue_text(UnsafeIssue())
+
+    assert rendered == "retrieval_backend_failed: 检索服务暂不可用 (retrieval)"
+    assert "CANARY" not in rendered
+    assert "C:\\private" not in rendered
 
 
 def test_search_command_auto_strategy(
@@ -310,16 +1203,10 @@ def test_search_command_auto_strategy(
     console_spy,
 ) -> None:
     """search should use QueryRouter when strategy is auto."""
-    results = _make_search_results()
     router = mocker.MagicMock()
-    router.search.return_value = results
+    router.search.return_value = _completed_search("bm25")
     mocker.patch.object(commands, "QueryRouter", return_value=router)
-    mocker.patch.object(commands, "Embedder", return_value=mocker.MagicMock())
-    mocker.patch.object(commands, "VectorRetriever", return_value=mocker.MagicMock())
-
-    text_processor = mocker.MagicMock()
-    text_processor.tokenize_chinese.return_value = "a b"
-    mocker.patch.object(commands, "TextProcessor", return_value=text_processor)
+    provider_factory = mocker.patch.object(commands, "create_embedder")
 
     response = runner.invoke(commands.cli, ["search", "hello world", "--limit", "3"])
 
@@ -327,10 +1214,11 @@ def test_search_command_auto_strategy(
     commands.QueryRouter.assert_called_once_with(
         db_path=mock_config.db_path,
         vector_index_dir=mock_config.vector_index_dir,
-        embedder=mocker.ANY,
         token_threshold=10,
+        embedder_factory=mocker.ANY,
     )
     router.search.assert_called_once_with("hello world", 3)
+    provider_factory.assert_not_called()
     assert any("bm25" in text for text in _printed_strings(console_spy))
 
 
@@ -342,11 +1230,15 @@ def test_search_command_bm25_strategy(
     console_spy,
 ) -> None:
     """search should use BM25 retriever when strategy is bm25."""
-    results = _make_search_results()
     retriever = mocker.MagicMock()
-    retriever.search.return_value = results
-    mocker.patch.object(commands, "BM25Retriever", return_value=retriever)
+    retriever.search.return_value = _completed_search("bm25")
+    mocker.patch.object(
+        commands,
+        "BM25Retriever",
+        return_value=retriever,
+    )
     mocker.patch.object(commands, "QueryRouter", return_value=mocker.MagicMock())
+    provider_factory = mocker.patch.object(commands, "create_embedder")
 
     response = runner.invoke(
         commands.cli, ["search", "keyword", "--strategy", "bm25", "--limit", "2"]
@@ -355,6 +1247,7 @@ def test_search_command_bm25_strategy(
     assert response.exit_code == 0
     commands.BM25Retriever.assert_called_once_with(mock_config.db_path)
     retriever.search.assert_called_once_with("keyword", 2)
+    provider_factory.assert_not_called()
 
 
 def test_search_command_vector_strategy(
@@ -365,21 +1258,70 @@ def test_search_command_vector_strategy(
     console_spy,
 ) -> None:
     """search should use vector retriever when strategy is vector."""
-    results = _make_search_results()
     retriever = mocker.MagicMock()
-    retriever.search.return_value = results
-    mocker.patch.object(commands, "VectorRetriever", return_value=retriever)
-    mocker.patch.object(commands, "Embedder", return_value=mocker.MagicMock())
+    retriever.search.return_value = _completed_search("vector")
+    vector_type = mocker.patch.object(commands, "VectorRetriever", return_value=retriever)
+    embedder = mocker.MagicMock()
+    provider_factory = mocker.patch.object(
+        commands, "create_embedder", return_value=embedder
+    )
 
     response = runner.invoke(
         commands.cli, ["search", "semantic", "--strategy", "vector", "--limit", "4"]
     )
 
     assert response.exit_code == 0
-    commands.VectorRetriever.assert_called_once_with(
-        mock_config.db_path, mock_config.vector_index_dir, mocker.ANY
+    provider_factory.assert_not_called()
+    factory = vector_type.call_args.kwargs["embedder_factory"]
+    assert factory() is embedder
+    provider_factory.assert_called_once_with(mock_config)
+    vector_type.assert_called_once_with(
+        mock_config.db_path,
+        mock_config.vector_index_dir,
+        embedder_factory=mocker.ANY,
     )
     retriever.search.assert_called_once_with("semantic", 4)
+
+
+def test_search_hybrid_defers_provider_to_retriever(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    mock_config: DummyConfig,
+    console_spy,
+) -> None:
+    retriever = mocker.MagicMock()
+    retriever.search.return_value = SearchResponse(
+        status="no_hits",
+        strategy="hybrid",
+    )
+    hybrid_type = mocker.patch.object(
+        commands,
+        "HybridRetriever",
+        return_value=retriever,
+    )
+    embedder = mocker.MagicMock()
+    provider_factory = mocker.patch.object(
+        commands,
+        "create_embedder",
+        return_value=embedder,
+    )
+
+    response = runner.invoke(
+        commands.cli,
+        ["search", "combined", "--strategy", "hybrid"],
+    )
+
+    assert response.exit_code == 0
+    provider_factory.assert_not_called()
+    factory = hybrid_type.call_args.kwargs["embedder_factory"]
+    assert factory() is embedder
+    provider_factory.assert_called_once_with(mock_config)
+    hybrid_type.assert_called_once_with(
+        mock_config.db_path,
+        mock_config.vector_index_dir,
+        embedder_factory=mocker.ANY,
+    )
 
 
 def test_search_command_json_output(
@@ -392,7 +1334,7 @@ def test_search_command_json_output(
     """search should emit JSON when output format is json."""
     results = _make_search_results()
     retriever = mocker.MagicMock()
-    retriever.search.return_value = results
+    retriever.search.return_value = SearchResponse.completed(results, strategy="bm25")
     mocker.patch.object(commands, "BM25Retriever", return_value=retriever)
 
     response = runner.invoke(
@@ -404,9 +1346,331 @@ def test_search_command_json_output(
     payload_text = response.output
     payload = json.loads(payload_text)
     assert payload["query"] == "query"
+    assert payload["status"] == "success"
     assert payload["strategy"] == "bm25"
     assert payload["total"] == len(results)
+    assert payload["issues"] == []
     assert payload["results"][0]["entry_id"] == 1
+
+
+def test_search_degraded_is_successful_but_warns_in_table_output(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    issue = RetrievalIssue(
+        code=ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+        message="一条结果的元数据缺失",
+        stage="metadata_hydration",
+        recoverable=True,
+    )
+    retriever = mocker.MagicMock()
+    retriever.search.return_value = SearchResponse.degraded_response(
+        _make_search_results()[:1],
+        [issue],
+        strategy="bm25",
+    )
+    mocker.patch.object(
+        commands,
+        "BM25Retriever",
+        return_value=retriever,
+    )
+
+    response = runner.invoke(
+        commands.cli,
+        ["search", "query", "--strategy", "bm25"],
+    )
+
+    assert response.exit_code == 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "状态: degraded" in printed
+    assert "警告" in printed
+    assert "retrieval_metadata_inconsistent" in printed
+    assert "检索结果元数据不一致" in printed
+    assert "一条结果的元数据缺失" not in printed
+
+
+def test_search_invalid_json_is_structured_and_nonzero(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    retriever = mocker.MagicMock()
+    retriever.search.return_value = SearchResponse.invalid(
+        "查询不能为空",
+        strategy="bm25",
+    )
+    retriever_type = mocker.patch.object(
+        commands,
+        "BM25Retriever",
+        return_value=retriever,
+    )
+
+    response = runner.invoke(
+        commands.cli,
+        ["search", "   ", "--strategy", "bm25", "--format", "json"],
+    )
+
+    assert response.exit_code != 0
+    payload = json.loads(response.output)
+    assert payload["status"] == "invalid"
+    assert payload["total"] == 0
+    assert payload["results"] == []
+    assert payload["issues"][0]["code"] == "retrieval_invalid_query"
+    assert payload["issues"][0]["message"] == "查询条件无效"
+    retriever_type.assert_not_called()
+
+
+def test_search_provider_failure_is_error_not_empty_results(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    provider_factory = mocker.patch.object(
+        commands,
+        "create_embedder",
+        side_effect=PKVRuntimeError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "Embedding Provider 不可用",
+            stage="provider_connect",
+            recoverable=True,
+        ),
+    )
+
+    def vector_factory(db_path, vector_index_dir, *, embedder_factory):
+        retriever = mocker.MagicMock()
+        retriever.search.side_effect = lambda query, limit: embedder_factory()
+        return retriever
+
+    vector_retriever = mocker.patch.object(
+        commands,
+        "VectorRetriever",
+        side_effect=vector_factory,
+    )
+
+    response = runner.invoke(
+        commands.cli,
+        ["search", "semantic", "--strategy", "vector", "--format", "json"],
+    )
+
+    assert response.exit_code != 0
+    payload = json.loads(response.output)
+    assert payload["status"] == "error"
+    assert payload["total"] == 0
+    assert payload["results"] == []
+    assert payload["issues"][0]["code"] == "provider_unavailable"
+    assert payload["issues"][0]["message"] == "检索 Provider 暂不可用"
+    assert payload["issues"][0]["stage"] == "provider_connect"
+    assert "Embedding Provider 不可用" not in response.output
+    vector_retriever.assert_called_once()
+    provider_factory.assert_called_once()
+
+
+def test_search_invalid_limit_does_not_construct_provider_or_store(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    provider_factory = mocker.patch.object(commands, "create_embedder")
+    vector_type = mocker.patch.object(commands, "VectorRetriever")
+    sqlite_store = mocker.patch.object(commands, "SQLiteStore")
+
+    response = runner.invoke(
+        commands.cli,
+        ["search", "semantic", "--strategy", "vector", "--limit", "0", "--format", "json"],
+    )
+
+    assert response.exit_code != 0
+    payload = json.loads(response.output)
+    assert payload["status"] == "invalid"
+    assert payload["issues"][0]["stage"] == "limit_validation"
+    provider_factory.assert_not_called()
+    vector_type.assert_not_called()
+    sqlite_store.assert_not_called()
+
+
+def test_search_config_failure_is_structured_json_error(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+) -> None:
+    mocker.patch.object(
+        commands,
+        "_load_config",
+        side_effect=RuntimeError("private path and secret must not leak"),
+    )
+
+    response = runner.invoke(
+        commands.cli,
+        ["search", "query", "--strategy", "bm25", "--format", "json"],
+    )
+
+    assert response.exit_code != 0
+    payload = json.loads(response.output)
+    assert payload["status"] == "error"
+    assert payload["issues"][0]["code"] == "retrieval_backend_failed"
+    assert payload["issues"][0]["message"] == "检索服务暂不可用"
+    assert "private path" not in response.output
+    assert "secret" not in response.output
+
+
+def test_search_invalid_backend_response_is_structured_error(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    retriever = mocker.MagicMock()
+    retriever.search.return_value = []
+    mocker.patch.object(commands, "BM25Retriever", return_value=retriever)
+
+    response = runner.invoke(
+        commands.cli,
+        ["search", "query", "--strategy", "bm25", "--format", "json"],
+    )
+
+    assert response.exit_code != 0
+    payload = json.loads(response.output)
+    assert payload["status"] == "error"
+    assert payload["issues"] == [
+        {
+            "code": "retrieval_backend_failed",
+            "message": "检索服务暂不可用",
+            "stage": "cli_search_protocol",
+            "recoverable": False,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("requested", "reported"),
+    [
+        ("bm25", "vector"),
+        ("vector", "hybrid"),
+        ("hybrid", "bm25"),
+        ("auto", "vector"),
+    ],
+)
+def test_search_response_strategy_must_match_requested_contract(
+    requested: str,
+    reported: str,
+) -> None:
+    response = SearchResponse.completed([], strategy=reported)
+
+    projected = commands._ensure_search_response(response, strategy=requested)
+
+    assert projected.status == "error"
+    assert projected.strategy == requested
+    assert projected.issues[0].code is ErrorCode.RETRIEVAL_BACKEND_FAILED
+    assert projected.issues[0].stage == "cli_search_protocol"
+    assert projected.issues[0].cause_type == "SearchStrategyMismatch"
+
+
+@pytest.mark.parametrize("reported", ["router", "bm25", "hybrid"])
+def test_auto_search_accepts_only_published_router_strategies(reported: str) -> None:
+    response = SearchResponse.completed([], strategy=reported)
+
+    assert commands._ensure_search_response(response, strategy="auto") is response
+
+
+def test_search_frozen_corruption_and_strategy_canary_fail_closed(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    canary = "frozen_response_secret_canary"
+    response = SearchResponse.completed(_make_search_results()[:1], strategy="bm25")
+    object.__setattr__(response, "results", (canary,))
+    retriever = mocker.MagicMock()
+    retriever.search.return_value = response
+    mocker.patch.object(commands, "BM25Retriever", return_value=retriever)
+
+    result = runner.invoke(
+        commands.cli,
+        ["search", "query", "--strategy", "bm25", "--format", "json"],
+    )
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+    assert payload["strategy"] == "bm25"
+    assert payload["issues"] == [
+        {
+            "code": ErrorCode.RETRIEVAL_BACKEND_FAILED.value,
+            "message": "检索服务暂不可用",
+            "stage": "cli_search_protocol",
+            "recoverable": False,
+        }
+    ]
+    assert canary not in result.output
+
+
+def test_search_error_markdown_exposes_status_and_issue(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    issue = RetrievalIssue(
+        code=ErrorCode.RETRIEVAL_BACKEND_FAILED,
+        message="数据库查询失败",
+        stage="bm25_query",
+    )
+    retriever = mocker.MagicMock()
+    retriever.search.return_value = SearchResponse.failed_response(
+        issue,
+        strategy="bm25",
+    )
+    mocker.patch.object(commands, "BM25Retriever", return_value=retriever)
+
+    response = runner.invoke(
+        commands.cli,
+        ["search", "query", "--strategy", "bm25", "--format", "markdown"],
+    )
+
+    assert response.exit_code != 0
+    printed = "\n".join(_printed_strings(console_spy))
+    assert "状态: error" in printed
+    assert "retrieval_backend_failed" in printed
+    assert "检索服务暂不可用" in printed
+    assert "数据库查询失败" not in printed
+
+
+def test_search_issue_message_stage_and_cause_never_publish_canaries(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    canary = "RETRIEVAL_DIAGNOSTIC_SECRET_CANARY"
+    issue = RetrievalIssue(
+        code=ErrorCode.PROVIDER_UNAVAILABLE,
+        message=f"message_{canary}",
+        stage=f"stage_{canary}",
+        recoverable=True,
+        cause_type=f"cause_{canary}",
+    )
+    retriever = mocker.MagicMock()
+    retriever.search.return_value = SearchResponse.failed_response(
+        issue,
+        strategy="bm25",
+    )
+    mocker.patch.object(commands, "BM25Retriever", return_value=retriever)
+
+    response = runner.invoke(
+        commands.cli,
+        ["search", "query", "--strategy", "bm25", "--format", "json"],
+    )
+
+    assert response.exit_code != 0
+    payload = json.loads(response.output)
+    assert payload["issues"] == [
+        {
+            "code": ErrorCode.PROVIDER_UNAVAILABLE.value,
+            "message": "检索 Provider 暂不可用",
+            "stage": "retrieval",
+            "recoverable": True,
+        }
+    ]
+    assert canary not in response.output
 
 
 def test_show_command_by_id(
@@ -416,7 +1680,7 @@ def test_show_command_by_id(
     console_spy,
 ) -> None:
     """show should look up an entry by ID."""
-    entry = {"knowledge_id": 3, "title": "Entry", "file_path": "x"}
+    entry = _make_db_entry()
     store = mocker.MagicMock()
     store.query_by_id.return_value = entry
     mocker.patch.object(commands, "SQLiteStore", return_value=store)
@@ -439,7 +1703,7 @@ def test_show_command_by_url(
     console_spy,
 ) -> None:
     """show should look up an entry by URL."""
-    entry = {"knowledge_id": 4, "title": "Entry", "file_path": "x"}
+    entry = _make_db_entry(knowledge_id=4)
     store = mocker.MagicMock()
     store.query_by_url.return_value = entry
     mocker.patch.object(commands, "SQLiteStore", return_value=store)
@@ -450,6 +1714,115 @@ def test_show_command_by_url(
 
     assert response.exit_code == 0
     store.query_by_url.assert_called_once_with("https://example.com/post")
+
+
+def test_show_non_raw_sanitizes_source_and_file_projection(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    credential_canary = "SHOW-PASSWORD-SECRET-CANARY"
+    query_canary = "SHOW-API-KEY-SECRET-CANARY"
+    fragment_canary = "SHOW-FRAGMENT-SECRET-CANARY"
+    path_canary = "SHOW-ABSOLUTE-PATH-SECRET-CANARY"
+    entry = _make_db_entry(
+        source_url=(
+            f"https://user:{credential_canary}@example.com/article;password="
+            f"{credential_canary}?api_key={query_canary}#{fragment_canary}"
+        ),
+        file_path=rf"C:\private\{path_canary}\entry.md",
+    )
+    store = mocker.MagicMock()
+    store.query_by_id.return_value = entry
+    mocker.patch.object(commands, "SQLiteStore", return_value=store)
+
+    response = runner.invoke(commands.cli, ["show", "3"])
+
+    assert response.exit_code == 0
+    panel = next(
+        call.args[0]
+        for call in console_spy.call_args_list
+        if call.args and isinstance(call.args[0], Panel)
+    )
+    published = str(panel.renderable)
+    assert credential_canary not in published
+    assert query_canary not in published
+    assert fragment_canary not in published
+    assert path_canary not in published
+    assert "user:" not in published
+    assert "https://example.com/" in published
+    assert "api_key=redacted" in published
+    assert "路径已隐藏" in published
+
+
+def test_show_non_raw_preserves_safe_public_url_and_vault_relative_path(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    entry = _make_db_entry(
+        source_url="https://example.com/public/article?lang=zh#unstable",
+        file_path="articles/2026/entry.md",
+    )
+    store = mocker.MagicMock()
+    store.query_by_id.return_value = entry
+    mocker.patch.object(commands, "SQLiteStore", return_value=store)
+
+    response = runner.invoke(commands.cli, ["show", "3"])
+
+    assert response.exit_code == 0
+    panel = next(
+        call.args[0]
+        for call in console_spy.call_args_list
+        if call.args and isinstance(call.args[0], Panel)
+    )
+    published = str(panel.renderable)
+    assert "https://example.com/public/article?lang=zh" in published
+    assert "unstable" not in published
+    assert "articles/2026/entry.md" in published
+
+
+@pytest.mark.parametrize(
+    "projection",
+    [
+        {},
+        [],
+        _make_db_entry(knowledge_id=0),
+        _make_db_entry(knowledge_id=True),
+        _make_db_entry(title=""),
+        _make_db_entry(source_url={"secret": "SHOW-READ-SECRET-CANARY"}),
+        {key: value for key, value in _make_db_entry().items() if key != "file_path"},
+    ],
+    ids=[
+        "empty-dict",
+        "list",
+        "zero-id",
+        "bool-id",
+        "empty-title",
+        "source-url-wrong-type",
+        "missing-required-field",
+    ],
+)
+def test_show_corrupt_projection_is_not_reported_as_not_found(
+    projection: object,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    store = mocker.MagicMock()
+    store.query_by_id.return_value = projection
+    mocker.patch.object(commands, "SQLiteStore", return_value=store)
+
+    response = runner.invoke(commands.cli, ["show", "3"])
+
+    assert response.exit_code != 0
+    published = "\n".join(_printed_strings(console_spy)) + response.output
+    assert "cli_show_failed" in published
+    assert "未找到对应条目" not in published
+    assert "SHOW-READ-SECRET-CANARY" not in published
 
 
 def test_show_command_raw(
@@ -466,7 +1839,7 @@ def test_show_command_raw(
     md_path.write_text(content, encoding="utf-8")
 
     # SQLite persists a Vault-relative path; the gateway resolves and validates it.
-    entry = {"knowledge_id": 9, "file_path": "entry.md"}
+    entry = _make_db_entry(knowledge_id=9, file_path="entry.md")
     store = mocker.MagicMock()
     store.query_by_id.return_value = entry
     mocker.patch.object(commands, "SQLiteStore", return_value=store)
@@ -546,6 +1919,47 @@ def test_list_command_with_tag_filter(
     store.list_entries.assert_called_once_with(
         limit=5, sort_by="title", sort_order="desc", tag="ai"
     )
+
+
+@pytest.mark.parametrize(
+    "projection",
+    [
+        "LIST-READ-SECRET-CANARY",
+        (),
+        [{}],
+        [_make_db_entry(knowledge_id=0)],
+        [_make_db_entry(knowledge_id=True)],
+        [{key: value for key, value in _make_db_entry().items() if key != "tags"}],
+        [_make_db_entry(tags=["not", "sqlite-text"])],
+    ],
+    ids=[
+        "string",
+        "tuple",
+        "empty-row",
+        "zero-id",
+        "bool-id",
+        "missing-tags",
+        "tags-wrong-type",
+    ],
+)
+def test_list_corrupt_projection_fails_closed(
+    projection: object,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    store = mocker.MagicMock()
+    store.list_entries.return_value = projection
+    mocker.patch.object(commands, "SQLiteStore", return_value=store)
+
+    response = runner.invoke(commands.cli, ["list"])
+
+    assert response.exit_code != 0
+    published = "\n".join(_printed_strings(console_spy)) + response.output
+    assert "cli_list_failed" in published
+    assert "未找到条目" not in published
+    assert "LIST-READ-SECRET-CANARY" not in published
 
 
 def test_config_show(
@@ -1080,3 +2494,80 @@ def test_stats_command(
         for call in console_spy.call_args_list
         if call.args
     )
+
+
+@pytest.mark.parametrize(
+    ("total", "source_rows", "tag_rows"),
+    [
+        (True, [], []),
+        (-1, [], []),
+        ("STATS-READ-SECRET-CANARY", [], []),
+        (0, "STATS-READ-SECRET-CANARY", []),
+        (0, [["webpage", 0]], []),
+        (0, [("webpage", True)], []),
+        (0, [("webpage", -1)], []),
+        (0, [], "STATS-READ-SECRET-CANARY"),
+        (0, [], [{}]),
+        (0, [], [{"name": "tag", "count": True}]),
+        (0, [], [{"name": "", "count": 0}]),
+    ],
+    ids=[
+        "bool-total",
+        "negative-total",
+        "string-total",
+        "string-source-rows",
+        "list-source-row",
+        "bool-source-count",
+        "negative-source-count",
+        "string-tag-rows",
+        "empty-tag-row",
+        "bool-tag-count",
+        "empty-tag-name",
+    ],
+)
+def test_stats_corrupt_projection_fails_closed(
+    total: object,
+    source_rows: object,
+    tag_rows: object,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    mock_config: DummyConfig,
+    console_spy,
+) -> None:
+    mock_config.db_path.parent.mkdir(parents=True, exist_ok=True)
+    mock_config.db_path.write_text("", encoding="utf-8")
+    store = mocker.MagicMock()
+    store.table_exists.return_value = True
+    store.count_entries.return_value = total
+    store.count_entries_by_source_type.return_value = source_rows
+    store.get_all_tags_with_count.return_value = tag_rows
+    mocker.patch.object(commands, "SQLiteStore", return_value=store)
+
+    response = runner.invoke(commands.cli, ["stats"])
+
+    assert response.exit_code != 0
+    published = "\n".join(_printed_strings(console_spy)) + response.output
+    assert "cli_stats_failed" in published
+    assert "STATS-READ-SECRET-CANARY" not in published
+
+
+def test_stats_malformed_table_exists_fails_closed(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    mock_config: DummyConfig,
+    console_spy,
+) -> None:
+    mock_config.db_path.parent.mkdir(parents=True, exist_ok=True)
+    mock_config.db_path.write_text("", encoding="utf-8")
+    store = mocker.MagicMock()
+    store.table_exists.return_value = "STATS-TABLE-SECRET-CANARY"
+    mocker.patch.object(commands, "SQLiteStore", return_value=store)
+
+    response = runner.invoke(commands.cli, ["stats"])
+
+    assert response.exit_code != 0
+    published = "\n".join(_printed_strings(console_spy)) + response.output
+    assert "cli_stats_failed" in published
+    assert "STATS-TABLE-SECRET-CANARY" not in published

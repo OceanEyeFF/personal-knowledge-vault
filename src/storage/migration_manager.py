@@ -163,7 +163,7 @@ class MigrationManager:
         # Migration scripts are bundled, read-only resources. A missing bundle
         # is an installation error and must never be "repaired" under source.
         if not self.migrations_dir.exists():
-            logger.warning(f"迁移目录不存在: {self.migrations_dir}")
+            logger.warning("迁移目录不存在")
 
     def _require_writable(self, operation: str) -> None:
         """Reject mutating operations when this manager is read-only."""
@@ -559,10 +559,13 @@ class MigrationManager:
         if os.name != "nt":
             try:
                 source.unlink()
-            except OSError:
+            except OSError as exc:
                 # 链接成功后目标已完整发布; 残留的源硬链接由调用方 finally
                 # 清理, 不得把成功误报为锁冲突。
-                logger.warning("发布成功但临时源文件清理失败: %s", source)
+                logger.warning(
+                    "发布成功但临时源文件清理失败: error_type=%s",
+                    type(exc).__name__,
+                )
         try:
             published = os.lstat(target)
             if (published.st_dev, published.st_ino) != source_identity:
@@ -639,29 +642,30 @@ class MigrationManager:
         identity = self._publication_lock_identity
         if identity is None:
             logger.warning(
-                "未记录迁移发布锁身份，拒绝删除锁文件 (fail-closed): %s",
-                lock_path,
+                "未记录迁移发布锁身份，拒绝删除锁文件 (fail-closed)"
             )
             return
         try:
             info = os.lstat(lock_path)
         except FileNotFoundError:
-            logger.warning("迁移发布锁已不存在（可能已被外部清理）: %s", lock_path)
+            logger.warning("迁移发布锁已不存在（可能已被外部清理）")
             return
         except OSError as exc:
             logger.warning(
-                "无法核对迁移发布锁身份，拒绝删除锁文件: %s (%s)", lock_path, exc
+                "无法核对迁移发布锁身份，拒绝删除锁文件: error_type=%s",
+                type(exc).__name__,
             )
             return
         if (info.st_dev, info.st_ino) != identity:
-            logger.warning(
-                "迁移发布锁路径已被外部替换，拒绝删除他人文件: %s", lock_path
-            )
+            logger.warning("迁移发布锁路径已被外部替换，拒绝删除他人文件")
             return
         try:
             os.unlink(lock_path)
-        except OSError:
-            logger.warning("迁移发布锁清理失败: %s", lock_path)
+        except OSError as exc:
+            logger.warning(
+                "迁移发布锁清理失败: error_type=%s",
+                type(exc).__name__,
+            )
 
     @staticmethod
     def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -752,7 +756,7 @@ class MigrationManager:
         for version, migration_file in self._migration_chain():
             if self._version_compare(version, current_version) > 0:
                 migrations.append((version, migration_file))
-                logger.debug(f"待迁移: {migration_file.name} (v{version})")
+                logger.debug("待迁移脚本已识别")
 
         logger.info(f"找到 {len(migrations)} 个待执行的迁移脚本")
         return migrations
@@ -914,7 +918,7 @@ class MigrationManager:
             Exception: 迁移执行失败
         """
         self._require_writable("apply_migration")
-        logger.info(f"开始迁移: {migration_file.name}")
+        logger.info("开始迁移")
         ensure_safe_directory(self.db_path.parent, label="数据库目录")
         metadata = self._read_migration_metadata(migration_file)
         version = metadata.get("version")
@@ -936,7 +940,7 @@ class MigrationManager:
             with self._connection() as conn:
                 self._ensure_timeline_indexes(conn)
                 self._record_schema_version(conn, version, description)
-            logger.info("✓ 跳过迁移: %s（目标列已存在）", migration_file.name)
+            logger.info("✓ 跳过迁移（目标列已存在）")
             return
 
         # 执行 SQL 脚本
@@ -957,7 +961,7 @@ class MigrationManager:
             # wrapper makes DDL, data changes and schema_version one unit.
             conn.executescript(f"BEGIN IMMEDIATE;\n{sql}\nCOMMIT;")
 
-            logger.info(f"✓ 迁移成功: {migration_file.name}")
+            logger.info("✓ 迁移成功")
 
         except PKVRuntimeError:
             with suppress(sqlite3.Error):
@@ -966,7 +970,10 @@ class MigrationManager:
         except Exception as error:
             with suppress(sqlite3.Error):
                 conn.rollback()
-            logger.error(f"✗ 迁移失败: {migration_file.name} - {error}")
+            logger.error(
+                "✗ 迁移失败: error_type=%s",
+                type(error).__name__,
+            )
             raise PKVRuntimeError(
                 ErrorCode.MIGRATION_FAILED,
                 f"迁移脚本执行失败: {migration_file.name}",
@@ -1224,7 +1231,7 @@ class MigrationManager:
         backup_path = self.backup_dir / (
             f"{self.db_path.stem}-{safe_name or 'migration'}-{uuid.uuid4().hex}.db"
         )
-        logger.info("自动备份数据库: %s", backup_path)
+        logger.info("自动备份数据库开始")
         try:
             self._copy_database(self.db_path, backup_path)
             conn = sqlite3.connect(backup_path)
@@ -1295,7 +1302,7 @@ class MigrationManager:
                     version = line.split(":")[-1].strip()
                     return version
         except OSError:
-            logger.warning(f"无法读取迁移文件: {file_path.name}")
+            logger.warning("无法读取迁移文件")
 
         # 如果没有找到版本号，使用文件名序号生成版本号
         # 例如: 001_xxx.sql -> "0.0.1"
@@ -1307,7 +1314,7 @@ class MigrationManager:
                 seq = 0
             return f"0.0.{seq}"
 
-        logger.warning(f"无法解析版本号: {file_path.name}")
+        logger.warning("无法解析迁移版本号")
         return "0.0.0"
 
     def _get_migration_description(self, file_path: Path) -> str | None:
@@ -1325,7 +1332,7 @@ class MigrationManager:
                 if line.strip().startswith("-- Description:"):
                     return line.split(":")[-1].strip()
         except OSError:
-            logger.warning(f"无法读取迁移文件: {file_path.name}")
+            logger.warning("无法读取迁移文件")
 
         return None
 
@@ -1358,7 +1365,7 @@ class MigrationManager:
                 if all(metadata.values()):
                     break
         except OSError:
-            logger.warning(f"无法读取迁移文件: {file_path.name}")
+            logger.warning("无法读取迁移文件")
 
         return metadata
 
@@ -1444,5 +1451,5 @@ class MigrationManager:
         try:
             return tuple(int(x) for x in version.split("."))
         except ValueError:
-            logger.warning(f"无效的版本号格式: {version}")
+            logger.warning("无效的版本号格式")
             return (0, 0, 0)

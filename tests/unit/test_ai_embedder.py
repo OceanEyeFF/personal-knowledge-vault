@@ -14,6 +14,7 @@ import numpy as np
 from unittest.mock import Mock, patch
 
 from src.ai.embedder import Embedder
+from src.runtime.errors import ErrorCode, PKVRuntimeError
 
 
 @pytest.fixture
@@ -57,7 +58,7 @@ class TestEmbedderInit:
 
     def test_init_with_defaults(self):
         """测试使用默认参数初始化"""
-        with patch('src.ai.embedder.OpenAIClient'):
+        with patch("src.ai.embedder.OpenAIClient"):
             embedder = Embedder()
 
             assert embedder.chunk_size == 500
@@ -82,7 +83,7 @@ class TestEmbedDocument:
         # 创建超过 8000 字符的长文本
         long_text = "这是一个很长的文本。" * 1000  # 约 9000 字符
 
-        with patch.object(embedder, '_embed_long_document') as mock_embed_long:
+        with patch.object(embedder, "_embed_long_document") as mock_embed_long:
             mock_embed_long.return_value = np.array([0.5] * 1536, dtype=np.float32)
 
             vector = embedder.embed_document(long_text)
@@ -108,7 +109,7 @@ class TestEmbedLongDocument:
         long_text = "a" * 2000  # 创建长文本
 
         # Mock 分块和批量向量化
-        with patch('src.ai.embedder.split_text_into_chunks') as mock_split:
+        with patch("src.ai.embedder.split_text_into_chunks") as mock_split:
             mock_split.return_value = ["chunk1", "chunk2", "chunk3"]
 
             # Mock embed_batch_numpy 返回 3 个向量
@@ -119,7 +120,9 @@ class TestEmbedLongDocument:
             vector = embedder._embed_long_document(long_text)
 
             # 检查分块调用
-            mock_split.assert_called_once_with(long_text, chunk_size=500, chunk_overlap=50)
+            mock_split.assert_called_once_with(
+                long_text, chunk_size=500, chunk_overlap=50
+            )
 
             # 检查批量向量化调用
             mock_openai_client.embed_batch_numpy.assert_called_once_with(
@@ -131,6 +134,64 @@ class TestEmbedLongDocument:
             assert vector.shape == (1536,)
             assert np.allclose(vector, 2.0)
 
+    def test_large_finite_chunks_reject_cosine_norm_overflow(
+        self,
+        embedder,
+        mock_openai_client,
+    ):
+        with patch("src.ai.embedder.split_text_into_chunks") as mock_split:
+            mock_split.return_value = ["chunk1", "chunk2"]
+            mock_openai_client.embed_batch_numpy.return_value = np.array(
+                [[3e38, 3e38, 3e38], [3e38, 3e38, 3e38]],
+                dtype=np.float32,
+            )
+
+            with pytest.raises(PKVRuntimeError) as captured:
+                embedder._embed_long_document("large finite chunks")
+
+        assert captured.value.code is ErrorCode.PROVIDER_PROTOCOL_FAILED
+        assert captured.value.stage == "embedding_protocol"
+        assert captured.value.recoverable is True
+
+    def test_long_document_rejects_zero_norm_after_cancellation(
+        self,
+        embedder,
+        mock_openai_client,
+    ):
+        with patch("src.ai.embedder.split_text_into_chunks") as mock_split:
+            mock_split.return_value = ["chunk1", "chunk2"]
+            mock_openai_client.embed_batch_numpy.return_value = np.array(
+                [[1.0, -2.0, 3.0], [-1.0, 2.0, -3.0]],
+                dtype=np.float32,
+            )
+
+            with pytest.raises(PKVRuntimeError) as captured:
+                embedder._embed_long_document("cancelling chunks")
+
+        assert captured.value.code is ErrorCode.PROVIDER_PROTOCOL_FAILED
+        assert captured.value.stage == "embedding_protocol"
+        assert captured.value.recoverable is True
+
+    def test_long_document_rejects_non_float32_finite_average(
+        self,
+        embedder,
+        mock_openai_client,
+    ):
+        with patch("src.ai.embedder.split_text_into_chunks") as mock_split:
+            mock_split.return_value = ["chunk1", "chunk2"]
+            mock_openai_client.embed_batch_numpy.return_value = np.array(
+                [[1e308, 1e308, 1e308], [1e308, 1e308, 1e308]],
+                dtype=np.float64,
+            )
+
+            with pytest.raises(PKVRuntimeError) as captured:
+                embedder._embed_long_document("overflowing chunks")
+
+        assert captured.value.code is ErrorCode.PROVIDER_PROTOCOL_FAILED
+        assert captured.value.stage == "embedding_protocol"
+        assert captured.value.recoverable is True
+        assert str(captured.value) == "Embedding Provider 响应非法"
+
 
 class TestEmbedChunks:
     """测试分块级 Embedding"""
@@ -139,7 +200,7 @@ class TestEmbedChunks:
         """测试不返回分块文本"""
         text = "这是一个需要分块的文本"
 
-        with patch('src.ai.embedder.split_text_into_chunks') as mock_split:
+        with patch("src.ai.embedder.split_text_into_chunks") as mock_split:
             mock_split.return_value = ["chunk1", "chunk2"]
 
             mock_openai_client.embed_batch_numpy.return_value = np.array(
@@ -156,7 +217,7 @@ class TestEmbedChunks:
         """测试返回分块文本"""
         text = "这是一个需要分块的文本"
 
-        with patch('src.ai.embedder.split_text_into_chunks') as mock_split:
+        with patch("src.ai.embedder.split_text_into_chunks") as mock_split:
             mock_split.return_value = ["chunk1", "chunk2", "chunk3"]
 
             mock_openai_client.embed_batch_numpy.return_value = np.array(
@@ -283,7 +344,7 @@ class TestBatchCosineSimilarity:
             [
                 [1.0, 0.0, 0.0],  # 相同方向
                 [0.0, 1.0, 0.0],  # 正交
-                [-1.0, 0.0, 0.0], # 相反方向
+                [-1.0, 0.0, 0.0],  # 相反方向
             ],
             dtype=np.float32,
         )

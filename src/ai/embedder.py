@@ -7,7 +7,8 @@
 from typing import List, Tuple, Optional
 import numpy as np
 
-from src.ai.openai_client import OpenAIClient
+from src.ai.openai_client import OpenAIClient, project_float32_cosine_vector
+from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.utils.text_utils import split_text_into_chunks
 from src.utils.logger import get_logger
 
@@ -104,8 +105,44 @@ class Embedder:
         # 批量向量化
         chunk_vectors = self.client.embed_batch_numpy(chunks)
 
-        # 取平均
-        avg_vector = np.mean(chunk_vectors, axis=0)
+        # float32 累加两个接近上限的有限向量也可能溢出；先以 float64
+        # 聚合，再投影回向量索引实际消费的 float32，并在返回前复验。
+        try:
+            normalized_chunks = np.asarray(chunk_vectors)
+            real_numeric = np.issubdtype(
+                normalized_chunks.dtype,
+                np.integer,
+            ) or np.issubdtype(normalized_chunks.dtype, np.floating)
+            valid_chunks = (
+                normalized_chunks.ndim == 2
+                and normalized_chunks.shape[0] > 0
+                and normalized_chunks.shape[1] > 0
+                and real_numeric
+                and bool(np.all(np.isfinite(normalized_chunks)))
+            )
+            if not valid_chunks:
+                raise ValueError("invalid chunk vectors")
+            with np.errstate(over="ignore", invalid="ignore"):
+                mean_float64 = np.mean(
+                    normalized_chunks,
+                    axis=0,
+                    dtype=np.float64,
+                )
+                avg_vector = mean_float64.astype(np.float32)
+            if not bool(
+                np.all(np.isfinite(mean_float64)) and np.all(np.isfinite(avg_vector))
+            ):
+                raise ValueError("non-finite averaged vector")
+            avg_vector = project_float32_cosine_vector(avg_vector)
+        except PKVRuntimeError:
+            raise
+        except Exception as exc:
+            raise PKVRuntimeError(
+                ErrorCode.PROVIDER_PROTOCOL_FAILED,
+                "Embedding Provider 响应非法",
+                stage="embedding_protocol",
+                recoverable=True,
+            ) from exc
 
         logger.info("长文档 Embedding 完成（平均向量）")
         return avg_vector
@@ -159,9 +196,7 @@ class Embedder:
         else:
             return chunk_vectors, None
 
-    def embed_batch_documents(
-        self, texts: List[str]
-    ) -> np.ndarray:
+    def embed_batch_documents(self, texts: List[str]) -> np.ndarray:
         """
         批量生成文档级 Embedding
 
@@ -204,9 +239,7 @@ class Embedder:
         logger.info(f"批量文档级 Embedding 完成: vectors_shape={vectors.shape}")
         return vectors
 
-    def cosine_similarity(
-        self, vector1: np.ndarray, vector2: np.ndarray
-    ) -> float:
+    def cosine_similarity(self, vector1: np.ndarray, vector2: np.ndarray) -> float:
         """
         计算两个向量的余弦相似度
 

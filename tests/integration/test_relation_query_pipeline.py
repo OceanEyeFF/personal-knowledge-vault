@@ -19,7 +19,7 @@ from src.relations.evidence_service import EvidenceCollectionService  # noqa: E4
 from src.relations.exploration_service import ExplorationService  # noqa: E402
 from src.relations.models import RelationQueryDirection, RelationType  # noqa: E402
 from src.relations.query_service import RelationQueryService  # noqa: E402
-from src.retrieval.result import SearchResult  # noqa: E402
+from src.retrieval.result import SearchResponse, SearchResult  # noqa: E402
 from src.storage.markdown_store import MarkdownStore  # noqa: E402
 from src.storage.sqlite_store import SQLiteStore  # noqa: E402
 from src.storage.relation_store import RelationStore  # noqa: E402
@@ -368,7 +368,7 @@ class StubQueryRouter:
         self.results = results
 
     def search(self, query: str, limit: int = 10):
-        return self.results[:limit]
+        return SearchResponse.completed(self.results[:limit], strategy="stub")
 
 
 def _load_regression_cases():
@@ -596,7 +596,7 @@ def test_exploration_service_can_build_partial_contrast(relation_pipeline_env):
     class ContrastRouter:
         def search(self, query: str, limit: int = 10):
             if query == "Topic A":
-                return [
+                results = [
                     SearchResult(
                         knowledge_id=relation_pipeline_env["alpha_id"],
                         title="Alpha",
@@ -612,22 +612,24 @@ def test_exploration_service_can_build_partial_contrast(relation_pipeline_env):
                         metadata={"source_type": "generic", "tags": "桥接,共同"},
                     ),
                 ]
-            return [
-                SearchResult(
-                    knowledge_id=relation_pipeline_env["delta_id"],
-                    title="Delta",
-                    score=0.88,
-                    highlight="Delta 摘要",
-                    metadata={"source_type": "generic", "tags": "终点,共同"},
-                ),
-                SearchResult(
-                    knowledge_id=relation_pipeline_env["gamma_id"],
-                    title="Gamma",
-                    score=0.75,
-                    highlight="Gamma 摘要",
-                    metadata={"source_type": "generic", "tags": "桥接,共同"},
-                ),
-            ]
+            else:
+                results = [
+                    SearchResult(
+                        knowledge_id=relation_pipeline_env["delta_id"],
+                        title="Delta",
+                        score=0.88,
+                        highlight="Delta 摘要",
+                        metadata={"source_type": "generic", "tags": "终点,共同"},
+                    ),
+                    SearchResult(
+                        knowledge_id=relation_pipeline_env["gamma_id"],
+                        title="Gamma",
+                        score=0.75,
+                        highlight="Gamma 摘要",
+                        metadata={"source_type": "generic", "tags": "桥接,共同"},
+                    ),
+                ]
+            return SearchResponse.completed(results[:limit], strategy="stub")
 
     exploration_service = ExplorationService(
         query_router=ContrastRouter(),
@@ -869,7 +871,7 @@ def _run_phase_b_5_4_regression_cases(
             class ContrastRouter:
                 def search(self, query: str, limit: int = 10):
                     if query == "Topic A":
-                        return [
+                        results = [
                             SearchResult(
                                 knowledge_id=relation_pipeline_env["alpha_id"],
                                 title="Alpha",
@@ -885,22 +887,24 @@ def _run_phase_b_5_4_regression_cases(
                                 metadata={"source_type": "generic", "tags": "桥接,共同"},
                             ),
                         ]
-                    return [
-                        SearchResult(
-                            knowledge_id=relation_pipeline_env["delta_id"],
-                            title="Delta",
-                            score=0.88,
-                            highlight="Delta 摘要",
-                            metadata={"source_type": "generic", "tags": "终点,共同"},
-                        ),
-                        SearchResult(
-                            knowledge_id=relation_pipeline_env["gamma_id"],
-                            title="Gamma",
-                            score=0.75,
-                            highlight="Gamma 摘要",
-                            metadata={"source_type": "generic", "tags": "桥接,共同"},
-                        ),
-                    ]
+                    else:
+                        results = [
+                            SearchResult(
+                                knowledge_id=relation_pipeline_env["delta_id"],
+                                title="Delta",
+                                score=0.88,
+                                highlight="Delta 摘要",
+                                metadata={"source_type": "generic", "tags": "终点,共同"},
+                            ),
+                            SearchResult(
+                                knowledge_id=relation_pipeline_env["gamma_id"],
+                                title="Gamma",
+                                score=0.75,
+                                highlight="Gamma 摘要",
+                                metadata={"source_type": "generic", "tags": "桥接,共同"},
+                            ),
+                        ]
+                    return SearchResponse.completed(results[:limit], strategy="stub")
 
             exploration_service = ExplorationService(
                 query_router=ContrastRouter(),

@@ -11,8 +11,6 @@
 - detect_urls: URL 检测
 """
 
-import pytest
-
 from src.gui.utils.knowledge_ref import (
     AtReference,
     KnowledgeReference,
@@ -181,9 +179,41 @@ class TestBuildKnowledgeReference:
         assert ref.knowledge_id == 42
         assert ref.title == "测试标题"
         assert ref.source_type == "wechat"
-        assert ref.source_url == "https://example.com"
+        assert ref.source_url == "https://example.com/"
         assert ref.summary == "一句话摘要"
         assert ref.token_count > 0
+
+    def test_source_url_credentials_are_sanitized_before_context_and_card(self) -> None:
+        cases = [
+            (
+                "https://user-secret:pass-secret@example.com/article",
+                ("user-secret", "pass-secret"),
+            ),
+            (
+                "https://example.com/article?api_key=query-secret&safe=1",
+                ("query-secret",),
+            ),
+            (
+                "https://example.com/article;token=matrix-secret?safe=1",
+                ("matrix-secret",),
+            ),
+        ]
+
+        for source_url, sentinels in cases:
+            ref = build_knowledge_reference(
+                {
+                    "knowledge_id": 42,
+                    "title": "safe-title",
+                    "source_url": source_url,
+                    "summary_one_sentence": "safe-summary",
+                }
+            )
+            context = format_context_message([ref])
+            card = format_reference_card_html(ref)
+            for sentinel in sentinels:
+                assert sentinel not in ref.source_url
+                assert sentinel not in context
+                assert sentinel not in card
 
     def test_without_content(self) -> None:
         """无全文内容（使用摘要）"""

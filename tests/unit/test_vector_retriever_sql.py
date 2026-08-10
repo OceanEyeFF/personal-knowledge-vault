@@ -143,13 +143,14 @@ def test_vector_retriever_search_chunks_returns_chunk_metadata(
     mock_embedder.embed_document.return_value = np.ones(1536, dtype="float32")
 
     retriever = VectorRetriever(db_path, vector_dir, mock_embedder)
-    results = retriever.search_chunks("第一段", limit=3)
+    response = retriever.search_chunks("第一段", limit=3)
 
-    assert len(results) == 1
-    assert results[0].knowledge_id == knowledge_id
-    assert results[0].metadata["chunk_index"] == 0
-    assert results[0].metadata["chunk_text"] == "第一段"
-    assert results[0].highlight == "第一段"
+    assert response.status == "success"
+    assert len(response.results) == 1
+    assert response.results[0].knowledge_id == knowledge_id
+    assert response.results[0].metadata["chunk_index"] == 0
+    assert response.results[0].metadata["chunk_text"] == "第一段"
+    assert response.results[0].highlight == "第一段"
 
 
 def test_vector_store_rejects_chunk_index_overflow(tmp_path: Path):
@@ -164,8 +165,8 @@ def test_vector_store_rejects_chunk_index_overflow(tmp_path: Path):
         )
 
 
-def test_vector_retriever_uses_embedder_dimension_for_new_store(tmp_path: Path):
-    """新建索引时应采用 embedder 维度，避免默认值分裂。"""
+def test_vector_retriever_records_embedder_dimension_without_creating_read_index(tmp_path: Path):
+    """只读检索器记录维度，但初始化不得创建空向量索引。"""
     from unittest.mock import Mock
     from src.retrieval.vector_retriever import VectorRetriever
 
@@ -176,7 +177,8 @@ def test_vector_retriever_uses_embedder_dimension_for_new_store(tmp_path: Path):
 
     retriever = VectorRetriever(db_path, vector_dir, mock_embedder)
 
-    assert retriever.vector_store.dim == 8
+    assert retriever._embedder_dim == 8
+    assert retriever.vector_store is None
 
 
 def test_vector_retriever_auto_mode_skips_empty_index_cold_start(tmp_path: Path):
@@ -192,8 +194,10 @@ def test_vector_retriever_auto_mode_skips_empty_index_cold_start(tmp_path: Path)
     mock_embedder.dim = None
 
     retriever = VectorRetriever(db_path, vector_dir, mock_embedder)
-    results = retriever.search("cold start query")
+    response = retriever.search("cold start query")
 
     assert retriever.vector_store is None
-    assert results == []
+    assert response.status == "error"
+    assert response.error_code.value == "retrieval_index_unavailable"
+    assert response.results == ()
     mock_embedder.embed_document.assert_not_called()

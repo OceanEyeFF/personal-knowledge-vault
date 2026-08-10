@@ -49,3 +49,39 @@ def test_workflow_result_defaults() -> None:
     assert result.data == {}
     assert result.errors == []
     assert result.logs == []
+    assert result.warnings == []
+    assert result.issues == []
+    assert result.terminal == "success"
+
+
+def test_workflow_result_derives_degraded_and_serializes_copies() -> None:
+    issue = {
+        "code": "workflow_step_failed",
+        "message": "optional step failed",
+        "severity": "warning",
+        "recoverable": True,
+    }
+    result = WorkflowResult(
+        success=True,
+        data={"answer": 42},
+        warnings=["optional step failed"],
+        issues=[issue],
+    )
+
+    payload = result.to_dict()
+
+    assert result.terminal == "degraded"
+    assert payload["terminal"] == "degraded"
+    payload["data"]["answer"] = 0
+    payload["issues"][0]["code"] = "changed"
+    assert result.data["answer"] == 42
+    assert result.issues[0]["code"] == "workflow_step_failed"
+
+
+def test_workflow_result_rejects_inconsistent_terminal() -> None:
+    try:
+        WorkflowResult(success=False, terminal="success")
+    except ValueError as exc:
+        assert "不一致" in str(exc)
+    else:  # pragma: no cover - explicit contract guard
+        raise AssertionError("inconsistent result must fail")

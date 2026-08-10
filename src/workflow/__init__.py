@@ -6,7 +6,14 @@
 
 from src.workflow.engine import WorkflowEngine
 from src.workflow.models import State, WorkflowContext, WorkflowResult
-from src.workflow.steps import BaseStep, FetchStep, AnalyzeStep, IdeaSharpenStep, StoreStep
+from src.workflow.steps import (
+    AnalyzeStep,
+    BaseStep,
+    FetchStep,
+    IdeaSharpenStep,
+    ReviewStep,
+    StoreStep,
+)
 
 __all__ = [
     "WorkflowEngine",
@@ -17,5 +24,6 @@ __all__ = [
     "FetchStep",
     "AnalyzeStep",
     "IdeaSharpenStep",
+    "ReviewStep",
     "StoreStep",
 ]

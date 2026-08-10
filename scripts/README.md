@@ -9,8 +9,8 @@
 #### `setup-test-conda.ps1` - Windows Py311 测试环境
 
 **用途**: 新建一个只用于离线测试的 Python 3.11 Conda 环境。创建环境和安装依赖
-需要访问已配置的 Conda/Python 包源；脚本不会安装 Playwright 浏览器、创建
-`config/local.yaml`，也不会创建或读取生产 `.data/`。
+需要访问已配置的 Conda/Python 包源；URL processors 使用 urllib3 DNS-pinned
+SafeFetcher，不需要浏览器 runtime。脚本不会创建 `config/local.yaml`，也不会创建或读取生产 `.data/`。
 
 ```powershell
 .\scripts\setup-test-conda.ps1
@@ -364,8 +364,9 @@ python -m pip install --upgrade pip
 # 4. 安装依赖
 python -m pip install -r requirements.txt
 
-# 5. 复制本机配置文件
-copy config\config.yaml config\local.yaml
+# 5. 可选：仅在用户主动启用 Chat/摘要/向量能力时，
+#    手动创建 Git 忽略的 config/local.yaml 并填写对应 Provider 配置
+#    BM25、MCP stdio 能力发现和默认离线验证无需真实 API Key
 
 # 6. 创建数据目录
 mkdir .data\db, .data\vectors, .data\vault, .data\logs, .data\tmp
@@ -380,7 +381,7 @@ python src\utils\verify_setup.py
 
 - 🔧 首次安装可能需要 3-5 分钟
 - 📦 Conda 环境名称: `py311-private` (Python 3.11)
-- 🔑 记得编辑 `config/local.yaml` 填入 API Keys
+- 🔑 `config/local.yaml` 只用于用户主动启用的 Provider-backed 能力；默认离线/BM25 验证不需要真实 API Key
 - 📝 运行测试确保一切正常
 - 🌟 推荐通过 `scripts/run-windows.ps1` 运行命令
 - 🔤 PowerShell 脚本使用 UTF-8 BOM 以兼容 Windows PowerShell 5.1；编辑时不要移除 BOM

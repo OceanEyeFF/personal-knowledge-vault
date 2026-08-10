@@ -1,9 +1,12 @@
 # WorkflowEngine 接口规范（M5 核心）
 
-> **版本**: 1.0
+> **版本**: 1.1
 > **创建日期**: 2026-02-15
+> **最后更新**: 2026-08-07（M13 W2 契约对齐）
 > **文件位置**: `src/workflow/`
 > **作用**: M5 工作流引擎的核心接口和步骤规范
+
+> **M13 发布边界**：运行时只加载磁盘上的真实、版本化 YAML，目前仅支持 `archive-url.yaml` 与 `archive-text.yaml`。缺失、未知、版本错误或 schema 非法的配置必须在构造任何步骤前失败；不允许内嵌字典、`config.raw.workflows` 或默认工作流回退，`search.yaml` 不受支持。默认验证使用临时配置、替身 Provider 与合成数据，禁止真实密钥、真实 Provider 和真实 Vault 数据。
 
 ---
 
@@ -17,6 +20,7 @@ WorkflowEngine          # 引擎核心
     ├── FetchStep       # 内容抓取（集成 Processors）
     ├── AnalyzeStep     # AI 分析（集成 DeepSeek）
     ├── IdeaSharpenStep # 人机交互（Rich UI）
+    ├── ReviewStep      # CLI 人工审核 / 非交互入口显式跳过
     └── StoreStep       # 多后端存储（Markdown + SQLite + Vector）
 ```
 
@@ -52,28 +56,43 @@ async def execute_async(
 # 1. 创建上下文
 context = WorkflowContext(input_data)
 
-# 2. 加载配置
+# 2. 加载并一次性严格校验完整配置
 workflow_config = self._load_workflow_config(workflow_name)
-steps = self._normalize_steps(workflow_config.get("steps"))
+steps = validate_workflow_config(
+    workflow_name,
+    workflow_config,
+    self._step_registry,
+)
 
 # 3. 逐步执行
 for step_config in steps:
-    step_type = step_config.get("type")
-    step_class = _STEP_REGISTRY[step_type]
+    step_type = step_config["type"]
+    step_class = self._step_registry[step_type]
 
-    # 关键修复：传递 config 字段而非整个 step_config
-    step = step_class(step_id=step_id, config=step_config.get("config", {}))
-    result = await step.execute(context)
+    step = step_class(step_id=step_config["id"], config=step_config["config"])
+    try:
+        result = await step.execute(context)
+    except Exception:
+        # on_error=fail → error 并终止；continue → warning 并继续
+        ...
 
-    # 合并结果到 state
-    for key, value in result.items():
+# 4. 分离 errors / warnings / issues，再合并普通结果到 state
+    step_result = dict(result)
+    step_errors = step_result.pop("errors", [])
+    step_warnings = step_result.pop("warnings", [])
+    step_issues = step_result.pop("issues", [])
+    # 引擎按 on_error 聚合上述控制字段
+    for key, value in step_result.items():
         context.state.set(key, value)
 
-# 4. 返回结果
+# 5. 输出统一终态
 return WorkflowResult(
-    success=len(errors) == 0,
+    success=not errors,
+    terminal="error" if errors else ("degraded" if warnings else "success"),
     data=context.state.to_dict(),
     errors=errors,
+    warnings=warnings,
+    issues=issues,
     logs=context.logs
 )
 ```
@@ -98,15 +117,18 @@ _STEP_REGISTRY: Dict[str, Type[BaseStep]] = {
     "fetch_content": FetchStep,
     "ai_analyze": AnalyzeStep,
     "idea_sharpen": IdeaSharpenStep,
+    "review_entry": ReviewStep,
     "store_entry": StoreStep,
 }
 ```
 
 **扩展新步骤**:
 ```python
-engine = WorkflowEngine()
+engine = WorkflowEngine()  # 每个实例复制默认注册表
 engine.register_step("custom_step", MyCustomStep)
 ```
+
+注册表是实例级状态；对一个 `WorkflowEngine` 注册自定义步骤不会污染其他实例。
 
 ---
 
@@ -121,6 +143,8 @@ def _load_workflow_config(self, workflow_name: str) -> Dict[str, Any]:
 ```
 
 **配置路径**: `config/workflows/{workflow_name}.yaml`
+
+仅发布 `archive-url` 与 `archive-text`。加载后必须通过 `validate_workflow_config()` 的 v1 fail-closed 校验；未知顶层字段、未知步骤字段、重复 ID、未知步骤类型或非法 `on_error` 都会返回 `terminal="error"`，且不会执行任何步骤。
 
 ---
 
@@ -154,8 +178,10 @@ class BaseStep(ABC):
 |------|------|
 | **输入** | 通过 `context.state` 读取数据 |
 | **输出** | 返回字典，引擎会合并到 `context.state` |
-| **错误** | 返回 `{"errors": [...]}` 列表 |
+| **错误** | 可返回 `errors` / `warnings` / `issues` 控制字段；普通字段才合并到 state |
 | **日志** | 使用 `self._log(context, message)` |
+
+`on_error: fail` 的步骤错误终止工作流；`on_error: continue` 的步骤错误转为 warning，最终终态为 `degraded`，不得伪装成 `success`。
 
 ---
 
@@ -286,53 +312,54 @@ class BaseStep(ABC):
 
 ```yaml
 # config/workflows/archive-url.yaml
+schema_version: 1
+name: archive-url
+description: "智能归档网页内容工作流"
+
 steps:
   - id: fetch_content
     type: fetch_content
     config:
       retry: 3
+    on_error: fail
 
   - id: ai_analyze
     type: ai_analyze
     config:
       tasks: [summarize, extract_tags]
       max_words: 300
+      num_tags: 5
+    on_error: continue
 
   - id: idea_sharpen
     type: idea_sharpen
     config:
-      skip_conditions:
-        - word_count < 500
+      questions: ["这篇内容与你现有知识中的哪些观点有关？"]
+      trigger_rules:
+        - content_length_gt: 3000
+    on_error: continue
+
+  - id: review_entry
+    type: review_entry
+    config:
+      required: true
+      max_regenerations: 3
+      preview_chars: 500
+    on_error: continue
 
   - id: store_entry
     type: store_entry
     config:
-      targets: [markdown, sqlite, vector]
+      targets: [markdown, sqlite, vector_index]
+    on_error: fail
 ```
 
-### 简化格式（自动规范化）
+### 严格 v1 规则
 
-```yaml
-steps:
-  - fetch_content      # 使用默认配置
-  - ai_analyze
-  - idea_sharpen
-  - store_entry
-```
-
-**规范化规则**:
-```python
-def _normalize_steps(self, steps):
-    """将简化格式转换为完整格式"""
-    normalized = []
-    for step in steps:
-        if isinstance(step, str):
-            # 简化格式 → 完整格式
-            normalized.append({"type": step, "config": {}})
-        else:
-            normalized.append(step)
-    return normalized
-```
+- 根节点只允许 `schema_version`、`name`、`description`、`steps`。
+- `schema_version` 必须为整数 `1`，`name` 必须与请求名称完全一致。
+- 每个步骤必须显式提供唯一 `id`、已注册的 `type`、映射类型 `config` 与 `on_error: fail|continue`。
+- 字符串步骤简写、未知字段和隐式默认补齐均不属于发布契约；保留的 `_normalize_steps()` 只是历史导入兼容助手，不参与 v1 执行。
 
 ---
 
@@ -372,11 +399,14 @@ def _normalize_steps(self, steps):
     ↓
 WorkflowResult:
     success: true
+    terminal: degraded  # 存在 continue warning；无 warning 时为 success
     data: {
         url, entry, summary, tags, notes,
         file_path, knowledge_id, vector_ids
     }
     errors: []
+    warnings: [...]
+    issues: [...]       # 稳定 code/message/severity/recoverable/stage/step_id
     logs: [...]
 ```
 
@@ -419,7 +449,7 @@ step = step_class(step_id=step_id, config=step_config.get("config", {}))
 ✅ 配置驱动（YAML）
 ✅ 步骤注册表（可扩展）
 ✅ State 数据流（步骤间传递）
-✅ 统一的错误处理
+✅ `success` / `degraded` / `error` 统一终态与机器可读 issue
 ✅ 同步/异步两种调用方式
 
 ### 核心步骤
@@ -429,9 +459,10 @@ step = step_class(step_id=step_id, config=step_config.get("config", {}))
 | FetchStep | `fetch_content` | 集成 Processors 抓取内容 |
 | AnalyzeStep | `ai_analyze` | 集成 DeepSeek AI 分析 |
 | IdeaSharpenStep | `idea_sharpen` | 人机交互收集笔记 |
+| ReviewStep | `review_entry` | 审核、有限次重生成或显式跳过 |
 | StoreStep | `store_entry` | 多后端存储 |
 
 ---
 
 **文档维护者**: AI Agent
-**最后更新**: 2026-02-15
+**最后更新**: 2026-08-07

@@ -38,6 +38,10 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+_INVALID_VECTOR_WRITE_INPUT = "向量写入输入不符合索引契约"
+_INVALID_VECTOR_QUERY_INPUT = "查询向量不符合索引契约"
+_INVALID_DOCUMENT_VECTOR_READ = "文档向量索引内容不一致"
+
 
 @dataclass(frozen=True)
 class _PathContract:
@@ -189,6 +193,7 @@ class VectorStore:
         *,
         layout: Any = None,
         path_validator: Optional[Callable[..., Any]] = None,
+        allow_index_creation: bool = True,
     ):
         """
         初始化向量索引
@@ -199,8 +204,13 @@ class VectorStore:
             layout: 显式注入的 RuntimeLayout（测试/运维 seam）；缺省时若
                 index_dir 位于已声明用户数据根内则自动启用完整 containment 合同
             path_validator: 显式注入的叶子验证器（测试 seam）
+            allow_index_creation: 是否允许为缺失 pair 创建新索引。只读检索入口
+                必须传入 False，避免把丢失或损坏的 pair 解释为空索引。
         """
+        if not isinstance(allow_index_creation, bool):
+            raise TypeError("allow_index_creation 必须是 bool")
         self.index_dir = Path(index_dir)
+        self._allow_index_creation = allow_index_creation
         self._contract = self._resolve_path_contract(
             self.index_dir,
             layout=layout,
@@ -219,9 +229,14 @@ class VectorStore:
         else:
             ensure_safe_directory(self.index_dir, label="向量索引目录")
         self._active_pair_transactions: dict[str, _PairTransaction] = {}
+        self._validated_chunk_pair_key: tuple[int, int, int, int, int, str] | None = (
+            None
+        )
         # 必须先恢复跨 index/metadata 两次发布的中断事务；否则后续维度解析或
         # metadata 迁移会把可恢复的半提交状态误判为永久损坏。
         self._recover_incomplete_pair_transactions()
+        if not self._allow_index_creation:
+            self._require_complete_index_pairs()
         self._migrate_legacy_embedding_fingerprints()
         self.dim = self._resolve_index_dim(dim)
         self.embedding_fingerprint = self._resolve_embedding_fingerprint(self.dim)
@@ -236,7 +251,40 @@ class VectorStore:
         self.doc_index = self._init_index("doc_vectors")
         self.chunk_index = self._init_index("chunk_vectors")
 
-        logger.info(f"向量存储初始化完成: {self.index_dir}")
+        logger.info("向量存储初始化完成")
+
+    def _require_complete_index_pairs(self) -> None:
+        """只读打开前要求 doc/chunk 两个 pair 均完整存在。
+
+        正常 ``VectorStore`` 初始化总是发布两个 pair；只剩其中一个 pair 或单个
+        artifact 表示状态不可判定。这里在任何 metadata 迁移或新索引发布前拒绝，
+        从而保证检索不会以写入空索引的方式掩盖损坏。
+        """
+
+        for name in self.PAIR_NAMES:
+            with self._index_pair_lock(name):
+                self._recover_pair_transaction_locked(name)
+                index_path = self.index_dir / f"{name}.idx"
+                metadata_path = self.index_dir / f"{name}_metadata.json"
+                index_exists = os.path.lexists(index_path)
+                metadata_exists = os.path.lexists(metadata_path)
+                if not index_exists or not metadata_exists:
+                    raise PKVRuntimeError(
+                        ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                        f"{name} index/metadata pair 不完整，拒绝只读加载",
+                        stage="vector_index_pair_load",
+                        recoverable=True,
+                    )
+                self._validate_leaf(
+                    index_path,
+                    label="向量索引文件",
+                    allow_missing=False,
+                )
+                self._validate_leaf(
+                    metadata_path,
+                    label="向量元数据文件",
+                    allow_missing=False,
+                )
 
     @staticmethod
     def _resolve_path_contract(
@@ -1308,8 +1356,8 @@ class VectorStore:
                         )
                     except BaseException:
                         logger.error(
-                            "配对事务准备失败后无法安全清理 rollback: %s",
-                            rollback_path.name,
+                            "配对事务准备失败后无法安全清理 rollback: component=%s",
+                            name,
                         )
             else:
                 logger.error(
@@ -1503,7 +1551,10 @@ class VectorStore:
                 )
             except BaseException:
                 # 标记已删除，辅助副本不会再影响正式配对；不触碰未知替换物。
-                logger.warning("拒绝清理身份不确定的向量辅助文件: %s", auxiliary_path)
+                logger.warning(
+                    "拒绝清理身份不确定的向量辅助文件: component=%s",
+                    transaction.name,
+                )
         self._fsync_index_directory()
 
     def _restore_pair_transaction_locked(
@@ -1784,6 +1835,13 @@ class VectorStore:
                 f"{name} 索引文件与元数据不一致，无法安全初始化: "
                 f"index_exists={index_exists}, metadata_exists={metadata_exists}"
             )
+        if not index_exists and not self._allow_index_creation:
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                f"{name} index/metadata pair 缺失，拒绝只读加载",
+                stage="vector_index_pair_load",
+                recoverable=True,
+            )
 
         # 创建索引对象
         index = hnswlib.Index(space='cosine', dim=self.dim)
@@ -1837,7 +1895,7 @@ class VectorStore:
                 logger.info(
                     f"🔄 索引容量不足，已扩容至 {safe_size}: {name}"
                 )
-            logger.info(f"✅ 加载已有索引: {index_path}")
+            logger.info("✅ 加载已有索引: component=%s", name)
         else:
             # 初始化新索引
             index.init_index(
@@ -1878,14 +1936,27 @@ class VectorStore:
                     ),
                 )
 
-            logger.info(f"✅ 创建新索引: {index_path}")
+            logger.info("✅ 创建新索引: component=%s", name)
 
         # 设置查询时的搜索深度
         index.set_ef(self.ef_search)
 
         return index
 
-    def _reload_index_for_update_locked(self, name: str) -> hnswlib.Index:
+    def _reload_index_for_update_locked(
+        self,
+        name: str,
+        *,
+        include_file_state: bool = False,
+    ) -> (
+        hnswlib.Index
+        | tuple[
+            hnswlib.Index,
+            tuple[int, int, int, int, int],
+            dict[str, Any],
+            bytes,
+        ]
+    ):
         """在配对锁内从磁盘重载最新 index，并重新校验其 metadata。"""
         self._recover_pair_transaction_locked(name)
         index_path = self.index_dir / f"{name}.idx"
@@ -1906,19 +1977,64 @@ class VectorStore:
             expected_bytes=metadata_bytes,
         )
 
-        # hnswlib 不能接收 fd：加载前后都核验同一路径仍是安全叶子。
-        self._validate_leaf(
-            index_path,
-            label="向量索引文件",
-            allow_missing=False,
-        )
+        validated_metadata = metadata
+        validated_metadata_bytes = metadata_bytes
+        if include_file_state:
+            # 前一次校验可能完成合法 metadata 迁移；重新读取并完整校验最终快照，
+            # 后续 mapping/cache 只能消费这份 bytes。
+            try:
+                validated_metadata, validated_metadata_bytes = (
+                    self._load_metadata_snapshot(name)
+                )
+                validated_dim = validated_metadata.get("dim")
+                if validated_dim is None or int(validated_dim) != self.dim:
+                    raise RuntimeError(f"{name} 维度不匹配，无法安全读取")
+                self._validate_embedding_fingerprint(
+                    name,
+                    validated_metadata,
+                    expected_bytes=validated_metadata_bytes,
+                )
+            except PKVRuntimeError:
+                raise
+            except Exception as exc:
+                raise PKVRuntimeError(
+                    ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                    f"{name} metadata 契约不一致",
+                    stage="chunk_index_metadata",
+                    recoverable=True,
+                ) from exc
+
+        # hnswlib 不能接收 fd：加载前后以安全 fd 状态绑定实际读取的文件。
+        before_state = self._index_file_state(index_path)
         index = hnswlib.Index(space="cosine", dim=self.dim)
         index.load_index(str(index_path), allow_replace_deleted=True)
-        self._validate_leaf(
-            index_path,
-            label="向量索引文件",
-            allow_missing=False,
-        )
+        after_state = self._index_file_state(index_path)
+        if before_state != after_state:
+            raise PKVRuntimeError(
+                ErrorCode.PATH_STATE_UNDETERMINED,
+                f"{name} 索引在 hnswlib 加载期间发生变化",
+                stage="vector_index_load",
+                recoverable=True,
+            )
+        if include_file_state:
+            try:
+                _, after_metadata_bytes = self._load_metadata_snapshot(name)
+            except PKVRuntimeError:
+                raise
+            except Exception as exc:
+                raise PKVRuntimeError(
+                    ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                    f"{name} metadata 状态不可判定",
+                    stage="chunk_index_metadata",
+                    recoverable=True,
+                ) from exc
+            if after_metadata_bytes != validated_metadata_bytes:
+                raise PKVRuntimeError(
+                    ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                    f"{name} metadata 在 index 加载期间发生变化",
+                    stage="chunk_index_metadata",
+                    recoverable=True,
+                )
         if index.max_elements < index.element_count + 1000:
             index.resize_index(max(10000, index.element_count + 1000))
         index.set_ef(self.ef_search)
@@ -1926,7 +2042,34 @@ class VectorStore:
             self.doc_index = index
         else:
             self.chunk_index = index
+        if include_file_state:
+            return (
+                index,
+                after_state,
+                validated_metadata,
+                validated_metadata_bytes,
+            )
         return index
+
+    def _index_file_state(
+        self,
+        index_path: Path,
+    ) -> tuple[int, int, int, int, int]:
+        """通过安全 fd 取得可缓存的 index 文件状态。"""
+
+        with self._open_leaf(
+            index_path,
+            "rb",
+            label="向量索引文件",
+        ) as source:
+            state = os.fstat(source.fileno())
+        return (
+            int(state.st_dev),
+            int(state.st_ino),
+            int(state.st_size),
+            int(state.st_mtime_ns),
+            int(state.st_ctime_ns),
+        )
 
     def _ensure_capacity(self, index: "hnswlib.Index", count: int = 1) -> None:
         """确保索引有足够容量，不足时自动扩容（翻倍策略）
@@ -1945,6 +2088,137 @@ class VectorStore:
                 f"🔄 索引自动扩容: {index.max_elements // 2} → {new_size}"
             )
 
+    @staticmethod
+    def _invalid_vector_write_input() -> PKVRuntimeError:
+        """Return the stable, value-free failure exposed by the write boundary."""
+
+        return PKVRuntimeError(
+            ErrorCode.STORAGE_VECTOR_FAILED,
+            _INVALID_VECTOR_WRITE_INPUT,
+            stage="vector_write_preflight",
+            recoverable=False,
+        )
+
+    def _preflight_vector_write(
+        self,
+        vectors: np.ndarray,
+        *,
+        batch_size: Optional[int] = None,
+    ) -> np.ndarray:
+        """Freeze and validate exactly what hnswlib's float32 cosine path consumes.
+
+        A fresh C-contiguous float32 snapshot closes the caller-mutation gap between
+        validation and ``add_items``.  Every row is checked before a pair lock or
+        transaction can be entered, so a bad batch is all-or-nothing.
+        """
+
+        expected_shape = (
+            (int(self.dim),)
+            if batch_size is None
+            else (batch_size, int(self.dim))
+        )
+        return self._project_float32_cosine_input(
+            vectors,
+            expected_shape=expected_shape,
+            invalid_error=self._invalid_vector_write_input,
+        )
+
+    @staticmethod
+    def _invalid_vector_query_input() -> PKVRuntimeError:
+        """Return the stable, value-free failure exposed by the query boundary."""
+
+        return PKVRuntimeError(
+            ErrorCode.RETRIEVAL_INVALID_QUERY,
+            _INVALID_VECTOR_QUERY_INPUT,
+            stage="vector_query_preflight",
+            recoverable=False,
+        )
+
+    def _preflight_vector_query(self, query_vector: np.ndarray) -> np.ndarray:
+        """Freeze one query in the exact float32 cosine domain before any read."""
+
+        return self._project_float32_cosine_input(
+            query_vector,
+            expected_shape=(int(self.dim),),
+            invalid_error=self._invalid_vector_query_input,
+        )
+
+    @staticmethod
+    def _invalid_document_vector_read() -> PKVRuntimeError:
+        """Return the stable failure for malformed persisted document vectors."""
+
+        return PKVRuntimeError(
+            ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+            _INVALID_DOCUMENT_VECTOR_READ,
+            stage="document_vector_read",
+            recoverable=True,
+        )
+
+    def _preflight_document_vector_read(self, vectors: np.ndarray) -> np.ndarray:
+        """Validate one exact hnswlib get_items matrix and return an owned row."""
+
+        projected = self._project_float32_cosine_input(
+            vectors,
+            expected_shape=(1, int(self.dim)),
+            invalid_error=self._invalid_document_vector_read,
+        )
+        return projected[0].copy()
+
+    def _project_float32_cosine_input(
+        self,
+        vectors: np.ndarray,
+        *,
+        expected_shape: tuple[int, ...],
+        invalid_error: Callable[[], PKVRuntimeError],
+    ) -> np.ndarray:
+        """Project an owned, exact-shape snapshot into hnswlib's safe domain."""
+
+        try:
+            if type(vectors) is not np.ndarray:
+                raise invalid_error()
+            is_real_numeric = np.issubdtype(
+                vectors.dtype,
+                np.integer,
+            ) or np.issubdtype(vectors.dtype, np.floating)
+            if not is_real_numeric or vectors.shape != expected_shape:
+                raise invalid_error()
+
+            with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+                projected = vectors.astype(
+                    np.float32,
+                    order="C",
+                    casting="unsafe",
+                    subok=False,
+                    copy=True,
+                )
+            if not bool(np.all(np.isfinite(projected))):
+                raise invalid_error()
+
+            matrix = (
+                projected.reshape(1, int(self.dim))
+                if projected.ndim == 1
+                else projected
+            )
+            with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+                norm_squared = np.sum(
+                    matrix * matrix,
+                    axis=1,
+                    dtype=np.float32,
+                )
+                norms = np.sqrt(norm_squared)
+            if (
+                not bool(np.all(np.isfinite(norm_squared)))
+                or not bool(np.all(norm_squared > np.float32(0.0)))
+                or not bool(np.all(np.isfinite(norms)))
+                or not bool(np.all(norms > np.float32(0.0)))
+            ):
+                raise invalid_error()
+            return projected
+        except PKVRuntimeError:
+            raise
+        except Exception:
+            raise invalid_error() from None
+
     def add_doc_vector(
         self,
         knowledge_id: int,
@@ -1958,9 +2232,9 @@ class VectorStore:
             knowledge_id: 知识条目 ID (对应 knowledge_items.id)
             vector: 向量 (维度须与索引一致)
         """
-        # 确保向量是 float32 类型
-        if vector.dtype != np.float32:
-            vector = vector.astype('float32')
+        if type(knowledge_id) is not int or knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须为正整数")
+        vector = self._preflight_vector_write(vector)
 
         with self._index_pair_lock("doc_vectors"):
             index = self._reload_index_for_update_locked("doc_vectors")
@@ -1990,11 +2264,8 @@ class VectorStore:
             chunk_index: 块序号
             vector: 向量 (维度须与索引一致)
         """
-        # 确保向量是 float32 类型
-        if vector.dtype != np.float32:
-            vector = vector.astype('float32')
-
         hnswlib_id = self.encode_chunk_id(knowledge_id, chunk_index)
+        vector = self._preflight_vector_write(vector)
 
         with self._index_pair_lock("chunk_vectors"):
             index = self._reload_index_for_update_locked("chunk_vectors")
@@ -2043,25 +2314,32 @@ class VectorStore:
         Returns:
             实际写入的向量数量
         """
-        if knowledge_id <= 0:
+        if type(knowledge_id) is not int or knowledge_id <= 0:
             raise ValueError("knowledge_id 必须为正整数")
-        if len(chunk_indices) == 0:
-            return 0
-        if vectors.ndim != 2:
-            raise ValueError("vectors 必须是二维矩阵")
-        if len(chunk_indices) != vectors.shape[0]:
-            raise ValueError("chunk_indices 与 vectors 行数必须一致")
-
-        if vectors.dtype != np.float32:
-            vectors = vectors.astype("float32")
+        if type(chunk_indices) is not list:
+            raise ValueError("chunk_indices 必须是整数列表")
+        frozen_chunk_indices = tuple(chunk_indices)
+        if any(type(chunk_index) is not int for chunk_index in frozen_chunk_indices):
+            raise ValueError("chunk_indices 必须是整数列表")
+        if len(set(frozen_chunk_indices)) != len(frozen_chunk_indices):
+            raise ValueError("chunk_indices 不能重复")
 
         hnswlib_ids = [
             self.encode_chunk_id(knowledge_id, chunk_index)
-            for chunk_index in chunk_indices
+            for chunk_index in frozen_chunk_indices
         ]
+        vectors = self._preflight_vector_write(
+            vectors,
+            batch_size=len(frozen_chunk_indices),
+        )
+        if len(frozen_chunk_indices) == 0:
+            return 0
         mapping = {
             hnswlib_id: (knowledge_id, chunk_index)
-            for hnswlib_id, chunk_index in zip(hnswlib_ids, chunk_indices)
+            for hnswlib_id, chunk_index in zip(
+                hnswlib_ids,
+                frozen_chunk_indices,
+            )
         }
         with self._index_pair_lock("chunk_vectors"):
             index = self._reload_index_for_update_locked("chunk_vectors")
@@ -2096,8 +2374,10 @@ class VectorStore:
     @classmethod
     def encode_chunk_id(cls, knowledge_id: int, chunk_index: int) -> int:
         """将 (knowledge_id, chunk_index) 编码为 hnswlib label。"""
-        if knowledge_id <= 0:
+        if type(knowledge_id) is not int or knowledge_id <= 0:
             raise ValueError("knowledge_id 必须为正整数")
+        if type(chunk_index) is not int:
+            raise ValueError("chunk_index 必须为整数")
         if chunk_index < 0:
             raise ValueError("chunk_index 不能为负数")
         if chunk_index > cls.MAX_CHUNK_INDEX:
@@ -2140,8 +2420,8 @@ class VectorStore:
                     knowledge_id,
                 )
                 return None
-            if vectors is not None and len(vectors) > 0:
-                return np.array(vectors[0], dtype=np.float32)
+            if vectors is not None:
+                return self._preflight_document_vector_read(vectors)
         return None
 
     def delete_vectors_for_entry(self, knowledge_id: int) -> dict:
@@ -2225,12 +2505,13 @@ class VectorStore:
             for hnswlib_id, mapping in metadata.get("id_mapping", {}).items():
                 if int(mapping[0]) != knowledge_id:
                     continue
-                if not self._chunk_vector_exists(index, int(hnswlib_id)):
+                canonical_hnswlib_id = int(hnswlib_id)
+                if not self._chunk_vector_exists(index, canonical_hnswlib_id):
                     logger.warning(
                         "检测到 chunk metadata/index 漂移: "
                         "knowledge_id=%s, hnswlib_id=%s",
                         knowledge_id,
-                        hnswlib_id,
+                        canonical_hnswlib_id,
                     )
                     continue
                 chunk_indices.append(int(mapping[1]))
@@ -2348,9 +2629,7 @@ class VectorStore:
         Returns:
             [(knowledge_id, distance), ...] 列表
         """
-        # 确保向量是 float32 类型
-        if query_vector.dtype != np.float32:
-            query_vector = query_vector.astype('float32')
+        query_vector = self._preflight_vector_query(query_vector)
 
         with self._index_pair_lock("doc_vectors"):
             index = self._reload_index_for_update_locked("doc_vectors")
@@ -2372,56 +2651,184 @@ class VectorStore:
         Returns:
             [(knowledge_id, chunk_index, distance), ...] 列表
         """
-        # 确保向量是 float32 类型
-        if query_vector.dtype != np.float32:
-            query_vector = query_vector.astype('float32')
+        query_vector = self._preflight_vector_query(query_vector)
 
         with self._index_pair_lock("chunk_vectors"):
-            index = self._reload_index_for_update_locked("chunk_vectors")
-            metadata = self._load_metadata("chunk_vectors")
-            id_mapping = metadata.get("id_mapping", {})
-            if not isinstance(id_mapping, dict) or not id_mapping:
-                return []
-
-            active_mapping: dict[int, tuple[int, int]] = {}
-            for hnswlib_id, mapping in id_mapping.items():
-                if not isinstance(mapping, (list, tuple)) or len(mapping) < 2:
-                    continue
-                try:
-                    active_mapping[int(hnswlib_id)] = (
-                        int(mapping[0]),
-                        int(mapping[1]),
+            try:
+                index, index_state, metadata, metadata_bytes = (
+                    self._reload_index_for_update_locked(
+                        "chunk_vectors",
+                        include_file_state=True,
                     )
-                except (TypeError, ValueError, OverflowError):
-                    continue
+                )
+            except Exception:
+                self._validated_chunk_pair_key = None
+                raise
+            validation_key = self._chunk_pair_validation_key(
+                index_state,
+                metadata_bytes,
+            )
+            cache_hit = validation_key == self._validated_chunk_pair_key
+            if not cache_hit:
+                # 旧 key 对当前 pair 没有证明力；失败路径必须保持 cache 为空。
+                self._validated_chunk_pair_key = None
+            active_mapping = self._parse_chunk_id_mapping(metadata)
             if not active_mapping:
+                if cache_hit:
+                    return []
+                # 空 mapping 只在索引确实没有 active label 时表示正常 no_hits。
+                # 如果仍能查询到 label，则 metadata 已与 index 漂移，必须 fail closed。
+                if self._knn_query_active(index, query_vector, 1) is not None:
+                    raise PKVRuntimeError(
+                        ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                        "chunk id_mapping 为空但索引仍包含 active label",
+                        stage="chunk_index_metadata",
+                        recoverable=True,
+                    )
+                if self._index_file_state(
+                    self.index_dir / "chunk_vectors.idx"
+                ) != index_state:
+                    raise PKVRuntimeError(
+                        ErrorCode.PATH_STATE_UNDETERMINED,
+                        "chunk 索引在完整性校验期间发生变化",
+                        stage="chunk_index_metadata",
+                        recoverable=True,
+                    )
+                self._validated_chunk_pair_key = validation_key
                 return []
 
+            # Pair 首次出现或身份变化时，用 mapping_count + 1 探测全部 active
+            # labels。稳定且已验证的 pair 恢复普通 top-k，避免每次 O(N) 输出。
+            requested_k = k if cache_hit else len(active_mapping) + 1
             neighbors = self._knn_query_active(
                 index,
                 query_vector,
-                min(k, len(active_mapping)),
-                allowed_labels=set(active_mapping),
+                requested_k,
             )
-        if neighbors is None:
-            return []
-        labels, distances = neighbors
-
-        # 从元数据中解析 (knowledge_id, chunk_index)
-        results = []
-        for label, dist in zip(labels[0], distances[0]):
-            hnswlib_id = int(label)
-            mapping = active_mapping.get(hnswlib_id)
-            if mapping is None:
-                logger.warning(
-                    "忽略缺少 active metadata mapping 的 chunk label: %s",
-                    hnswlib_id,
+            if neighbors is None:
+                raise PKVRuntimeError(
+                    ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                    "chunk id_mapping 未对应任何 active label",
+                    stage="chunk_index_metadata",
+                    recoverable=True,
                 )
-                continue
-            knowledge_id, chunk_index = mapping
-            results.append((knowledge_id, chunk_index, float(dist)))
+            labels, distances = neighbors
+            actual_labels = tuple(int(label) for label in labels[0])
+            if not cache_hit and (
+                len(actual_labels) != len(active_mapping)
+                or set(actual_labels) != set(active_mapping)
+            ):
+                raise PKVRuntimeError(
+                    ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                    "chunk index active labels 与 id_mapping 不一致",
+                    stage="chunk_index_metadata",
+                    recoverable=True,
+                )
 
-        return results
+            # 从同一个受锁快照解析结果；任一失败都不得发布新的 cache key。
+            results = []
+            result_count = min(k, len(actual_labels))
+            for label, dist in zip(
+                labels[0][:result_count],
+                distances[0][:result_count],
+            ):
+                hnswlib_id = int(label)
+                mapping = active_mapping.get(hnswlib_id)
+                if mapping is None:
+                    self._validated_chunk_pair_key = None
+                    raise PKVRuntimeError(
+                        ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                        "chunk 查询命中缺少 id_mapping",
+                        stage="chunk_index_metadata",
+                        recoverable=True,
+                    )
+                knowledge_id, chunk_index = mapping
+                results.append((knowledge_id, chunk_index, float(dist)))
+
+            if not cache_hit:
+                if self._index_file_state(
+                    self.index_dir / "chunk_vectors.idx"
+                ) != index_state:
+                    raise PKVRuntimeError(
+                        ErrorCode.PATH_STATE_UNDETERMINED,
+                        "chunk 索引在完整性校验期间发生变化",
+                        stage="chunk_index_metadata",
+                        recoverable=True,
+                    )
+                self._validated_chunk_pair_key = validation_key
+            return results
+
+    @staticmethod
+    def _chunk_pair_validation_key(
+        index_state: tuple[int, int, int, int, int],
+        metadata_bytes: bytes,
+    ) -> tuple[int, int, int, int, int, str]:
+        """绑定实际加载的 index 状态与同锁内 metadata 内容。"""
+
+        return (*index_state, hashlib.sha256(metadata_bytes).hexdigest())
+
+    @classmethod
+    def _parse_chunk_id_mapping(
+        cls,
+        metadata: dict[str, Any],
+    ) -> dict[int, tuple[int, int]]:
+        """严格解析 chunk mapping；任一畸形项都使整个快照不可用。"""
+
+        if "id_mapping" not in metadata:
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                "chunk metadata 缺少 id_mapping",
+                stage="chunk_index_metadata",
+                recoverable=True,
+            )
+        raw_mapping = metadata["id_mapping"]
+        if not isinstance(raw_mapping, dict):
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                "chunk id_mapping 必须是 JSON object",
+                stage="chunk_index_metadata",
+                recoverable=True,
+            )
+
+        parsed: dict[int, tuple[int, int]] = {}
+        for raw_label, raw_value in raw_mapping.items():
+            valid_label = (
+                isinstance(raw_label, str)
+                and raw_label.isascii()
+                and raw_label.isdigit()
+            )
+            valid_value = (
+                isinstance(raw_value, (list, tuple))
+                and len(raw_value) == 2
+                and type(raw_value[0]) is int
+                and type(raw_value[1]) is int
+            )
+            if not valid_label or not valid_value:
+                raise PKVRuntimeError(
+                    ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                    "chunk id_mapping 包含畸形条目",
+                    stage="chunk_index_metadata",
+                    recoverable=True,
+                )
+
+            label = int(raw_label)
+            knowledge_id = raw_value[0]
+            chunk_index = raw_value[1]
+            if (
+                knowledge_id <= 0
+                or chunk_index < 0
+                or chunk_index > cls.MAX_CHUNK_INDEX
+                or cls.encode_chunk_id(knowledge_id, chunk_index) != label
+                or str(label) != raw_label
+            ):
+                raise PKVRuntimeError(
+                    ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                    "chunk id_mapping 与编码合同不一致",
+                    stage="chunk_index_metadata",
+                    recoverable=True,
+                )
+            parsed[label] = (knowledge_id, chunk_index)
+        return parsed
 
     def _publish_index(self, name: str, index: hnswlib.Index) -> None:
         """保存 idx，并在 replace 前把将发布临时文件绑定进配对事务。"""

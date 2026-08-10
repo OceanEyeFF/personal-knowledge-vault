@@ -38,17 +38,23 @@ storage:
 # AI 服务默认配置；本机私有覆盖只写入被 Git 忽略的 config/local.yaml
 ai:
   llm:
+    provider: "openai_compatible"
     api_key: ""                       # 默认必须为空，私钥不得提交
     base_url: "https://api.deepseek.com/v1"
     model: "deepseek-chat"
     temperature: 0.7
     max_tokens: 2000
+    timeout_seconds: 30
+    max_retries: 2
 
   embedding:
+    provider: "openai_compatible"
     api_key: ""                       # 默认必须为空，私钥不得提交
     base_url: "https://api.openai.com/v1"
     model: "text-embedding-3-small"
     dim: 1536                           # 也可在 local.yaml 中设为 auto
+    timeout_seconds: 30
+    max_retries: 3
 
 # 检索配置
 retrieval:
@@ -78,6 +84,8 @@ db_path = config.db_path
 ---
 
 ### 工作流配置 (workflows/)
+
+运行时只加载这里真实存在、带 `schema_version` 且通过严格 schema 校验的 YAML。当前仅支持 `archive-url.yaml` 与 `archive-text.yaml`；不存在内嵌 step 回退，配置无效时会在执行任何 step 前 fail-closed。
 
 #### archive-url.yaml
 
@@ -150,28 +158,9 @@ steps:
 
 ---
 
-#### search.yaml
+#### 检索配置边界
 
-**用途**: 搜索知识库的工作流定义
-
-**步骤**:
-1. `query_router` - 查询路由 (选择检索策略)
-2. `retrieve` - 执行检索
-3. `format_results` - 格式化结果
-
-```yaml
-name: search
-description: "在知识库中搜索内容"
-steps:
-  - id: route
-    type: query_router
-
-  - id: retrieve
-    type: retrieve
-
-  - id: format
-    type: format_results
-```
+`search.yaml` 不受支持，也不应创建。搜索由 `src/retrieval/` 及 CLI/MCP adapter 直接执行；GUI 的 M13 发布合同只保证 BM25。向量/混合策略按需构造 Embedding Provider，缺少或无效 Provider 配置必须返回显式错误，不能降格为空结果。
 
 ---
 
@@ -221,10 +210,12 @@ notepad config\local.yaml
 ```yaml
 ai:
   llm:
+    provider: "openai_compatible"
     api_key: ""
     base_url: "https://api.deepseek.com/v1"
     model: "deepseek-chat"
   embedding:
+    provider: "openai_compatible"
     api_key: ""
     base_url: "https://api.openai.com/v1"
     model: "text-embedding-3-small"
@@ -283,7 +274,7 @@ verify_config()
 **检查项**:
 - config.yaml 是否存在
 - 必需配置项是否完整
-- API Keys 是否设置
+- Provider-backed 能力所需字段是否合法；默认离线/BM25 验证不要求真实 API Key
 - 数据目录是否可创建
 
 ---
@@ -348,7 +339,6 @@ $env:DATA_DIR = ".data-custom"
 | `local.yaml` | Git 忽略的本机私有覆盖配置 |
 | `workflows/archive-url.yaml` | 归档网页工作流配置 |
 | `workflows/archive-text.yaml` | 归档文本工作流配置 (M9 新增) |
-| `workflows/search.yaml` | 搜索工作流配置 |
 | `custom_dict.txt` | jieba 自定义词典 |
 
 ---
@@ -357,8 +347,8 @@ $env:DATA_DIR = ".data-custom"
 
 ### 2026-02-19 00:58 (M9)
 - 新增 `workflows/archive-text.yaml` 工作流配置 (MCP archive_text 专用)
-- 新增 `PKV_MCP_AUTH_TOKEN` 环境变量说明 (HTTP Bearer Token)
-- 更新文档体现 3 个工作流配置
+- 历史原型曾记录 HTTP Bearer 配置；M13 W2 已将 HTTP/Bearer 从发布面和运行入口移除
+- 当前发布配置只保留 2 个真实、版本化的归档工作流
 
 ### 2026-02-16 18:51
 - 生成 Config 模块 CLAUDE.md 文档

@@ -3,6 +3,8 @@
 > **主人，浮浮酱已经为你准备好了一切！** ฅ'ω'ฅ
 >
 > 推荐使用 **Conda 方式**安装，可以避免 Python 3.13 兼容性问题喵～
+>
+> **M13 当前边界**：Windows-first fresh-install Developer Preview 支持 GUI、CLI 与 MCP stdio；GUI 搜索只保证 BM25。MCP HTTP/Bearer 和 `search.yaml` 不受支持。默认验证离线，只使用 `.data-test` 合成数据，不需要也不得读取真实 API key、真实 Provider 或真实 Vault。
 
 ---
 
@@ -43,14 +45,14 @@
 
 **预计时间**: 3-5 分钟
 
-#### Step 2: 配置 API Keys
+#### Step 2: 可选配置 Provider
 
 ```powershell
 # 编辑本机私有配置
 notepad config\local.yaml
 ```
 
-在 `ai.llm.api_key` 和 `ai.embedding.api_key` 中填入你的 API Keys。
+BM25、浏览、MCP stdio 能力发现和安装验证不需要 API Key。只有用户主动使用摘要、Chat、向量或混合检索时，才在 `ai.llm.*` / `ai.embedding.*` 中填写对应 Provider 配置；不要把密钥写入仓库、日志或自动化输出。
 
 > **如果你还没有 API Keys**:
 > - LLM: 使用 OpenAI-compatible Chat Completions 服务

@@ -7,7 +7,7 @@
 当前状态补注（2026-07-31）：
 
 - 当前代码基线共 `14` 个 Tool，其中 `query_subgraph`、`explain_relation`、`collect_evidence` 已可调用
-- `find_bridges`、`timeline_of`、`contrast` 也已接入 MCP，但仍属于 partial implementation
+- `find_bridges`、`timeline_of`、`contrast` 也已接入 MCP，但仍属于 `partial-v1`，公开 `implementation_level=partial`
 - 当前自动化验证已经覆盖 unit / integration / blackbox；完整 E2E 仍需继续补齐
 
 ---

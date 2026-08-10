@@ -12,17 +12,20 @@
 > 说明：`v0.6.0` 是 CLI 首次稳定引入版本，`v0.7.0` 是 MCP 首次稳定引入版本；当前仓库在此基础上继续合入后续 GUI 与文档收敛工作。
 > 命名说明：当前路线里提到的“当前开发 Phase 1”实际对应 `Phase A：Relation Foundation`；历史文档中的旧 `Phase 1` 已归档完成，两者不是同一时间轴。
 > 2026-07-31 离线收口：Phase C 固定评测为 16 tasks / 119 checks，`overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`；三个探索 Tool 按 `partial-v1` 口径交付，公开合同仍诚实声明 `implementation_level=partial`。
-> 2026-08-07 M13 W1 安全复审：统一 runtime layout/bootstrap、Vault containment、跨存储补偿/repair 终态及 fail-closed migration 已完成；SQLite 事务提交凭据、Markdown identity + SHA-256 和 Vector 持久 pair marker 已补齐。冻结后离线验收为 unit `1583 passed, 19 skipped`、integration/blackbox/e2e `277 passed, 9 deselected`；W2-W4 与最终 Artifact 发布仍待完成。
+> 2026-08-07 M13 W1 安全复审：统一 runtime layout/bootstrap、Vault containment、跨存储补偿/repair 终态及 fail-closed migration 已完成；SQLite 事务提交凭据、Markdown identity + SHA-256 和 Vector 持久 pair marker 已补齐。W1 冻结时离线验收为 unit `1583 passed, 19 skipped`、integration/blackbox/e2e `277 passed, 9 deselected`。
+> 2026-08-07 M13 W2 收口：Workflow、Retrieval、MCP、GUI Chat 四条源代码合同均已 `source_verified`，独立复审无确定性 P0/P1；Phase C fresh run 为 16 tasks / 151 checks（119 项声明式 + 32 项自动公开 envelope）、全部维度 `1.0`、0 failed、`targets_met=true`。下一步开始 W3；W3/W4 与最终 Artifact 发布仍未完成。
 
 ## ✨ 核心特点
 
 - 🤖 **AI-First 设计**: 以 Claude Code/CodeX 作为智能协作伙伴，支持人机协作的知识处理
 - 🔌 **MCP 服务**: 标准 MCP 协议集成，AI Agent 可直接搜索、归档、浏览知识库
 - 🔍 **智能混合检索**: 自动路由 BM25/向量/混合检索策略，精确高效零成本浪费
-- ⚡ **工作流驱动**: 一切操作皆工作流，可编排、可观测、可中断恢复
+- ⚡ **工作流驱动归档**: 真实版本化 YAML 编排归档，终态与问题可观测
 - 🔒 **本地优先**: 数据完全掌控，Markdown 主存储，SQLite+向量辅助索引
-- 💰 **成本可控**: 智能策略节省 85% API 成本，支持自定义成本阈值
+- 💰 **成本可控**: BM25 路径不构造 Provider，语义能力按需启用
 - 🛡️ **AI 安全**: 内置安全规范，测试环境完全隔离，数据备份自动化
+
+> **M13 Developer Preview 支持边界**：发布面只包含 Windows-first、fresh-install、GUI、CLI 与 MCP stdio。GUI 搜索只保证 BM25；向量/混合检索属于 CLI/MCP 的显式策略能力并依赖正常 Provider 配置。MCP HTTP transport 与 Bearer 合同不在本次发布面。默认自动化全程离线，只使用合成数据和可控 doubles，不读取真实 API key、真实 Provider 或真实 Vault；W3/W4 的 Chat Artifact 路径将使用 release payload 外的 deterministic loopback harness。
 
 ## 🎯 核心功能
 
@@ -35,10 +38,10 @@
 - 📝 **纯文本**: Fallback 处理器，任何文本内容都能归档
 
 ### 🔍 智能检索 (已实现)
-- **BM25 检索**: 短查询（<10 tokens）精确关键词匹配
-- **向量检索**: 长查询（≥10 tokens）语义理解
-- **混合检索**: RRF (k=60) 融合算法，兼顾精确与语义
-- **自动路由**: `QueryRouter` 根据查询特征自动选择最优策略
+- **BM25 检索**: 短查询（<5 tokens）精确关键词匹配
+- **向量检索**: CLI/MCP 可显式选择的语义检索
+- **混合检索**: 长查询（≥5 tokens）的默认自动路由，使用加权 RRF (k=60)
+- **显式结果**: `SearchResponse` 区分 `success/no_hits/invalid/error/degraded`
 - **中文优化**: jieba 分词 + 自定义词典支持
 
 ### 🤖 AI 能力 (已实现)
@@ -76,10 +79,9 @@ AI Agent（Claude Code、Cursor 等）通过 MCP 协议直接操作知识库：
 ```powershell
 # 启动 MCP Server（stdio 模式，供 Claude Code/Cursor 集成）
 .\scripts\run-windows.ps1 python -m src.mcp
-
-# 启动 HTTP 模式（远程访问；先按 MCP 文档无回显注入认证令牌）
-.\scripts\run-windows.ps1 python -m src.mcp.server --transport streamable-http --port 3000
 ```
+
+M13 只支持 `stdio`。`streamable-http` 与 Bearer Token 认证均未发布；服务入口会在初始化配置、数据或监听端口前拒绝非 stdio transport。
 
 **14 个 Tool**:
 - `search_knowledge` — 智能搜索（BM25/向量/混合）
@@ -98,7 +100,7 @@ AI Agent（Claude Code、Cursor 等）通过 MCP 协议直接操作知识库：
 
 **9 个 Resource**: 条目全文/元数据、精确 chunk、时间字段、关系边、标签列表与统计信息
 
-**安全加固**: SSRF 拦截（内网地址过滤）、文本长度限制、Bearer Token 认证
+**安全加固**: URL 抓取在 DNS、连接目标、重定向与子资源阶段执行 SSRF 重校验；文本输入有长度限制。M13 不发布网络 MCP transport，因此没有 Bearer Token 发布合同。
 
 ### 🕸️ 关系层基础 (Phase A / T1+T5 已实现)
 
@@ -130,7 +132,7 @@ personal-knowledge-vault/
 │   │   ├── ui.py                      # Rich Console 界面
 │   │   └── formatters.py              # 输出格式化
 │   ├── mcp/                           # MCP 服务 (v0.7.0)
-│   │   ├── server.py                  # FastMCP 主入口 (stdio/HTTP)
+│   │   ├── server.py                  # FastMCP 主入口 (M13: stdio only)
 │   │   ├── tools.py                   # 14 个 Tool handler
 │   │   ├── resources.py               # 9 个 Resource handler
 │   │   ├── prompts.py                 # 3 个 Prompt 模板
@@ -170,8 +172,7 @@ personal-knowledge-vault/
 │   ├── config.yaml                    # 主配置
 │   ├── workflows/                     # 工作流定义
 │   │   ├── archive-url.yaml           # URL 归档工作流
-│   │   ├── archive-text.yaml          # 文本归档工作流 (v0.7.0)
-│   │   └── search.yaml                # 搜索工作流
+│   │   └── archive-text.yaml          # 文本归档工作流 (v0.7.0)
 │   └── custom_dict.txt                # 自定义分词词典
 │
 ├── scripts/                           # 运维脚本 (v0.6.0)
@@ -216,9 +217,7 @@ personal-knowledge-vault/
 - Python 3.11+ (通过 Conda 自动创建)
 - SQLite 3.35+ (支持 FTS5，通常系统自带)
 
-**必需 API Keys**:
-- **DeepSeek API** (摘要生成、标签提取) - [获取 API Key](https://platform.deepseek.com/)
-- **OpenAI API** (Embedding) - [获取 API Key](https://platform.openai.com/)
+**可选 Provider 配置**：BM25、浏览、stdio 能力发现和默认离线验证不需要真实 API Key。只有用户主动使用摘要、Chat、向量或混合检索等 Provider-backed 能力时，才需要在 Git 忽略的 `config/local.yaml` 中配置相应服务。任何自动化/Agent 验证都不得使用真实 key、真实 Provider 或真实数据。
 
 ### Codex/Claude 专用环境
 
@@ -241,7 +240,7 @@ cd personal-knowledge-vault
 # 2️⃣ 运行自动安装脚本（创建 Python 3.11 环境 + 安装依赖）
 .\scripts\setup-conda.ps1
 
-# 3️⃣ 配置 API Keys（安装脚本已创建且 Git 已忽略 local.yaml）
+# 3️⃣ 可选：仅在手动使用 Provider-backed 能力时配置本机服务
 notepad config/local.yaml
 
 # ✅ 验证安装
@@ -356,32 +355,50 @@ notepad config/local.yaml
 
 | 查询类型 | 策略 | 触发条件 | 优势 |
 |---------|------|----------|------|
-| 短查询 | **BM25** | tokens < 10 | 精确快速，零 API 成本 |
-| 长查询 | **向量检索** | tokens ≥ 10 | 语义理解强 |
-| 混合模式 | **Hybrid (RRF k=60)** | 需要精确+语义 | 兼顾精确与语义 |
+| 短查询 | **BM25** | tokens < 5 | 精确快速，不构造 Provider |
+| 长查询 | **Hybrid (加权 RRF k=60)** | tokens ≥ 5 | BM25 + 向量并行，保留分支降级状态 |
+| 向量模式 | **Vector** | CLI/MCP 显式选择 | 按需创建 Embedding Provider |
 
-**成本优化**: 智能路由比纯向量方案节省 **85% API 成本**
+**成本边界**: BM25 与被参数校验拒绝的路径不会创建或调用 Embedding Provider；向量/混合路径需要有效的 Provider 配置。
 
 ### ⚡ 工作流驱动架构
 
-**一切操作皆工作流**:
+归档由严格版本化工作流编排；搜索直接由 Retrieval 层及 adapter 执行，不存在 `search.yaml`:
 
 ```yaml
 # config/workflows/archive-url.yaml
+schema_version: 1
 name: archive-url
+description: "智能归档网页内容工作流"
 steps:
-  - id: fetch          # 抓取内容
+  - id: fetch_content
     type: fetch_content
-  - id: analyze        # AI 分析（摘要、标签）
+    config: {processor: auto, url_key: url, timeout: 30, retry: 3}
+    on_error: fail
+  - id: ai_analyze
     type: ai_analyze
-  - id: store          # 三层存储
+    config: {tasks: [summarize, extract_tags], max_words: 300, num_tags: 5}
+    on_error: continue
+  - id: idea_sharpen
+    type: idea_sharpen
+    config:
+      questions: ["这篇内容与你现有知识中的哪些观点有关？"]
+      trigger_rules: [{content_length_gt: 3000}]
+    on_error: continue
+  - id: review_entry
+    type: review_entry
+    config: {required: true, max_regenerations: 3, preview_chars: 500}
+    on_error: continue
+  - id: store_entry
     type: store_entry
+    config: {targets: [markdown, sqlite, vector_index]}
+    on_error: fail
 ```
 
 **优势**:
 - 可编排：YAML 定义，灵活配置
-- 可观测：每步进度追踪，日志记录
-- 可中断：支持失败重试、断点续跑
+- 可观测：公开 `success/degraded/error`、稳定 issues 与日志
+- 错误策略：每步显式声明 `on_error: fail|continue`，配置在副作用前 fail-closed
 
 ### 🛡️ AI 安全与测试隔离 (v0.6.1)
 
@@ -424,13 +441,13 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 
 ### 🎉 当前仓库基线: v0.8.0-alpha
 
-**发布状态**: 🧪 M13 W1 已完成，当前仍为 alpha 开发基线；W2-W4、Artifact 发布与真实数据验收尚未完成
+**发布状态**: 🧪 M13 W1/W2 已完成，当前仍为 alpha 开发基线；W3 可开始，W3/W4、Artifact 发布与真实数据验收尚未完成
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
 | **项目版本** | v0.8.0-alpha | 当前仓库基线 |
 | **稳定能力基线** | v0.7.0 | MCP 服务 (8 Tool + 4 Resource + 3 Prompt) |
-| **开发进度** | M13 W1 | 运行时布局与数据安全底座完成，W2-W4 待完成 |
+| **开发进度** | M13 W2 | W1 安全底座与 W2 源代码功能合同完成；W3/W4 待完成 |
 | **源代码文件** | 40+ 个 | Python 模块 |
 | **测试文件** | 96 个 | 2026-03-06 仓库快照（tracked files） |
 | **测试覆盖率** | 待重新统计 | README 不再保留未经重新验证的旧覆盖率数字 |
@@ -453,6 +470,7 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 | **M8** | ✅ | MCP 只读服务（5 Tool + 4 Resource） | 2026-02-18 |
 | **M9** | ✅ | MCP 写入 + Prompts + 安全加固 (v0.7.0) | 2026-02-19 |
 | **M13 W1** | ✅ | Runtime layout、Vault containment、跨存储终态与 fail-closed migration | 2026-08-02 |
+| **M13 W2** | ✅ | Workflow、Retrieval、MCP、GUI Chat 源代码功能合同与独立复审 | 2026-08-07 |
 
 ### 🚀 核心能力矩阵
 
@@ -465,26 +483,15 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 | **工作流引擎** | 🧪 已实现（alpha） | YAML 配置，可编排/可观测 |
 | **数据迁移** | 🧪 W1 安全合同通过 | fresh/off-path 初始化与升级拒绝已验证；历史原地升级仍不在 M13 默认范围 |
 | **AI 安全** | 🧪 CAT-0 已验证 | 离线入口与测试隔离；不等同于 OS sandbox |
-| **MCP 服务** | 🧪 离线基线通过 | 固定评测 16/16、119/119；真实快照未验收 |
+| **MCP 服务** | 🧪 W2 源代码合同通过 | 固定评测 16/16、151/151；stdio-only，Artifact/真实快照未验收 |
 
 ### 📈 技术债务与改进方向
 
 **当前优先级**:
 
-1. **性能优化** (中优先级)
-   - 向量索引批量更新
-   - SQLite 查询优化
-   - 长文档分块策略
-
-2. **功能增强** (中优先级)
-   - RAG 问答能力
-   - B站视频处理器
-   - PDF 书籍处理器
-
-3. **用户体验** (低优先级)
-   - 交互式配置向导
-   - 更丰富的终端 UI
-   - Web 界面（计划中）
+1. **M13 W3 可复现打包链**：干净 checkout、锁定资源/依赖、构建指纹与 release payload 外的 deterministic Chat loopback harness
+2. **M13 W4 Artifact 验收**：在安装产物上复验 GUI/CLI/MCP stdio、离线归档、Chat、升级拒绝与卸载，并给出 release/hold
+3. **后置增强**：按真实需求逐 Tool 扩展 full 语义；性能、多模态和重交互体验不阻塞当前 Developer Preview
 
 ## 🧪 测试体系
 
@@ -546,15 +553,16 @@ live/secret/proxy 环境并安装 Python 级网络与子进程 guard，但它不
 )
 ```
 
-当前固定结果为 16/16 tasks、119/119 checks、`overall=1.0`、
-`citability=1.0`、0 failed 且 `thresholds_met=true`。固定任务、评分维度与
+当前 fresh run 为 16/16 tasks、151/151 checks（119 项版本化声明式检查 +
+32 项自动公开 envelope 检查）、`overall=1.0`、全部维度 `1.0`、0 failed 且
+`targets_met=true`。2026-07-31 的 119/119 是历史声明式基线，未被降低或删除。固定任务、评分维度与
 隔离边界见
 [MCP 最小评测闭环](docs/operations/MCP最小评测闭环.md)。
 
 开发 vault 重建入口 `scripts/rebuild-dev-vault.py` 已完成合成演练：
 `rebuilt -> up_to_date -> checked`，目标 schema `1.2.4`、9 个迁移、3 条 seed。
 这只证明离线合成开发基线可重建；真实快照仍受 U1/G8 与迁移 FT5 阻塞，
-本轮未读取或执行真实数据。M13 W1 已在该离线基线上完成，当前进入 W2；这仍不等于真实数据验收。
+本轮未读取或执行真实数据。M13 W1/W2 已在该离线基线上完成，当前开始 W3；这仍不等于 Artifact 或真实数据验收。
 
 详细说明：[tests/CLAUDE.md](tests/CLAUDE.md)
 

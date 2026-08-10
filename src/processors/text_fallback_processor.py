@@ -16,6 +16,7 @@ from typing import Iterable, List, Optional, Tuple
 
 from src.ai.deepseek_client import DeepSeekClient
 from src.processors.base import BaseProcessor
+from src.processors.local_file_reader import read_local_text_file
 from src.storage.markdown_store import Entry
 from src.utils.config import get_config
 from src.utils.logger import get_logger
@@ -71,19 +72,39 @@ class TextFallbackProcessor(BaseProcessor):
             return False
         return not re.match(r"^https?://", url.strip(), re.IGNORECASE)
 
-    async def process(self, url: str) -> Entry:
+    async def process(
+        self,
+        url: str,
+        *,
+        allow_local_file: bool = False,
+        require_local_file: bool = False,
+    ) -> Entry:
         """
-        Process raw text or local text file and return an Entry.
+        Process raw text and return an Entry.
+
+        Local file loading is disabled by default so an untrusted text value that
+        happens to match a local path is never dereferenced implicitly. Callers
+        that intentionally import a local file must opt in via ``process_file``
+        (or set ``allow_local_file=True`` explicitly).
 
         Args:
-            url: Raw text content or file path.
+            url: Raw text content, or a file path only when explicitly opted in.
+            allow_local_file: Whether a single-line input may be read as a local
+                file path. Defaults to False.
+            require_local_file: When True, a missing local file is an error
+                instead of falling back to literal-text processing. This is
+                reserved for the explicit ``process_file`` entry point.
 
         Returns:
             Entry with parsed content.
         """
         logger.info("TextFallbackProcessor processing input length=%s", len(url) if url else 0)
 
-        raw_text, source_path = await self._resolve_text(url)
+        raw_text, source_path = await self._resolve_text(
+            url,
+            allow_local_file=allow_local_file,
+            require_local_file=require_local_file,
+        )
         text = self._normalize_text(raw_text)
         if not text:
             return self._build_empty_entry(url, source_path)
@@ -121,7 +142,9 @@ class TextFallbackProcessor(BaseProcessor):
         if len(summary_one_sentence) > 50:
             summary_one_sentence = summary_one_sentence[:50]
 
-        source_url = str(source_path) if source_path else None
+        # Local machine paths are internal import details, never public source
+        # locators persisted into Markdown/SQLite/MCP projections.
+        source_url = None
 
         entry = Entry(
             title=title,
@@ -144,25 +167,52 @@ class TextFallbackProcessor(BaseProcessor):
         }
 
         logger.info(
-            "TextFallbackProcessor completed type=%s title=%s",
+            "TextFallbackProcessor completed type=%s content_length=%s messages=%s",
             text_type,
-            title,
+            len(text),
+            len(messages),
         )
         return entry
 
-    async def _resolve_text(self, url: str) -> Tuple[str, Optional[Path]]:
-        """Resolve input to text, loading from file if needed."""
+    async def process_text(self, text: str) -> Entry:
+        """Process ``text`` without performing any local filesystem lookup."""
+        return await self.process(text, allow_local_file=False)
+
+    async def process_file(self, file_path: str | Path) -> Entry:
+        """Explicitly import and process a local text file."""
+        return await self.process(
+            str(file_path),
+            allow_local_file=True,
+            require_local_file=True,
+        )
+
+    async def _resolve_text(
+        self,
+        url: str,
+        *,
+        allow_local_file: bool = False,
+        require_local_file: bool = False,
+    ) -> Tuple[str, Optional[Path]]:
+        """Resolve input to text, loading a file only after explicit opt-in."""
         if not url or not url.strip():
             return "", None
 
         candidate = url.strip()
-        if "\n" not in candidate:
+        if allow_local_file and "\n" not in candidate:
             path = Path(candidate)
-            if path.exists() and path.is_file():
-                try:
-                    text = await asyncio.to_thread(path.read_text, encoding="utf-8")
-                except UnicodeDecodeError:
-                    text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="ignore")
+            try:
+                text = await asyncio.to_thread(read_local_text_file, path)
+            except UnicodeDecodeError:
+                text = await asyncio.to_thread(
+                    read_local_text_file,
+                    path,
+                    errors="ignore",
+                )
+                return text, path
+            except FileNotFoundError:
+                if require_local_file:
+                    raise
+            else:
                 return text, path
 
         return url, None
@@ -353,7 +403,10 @@ class TextFallbackProcessor(BaseProcessor):
             tags = client.extract_tags(text, num_tags=5, temperature=0.3)
             return summary, tags
         except Exception as exc:
-            logger.warning("AI summary generation failed: %s", exc)
+            logger.warning(
+                "AI summary generation failed: error_type=%s",
+                type(exc).__name__,
+            )
             summary = self._fallback_summary(text, text_type, messages)
             tags = self._fallback_tags(text, text_type, messages)
             return summary, tags
@@ -430,7 +483,8 @@ class TextFallbackProcessor(BaseProcessor):
 
     def _build_empty_entry(self, url: str, source_path: Optional[Path]) -> Entry:
         """Build an empty Entry for blank input."""
-        source_url = str(source_path) if source_path else None
+        # A local path is an import capability, not public entry provenance.
+        source_url = None
         title = source_path.stem if source_path else "未命名文本"
         entry = Entry(
             title=title,

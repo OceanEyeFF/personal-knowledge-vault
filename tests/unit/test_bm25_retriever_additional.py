@@ -20,8 +20,8 @@ def test_search_returns_empty_for_blank_query(tmp_path: Path) -> None:
 
     response = retriever.search("   ")
 
-    assert response == []
-    assert response.status == "invalid_query"
+    assert response.results == ()
+    assert response.status == "invalid"
 
 
 def test_search_returns_empty_when_all_tokens_are_sanitized(
@@ -32,8 +32,8 @@ def test_search_returns_empty_when_all_tokens_are_sanitized(
 
     response = retriever.search("特殊符号")
 
-    assert response == []
-    assert response.status == "invalid_query"
+    assert response.results == ()
+    assert response.status == "invalid"
 
 
 def test_search_returns_empty_when_store_raises(tmp_path: Path) -> None:
@@ -49,7 +49,7 @@ def test_search_returns_empty_when_store_raises(tmp_path: Path) -> None:
 
     response = retriever.search("alpha")
 
-    assert response == []
+    assert response.results == ()
     assert response.status == "error"
     assert response.error_type == "OperationalError"
 

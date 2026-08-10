@@ -14,12 +14,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import html
 import logging
-from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QKeyEvent, QTextCursor
+from PySide6.QtCore import QPoint, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QKeyEvent, QTextCursor
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -36,10 +37,179 @@ from PySide6.QtWidgets import (
 from markdown2 import Markdown
 from pygments.formatters import HtmlFormatter
 
-from src.gui.viewmodels import ChatViewModel
+from src.gui.viewmodels.chat_viewmodel import (
+    ChatViewModel,
+    is_strict_session_list_projection,
+)
 from src.gui.styles import theme_colors
+from src.gui.utils.preview_loader import (
+    PreviewIssue,
+    is_strict_preview_outcome,
+    load_entry_preview_outcome,
+)
+from src.gui.utils.search_response_contract import is_strict_search_response
+from src.processors.safe_fetch import describe_url_target
+from src.runtime.errors import ErrorCode
 
 logger = logging.getLogger("pkv.gui.views.chat")
+
+_REFERENCE_PUBLIC_STAGES = frozenset({
+    "reference_lookup",
+    "reference_search",
+    "reference_preview",
+    "reference_prepare",
+    "preview_input",
+    "preview_path",
+    "preview_content",
+    "preview_markdown",
+    "preview_summary",
+})
+_REFERENCE_ENTRY_OPTIONAL_TEXT_FIELDS = (
+    "source_type",
+    "source_url",
+    "summary_one_sentence",
+    "summary_100_words",
+    "file_path",
+    "archived_at",
+)
+
+
+@dataclass(frozen=True)
+class _ReferenceResolution:
+    """Structured result for one explicit @knowledge/@search reference."""
+
+    status: str
+    entry: dict[str, Any] | None = None
+    content: str = ""
+    issues: tuple[PreviewIssue, ...] = ()
+
+
+def _reference_issue(
+    code: ErrorCode,
+    *,
+    stage: str,
+    recoverable: bool,
+    cause_type: str,
+) -> PreviewIssue:
+    return PreviewIssue(
+        code=code,
+        stage=stage,
+        recoverable=recoverable,
+        cause_type=cause_type,
+    )
+
+
+def _reference_error(
+    code: ErrorCode,
+    *,
+    stage: str,
+    recoverable: bool,
+    cause_type: str,
+) -> _ReferenceResolution:
+    return _ReferenceResolution(
+        status="error",
+        issues=(
+            _reference_issue(
+                code,
+                stage=stage,
+                recoverable=recoverable,
+                cause_type=cause_type,
+            ),
+        ),
+    )
+
+
+def _project_reference_entry(
+    entry: Any,
+    *,
+    expected_knowledge_id: int,
+) -> dict[str, Any] | None:
+    """Snapshot only fields consumed by preview/reference rendering."""
+
+    if type(entry) is not dict:
+        return None
+    knowledge_id = entry.get("knowledge_id")
+    title = entry.get("title")
+    if (
+        type(knowledge_id) is not int
+        or knowledge_id <= 0
+        or knowledge_id != expected_knowledge_id
+        or type(title) is not str
+        or not title.strip()
+    ):
+        return None
+
+    projected: dict[str, Any] = {
+        "knowledge_id": knowledge_id,
+        "title": title,
+    }
+    for field in _REFERENCE_ENTRY_OPTIONAL_TEXT_FIELDS:
+        if field not in entry:
+            continue
+        value = entry[field]
+        if value is not None and type(value) is not str:
+            return None
+        projected[field] = value
+
+    if "tags" in entry:
+        tags = entry["tags"]
+        if tags is not None and type(tags) not in {str, list}:
+            return None
+        if type(tags) is list:
+            if not all(type(tag) is str for tag in tags):
+                return None
+            tags = list(tags)
+        projected["tags"] = tags
+    return projected
+
+
+def _preview_resolution(
+    entry: dict[str, Any],
+    outcome: Any,
+    *,
+    prior_issues: tuple[PreviewIssue, ...] = (),
+) -> _ReferenceResolution:
+    """Combine preview and earlier retrieval degradation without flattening."""
+
+    if not is_strict_preview_outcome(outcome):
+        return _reference_error(
+            ErrorCode.RESOURCE_NOT_READABLE,
+            stage="reference_preview",
+            recoverable=False,
+            cause_type="InvalidPreviewOutcome",
+        )
+    if outcome.status == "error":
+        return _ReferenceResolution(status="error", issues=(outcome.issue,))
+    issues = prior_issues
+    if outcome.status == "degraded":
+        issues = (*issues, outcome.issue)
+    return _ReferenceResolution(
+        status="degraded" if issues else "success",
+        entry=entry,
+        content=outcome.content,
+        issues=issues,
+    )
+
+
+def _preview_issue_from_retrieval(issue: Any) -> PreviewIssue:
+    """Project retrieval diagnostics onto fixed Chat reference metadata."""
+
+    code_value = getattr(issue, "code", None)
+    recoverable_value = getattr(issue, "recoverable", None)
+    code = (
+        code_value
+        if isinstance(code_value, ErrorCode)
+        else ErrorCode.RETRIEVAL_BACKEND_FAILED
+    )
+    recoverable = (
+        recoverable_value if type(recoverable_value) is bool else False
+    )
+    return _reference_issue(
+        code,
+        stage="reference_search",
+        recoverable=recoverable,
+        cause_type="RetrievalDegraded",
+    )
 
 
 # ===================================================================
@@ -69,7 +239,10 @@ def render_markdown(text: str, role: str) -> str:
     Returns:
         渲染后的 HTML 字符串
     """
-    html_content = md_renderer.convert(text)
+    # markdown2 accepts raw HTML by default.  Escape it before Markdown
+    # conversion so user/provider text cannot inject img/a/object tags while
+    # ordinary Markdown syntax (headings, lists, code, links) still works.
+    html_content = md_renderer.convert(html.escape(str(text), quote=False))
     colors = theme_colors.get_current_colors()
 
     css_class = "assistant" if role == "assistant" else "user"
@@ -127,6 +300,38 @@ def render_markdown(text: str, role: str) -> str:
     """
 
     return template
+
+
+def _html_text(value: object) -> str:
+    """Escape one untrusted scalar before inserting it into hand-written HTML."""
+
+    return html.escape(str(value), quote=True)
+
+
+class SafeMessageBrowser(QTextBrowser):
+    """QTextBrowser that never resolves document-supplied resources."""
+
+    _ALLOWED_CLICK_SCHEMES = frozenset({"http", "https"})
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setOpenExternalLinks(False)
+        self.setOpenLinks(False)
+        self.anchorClicked.connect(self._open_allowed_link)
+
+    def loadResource(self, resource_type: int, name: QUrl):  # noqa: N802
+        """Deny HTTP/file/qrc/data image or document fetches by default."""
+
+        return None
+
+    def _open_allowed_link(self, url: QUrl) -> None:
+        """Open only an explicit http(s) click; all other schemes stay inert."""
+
+        scheme = url.scheme().lower()
+        if scheme not in self._ALLOWED_CLICK_SCHEMES or not url.isValid():
+            logger.warning("已拦截 Chat 链接: scheme=%s", scheme or "relative")
+            return
+        QDesktopServices.openUrl(url)
 
 
 # ===================================================================
@@ -302,14 +507,20 @@ class SessionSidebar(QWidget):
 
         menu.exec(self.session_list.mapToGlobal(pos))
 
-    def load_sessions(self, sessions: list) -> None:
+    def load_sessions(self, sessions: Any) -> bool:
         """加载会话列表
 
         Args:
-            sessions: 会话字典列表
-        """
-        self.session_list.clear()
+            sessions: SQLite 会话列表投影
 
+        Returns:
+            是否以一个完整、有效的投影替换了当前列表。
+        """
+        if not is_strict_session_list_projection(sessions):
+            logger.error("拒绝无效会话列表投影: code=session_projection_invalid")
+            return False
+
+        items: list[QListWidgetItem] = []
         for session in sessions:
             # 截断标题（最多 30 字符）
             title = session["title"]
@@ -318,7 +529,13 @@ class SessionSidebar(QWidget):
 
             item = QListWidgetItem(f"• {title}")
             item.setData(Qt.ItemDataRole.UserRole, session["session_id"])
+            items.append(item)
+
+        # Validation and item construction complete before the mutation point.
+        self.session_list.clear()
+        for item in items:
             self.session_list.addItem(item)
+        return True
 
 
 # ===================================================================
@@ -363,6 +580,13 @@ class StreamRenderer(QWidget):
         self.buffer += token
         self.full_text += token
 
+    def start(self) -> None:
+        """Start a fresh request-scoped render buffer."""
+
+        self.buffer = ""
+        self.full_text = ""
+        self.timer.start(30)
+
     def flush(self) -> None:
         """批量更新到 UI（每 30ms 执行一次）"""
         if not self.buffer:
@@ -382,6 +606,13 @@ class StreamRenderer(QWidget):
         """停止定时器并最后一次刷新"""
         self.timer.stop()
         self.flush()  # 最后一次刷新
+
+    def discard(self) -> None:
+        """Discard a provisional response without rendering it."""
+
+        self.timer.stop()
+        self.buffer = ""
+        self.full_text = ""
 
     def get_full_text(self) -> str:
         """获取本轮完整文本并重置
@@ -512,11 +743,6 @@ class InputBox(QTextEdit):
             mode: 补全模式
             filter_text: 过滤文本
         """
-        from src.gui.widgets.autocomplete_popup import (
-            MODE_KNOWLEDGE,
-            MODE_SEARCH,
-        )
-
         # 计算弹窗锚点位置（光标位置的全局坐标）
         cursor_rect = self.cursorRect()
         anchor = self.mapToGlobal(cursor_rect.bottomLeft())
@@ -648,10 +874,9 @@ class ChatArea(QWidget):
         layout = QVBoxLayout(self)
 
         # 消息显示区
-        self.message_display = QTextBrowser()
+        self.message_display = SafeMessageBrowser()
         self.message_display.setObjectName("message_display")
         self.message_display.setReadOnly(True)
-        self.message_display.setOpenExternalLinks(True)
         layout.addWidget(self.message_display)
 
         # 输入区
@@ -675,6 +900,7 @@ class ChatArea(QWidget):
 
         记录当前文档长度，流式结束后用于定位并替换纯文本。
         """
+        self.stream_renderer.start()
         self._stream_start_pos = self.message_display.document().characterCount()
         colors = theme_colors.get_current_colors()
         self.message_display.append(
@@ -713,6 +939,11 @@ class ChatArea(QWidget):
         html = render_markdown(full_text, role="assistant")
         self.message_display.append(html)
 
+    def discard_assistant_message(self) -> None:
+        """Drop request-scoped render state before re-rendering history."""
+
+        self.stream_renderer.discard()
+
 
 # ===================================================================
 # ChatView - 主视图
@@ -736,6 +967,9 @@ class ChatView(QWidget):
 
         # ViewModel
         self.viewmodel = ChatViewModel()
+        self._active_ui_request: tuple[str, str] | None = None
+        self._pending_user_messages: dict[tuple[str, str], str] = {}
+        self._pending_url_archives: set[tuple[str, str]] = set()
 
         # 主布局
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -767,21 +1001,48 @@ class ChatView(QWidget):
     def _connect_signals(self) -> None:
         """连接 Signal/Slot"""
         # ViewModel → UI
-        self.viewmodel.token_received.connect(self.chat_area.stream_renderer.add_token)
-        self.viewmodel.token_usage_updated.connect(self._on_token_usage_updated)
-        self.viewmodel.stream_finished.connect(self._on_stream_finished)
+        self.viewmodel.chat_request_started.connect(
+            self._on_chat_request_started
+        )
+        self.viewmodel.chat_token_received.connect(self._on_chat_token_received)
+        self.viewmodel.chat_token_usage_updated.connect(
+            self._on_chat_token_usage_updated
+        )
+        self.viewmodel.chat_request_completed.connect(
+            self._on_chat_request_completed
+        )
+        self.viewmodel.chat_request_stopped.connect(
+            self._on_chat_request_stopped
+        )
+        self.viewmodel.chat_request_failed.connect(
+            self._on_chat_request_failed
+        )
+        self.viewmodel.chat_request_rejected.connect(
+            self._on_chat_request_rejected
+        )
         self.viewmodel.error_occurred.connect(self._on_error)
         self.viewmodel.session_created.connect(self._on_session_created)
 
         # M12 Phase 3: URL 归档信号
-        self.viewmodel.url_archive_started.connect(self._on_url_archive_started)
-        self.viewmodel.url_archive_completed.connect(self._on_url_archive_completed)
-        self.viewmodel.url_archive_failed.connect(self._on_url_archive_failed)
-        self.viewmodel.url_archive_warning.connect(self._on_url_archive_warning)
+        self.viewmodel.url_archive_operation_started.connect(
+            self._on_url_archive_started
+        )
+        self.viewmodel.url_archive_operation_completed.connect(
+            self._on_url_archive_completed
+        )
+        self.viewmodel.url_archive_operation_failed.connect(
+            self._on_url_archive_failed
+        )
+        self.viewmodel.url_archive_operation_warning.connect(
+            self._on_url_archive_warning
+        )
 
         # 对话保存到知识库
         self.viewmodel.session_saved_to_kb.connect(self._on_session_saved_to_kb)
         self.viewmodel.session_save_to_kb_failed.connect(self._on_session_save_to_kb_failed)
+        self.viewmodel.session_save_to_kb_warning.connect(
+            self._on_session_save_to_kb_warning
+        )
 
         # UI → ViewModel
         self.sidebar.new_btn.clicked.connect(self._on_new_session)
@@ -791,20 +1052,27 @@ class ChatView(QWidget):
         self.chat_area.input_area.send_btn.clicked.connect(self._on_send_clicked)
         self.chat_area.input_area.stop_btn.clicked.connect(self._on_stop_clicked)
 
-    def _load_sessions(self) -> None:
+    def _load_sessions(self) -> bool:
         """加载会话列表"""
-        sessions = self.viewmodel.list_sessions(is_archived=False)
-        self.sidebar.load_sessions(sessions)
+        try:
+            sessions = self.viewmodel.list_sessions(is_archived=False)
+        except Exception:
+            logger.error("加载 Chat 会话列表失败: code=session_list_failed")
+            return False
+        if sessions is None:
+            return False
+        return self.sidebar.load_sessions(sessions)
 
     def _on_new_session(self) -> None:
         """新建会话"""
         try:
             self.viewmodel.create_new_session()
+            self.chat_area.discard_assistant_message()
             self.chat_area.message_display.clear()
             self.sidebar.token_panel.update_stats(0, 0, 0, 0)
             logger.info("✅ 新建会话成功")
         except Exception as e:
-            logger.error(f"新建会话失败: {e}")
+            logger.error("新建会话失败: error_type=%s", type(e).__name__)
 
     def _on_delete_session(self, session_id: str) -> None:
         """删除指定会话
@@ -818,7 +1086,7 @@ class ChatView(QWidget):
                 self.chat_area.message_display.clear()
                 self.sidebar.token_panel.update_stats(0, 0, 0, 0)
             self._load_sessions()
-            logger.info(f"🗑️ 会话已删除: {session_id}")
+            logger.info("会话已删除")
 
     def _on_save_to_kb(self, session_id: str) -> None:
         """保存对话到知识库
@@ -840,8 +1108,10 @@ class ChatView(QWidget):
             knowledge_id: 新建的知识条目 ID
         """
         colors = theme_colors.get_current_colors()
+        safe_knowledge_id = _html_text(knowledge_id)
         self.chat_area.message_display.append(
-            f"<p style='color: {colors['status_success']};'>✅ 对话已保存到知识库 (ID: {knowledge_id})</p>"
+            f"<p style='color: {colors['status_success']};'>"
+            f"✅ 对话已保存到知识库 (ID: {safe_knowledge_id})</p>"
         )
 
     def _on_session_save_to_kb_failed(self, session_id: str, error_msg: str) -> None:
@@ -852,8 +1122,24 @@ class ChatView(QWidget):
             error_msg: 错误信息
         """
         colors = theme_colors.get_current_colors()
+        safe_error = _html_text(error_msg)
         self.chat_area.message_display.append(
-            f"<p style='color: {colors['status_error']};'>❌ 保存失败: {error_msg}</p>"
+            f"<p style='color: {colors['status_error']};'>"
+            f"❌ 保存失败: {safe_error}</p>"
+        )
+
+    def _on_session_save_to_kb_warning(
+        self,
+        session_id: str,
+        warning_msg: str,
+    ) -> None:
+        """Expose a committed-but-degraded archive result to the user."""
+
+        colors = theme_colors.get_current_colors()
+        safe_warning = _html_text(warning_msg)
+        self.chat_area.message_display.append(
+            f"<p style='color: {colors['status_warning']};'>"
+            f"⚠️ {safe_warning}</p>"
         )
 
     def _on_session_created(self, session_id: str, title: str) -> None:
@@ -872,25 +1158,50 @@ class ChatView(QWidget):
             session_id: 会话 ID
         """
         if self.viewmodel.load_session(session_id):
-            # 加载成功，显示历史消息
-            self.chat_area.message_display.clear()
-            messages = self.viewmodel.get_current_messages()
+            self._render_current_session()
 
-            for msg in messages:
-                role = msg["role"]
-                content = msg["content"]
-                if role == "user":
-                    self.chat_area.add_user_message(content)
-                elif role == "assistant":
-                    html = render_markdown(content, role="assistant")
-                    self.chat_area.message_display.append(html)
-                    self.chat_area.message_display.append("")
+            logger.info("会话已加载")
 
-            # 更新 Token 统计
-            stats = self.viewmodel.get_token_stats()
-            self.sidebar.token_panel.update_stats(0, 0, stats["total_tokens"], stats["round_count"])
+    def _render_current_session(self) -> None:
+        """Render committed state plus this session's provisional active turn."""
 
-            logger.info(f"✅ 加载会话: {session_id}")
+        self.chat_area.discard_assistant_message()
+        self.chat_area.message_display.clear()
+        for msg in self.viewmodel.get_current_messages():
+            role = msg["role"]
+            content = msg["content"]
+            if role == "user":
+                self.chat_area.add_user_message(content)
+            elif role == "assistant":
+                self.chat_area.message_display.append(
+                    render_markdown(content, role="assistant")
+                )
+                self.chat_area.message_display.append("")
+
+        session_id = self.viewmodel.current_session_id
+        active_turn = (
+            self.viewmodel.get_active_turn(session_id) if session_id else None
+        )
+        if active_turn is not None:
+            request_key = (session_id, active_turn["request_id"])
+            display_user = self._pending_user_messages.get(
+                request_key,
+                active_turn["user"],
+            )
+            self.chat_area.add_user_message(display_user)
+            self.chat_area.start_assistant_message()
+            if active_turn["assistant"]:
+                self.chat_area.stream_renderer.add_token(
+                    active_turn["assistant"]
+                )
+
+        stats = self.viewmodel.get_token_stats()
+        self.sidebar.token_panel.update_stats(
+            0,
+            0,
+            stats["total_tokens"],
+            stats["round_count"],
+        )
 
     def _on_send_clicked(self) -> None:
         """发送按钮点击事件
@@ -901,24 +1212,16 @@ class ChatView(QWidget):
         if not user_message:
             return
 
+        # Admission must happen before context injection or optimistic UI,
+        # otherwise busy/config rejection would create a ghost turn.
+        if not self.viewmodel.can_dispatch_message(user_message):
+            return
+        checkpoint = self.viewmodel.capture_turn_checkpoint()
+
         # M12 Phase 2: 解析 @ 引用
-        self._resolve_and_inject_references(user_message)
-
-        # M12 Phase 3: 检测 URL 并触发异步归档
-        self._detect_and_archive_urls(user_message)
-
-        # 显示 User 消息（保留 @ 语法供用户查看）
-        self.chat_area.add_user_message(user_message)
-
-        # 清空输入框
-        self.chat_area.input_area.input_box.clear()
-
-        # 开始 Assistant 流式输出
-        self.chat_area.start_assistant_message()
-
-        # 切换按钮状态
-        self.chat_area.input_area.send_btn.setVisible(False)
-        self.chat_area.input_area.stop_btn.setVisible(True)
+        if not self._resolve_and_inject_references(user_message):
+            self.viewmodel.restore_turn_checkpoint(checkpoint)
+            return
 
         # 发送消息时移除 @ 语法（API 只需要纯文本 + 上下文）
         from src.gui.utils.knowledge_ref import strip_at_references
@@ -926,10 +1229,31 @@ class ChatView(QWidget):
         if not clean_message:
             clean_message = user_message  # 全是引用时保留原文
 
-        # 调用 ViewModel（异步）
-        self.viewmodel.send_message(clean_message)
+        # 原子接纳后才渲染 provisional turn。
+        if not self.viewmodel.dispatch_message(
+            clean_message,
+            checkpoint=checkpoint,
+        ):
+            return
 
-    def _resolve_and_inject_references(self, text: str) -> None:
+        session_id = self.viewmodel.active_session_id
+        request_id = self.viewmodel.active_request_id
+        if session_id and request_id:
+            request_key = (session_id, request_id)
+            self._active_ui_request = request_key
+            self._pending_user_messages[request_key] = user_message
+        self.chat_area.add_user_message(user_message)
+        self.chat_area.input_area.input_box.clear()
+        self.chat_area.start_assistant_message()
+        self.chat_area.input_area.send_btn.setVisible(False)
+        self.chat_area.input_area.stop_btn.setVisible(True)
+        self.chat_area.input_area.stop_btn.setEnabled(True)
+
+        # URL 归档独立于本轮冻结的 Provider 请求，在接纳后再触发，避免
+        # 被拒绝的 send 产生额外副作用。
+        self._detect_and_archive_urls(user_message)
+
+    def _resolve_and_inject_references(self, text: str) -> bool:
         """解析消息中的 @ 引用并注入知识上下文
 
         Args:
@@ -944,92 +1268,365 @@ class ChatView(QWidget):
 
         refs = parse_at_references(text)
         if not refs:
-            return
+            return True
 
         knowledge_refs = []
+        degraded_issues: list[PreviewIssue] = []
         for ref in refs:
             try:
                 if ref.ref_type == "knowledge":
-                    # 直接按 ID 查找
-                    entry, content = self._load_entry_by_id(int(ref.value))
-                    if entry:
-                        kref = build_knowledge_reference(entry, content)
-                        knowledge_refs.append(kref)
+                    resolution = self._load_entry_by_id(int(ref.value))
                 elif ref.ref_type == "search":
-                    # 搜索并取第一个结果
-                    entry, content = self._search_entry(ref.value)
-                    if entry:
-                        kref = build_knowledge_reference(entry, content)
-                        knowledge_refs.append(kref)
+                    resolution = self._search_entry(ref.value)
+                else:
+                    resolution = _reference_error(
+                        ErrorCode.RETRIEVAL_INVALID_QUERY,
+                        stage="reference_lookup",
+                        recoverable=True,
+                        cause_type="UnsupportedReferenceType",
+                    )
             except Exception as e:
-                logger.warning(f"解析引用失败 ({ref.original_text}): {e}")
+                logger.error(
+                    "解析知识引用失败: ref_type=%s, error_type=%s",
+                    ref.ref_type,
+                    type(e).__name__,
+                )
+                resolution = _reference_error(
+                    ErrorCode.RESOURCE_NOT_READABLE,
+                    stage="reference_prepare",
+                    recoverable=False,
+                    cause_type="ReferenceResolutionFailed",
+                )
 
-        if knowledge_refs:
-            # 显示引用卡片
-            for kref in knowledge_refs:
-                card = format_reference_card_html(kref)
-                self.chat_area.message_display.append(card)
+            if resolution.status == "error":
+                issue = (
+                    resolution.issues[0]
+                    if resolution.issues
+                    else _reference_issue(
+                        ErrorCode.RESOURCE_NOT_READABLE,
+                        stage="reference_prepare",
+                        recoverable=False,
+                        cause_type="MissingReferenceIssue",
+                    )
+                )
+                self._show_reference_status("error", issue)
+                return False
 
-            # 注入上下文
+            if (
+                resolution.status not in {"success", "degraded"}
+                or not isinstance(resolution.entry, dict)
+                or not resolution.content.strip()
+            ):
+                self._show_reference_status(
+                    "error",
+                    _reference_issue(
+                        ErrorCode.RESOURCE_NOT_READABLE,
+                        stage="reference_prepare",
+                        recoverable=False,
+                        cause_type="InvalidReferenceResolution",
+                    ),
+                )
+                return False
+
+            try:
+                knowledge_refs.append(
+                    build_knowledge_reference(
+                        resolution.entry,
+                        resolution.content,
+                    )
+                )
+            except Exception as e:
+                logger.error(
+                    "构建知识引用失败: error_type=%s",
+                    type(e).__name__,
+                )
+                self._show_reference_status(
+                    "error",
+                    _reference_issue(
+                        ErrorCode.RESOURCE_NOT_READABLE,
+                        stage="reference_prepare",
+                        recoverable=False,
+                        cause_type="ReferenceBuildFailed",
+                    ),
+                )
+                return False
+
+            if resolution.status == "degraded":
+                degraded_issues.extend(resolution.issues)
+
+        try:
+            cards = [format_reference_card_html(kref) for kref in knowledge_refs]
             context = format_context_message(knowledge_refs)
+            if not context:
+                raise ValueError("知识引用上下文为空")
             self.viewmodel.set_knowledge_context(context)
+            for issue in degraded_issues:
+                self._show_reference_status("degraded", issue)
+            for card in cards:
+                self.chat_area.message_display.append(card)
+        except Exception as e:
+            logger.error(
+                "知识引用注入失败: error_type=%s",
+                type(e).__name__,
+            )
+            try:
+                self._show_reference_status(
+                    "error",
+                    _reference_issue(
+                        ErrorCode.RESOURCE_NOT_READABLE,
+                        stage="reference_prepare",
+                        recoverable=False,
+                        cause_type="ReferenceInjectionFailed",
+                    ),
+                )
+            except Exception:
+                logger.error("知识引用失败状态无法显示")
+            return False
 
-            logger.info(f"📎 已注入 {len(knowledge_refs)} 个知识引用")
+        logger.info("已注入知识引用: count=%s", len(knowledge_refs))
+        return True
 
-    def _load_entry_by_id(self, knowledge_id: int) -> tuple:
+    def _load_entry_by_id(self, knowledge_id: int) -> _ReferenceResolution:
         """按 ID 加载知识条目
 
         Args:
             knowledge_id: 知识条目 ID
 
         Returns:
-            (entry_dict, content_text) 或 (None, "")
+            显式 success/degraded/error 引用结果
         """
+        if type(knowledge_id) is not int or knowledge_id <= 0:
+            return _reference_error(
+                ErrorCode.RESOURCE_MISSING,
+                stage="reference_lookup",
+                recoverable=True,
+                cause_type="InvalidKnowledgeId",
+            )
         try:
             from src.gui.stores import get_sqlite_store, get_markdown_store
-            from src.gui.utils.preview_loader import load_entry_preview
 
             store = get_sqlite_store()
             entry = store.query_by_id(knowledge_id)
-            if not entry:
-                return None, ""
-
-            md_store = get_markdown_store()
-            content = load_entry_preview(entry, md_store)
-            return entry, content
         except Exception as e:
-            logger.error(f"加载条目 {knowledge_id} 失败: {e}")
-            return None, ""
+            logger.error(
+                "加载知识条目失败: knowledge_id=%s, error_type=%s",
+                knowledge_id,
+                type(e).__name__,
+            )
+            return _reference_error(
+                ErrorCode.STORAGE_PRIMARY_FAILED,
+                stage="reference_lookup",
+                recoverable=False,
+                cause_type="KnowledgeLookupFailed",
+            )
 
-    def _search_entry(self, keyword: str) -> tuple:
+        if entry is None:
+            return _reference_error(
+                ErrorCode.RESOURCE_MISSING,
+                stage="reference_lookup",
+                recoverable=True,
+                cause_type="KnowledgeEntryMissing",
+            )
+        projected_entry = _project_reference_entry(
+            entry,
+            expected_knowledge_id=knowledge_id,
+        )
+        if projected_entry is None:
+            return _reference_error(
+                ErrorCode.RESOURCE_NOT_READABLE,
+                stage="reference_lookup",
+                recoverable=False,
+                cause_type="InvalidKnowledgeEntry",
+            )
+
+        try:
+            md_store = get_markdown_store()
+            outcome = load_entry_preview_outcome(projected_entry, md_store)
+        except Exception as e:
+            logger.error(
+                "加载知识预览失败: knowledge_id=%s, error_type=%s",
+                knowledge_id,
+                type(e).__name__,
+            )
+            return _reference_error(
+                ErrorCode.RESOURCE_NOT_READABLE,
+                stage="reference_preview",
+                recoverable=False,
+                cause_type="KnowledgePreviewFailed",
+            )
+        return _preview_resolution(projected_entry, outcome)
+
+    def _search_entry(self, keyword: str) -> _ReferenceResolution:
         """搜索知识条目（取第一个结果）
 
         Args:
             keyword: 搜索关键词
 
         Returns:
-            (entry_dict, content_text) 或 (None, "")
+            显式 success/degraded/error 引用结果
         """
         try:
-            from src.gui.stores import get_bm25_retriever, get_sqlite_store, get_markdown_store
-            from src.gui.utils.preview_loader import load_entry_preview
+            from src.gui.stores import (
+                get_bm25_retriever,
+                get_markdown_store,
+                get_sqlite_store,
+            )
 
             retriever = get_bm25_retriever()
-            results = retriever.search(keyword, limit=1)
-            if not results:
-                return None, ""
-
-            store = get_sqlite_store()
-            entry = store.query_by_id(results[0].knowledge_id)
-            if not entry:
-                return None, ""
-
-            md_store = get_markdown_store()
-            content = load_entry_preview(entry, md_store)
-            return entry, content
+            response = retriever.search(keyword, limit=1)
         except Exception as e:
-            logger.error(f"搜索 '{keyword}' 失败: {e}")
-            return None, ""
+            logger.error(
+                "知识引用搜索异常: error_type=%s",
+                type(e).__name__,
+            )
+            return _reference_error(
+                ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                stage="reference_search",
+                recoverable=False,
+                cause_type="ReferenceSearchFailed",
+            )
+
+        if (
+            not is_strict_search_response(response)
+            or response.strategy != "bm25"
+        ):
+            return _reference_error(
+                ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                stage="reference_search",
+                recoverable=False,
+                cause_type="InvalidSearchResponse",
+            )
+        if response.status == "no_hits":
+            return _reference_error(
+                ErrorCode.RESOURCE_MISSING,
+                stage="reference_search",
+                recoverable=True,
+                cause_type="ReferenceSearchNoHits",
+            )
+        if response.status in {"invalid", "error"}:
+            issue = (
+                _preview_issue_from_retrieval(response.issues[0])
+                if response.issues
+                else _reference_issue(
+                    ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                    stage="reference_search",
+                    recoverable=False,
+                    cause_type="MissingRetrievalIssue",
+                )
+            )
+            return _ReferenceResolution(status="error", issues=(issue,))
+        if response.status not in {"success", "degraded"}:
+            return _reference_error(
+                ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                stage="reference_search",
+                recoverable=False,
+                cause_type="InvalidRetrievalStatus",
+            )
+
+        retrieval_issues = tuple(
+            _preview_issue_from_retrieval(issue) for issue in response.issues
+        )
+        if not response.results:
+            issue = (
+                retrieval_issues[0]
+                if retrieval_issues
+                else _reference_issue(
+                    ErrorCode.RESOURCE_MISSING,
+                    stage="reference_search",
+                    recoverable=True,
+                    cause_type="ReferenceSearchNoUsableResult",
+                )
+            )
+            return _ReferenceResolution(status="error", issues=(issue,))
+
+        knowledge_id = response.results[0].knowledge_id
+        if type(knowledge_id) is not int or knowledge_id <= 0:
+            return _reference_error(
+                ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                stage="reference_lookup",
+                recoverable=False,
+                cause_type="InvalidSearchKnowledgeId",
+            )
+
+        try:
+            store = get_sqlite_store()
+            entry = store.query_by_id(knowledge_id)
+        except Exception as e:
+            logger.error(
+                "知识搜索条目回读失败: error_type=%s",
+                type(e).__name__,
+            )
+            return _reference_error(
+                ErrorCode.STORAGE_PRIMARY_FAILED,
+                stage="reference_lookup",
+                recoverable=False,
+                cause_type="SearchEntryLookupFailed",
+            )
+        projected_entry = _project_reference_entry(
+            entry,
+            expected_knowledge_id=knowledge_id,
+        )
+        if projected_entry is None:
+            return _reference_error(
+                ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                stage="reference_lookup",
+                recoverable=False,
+                cause_type="SearchEntryMissing",
+            )
+
+        try:
+            md_store = get_markdown_store()
+            outcome = load_entry_preview_outcome(projected_entry, md_store)
+        except Exception as e:
+            logger.error(
+                "知识搜索预览失败: error_type=%s",
+                type(e).__name__,
+            )
+            return _reference_error(
+                ErrorCode.RESOURCE_NOT_READABLE,
+                stage="reference_preview",
+                recoverable=False,
+                cause_type="SearchPreviewFailed",
+            )
+        return _preview_resolution(
+            projected_entry,
+            outcome,
+            prior_issues=retrieval_issues,
+        )
+
+    def _show_reference_status(
+        self,
+        status: str,
+        issue: PreviewIssue,
+    ) -> None:
+        """Expose only enum-backed diagnostics in the Chat surface."""
+
+        colors = theme_colors.get_current_colors()
+        degraded = status == "degraded"
+        color = (
+            colors["status_warning"]
+            if degraded
+            else colors["status_error"]
+        )
+        label = "知识引用已降级，正在使用安全摘要" if degraded else "知识引用未完成，本轮未发送"
+        public_status = "degraded" if degraded else "error"
+        code = (
+            issue.code.value
+            if isinstance(issue, PreviewIssue)
+            and isinstance(issue.code, ErrorCode)
+            else ErrorCode.RESOURCE_NOT_READABLE.value
+        )
+        stage = (
+            issue.stage
+            if isinstance(issue, PreviewIssue)
+            and issue.stage in _REFERENCE_PUBLIC_STAGES
+            else "reference"
+        )
+        self.chat_area.message_display.append(
+            f"<p style='color: {color}; font-size: 12px;'>"
+            f"⚠️ {label}（status={public_status}, code={code}, "
+            f"stage={stage}）</p>"
+        )
 
     # ------------------------------------------------------------------
     # M12 Phase 3: URL 自动检测和归档
@@ -1048,99 +1645,300 @@ class ChatView(QWidget):
             return
 
         for url in urls:
-            logger.info(f"🔗 检测到 URL: {url}")
-            # 异步归档（不阻塞消息发送）
-            self.viewmodel.archive_url_and_inject(url)
+            logger.info("检测到 URL target=%s", describe_url_target(url))
+            # 同步冻结 origin session + operation identity，再异步归档。
+            self.viewmodel.begin_url_archive(url)
 
-    def _on_url_archive_started(self, url: str) -> None:
+    def _on_url_archive_started(
+        self,
+        session_id: str,
+        operation_id: str,
+        url: str,
+    ) -> None:
         """URL 归档开始
 
         Args:
             url: 正在归档 of the URL
         """
+        self._pending_url_archives.add((session_id, operation_id))
+        if self.viewmodel.current_session_id != session_id:
+            return
         colors = theme_colors.get_current_colors()
+        safe_target = _html_text(describe_url_target(url))
         self.chat_area.message_display.append(
             f"<p style='color: {colors['status_progress']}; font-size: 12px;'>"
-            f"🔄 正在归档: {url}...</p>"
+            f"🔄 正在归档: {safe_target}...</p>"
         )
 
-    def _on_url_archive_completed(self, url: str, entry: dict) -> None:
+    def _on_url_archive_completed(
+        self,
+        session_id: str,
+        operation_id: str,
+        url: str,
+        entry: dict,
+    ) -> None:
         """URL 归档完成，注入上下文
 
         Args:
             url: 已归档的 URL
             entry: 归档后的条目字典
         """
-        from src.gui.utils.knowledge_ref import (
-            build_knowledge_reference,
-            format_context_message,
-            format_reference_card_html,
-        )
+        operation_key = (session_id, operation_id)
+        if operation_key not in self._pending_url_archives:
+            return
+        self._pending_url_archives.discard(operation_key)
+        if self.viewmodel.current_session_id != session_id:
+            logger.info("URL 归档完成时原会话已离开，安全丢弃上下文注入")
+            return
 
         try:
-            # 构建引用（使用摘要作为内容，不加载全文）
-            ref = build_knowledge_reference(entry)
-            card = format_reference_card_html(ref)
+            # ViewModel prepares the injectable reference before publishing
+            # completed, keeping completed/failed mutually exclusive.
+            card = entry.get(
+                self.viewmodel.URL_ARCHIVE_REFERENCE_CARD_HTML_KEY,
+            )
+            if type(card) is not str or not card:
+                raise ValueError("URL archive completion payload is not prepared")
             self.chat_area.message_display.append(card)
 
-            # 注入上下文
-            context = format_context_message([ref])
-            self.viewmodel.set_knowledge_context(context)
-
-            title = entry.get("title", url)
-            logger.info(f"✅ URL 归档并注入: {title}")
+            logger.info(
+                "URL 归档引用已显示 target=%s",
+                describe_url_target(url),
+            )
 
         except Exception as e:
-            logger.error(f"URL 归档后处理失败: {e}")
+            logger.error(
+                "URL 归档后处理失败: error_type=%s",
+                type(e).__name__,
+            )
 
-    def _on_url_archive_failed(self, url: str, error_msg: str) -> None:
+    def _on_url_archive_failed(
+        self,
+        session_id: str,
+        operation_id: str,
+        url: str,
+        error_msg: str,
+    ) -> None:
         """URL 归档失败
 
         Args:
             url: 归档失败的 URL
             error_msg: 错误消息
         """
+        operation_key = (session_id, operation_id)
+        if operation_key not in self._pending_url_archives:
+            return
+        self._pending_url_archives.discard(operation_key)
+        if self.viewmodel.current_session_id != session_id:
+            return
         colors = theme_colors.get_current_colors()
+        safe_target = _html_text(describe_url_target(url))
+        safe_error = _html_text(error_msg)
         self.chat_area.message_display.append(
             f"<p style='color: {colors['status_warning']}; font-size: 12px;'>"
-            f"⚠️ URL 归档失败: {url}<br>"
-            f"原因: {error_msg}</p>"
+            f"⚠️ URL 归档失败: {safe_target}<br>"
+            f"原因: {safe_error}</p>"
         )
 
-    def _on_url_archive_warning(self, url: str, warning_msg: str) -> None:
+    def _on_url_archive_warning(
+        self,
+        session_id: str,
+        operation_id: str,
+        url: str,
+        warning_msg: str,
+    ) -> None:
         """URL 归档降级/需修复警告（核心已提交，请勿盲目重试）
 
         Args:
             url: 归档的 URL
             warning_msg: 警告消息
         """
+        operation_key = (session_id, operation_id)
+        if (
+            operation_key not in self._pending_url_archives
+            or self.viewmodel.current_session_id != session_id
+        ):
+            return
         colors = theme_colors.get_current_colors()
+        safe_target = _html_text(describe_url_target(url))
+        safe_warning = _html_text(warning_msg)
         self.chat_area.message_display.append(
             f"<p style='color: {colors['status_warning']}; font-size: 12px;'>"
-            f"⚠️ URL 归档需修复: {url}<br>"
-            f"{warning_msg}</p>"
+            f"⚠️ URL 归档需修复: {safe_target}<br>"
+            f"{safe_warning}</p>"
         )
 
     def _on_stop_clicked(self) -> None:
         """停止按钮点击事件"""
-        self.viewmodel.stop_stream()
-        self.chat_area.finish_assistant_message()
+        if self.viewmodel.stop_stream():
+            # 终态信号会在 stream/provider 完成 close 后统一回滚 UI。
+            self.chat_area.input_area.stop_btn.setEnabled(False)
+            logger.info("🛑 用户请求停止流式输出")
 
-        # 切换按钮状态
+    def _on_chat_request_started(
+        self,
+        session_id: str,
+        request_id: str,
+    ) -> None:
+        if (
+            self.viewmodel.active_session_id != session_id
+            or self.viewmodel.active_request_id != request_id
+        ):
+            return
+        self._active_ui_request = (session_id, request_id)
+
+    def _on_chat_token_received(
+        self,
+        session_id: str,
+        request_id: str,
+        token: str,
+    ) -> None:
+        """Only render tokens owned by the currently displayed session."""
+
+        if (
+            self._active_ui_request == (session_id, request_id)
+            and self.viewmodel.current_session_id == session_id
+        ):
+            self.chat_area.stream_renderer.add_token(token)
+
+    def _on_chat_request_completed(
+        self,
+        session_id: str,
+        request_id: str,
+    ) -> None:
+        """Finalize exactly one successfully committed turn."""
+
+        request_key = (session_id, request_id)
+        if self._active_ui_request != request_key:
+            return
+        if self.viewmodel.current_session_id == session_id:
+            self.chat_area.finish_assistant_message()
+        self._pending_user_messages.pop(request_key, None)
+        self._active_ui_request = None
+        self._restore_send_controls()
+        logger.info("流式输出完成")
+
+    def _on_chat_request_stopped(
+        self,
+        session_id: str,
+        request_id: str,
+    ) -> None:
+        """Discard the complete provisional turn after active cancellation."""
+
+        request_key = (session_id, request_id)
+        if self._active_ui_request != request_key:
+            return
+        pending = self._pending_user_messages.pop(request_key, "")
+        self._active_ui_request = None
+        if self.viewmodel.current_session_id == session_id:
+            self._render_current_session()
+            if pending and not self.chat_area.input_area.input_box.toPlainText():
+                self.chat_area.input_area.input_box.setPlainText(pending)
+        self._restore_send_controls()
+        logger.info("流式输出已停止并回滚")
+
+    def _on_chat_request_failed(
+        self,
+        session_id: str,
+        request_id: str,
+        error_code: str,
+        error_msg: str,
+    ) -> None:
+        """Render one terminal error only for its active provisional turn."""
+
+        request_key = (session_id, request_id)
+        if self._active_ui_request != request_key:
+            return
+
+        colors = theme_colors.get_current_colors()
+        safe_error_code = _html_text(error_code)
+        safe_error_message = _html_text(error_msg)
+        pending = self._pending_user_messages.pop(request_key, "")
+        self._active_ui_request = None
+        if not session_id or self.viewmodel.current_session_id == session_id:
+            if session_id:
+                self._render_current_session()
+                if (
+                    pending
+                    and "持久化状态需检查" not in error_msg
+                    and not self.chat_area.input_area.input_box.toPlainText()
+                ):
+                    self.chat_area.input_area.input_box.setPlainText(pending)
+            self.chat_area.message_display.append(
+                f"<p style='color: {colors['status_error']};'>"
+                f"❌ 错误 [{safe_error_code}]: {safe_error_message}</p>"
+            )
+        self._restore_send_controls()
+
+    def _on_chat_request_rejected(
+        self,
+        session_id: str,
+        request_id: str,
+        error_code: str,
+        error_msg: str,
+    ) -> None:
+        """Show admission rejection without altering an active request."""
+
+        if self.viewmodel.latest_attempt_id != request_id:
+            return
+        # A queued rejection from an older attempt must not affect a newer
+        # provisional request in the same session.
+        if self.viewmodel.is_busy and error_code != "chat_busy":
+            return
+        if session_id and self.viewmodel.current_session_id != session_id:
+            return
+        if error_code == "chat_busy":
+            input_box = self.chat_area.input_area.input_box
+            input_box.setToolTip(f"[{error_code}] {error_msg}")
+            input_box.setFocus()
+            logger.warning("Chat send rejected while another request is active")
+            return
+        colors = theme_colors.get_current_colors()
+        safe_error_code = _html_text(error_code)
+        safe_error_message = _html_text(error_msg)
+        if session_id:
+            self._render_current_session()
+        self.chat_area.message_display.append(
+            f"<p style='color: {colors['status_error']};'>"
+            f"❌ [{safe_error_code}] "
+            f"{safe_error_message}</p>"
+        )
+
+    def _on_chat_token_usage_updated(
+        self,
+        session_id: str,
+        request_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+    ) -> None:
+        if (
+            self._active_ui_request != (session_id, request_id)
+            or self.viewmodel.current_session_id != session_id
+        ):
+            return
+        stats = self.viewmodel.get_token_stats()
+        self.sidebar.token_panel.update_stats(
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            stats["round_count"],
+        )
+
+    def _restore_send_controls(self) -> None:
+        """Restore global one-request controls after a terminal event."""
+
         self.chat_area.input_area.send_btn.setVisible(True)
         self.chat_area.input_area.stop_btn.setVisible(False)
+        self.chat_area.input_area.stop_btn.setEnabled(True)
 
-        logger.info("🛑 用户停止流式输出")
-
+    # Backward-compatible handlers retained for external callers; production
+    # signal wiring uses the session-scoped variants above.
     def _on_stream_finished(self) -> None:
-        """流式输出完成"""
-        self.chat_area.finish_assistant_message()
-
-        # 切换按钮状态
-        self.chat_area.input_area.send_btn.setVisible(True)
-        self.chat_area.input_area.stop_btn.setVisible(False)
-
-        logger.info("✅ 流式输出完成")
+        session_id = self.viewmodel.current_session_id
+        request_id = self.viewmodel.active_request_id
+        if session_id and request_id:
+            self._on_chat_request_completed(session_id, request_id)
 
     def _on_token_usage_updated(self, input_tokens: int, output_tokens: int, total_tokens: int) -> None:
         """Token 统计更新
@@ -1164,13 +1962,17 @@ class ChatView(QWidget):
         Args:
             error_msg: 错误消息
         """
-        logger.error(f"❌ 错误: {error_msg}")
+        logger.error("GUI 非 Chat 操作失败")
         colors = theme_colors.get_current_colors()
-        self.chat_area.message_display.append(f"<p style='color: {colors['status_error']};'>❌ 错误: {error_msg}</p>")
+        safe_error = _html_text(error_msg)
+        self.chat_area.message_display.append(
+            f"<p style='color: {colors['status_error']};'>"
+            f"❌ 错误: {safe_error}</p>"
+        )
 
-        # 恢复按钮状态
-        self.chat_area.input_area.send_btn.setVisible(True)
-        self.chat_area.input_area.stop_btn.setVisible(False)
+        # 非 Chat 错误不得把仍在运行的请求误显示为已结束。
+        if not self.viewmodel.is_busy:
+            self._restore_send_controls()
 
     # ------------------------------------------------------------------
     # M12 Phase 1: 从 BrowserView 接收知识条目
@@ -1226,12 +2028,15 @@ class ChatView(QWidget):
             self.chat_area.input_area.input_box.setFocus()
 
             logger.info(
-                f"✅ 创建引用会话: {ref.title} "
-                f"(~{ref.token_count} tokens, "
-                f"截断: {ref.is_truncated})"
+                "创建引用会话成功: tokens=%s truncated=%s",
+                ref.token_count,
+                ref.is_truncated,
             )
 
         except Exception as e:
-            error_msg = f"创建引用会话失败: {e}"
-            logger.error(error_msg, exc_info=True)
+            error_msg = "创建引用会话失败，请检查本地数据库状态"
+            logger.error(
+                "创建引用会话失败: error_type=%s",
+                type(e).__name__,
+            )
             self._on_error(error_msg)

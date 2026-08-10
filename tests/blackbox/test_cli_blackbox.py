@@ -214,10 +214,19 @@ def test_search_command_with_json_output(cli_tester: CLIBlackboxTester):
     assert result.returncode == 0
 
     data = json.loads(result.stdout)
-    assert set(data) == {"query", "strategy", "total", "results"}
+    assert set(data) == {
+        "query",
+        "status",
+        "strategy",
+        "total",
+        "issues",
+        "results",
+    }
     assert data["query"] == "Docker"
+    assert data["status"] == "success"
     assert data["strategy"] == "bm25"
     assert data["total"] == 1
+    assert data["issues"] == []
     assert len(data["results"]) == data["total"]
     assert set(data["results"][0]) == {
         "entry_id",

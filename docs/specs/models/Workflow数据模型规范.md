@@ -1,9 +1,12 @@
 # Workflow 数据模型规范
 
-> **版本**: 1.0
+> **版本**: 1.1
 > **创建日期**: 2026-02-15
+> **最后更新**: 2026-08-07（M13 W2 结果合同对齐）
 > **文件位置**: `src/workflow/models.py`
 > **作用**: 定义工作流执行过程中的状态管理、上下文和结果对象
+
+> **当前合同**：adapter 必须按 `WorkflowResult.terminal` 区分 `success`、`degraded`、`error`。`success=True` 同时覆盖完整成功和可恢复降级，不能单独用于判断“无警告成功”；机器处理使用 `issues`，人类展示使用 `errors` / `warnings`。
 
 ---
 
@@ -164,6 +167,7 @@ WorkflowEngine.execute()
 # 工作流执行完成后返回结果
 result = WorkflowResult(
     success=True,
+    terminal="success",
     data=context.state.to_dict(),
     logs=context.logs
 )
@@ -207,22 +211,34 @@ class WorkflowResult:
     data: Dict[str, Any] = field(default_factory=dict)
     errors: List[str] = field(default_factory=list)
     logs: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    issues: List[Dict[str, Any]] = field(default_factory=list)
+    terminal: Optional[str] = None
 ```
 
 #### 字段详解
 
 | 字段名 | 类型 | 必填 | 默认值 | 说明 |
 |--------|------|------|--------|------|
-| `success` | `bool` | ✅ | 无 | 执行是否成功（True/False） |
+| `success` | `bool` | ✅ | 无 | `terminal != "error"`；兼容布尔字段，不区分完整成功与降级 |
 | `data` | `Dict[str, Any]` | ❌ | `{}` | 执行结果数据（成功时包含所有状态） |
-| `errors` | `List[str]` | ❌ | `[]` | 错误消息列表（失败时填充） |
+| `errors` | `List[str]` | ❌ | `[]` | 致命错误的人类可读消息 |
 | `logs` | `List[str]` | ❌ | `[]` | 执行日志列表 |
+| `warnings` | `List[str]` | ❌ | `[]` | `on_error: continue` 等可恢复问题的人类可读消息 |
+| `issues` | `List[Dict[str, Any]]` | ❌ | `[]` | 稳定、机器可读的问题合同 |
+| `terminal` | `Optional[str]` | ❌ | 自动推导 | 只能是 `success` / `degraded` / `error` |
 
 #### 字段语义
 
 **success**:
-- `True` - 工作流执行成功完成
-- `False` - 工作流执行失败或被中断
+- `True` - 终态为 `success` 或 `degraded`
+- `False` - 终态为 `error`
+- `success` 必须始终满足 `success == (terminal != "error")`
+
+**terminal**:
+- `success` - 无致命错误且没有 warning
+- `degraded` - 没有致命错误，但存在继续执行的 warning / issue
+- `error` - 配置预检或 `on_error: fail` 路径失败
 
 **data**:
 - 成功时：包含 `context.state.to_dict()` 的所有数据
@@ -230,9 +246,16 @@ class WorkflowResult:
 - 失败时：可能为空字典或包含部分数据
 
 **errors**:
-- 存储所有步骤的错误消息
-- 格式：`["步骤 ID: 错误描述", ...]`
-- 空列表表示没有错误
+- 只存储导致 `terminal="error"` 的人类可读消息
+- 空列表只能说明没有致命错误；仍需检查 `terminal` / `warnings` 判断是否降级
+
+**warnings**:
+- 存储继续执行但需要用户注意的消息
+- 非空时终态必须为 `degraded`
+
+**issues**:
+- 每项至少包含稳定 `code`、公开 `message`、`severity` 与 `recoverable`
+- 可附带 `stage`、`step_id`、`cause_type`；不得依赖底层异常原文作为公开合同
 
 **logs**:
 - 包含所有步骤的日志消息
@@ -245,8 +268,27 @@ class WorkflowResult:
 ```python
 result = WorkflowResult(
     success=True,
+    terminal="success",
     data=context.state.to_dict(),
     logs=context.logs
+)
+```
+
+**降级结果**:
+```python
+result = WorkflowResult(
+    success=True,
+    terminal="degraded",
+    data=context.state.to_dict(),
+    warnings=["步骤 ai_analyze 执行失败"],
+    issues=[{
+        "code": "workflow_step_failed",
+        "message": "步骤 ai_analyze 执行失败",
+        "severity": "warning",
+        "recoverable": True,
+        "step_id": "ai_analyze",
+    }],
+    logs=context.logs,
 )
 ```
 
@@ -254,8 +296,16 @@ result = WorkflowResult(
 ```python
 result = WorkflowResult(
     success=False,
+    terminal="error",
     data=context.state.to_dict(),  # 可能包含部分数据
-    errors=["FetchStep: URL 无法访问", "AnalyzeStep: API 调用失败"],
+    errors=["步骤 fetch_content 执行失败"],
+    issues=[{
+        "code": "workflow_step_failed",
+        "message": "步骤 fetch_content 执行失败",
+        "severity": "error",
+        "recoverable": False,
+        "step_id": "fetch_content",
+    }],
     logs=context.logs
 )
 ```
@@ -266,12 +316,16 @@ result = WorkflowResult(
 # 执行工作流
 result = workflow_engine.execute("archive-url", input_data={"url": "https://example.com"})
 
-# 检查结果
-if result.success:
+# 检查三态结果；不要只检查 result.success
+if result.terminal == "success":
     print(f"✅ 工作流成功！")
     print(f"知识条目 ID: {result.data.get('knowledge_id')}")
     print(f"文件路径: {result.data.get('file_path')}")
-else:
+elif result.terminal == "degraded":
+    print("⚠️ 工作流降级完成")
+    for warning in result.warnings:
+        print(f"  - {warning}")
+else:  # error
     print(f"❌ 工作流失败！")
     for error in result.errors:
         print(f"  - {error}")
@@ -308,7 +362,8 @@ WorkflowContext
 ```
 WorkflowContext (执行期)  →  WorkflowResult (返回值)
     ├── state.to_dict()   →  result.data
-    └── logs              →  result.logs
+    ├── logs              →  result.logs
+    └── step outcomes     →  errors / warnings / issues / terminal
 ```
 
 **转换时机**:
@@ -316,15 +371,18 @@ WorkflowContext (执行期)  →  WorkflowResult (返回值)
 # 工作流引擎最后一步
 def execute(self, workflow_name, input_data):
     context = WorkflowContext(initial_state=input_data)
-    errors = []
+    errors, warnings, issues = [], [], []
 
     # 执行所有步骤...
 
     # 转换为结果对象
     return WorkflowResult(
-        success=len(errors) == 0,
+        success=not errors,
+        terminal="error" if errors else ("degraded" if warnings else "success"),
         data=context.state.to_dict(),
         errors=errors,
+        warnings=warnings,
+        issues=issues,
         logs=context.logs
     )
 ```
@@ -397,39 +455,33 @@ entry = context.state.get("enty")  # 返回 None！
 
 ---
 
-### 问题 2: WorkflowResult.errors 格式不统一
+### 问题 2: 人类消息与机器合同必须同步维护
 
-**问题描述**:
-- errors 列表元素是字符串
-- 没有定义统一的错误消息格式
-- 难以程序化处理错误
+**当前状态**:
+- `errors` / `warnings` 仍是面向人的字符串
+- `issues` 已提供机器可读的稳定结构
+- 新步骤必须让 message、severity 与 `on_error` 聚合语义保持一致
 
-**当前格式**（不一致）:
+**机器合同示例**:
 ```python
-errors = [
-    "FetchStep: URL 无法访问",           # 格式 A
-    "API 调用失败",                      # 格式 B (缺少步骤名)
-    "StoreStep - SQLite 插入错误: xxx"  # 格式 C
-]
+issues = [{
+    "code": "workflow_step_failed",
+    "message": "步骤 fetch_content 执行失败",
+    "severity": "error",
+    "recoverable": False,
+    "stage": "workflow_step",
+    "step_id": "fetch_content",
+}]
 ```
 
 **影响范围**: 低 - 主要用于人类阅读
 
 **优先级**: 低
 
-**建议修复**:
-- 统一格式：`"{step_id}: {error_type} - {error_message}"`
-- 或使用结构化错误对象：
-  ```python
-  @dataclass
-  class WorkflowError:
-      step_id: str
-      error_type: str
-      message: str
-      timestamp: str
-
-  errors: List[WorkflowError] = field(default_factory=list)
-  ```
+**维护要求**:
+- adapter 分支使用 `terminal`，机器逻辑使用 `issues`
+- 底层异常全文只进入私有日志；公开 issue 使用稳定消息
+- 不得把 `degraded` 显示成无警告的完整成功
 
 ---
 
@@ -535,11 +587,12 @@ def get(self, key: str, default: Any = None) -> Any:
 ✅ 清晰的职责分离（State、Context、Result）
 ✅ 灵活的 State 容器（支持任意类型数据）
 ✅ 日志自动记录（双重记录：logs + logger）
+✅ 三态终态与机器可读 issues
 
 ### 需要改进
 
 ⚠️ 缺少 State 键名约定和类型检查
-⚠️ errors 格式不统一
+⚠️ 新步骤需持续保持人类消息与 issues 一致
 ⚠️ logs 缺少时间戳
 ⚠️ 缺少性能监控字段（执行时长）
 ⚠️ State 不支持嵌套路径访问
@@ -580,6 +633,7 @@ context.log(f"存储完成: ID={knowledge_id}")
 # 5. 构建结果对象
 result = WorkflowResult(
     success=True,
+    terminal="success",
     data=context.state.to_dict(),
     logs=context.logs
 )
@@ -591,4 +645,4 @@ return result
 ---
 
 **文档维护者**: AI Agent
-**最后更新**: 2026-02-15
+**最后更新**: 2026-08-07

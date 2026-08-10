@@ -1,0 +1,97 @@
+schema_version: pkv.workflow.fixture.v1
+
+workflows:
+  archive-url:
+    config_path: config/workflows/archive-url.yaml
+    expected_steps:
+      - fetch_content
+      - ai_analyze
+      - idea_sharpen
+      - review_entry
+      - store_entry
+    fault_cases:
+      - step_id: fetch_content
+        kind: returned_error
+        expected_terminal: error
+        expected_trace: [fetch_content]
+      - step_id: ai_analyze
+        kind: exception
+        expected_terminal: degraded
+        expected_trace: &archive_url_full_trace
+          - fetch_content
+          - ai_analyze
+          - idea_sharpen
+          - review_entry
+          - store_entry
+      - step_id: idea_sharpen
+        kind: returned_error
+        expected_terminal: degraded
+        expected_trace: *archive_url_full_trace
+      - step_id: review_entry
+        kind: exception
+        expected_terminal: degraded
+        expected_trace: *archive_url_full_trace
+      - step_id: store_entry
+        kind: returned_error
+        expected_terminal: error
+        expected_trace: *archive_url_full_trace
+    input:
+      url: https://example.com/w2-fixture
+      skip_sharpen: true
+      skip_review: true
+
+  archive-text:
+    config_path: config/workflows/archive-text.yaml
+    expected_steps:
+      - ai_analyze
+      - review_entry
+      - store_entry
+    fault_cases:
+      - step_id: ai_analyze
+        kind: returned_error
+        expected_terminal: degraded
+        expected_trace: &archive_text_full_trace [ai_analyze, review_entry, store_entry]
+      - step_id: review_entry
+        kind: exception
+        expected_terminal: degraded
+        expected_trace: *archive_text_full_trace
+      - step_id: store_entry
+        kind: exception
+        expected_terminal: error
+        expected_trace: *archive_text_full_trace
+    input:
+      title: W2 fixture
+      content: deterministic offline text
+      skip_sharpen: true
+      skip_review: true
+
+trigger_cases:
+  - id: content_length
+    state:
+      content_length: 3001
+      content: plain
+      content_type: generic
+    expected: true
+  - id: source_type
+    state:
+      content_length: 10
+      content: plain
+      content_type: wechat
+    expected: true
+  - id: keyword
+    state:
+      content_length: 10
+      content: 这里包含观点对比
+      content_type: generic
+    expected: true
+  - id: strict_boundary
+    state:
+      content_length: 3000
+      content: plain
+      content_type: generic
+    expected: false
+
+processor_route:
+  configured: generic
+  input_url: https://example.com/explicit-route
+  expected_title: deterministic processor

@@ -308,7 +308,7 @@ CLONE_ID   -> .data-test/<scenario>/clones/<clone-id>    # 破坏性演练唯一
 
 补充说明（勿混淆开关语义）：
 
-- `PKV_RUN_LIVE` 只是 **pytest 收集开关**（`skipif os.getenv("PKV_RUN_LIVE") != "1"`），只作用于带 `network` marker 的测试用例；它**绝不是应用层网络开关**，不阻止也不代表 CLI/MCP 的 HTTP 行为。
+- `PKV_RUN_LIVE` 只是 **pytest 收集开关**（`skipif os.getenv("PKV_RUN_LIVE") != "1"`），只作用于带 `network` marker 的测试用例；它**绝不是应用层网络开关**，不阻止也不代表 CLI/MCP 发起的 Provider 出站连接。这里不是指 MCP HTTP transport；M13 MCP 只发布 stdio。
 - 应用层联网由 `config/local.yaml` 的 `base_url` / `api_key` 驱动；判断"某步是否联网"应看命令本身（archive / vector / hybrid 必然联网），而不是看环境变量。
 - **"纯离线"只说明不联网，不改变执行通道**：读取真实快照或可能加载 local.yaml 的命令，无论离线还是 live，一律 user-only（0.2-7/9）。live/数据出境阶段不是默认步骤。
 
@@ -642,7 +642,7 @@ U1 launcher -> DataRoot=.data-test/real-eval-p1/clones/<archive-clone-id>
 **验证内容**：真实文本上的检索相关性与排序；中文分词效果（jieba）；英文回退。
 
 - **默认（离线）**：`search --strategy bm25`（FTS5，无 Embedder）与 MCP `search_knowledge` strategy=bm25——**user-only**（命令会加载 local.yaml 并读取快照，8.1）。
-- **live/数据出境（单独授权后）**：`--strategy vector/hybrid/auto` 与 MCP `search_knowledge` 非 bm25（触发 Embedding HTTP，7.3）——**user-only**。
+- **live/数据出境（单独授权后）**：`--strategy vector/hybrid`、路由到 Hybrid 的 `auto`（当前为 ≥5 tokens）及 MCP 对应语义检索路径会触发 Embedding Provider——**user-only**。短查询 `auto` 路由到 BM25，不提前构造 Provider，但读取真实快照仍是 user-only。
 
 **目标命令意图（全部由用户经 U1 执行；Agent 只接收脱敏摘要）**：
 

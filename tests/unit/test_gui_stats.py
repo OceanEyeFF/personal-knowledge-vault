@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -189,6 +190,150 @@ class TestStatsViewData:
         label_text = error_stats_view._total_label.text()
         assert "失败" in label_text
 
+    @pytest.mark.parametrize(
+        "malformed_stats",
+        [
+            pytest.param("not-a-mapping", id="string-root"),
+            pytest.param((0, [], []), id="tuple-root"),
+            pytest.param(
+                MappingProxyType(MOCK_STATS),
+                id="frozen-root-mapping",
+            ),
+            pytest.param({}, id="missing-fields"),
+            pytest.param(
+                {
+                    "total_entries": True,
+                    "by_source_type": [],
+                    "top_tags": [],
+                },
+                id="bool-total",
+            ),
+            pytest.param(
+                {
+                    "total_entries": -1,
+                    "by_source_type": [],
+                    "top_tags": [],
+                },
+                id="negative-total",
+            ),
+            pytest.param(
+                {
+                    "total_entries": 1,
+                    "by_source_type": (("text", 1),),
+                    "top_tags": [],
+                },
+                id="frozen-source-sequence",
+            ),
+            pytest.param(
+                {
+                    "total_entries": 1,
+                    "by_source_type": [["text", 1]],
+                    "top_tags": [],
+                },
+                id="source-item-not-tuple",
+            ),
+            pytest.param(
+                {
+                    "total_entries": 1,
+                    "by_source_type": [("", 1)],
+                    "top_tags": [],
+                },
+                id="empty-source-name",
+            ),
+            pytest.param(
+                {
+                    "total_entries": 1,
+                    "by_source_type": [("text", True)],
+                    "top_tags": [],
+                },
+                id="bool-source-count",
+            ),
+            pytest.param(
+                {
+                    "total_entries": 2,
+                    "by_source_type": [("text", 1), ("text", 1)],
+                    "top_tags": [],
+                },
+                id="duplicate-source-name",
+            ),
+            pytest.param(
+                {
+                    "total_entries": 2,
+                    "by_source_type": [("text", 1)],
+                    "top_tags": [],
+                },
+                id="source-count-sum-mismatch",
+            ),
+            pytest.param(
+                {
+                    "total_entries": 1,
+                    "by_source_type": [],
+                    "top_tags": ({"name": "tag", "count": 1},),
+                },
+                id="frozen-tag-sequence",
+            ),
+            pytest.param(
+                {
+                    "total_entries": 1,
+                    "by_source_type": [],
+                    "top_tags": [
+                        MappingProxyType({
+                            "name": "stats-secret\r\napi_key=x",
+                            "count": 1,
+                        })
+                    ],
+                },
+                id="frozen-tag-mapping",
+            ),
+            pytest.param(
+                {
+                    "total_entries": 1,
+                    "by_source_type": [],
+                    "top_tags": [{"name": "tag"}],
+                },
+                id="missing-tag-count",
+            ),
+            pytest.param(
+                {
+                    "total_entries": 1,
+                    "by_source_type": [],
+                    "top_tags": [{"name": "tag", "count": True}],
+                },
+                id="bool-tag-count",
+            ),
+        ],
+    )
+    def test_malformed_projection_renders_fixed_error_without_raw_values(
+        self,
+        stats_view,
+        mock_store,
+        malformed_stats,
+        caplog,
+    ):
+        """Corrupt storage projections fail closed before reaching widgets."""
+        mock_store.get_statistics.return_value = malformed_stats
+
+        with caplog.at_level("WARNING", logger="pkv.gui.stats"):
+            stats_view.refresh()
+
+        assert stats_view._stats is None
+        assert stats_view._total_label.text() == "总条目数: 加载失败"
+        assert stats_view._source_layout.count() == 1
+        assert stats_view._source_layout.itemAt(0).widget().text() == "加载失败"
+        assert stats_view._tags_layout.count() == 1
+        assert stats_view._tags_layout.itemAt(0).widget().text() == "加载失败"
+        visible = "\n".join(
+            (
+                stats_view._total_label.text(),
+                stats_view._source_type_count_label.text(),
+                stats_view._tag_count_label.text(),
+                stats_view._source_layout.itemAt(0).widget().text(),
+                stats_view._tags_layout.itemAt(0).widget().text(),
+            )
+        )
+        assert "stats-secret" not in visible
+        assert "stats-secret" not in caplog.text
+
     def test_refresh_reloads_data(self, stats_view, mock_store):
         """刷新按钮触发数据重新加载。"""
         initial_call_count = mock_store.get_statistics.call_count
@@ -206,7 +351,7 @@ class TestStatsViewData:
         # 修改 mock 返回新数据
         new_stats = {
             "total_entries": 99,
-            "by_source_type": [("wechat", 50)],
+            "by_source_type": [("wechat", 99)],
             "top_tags": [{"name": "NewTag", "count": 10}],
         }
         mock_store.get_statistics.return_value = new_stats

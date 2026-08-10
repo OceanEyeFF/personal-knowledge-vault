@@ -9,7 +9,7 @@
 当前实现的关键调用关系：
 
 - `archive` 通过 `WorkflowEngine.execute_async("archive-url", input_data)` 执行归档工作流。
-- `search --strategy auto` 通过 `QueryRouter.search()` 路由；显式策略直接构造 BM25、Vector 或 Hybrid retriever。
+- `search --strategy auto` 通过 `QueryRouter.search()` 路由；显式策略直接构造 BM25、Vector 或 Hybrid retriever。所有路径消费五态 `SearchResponse`，BM25/auto 的短查询路径不会提前创建 Provider。
 - `show`、`list`、`stats` 读取 SQLite/Markdown 等已配置存储。
 - `config show/get` 读取配置并遮罩敏感值；`config set` 会写 `config/local.yaml`。
 
@@ -36,8 +36,8 @@
 | 命令 | 主要参数/选项 | 当前接线与稳定边界 |
 |---|---|---|
 | `archive URL_OR_PATH` | `--skip-sharpen`、`--tags`、`--quiet`、`--type auto\|webpage\|chat\|news` | 调用 `execute_async("archive-url", ...)`；真实网络/Provider 仅后续显式 live 流程 |
-| `search QUERY` | `--strategy auto\|bm25\|vector\|hybrid`、`--limit`、`--format table\|json\|markdown` | JSON 输出含 `query/strategy/total/results`；TestCase 需区分请求策略与实际路由语义 |
-| `show [ID_OR_URL]` | `--url`、`--raw` | ID 或 URL 至少提供一个；当前 `--raw` 尚未验证 DB `file_path` 的 Vault containment，这是待独立源修复的 P0 缺口 |
+| `search QUERY` | `--strategy auto\|bm25\|vector\|hybrid`、`--limit`、`--format table\|json\|markdown` | 输出公开实际执行策略及 `success/no_hits/invalid/error/degraded`；JSON 含 `query/status/strategy/total/issues/results` |
+| `show [ID_OR_URL]` | `--url`、`--raw` | ID 或 URL 至少提供一个；`--raw` 经 `MarkdownStore.load()` 做 Vault containment 校验，不直接读取 DB 中的任意路径 |
 | `list` | `--tag`、`--sort time\|title\|id`、`--desc`、`--limit` | 从 SQLite 查询并以 Rich 表格输出；排序/tie 与非法 limit 仍需目标合同 |
 | `config show/get` | `get KEY` | 读取并遮罩敏感配置；默认自动化只允许只读子命令 |
 | `config set KEY VALUE` | YAML 点号键 | 写 local config；不属于自动化/AI 运行边界 |
@@ -105,8 +105,8 @@
 
 ## TestCase 设计注意事项
 
-- `search` 的 `strategy` 字段当前存在“请求值/实际路由值”语义风险，最终 oracle 需先做产品合同决策。
-- `show --raw` 当前只检查 DB `file_path` 是否存在后直接读取，未做 Vault canonical containment；它是待独立源修复的 P0 缺口，目标 TestCase 必须用外部 sentinel 证明不越界读取。
+- `search` 的 `strategy` 字段表示实际执行策略；适配器必须逐一保留五态和稳定 issue，只有 `invalid` / `error` 使用非零退出码，`degraded` 必须显式展示警告。
+- `show --raw` 的 TestCase 应继续用外部 sentinel 锁定 `MarkdownStore.load()` 的 canonical containment，防止后续回归成任意路径读取。
 - `archive` 的真实网页、真实 Provider 和费用不进入默认回归；离线 integration 只能计为 adapter seam，不能冒充真实工作流 E2E。
 - `config set`、生产数据查询和开发 Vault 重建不作为 pytest fixture 或完成定义。
 - CLI help/stats/search 在 unit/integration/blackbox 有重复，后续按“行为 owner + 高层协议 sentinel”收敛。

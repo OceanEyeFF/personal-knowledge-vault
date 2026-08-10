@@ -13,7 +13,6 @@
 import asyncio
 import logging
 import sys
-import traceback
 from pathlib import Path
 
 # 确保项目根目录在 sys.path 中（支持直接运行该文件的情形）
@@ -28,6 +27,22 @@ from src.runtime.bootstrap import bootstrap_runtime  # noqa: E402
 from src.utils.config import Config  # noqa: E402
 
 logger = logging.getLogger("pkv.gui.app")
+
+_PUBLIC_EXCEPTION_TYPES = {
+    ArithmeticError: "ArithmeticError",
+    AssertionError: "AssertionError",
+    ImportError: "ImportError",
+    LookupError: "LookupError",
+    OSError: "OSError",
+    RuntimeError: "RuntimeError",
+    TypeError: "TypeError",
+    ValueError: "ValueError",
+}
+
+
+def _public_exception_type(exc_type: type) -> str:
+    """Return a fixed diagnostic label without trusting a class name."""
+    return _PUBLIC_EXCEPTION_TYPES.get(exc_type, "Exception")
 
 
 def ensure_database_initialized() -> bool:
@@ -47,12 +62,15 @@ def ensure_database_initialized() -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"数据库初始化检查失败: {e}", exc_info=True)
+        logger.error(
+            "数据库初始化检查失败: error_type=%s",
+            _public_exception_type(type(e)),
+        )
         return False
 
 
 def setup_exception_handler(app: QApplication) -> None:
-    """设置全局未处理异常捕获，记录日志并打印堆栈。
+    """设置全局未处理异常捕获并记录稳定、脱敏的诊断。
 
     KeyboardInterrupt 仍交由系统默认处理（允许 Ctrl+C 终止）。
 
@@ -68,10 +86,9 @@ def setup_exception_handler(app: QApplication) -> None:
             sys.__excepthook__(exc_type, exc_value, exc_tb)
             return
         logger.error(
-            "未处理的异常",
-            exc_info=(exc_type, exc_value, exc_tb),
+            "未处理的异常: code=gui_uncaught_exception error_type=%s",
+            _public_exception_type(exc_type),
         )
-        traceback.print_exception(exc_type, exc_value, exc_tb)
 
     sys.excepthook = handle_exception
 

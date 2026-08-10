@@ -121,7 +121,7 @@ class MarkdownStore:
         """
         self.gateway = VaultPathGateway(vault_dir)
         self.vault_dir = self.gateway.vault_dir
-        logger.info(f"Markdown 存储初始化完成: {self.vault_dir}")
+        logger.info("Markdown 存储初始化完成")
 
     def plan_save(self, entry: Entry, subdir: Optional[str] = None) -> PlannedVaultWrite:
         """Plan the exact no-clobber Markdown target without writing any file.
@@ -220,7 +220,7 @@ class MarkdownStore:
             content=content,
         )
 
-        logger.info(f"加载 Markdown 文件: {safe_path}")
+        logger.info("加载 Markdown 文件完成")
         return entry
 
     def list_all(self, subdir: Optional[str] = None) -> list[Path]:
@@ -245,9 +245,9 @@ class MarkdownStore:
             file_path: 文件路径
         """
         if self.gateway.delete(file_path):
-            logger.info(f"删除 Markdown 文件: {file_path}")
+            logger.info("删除 Markdown 文件完成")
         else:
-            logger.warning(f"文件不存在，无法删除: {file_path}")
+            logger.warning("Markdown 文件不存在，无法删除")
 
     def relative_path(self, file_path: Path | str) -> str:
         """返回数据库唯一允许持久化的 Vault-relative POSIX 路径。"""

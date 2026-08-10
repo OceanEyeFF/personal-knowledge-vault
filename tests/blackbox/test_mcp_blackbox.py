@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pytest
+import yaml
 from mcp import StdioServerParameters
 from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client
@@ -39,6 +40,14 @@ from mcp.shared.exceptions import McpError
 # 确保项目根目录在 Python path 中
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 from tests.offline_runtime import prepare_offline_child_env
+
+W2_MCP_FIXTURE_PATH = (
+    PROJECT_ROOT / "tests" / "fixtures" / "w2" / "mcp" / "v1" / "matrix.yaml"
+)
+W2_MCP_FIXTURE = yaml.safe_load(
+    W2_MCP_FIXTURE_PATH.read_text(encoding="utf-8")
+)
+READONLY_TOOL_MATRIX = W2_MCP_FIXTURE["readonly_tools"]
 
 
 # ============================================================
@@ -109,10 +118,20 @@ def parse_tool_content(result) -> Dict[str, Any]:
     return payload
 
 
-def assert_stats_payload(payload: Dict[str, Any]) -> None:
+def assert_stats_payload(
+    payload: Dict[str, Any],
+    *,
+    expect_tool_envelope: bool = False,
+) -> None:
     """Assert the canonical statistics schema after stdio serialization."""
 
-    assert set(payload) == {"total_entries", "by_source_type", "top_tags"}
+    expected_keys = {"total_entries", "by_source_type", "top_tags"}
+    if expect_tool_envelope:
+        expected_keys |= {"status", "issues"}
+    assert set(payload) == expected_keys
+    if expect_tool_envelope:
+        assert payload["status"] == "success"
+        assert payload["issues"] == []
     assert isinstance(payload["total_entries"], int)
     assert not isinstance(payload["total_entries"], bool)
     assert payload["total_entries"] >= 0
@@ -425,6 +444,8 @@ class TestReadonlyTools:
                 result = await session.call_tool("list_tags", {})
 
         data = parse_tool_content(result)
+        assert data["status"] == "success"
+        assert data["issues"] == []
         assert "total_tags" in data
         assert data["total_tags"] > 0
         tag_names = [t["name"] for t in data["tags"]]
@@ -441,6 +462,8 @@ class TestReadonlyTools:
                 result = await session.call_tool("get_stats", {})
 
         data = parse_tool_content(result)
+        assert data["status"] == "success"
+        assert data["issues"] == []
         assert data["total_entries"] == 3
         assert dict(data["by_source_type"]) == {
             "generic": 1,
@@ -450,7 +473,7 @@ class TestReadonlyTools:
         assert {
             item["name"]: item["count"] for item in data["top_tags"]
         }["AI"] == 1
-        assert_stats_payload(data)
+        assert_stats_payload(data, expect_tool_envelope=True)
 
     @pytest.mark.asyncio
     async def test_list_entries_pagination(self, populated_db_path):
@@ -466,6 +489,8 @@ class TestReadonlyTools:
                     "page": 1, "per_page": 2,
                 })
                 data1 = parse_tool_content(result1)
+                assert data1["status"] == "success"
+                assert data1["issues"] == []
                 assert data1["total"] == 3
                 assert len(data1["entries"]) == 2
 
@@ -474,6 +499,8 @@ class TestReadonlyTools:
                     "page": 2, "per_page": 2,
                 })
                 data2 = parse_tool_content(result2)
+                assert data2["status"] == "success"
+                assert data2["issues"] == []
                 assert len(data2["entries"]) == 1
 
     @pytest.mark.asyncio
@@ -487,6 +514,8 @@ class TestReadonlyTools:
                 result = await session.call_tool("list_entries", {})
 
         data = parse_tool_content(result)
+        assert data["status"] == "no_hits"
+        assert data["issues"] == []
         assert data["total"] == 0
         assert len(data["entries"]) == 0
 
@@ -619,7 +648,10 @@ class TestWriteToolSecurity:
 
         data = parse_tool_content(result)
         assert data["success"] is False
-        assert "空" in data["error"]
+        assert data["terminal"] == "error"
+        assert data["error"] == "工作流配置无效"
+        assert data["issues"][0]["code"] == "workflow_config_invalid"
+        assert data["issues"][0]["stage"] == "text_validation"
 
     @pytest.mark.asyncio
     async def test_archive_text_rejects_whitespace(self, empty_db_path):
@@ -650,7 +682,10 @@ class TestWriteToolSecurity:
 
         data = parse_tool_content(result)
         assert data["success"] is False
-        assert data["error"] == "文本长度 100001 超过限制 100000 字符"
+        assert data["terminal"] == "error"
+        assert data["error"] == "工作流配置无效"
+        assert data["issues"][0]["code"] == "workflow_config_invalid"
+        assert data["issues"][0]["stage"] == "text_validation"
 
     @pytest.mark.asyncio
     async def test_get_related_invalid_id(self, empty_db_path):
@@ -902,7 +937,7 @@ class TestEndToEnd:
                 # Step 4: 查看统计
                 stats_result = await session.call_tool("get_stats", {})
                 stats = parse_tool_content(stats_result)
-                assert_stats_payload(stats)
+                assert_stats_payload(stats, expect_tool_envelope=True)
 
                 # Step 5: 列出标签
                 tags_result = await session.call_tool("list_tags", {})
@@ -922,12 +957,23 @@ class TestEndToEnd:
                 tools_result = await session.list_tools()
                 tool_names = {t.name for t in tools_result.tools}
 
-                # 调用所有无参数或简单参数的只读 Tool
-                for name in ["list_tags", "get_stats"]:
+                readonly_names = {case["name"] for case in READONLY_TOOL_MATRIX}
+                assert len(readonly_names) == 12
+                assert readonly_names == tool_names - {"archive_url", "archive_text"}
+
+                # 版本化 fixture 为每个只读 Tool 提供有效、离线且确定性的参数。
+                invoked = []
+                for case in READONLY_TOOL_MATRIX:
+                    name = case["name"]
                     assert name in tool_names, f"Tool {name} 未注册"
-                    result = await session.call_tool(name, {})
+                    result = await session.call_tool(name, case["arguments"])
                     data = parse_tool_content(result)
                     assert isinstance(data, dict), f"{name} 返回值不是 dict"
+                    if case.get("forbid_error", False):
+                        assert "error" not in data, f"{name} 意外错误: {data}"
+                    invoked.append(name)
+
+                assert invoked == [case["name"] for case in READONLY_TOOL_MATRIX]
 
     @pytest.mark.asyncio
     async def test_prompt_then_tool(self, populated_db_path):

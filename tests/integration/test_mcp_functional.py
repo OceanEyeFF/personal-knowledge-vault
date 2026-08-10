@@ -45,6 +45,12 @@ from src.relations.models import (  # noqa: E402
     TimelinePoint,
     TimelineResult,
 )
+from src.relations.citations import (  # noqa: E402
+    build_chunk_locator,
+    build_entry_locator,
+    build_entry_metadata_locator,
+)
+from src.relations.exploration_service import ExplorationService  # noqa: E402
 
 # 导入 MCP 实例（会触发 tools/resources/prompts 注册）
 from src.mcp.server import mcp  # noqa: E402
@@ -74,10 +80,20 @@ def parse_tool_result(result: Any) -> Dict[str, Any]:
     raise ValueError(f"无法解析 call_tool 结果: {type(result)}")
 
 
-def assert_stats_payload(payload: Dict[str, Any]) -> None:
+def assert_stats_payload(
+    payload: Dict[str, Any],
+    *,
+    expect_tool_envelope: bool = False,
+) -> None:
     """Assert the canonical public statistics schema."""
 
-    assert set(payload) == {"total_entries", "by_source_type", "top_tags"}
+    expected_keys = {"total_entries", "by_source_type", "top_tags"}
+    if expect_tool_envelope:
+        expected_keys |= {"status", "issues"}
+    assert set(payload) == expected_keys
+    if expect_tool_envelope:
+        assert payload["status"] == "success"
+        assert payload["issues"] == []
     assert isinstance(payload["total_entries"], int)
     assert not isinstance(payload["total_entries"], bool)
     assert payload["total_entries"] >= 0
@@ -466,6 +482,8 @@ class TestToolCallReadonly:
             raw = await mcp.call_tool("list_tags", {})
 
         result = parse_tool_result(raw)
+        assert result["status"] == "success"
+        assert result["issues"] == []
         assert "total_tags" in result
         assert result["total_tags"] > 0
         tag_names = [t["name"] for t in result["tags"]]
@@ -481,6 +499,8 @@ class TestToolCallReadonly:
             raw = await mcp.call_tool("list_entries", {"page": 1, "per_page": 10})
 
         result = parse_tool_result(raw)
+        assert result["status"] == "success"
+        assert result["issues"] == []
         assert result["total"] == 3
         assert len(result["entries"]) == 3
 
@@ -539,7 +559,7 @@ class TestToolCallReadonly:
             raw = await mcp.call_tool("get_stats", {})
 
         result = parse_tool_result(raw)
-        assert_stats_payload(result)
+        assert_stats_payload(result, expect_tool_envelope=True)
 
 
 # ============================================================
@@ -595,7 +615,9 @@ class TestToolCallWriteSecurity:
         )
         result = parse_tool_result(raw)
         assert result["success"] is False
-        assert result["error"] == "URL scheme 必须是 http 或 https，当前: ftp"
+        assert result["terminal"] == "error"
+        assert result["error"] == "URL 格式无效"
+        assert result["issues"][0]["code"] == "url_invalid"
 
     @pytest.mark.asyncio
     async def test_archive_url_rejects_empty(self):
@@ -614,7 +636,10 @@ class TestToolCallWriteSecurity:
         )
         result = parse_tool_result(raw)
         assert result["success"] is False
-        assert "空" in result["error"]
+        assert result["terminal"] == "error"
+        assert result["error"] == "工作流配置无效"
+        assert result["issues"][0]["code"] == "workflow_config_invalid"
+        assert result["issues"][0]["stage"] == "text_validation"
 
     @pytest.mark.asyncio
     async def test_archive_text_rejects_whitespace_only(self):
@@ -633,7 +658,10 @@ class TestToolCallWriteSecurity:
         )
         result = parse_tool_result(raw)
         assert result["success"] is False
-        assert result["error"] == "文本长度 100001 超过限制 100000 字符"
+        assert result["terminal"] == "error"
+        assert result["error"] == "工作流配置无效"
+        assert result["issues"][0]["code"] == "workflow_config_invalid"
+        assert result["issues"][0]["stage"] == "text_validation"
 
     @pytest.mark.asyncio
     async def test_get_related_invalid_id(self):
@@ -751,6 +779,14 @@ class TestToolCallWriteSecurity:
     @pytest.mark.asyncio
     async def test_collect_evidence_success(self):
         """collect_evidence 应返回结构化证据包。"""
+        relation = RelationRecord(
+            relation_id=9,
+            source_knowledge_id=1,
+            target_knowledge_id=2,
+            relation_type=RelationType.RELATED_DOCUMENT,
+            relation_source_type=RelationSourceType.FRONTMATTER_RELATED_DOCS,
+            evidence_payload={"field": "related_docs"},
+        )
         mock_service = MagicMock()
         mock_service.collect_evidence.return_value = CollectedEvidenceResult(
             question="Alpha 和 Beta 有什么关系？",
@@ -768,6 +804,7 @@ class TestToolCallWriteSecurity:
                     retrieval_rank=1,
                     retrieval_score=0.95,
                     is_seed=True,
+                    citation_locator=build_entry_locator(1),
                 ),
                 CollectedEvidenceItem(
                     knowledge_id=2,
@@ -782,6 +819,20 @@ class TestToolCallWriteSecurity:
                     relation_explanation_type="direct",
                     relation_hops=1,
                     relation_summary="1 -[related_document]-> 2",
+                    relation_path=[relation],
+                    relation_evidence_items=[
+                        {
+                            "step_index": 0,
+                            "relation_type": "related_document",
+                            "relation_source_type": "frontmatter_related_docs",
+                            "direction": "directed",
+                            "weight": 1.0,
+                            "source_knowledge_id": 1,
+                            "target_knowledge_id": 2,
+                            "evidence_payload": {"field": "related_docs"},
+                        }
+                    ],
+                    citation_locator=build_entry_locator(2),
                 ),
             ],
             summary="围绕问题共聚合 2 条证据",
@@ -838,9 +889,11 @@ class TestToolCallWriteSecurity:
                     freshness_score=0.70,
                     relation_score=1.0,
                     is_seed=True,
+                    citation_locator=build_chunk_locator(1, chunk_id=101),
                 ),
             ],
             summary="围绕问题共聚合 1 条证据",
+            chunk_retrieval_status="success",
         )
 
         with patch("src.mcp.tools.get_evidence_collection_service", return_value=mock_service):
@@ -867,6 +920,58 @@ class TestToolCallWriteSecurity:
     @pytest.mark.asyncio
     async def test_find_bridges_success(self):
         """find_bridges 应返回桥接候选。"""
+        seed_edge = RelationRecord(
+            relation_id=7,
+            source_knowledge_id=1,
+            target_knowledge_id=3,
+            relation_type=RelationType.REFERENCES,
+            relation_source_type=RelationSourceType.MARKDOWN_LINK,
+            evidence_payload={"raw_target": "gamma.md"},
+        )
+        frontier_edge = RelationRecord(
+            relation_id=8,
+            source_knowledge_id=3,
+            target_knowledge_id=4,
+            relation_type=RelationType.RELATED_DOCUMENT,
+            relation_source_type=RelationSourceType.FRONTMATTER_RELATED_DOCS,
+            evidence_payload={"field": "related_docs"},
+        )
+        semantic_inputs = {
+            "fields_used": [
+                "title",
+                "summary_one_sentence",
+                "summary_100_words",
+                "tags",
+            ],
+            "candidate": {
+                "knowledge_id": 3,
+                "citation_locator": build_entry_locator(3),
+                "metadata_locator": build_entry_metadata_locator(3),
+                "token_count": 0,
+            },
+            "comparisons": [],
+            "anchor_score": 0.0,
+            "support_score": 0.0,
+            "coverage_score": 0.0,
+            "semantic_score": 0.0,
+        }
+        subgraph_edges = [seed_edge, frontier_edge]
+        supporting_subgraph = ExplorationService._build_bridge_supporting_subgraph(
+            seed_knowledge_id=1,
+            candidate_knowledge_id=3,
+            neighbors={1, 4},
+            adjacency={1: {3}, 3: {1, 4}, 4: {3}},
+            node_depth_map={1: 0, 3: 1, 4: 2},
+            subgraph_edges=subgraph_edges,
+            max_depth=2,
+            semantic_score_inputs=semantic_inputs,
+        )
+        evidence_path = ExplorationService._build_bridge_evidence_path(
+            seed_knowledge_id=1,
+            candidate_knowledge_id=3,
+            explanation=MagicMock(found=True, path=[seed_edge]),
+            subgraph_edges=subgraph_edges,
+        )
         mock_service = MagicMock()
         mock_service.find_bridges.return_value = BridgeDiscoveryResult(
             seed_knowledge_id=1,
@@ -877,22 +982,29 @@ class TestToolCallWriteSecurity:
                     knowledge_id=3,
                     title="Gamma",
                     depth=1,
-                    bridge_score=2.25,
+                    bridge_score=0.66,
+                    structural_bridge_score=0.65,
+                    graph_bridge_score=1.0,
+                    semantic_bridge_score=0.0,
                     connected_knowledge_ids=[1, 4],
                     relation_types=["references", "related_document"],
-                    evidence_path=[
-                        {
-                            "hop_index": 1,
-                            "from_knowledge_id": 1,
-                            "to_knowledge_id": 3,
-                            "citation_locator": "pkv://relations/7",
-                        }
-                    ],
+                    evidence_path=evidence_path,
+                    supporting_subgraph=supporting_subgraph,
                     summary="Gamma 是桥接候选",
                 )
             ],
             summary="找到 1 个桥接候选",
+            evidence_sources=[
+                "relation_subgraph",
+                "graph_bridge_signal",
+                "entry_tags",
+                "entry_title_summary",
+            ],
             limitation_notes=["partial"],
+            subgraph_max_nodes=100,
+            subgraph_max_edges=300,
+            subgraph_node_count=3,
+            subgraph_edge_count=2,
         )
 
         with patch("src.mcp.tools.get_exploration_service", return_value=mock_service):
@@ -925,17 +1037,30 @@ class TestToolCallWriteSecurity:
                 TimelinePoint(
                     knowledge_id=1,
                     title="Alpha",
+                    time_value="2026-03-01 08:00:00",
+                    event_time="2026-03-01 08:00:00",
+                    published_at="2026-03-02 08:00:00",
                     archived_at="2026-03-10 10:00:00",
+                    time_source="event_time",
+                    time_source_field="event_time",
+                    time_precision="structured_field",
                     source_type="generic",
                     source_url="https://example.test/alpha",
                     source="https://example.test/alpha",
-                    citation_locator="pkv://entries/1/metadata/archived_at",
+                    citation_locator="pkv://entries/1/metadata/event_time",
                     abstract="Alpha 摘要",
                     tags=["AI"],
                     retrieval_score=0.91,
                 )
             ],
             summary="时间线已生成",
+            inferred_time_field="event_time",
+            time_source_priority=["event_time", "published_at", "archived_at"],
+            evidence_sources=[
+                "query_results",
+                "entry_metadata",
+                "structured_time_fields",
+            ],
             limitation_notes=["partial"],
         )
 
@@ -962,48 +1087,74 @@ class TestToolCallWriteSecurity:
     @pytest.mark.asyncio
     async def test_contrast_success(self):
         """contrast 应返回主题对比结构。"""
+        candidates_a = [
+            ContrastCandidateItem(
+                knowledge_id=1,
+                title="Alpha",
+                abstract="Alpha 摘要",
+                archived_at="2026-03-10 10:00:00",
+                source_type="generic",
+                source=build_entry_locator(1),
+                citation_locator=build_entry_locator(1),
+                tags=["AI", "共同"],
+                retrieval_score=0.93,
+            )
+        ]
+        candidates_b = [
+            ContrastCandidateItem(
+                knowledge_id=2,
+                title="Beta",
+                abstract="Beta 摘要",
+                archived_at="2026-03-11 10:00:00",
+                source_type="generic",
+                source=build_entry_locator(2),
+                citation_locator=build_entry_locator(2),
+                tags=["时间线", "共同"],
+                retrieval_score=0.87,
+            )
+        ]
+        comparison_dimensions = {
+            "shared_tags_count": 1,
+            "topic_a_only_tags_count": 1,
+            "topic_b_only_tags_count": 1,
+            "overlap_knowledge_count": 0,
+            "candidate_count": {"topic_a": 1, "topic_b": 1},
+            "relation_graph_signal": {
+                "connected_candidate_pairs_count": 0,
+                "topic_a_connected_candidate_count": 0,
+                "topic_b_connected_candidate_count": 0,
+                "shared_relation_types": [],
+                "max_relation_hops": 0,
+            },
+            "provenance": ExplorationService._build_contrast_provenance(
+                candidates_a=candidates_a,
+                candidates_b=candidates_b,
+                shared_tags=["共同"],
+                only_a_tags=["AI"],
+                only_b_tags=["时间线"],
+                overlap_knowledge_ids=[],
+                relation_pairs=[],
+            ),
+        }
         mock_service = MagicMock()
         mock_service.contrast.return_value = ContrastResult(
             topic_a="Topic A",
             topic_b="Topic B",
             found=True,
-            topic_a_candidates=[
-                ContrastCandidateItem(
-                    knowledge_id=1,
-                    title="Alpha",
-                    abstract="Alpha 摘要",
-                    archived_at="2026-03-10 10:00:00",
-                    source_type="generic",
-                    tags=["AI", "共同"],
-                    retrieval_score=0.93,
-                )
-            ],
-            topic_b_candidates=[
-                ContrastCandidateItem(
-                    knowledge_id=2,
-                    title="Beta",
-                    abstract="Beta 摘要",
-                    archived_at="2026-03-11 10:00:00",
-                    source_type="generic",
-                    tags=["时间线", "共同"],
-                    retrieval_score=0.87,
-                )
-            ],
+            topic_a_candidates=candidates_a,
+            topic_b_candidates=candidates_b,
             shared_tags=["共同"],
             only_a_tags=["AI"],
             only_b_tags=["时间线"],
             overlap_knowledge_ids=[],
-            comparison_dimensions={
-                "provenance": {
-                    "shared_tags": {
-                        "共同": {
-                            "topic_a": [{"citation_locator": "pkv://entries/1"}],
-                            "topic_b": [{"citation_locator": "pkv://entries/2"}],
-                        }
-                    }
-                }
-            },
+            comparison_dimensions=comparison_dimensions,
             summary="对比完成",
+            evidence_sources=[
+                "query_results",
+                "relation_graph",
+                "entry_tags",
+                "entry_summary",
+            ],
             limitation_notes=["partial"],
         )
 

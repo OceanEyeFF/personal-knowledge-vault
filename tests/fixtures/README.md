@@ -20,6 +20,8 @@
 |------|------|------|
 | `test_urls.json` | 集成测试真实链接配置 | JSON |
 
+`test_urls.json` 属于 user-only live/数据出境材料，不进入默认 W2 回归或完成定义。Agent 不填写、不运行这些真实链接；默认只使用上表合成 fixture、`.data-test` 隔离根和注入的 `SafeFetcher` doubles，不读取真实 key、Provider 或 Vault。
+
 ---
 
 ## 🔧 使用 test_urls.json 配置真实链接
@@ -216,7 +218,7 @@ Milestone 3: 内容处理器 - 集成测试
 
 **解决方案**：
 - 更换其他测试链接
-- 检查 Playwright 浏览器是否正常工作
+- 检查 `SafeFetcher` 返回的稳定 URL/SSRF/transport 错误码；不要改用浏览器或其他 HTTP client 绕过
 - 查看详细错误日志
 
 ---
@@ -246,17 +248,14 @@ Milestone 3: 内容处理器 - 集成测试
 - 打开 `test_urls.json` 文件
 - 将所有 `example` 和 `12345678` 替换为真实链接
 
-### 问题 3: Playwright 浏览器未安装
+### 问题 3: SafeFetcher 拒绝目标
 
 **错误信息**：
 ```
-Error: Executable doesn't exist at /path/to/chromium
+ssrf_target_forbidden / ssrf_resolution_failed / url_invalid
 ```
 
-**解决方案**：
-```bash
-python -m playwright install chromium
-```
+**解决方案**：确认 URL 的 scheme、host、port、每跳 DNS 答案与 redirect 都满足公网目标策略。该拒绝是 fail-closed 安全合同；不要安装 Playwright、关闭校验或增加 requests/httpx 退路。
 
 ### 问题 4: DeepSeek API 错误
 

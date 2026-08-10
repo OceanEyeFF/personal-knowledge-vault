@@ -5,6 +5,7 @@ Unit tests for BM25Retriever edge paths.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import logging
 import sys
 from pathlib import Path
 
@@ -41,9 +42,9 @@ def test_search_returns_empty_for_blank_query(tmp_path: Path) -> None:
 
     response = retriever.search("   ")
 
-    assert response == []
-    assert response.status == "invalid_query"
-    assert response.ok is True
+    assert response.results == ()
+    assert response.status == "invalid"
+    assert response.ok is False
 
 
 def test_search_returns_empty_when_tokenized_query_is_empty(
@@ -59,8 +60,8 @@ def test_search_returns_empty_when_tokenized_query_is_empty(
 
     response = retriever.search("特殊字符")
 
-    assert response == []
-    assert response.status == "invalid_query"
+    assert response.results == ()
+    assert response.status == "invalid"
 
 
 def test_search_normalizes_positive_bm25_scores_and_builds_metadata(
@@ -97,15 +98,15 @@ def test_search_normalizes_positive_bm25_scores_and_builds_metadata(
 
     results = retriever.search("ranked", limit=1)
 
-    assert len(results) == 1
+    assert len(results.results) == 1
     assert results.status == "success"
     assert results.ok is True
-    assert results[0].knowledge_id == 7
-    assert results[0].score == 0.5
-    assert results[0].highlight == "summary 100"
-    assert results[0].metadata["bm25_score"] == 5.0
-    assert results[0].metadata["bm25_match_query"] == "ranked"
-    assert results[0].metadata["bm25_match_mode"] == "strict"
+    assert results.results[0].knowledge_id == 7
+    assert results.results[0].score == 0.5
+    assert results.results[0].highlight == "summary 100"
+    assert results.results[0].metadata["bm25_score"] == 5.0
+    assert results.results[0].metadata["bm25_match_query"] == "ranked"
+    assert results.results[0].metadata["bm25_match_mode"] == "strict"
     assert fake_conn.executed[0][1] == ("ranked", 1)
 
 
@@ -131,10 +132,10 @@ def test_search_relaxes_english_multi_term_query_when_strict_match_has_no_result
     response = BM25Retriever(db_path).search("Borretti human bottlenecks", limit=5)
 
     assert response.status == "success"
-    assert response[0].knowledge_id == knowledge_id
-    assert response[0].title == "Human Bottlenecks"
-    assert response[0].metadata["bm25_match_query"] == "Borretti OR human OR bottlenecks"
-    assert response[0].metadata["bm25_match_mode"] == "relaxed_or"
+    assert response.results[0].knowledge_id == knowledge_id
+    assert response.results[0].title == "Human Bottlenecks"
+    assert response.results[0].metadata["bm25_match_query"] == "Borretti OR human OR bottlenecks"
+    assert response.results[0].metadata["bm25_match_mode"] == "relaxed_or"
 
 
 def test_search_returns_error_response_on_storage_exception(
@@ -153,11 +154,39 @@ def test_search_returns_error_response_on_storage_exception(
 
     response = retriever.search("alpha")
 
-    assert response == []
+    assert response.results == ()
     assert response.status == "error"
     assert response.failed is True
     assert response.error_type == "RuntimeError"
-    assert response.error_message == "fts unavailable"
+    assert response.error_message == "BM25 检索后端不可用"
+
+
+def test_search_logs_do_not_publish_query_or_backend_exception_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    retriever = BM25Retriever(tmp_path / "private.db")
+    query_canary = "password=BM25-QUERY-SECRET-CANARY"
+    error_canary = r"C:\private\vault.db api_key=BM25-ERROR-SECRET-CANARY"
+
+    @contextmanager
+    def _broken_get_connection():
+        raise RuntimeError(error_canary)
+        yield
+
+    monkeypatch.setattr(retriever, "_build_match_query", lambda query: "safe")
+    monkeypatch.setattr(retriever.store, "get_connection", _broken_get_connection)
+    caplog.set_level(logging.INFO, logger="src.retrieval.bm25_retriever")
+
+    response = retriever.search(query_canary)
+
+    assert response.status == "error"
+    assert "RuntimeError" in caplog.text
+    assert query_canary not in caplog.text
+    assert "BM25-QUERY-SECRET-CANARY" not in caplog.text
+    assert error_canary not in caplog.text
+    assert "BM25-ERROR-SECRET-CANARY" not in caplog.text
 
 
 def test_helper_methods_cover_sanitization_and_normalization(tmp_path: Path) -> None:

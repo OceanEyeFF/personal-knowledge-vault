@@ -32,21 +32,27 @@ ai:
   # OpenAI-compatible LLM 配置（摘要、标签、对话分析）
   # API Key 请写入 config/local.yaml，不要提交到版本库。
   llm:
+    provider: "openai_compatible"
     api_key: ""
     base_url: "https://api.deepseek.com/v1"
     model: "deepseek-chat"
     max_tokens: 2000
     temperature: 0.7
+    timeout_seconds: 30
+    max_retries: 2
 
   # OpenAI-compatible Embedding 配置
   # API Key 请写入 config/local.yaml，不要提交到版本库。
   # 注意：Embedding 端点/模型/维度是向量索引契约，不是普通偏好项。
   # 更换端点、模型或维度后，必须重建向量索引并重新生成文档/分块 Embedding。
   embedding:
+    provider: "openai_compatible"
     api_key: ""
     base_url: "https://api.openai.com/v1"
     model: "text-embedding-3-small"
     dim: 1536
+    timeout_seconds: 30
+    max_retries: 3
 
   # Whisper 配置 (Phase 2)
   whisper:
@@ -97,23 +103,6 @@ processors:
   generic:
     timeout: 30
     readability_min_length: 500  # 最小正文长度
-
-# ===========================
-# 工作流配置
-# ===========================
-workflows:
-  # 归档 URL 工作流
-  archive_url:
-    steps:
-      - fetch
-      - analyze
-      - sharpen    # idea Sharpen (根据内容决定是否触发)
-      - store
-
-  # 搜索工作流
-  search:
-    default_strategy: "hybrid"
-    max_results: 10
 
 # ===========================
 # jieba 中文分词配置

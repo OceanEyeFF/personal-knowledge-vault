@@ -19,6 +19,22 @@ logger = get_logger(__name__)
 _TAG_NAME_ROLE = Qt.UserRole  # type: ignore[attr-defined]
 
 
+def validate_tag_rows(tags: Any) -> None:
+    """Reject malformed tag projections before rebuilding the visible model."""
+
+    if type(tags) is not list:
+        raise TypeError("tag list contract violation")
+    for tag in tags:
+        if type(tag) is not dict:
+            raise TypeError("tag item contract violation")
+        name = tag.get("name")
+        count = tag.get("count")
+        if type(name) is not str or not name:
+            raise TypeError("tag name contract violation")
+        if type(count) is not int or count < 0:
+            raise TypeError("tag count contract violation")
+
+
 class TagTreeModel(QStandardItemModel):
     """标签树形数据模型。
 
@@ -70,6 +86,7 @@ class TagTreeModel(QStandardItemModel):
                 {"name": "Python", "count": 5},
             ])
         """
+        validate_tag_rows(tags)
         self.clear()
         self.setHorizontalHeaderLabels(self.HEADER_LABELS)
 

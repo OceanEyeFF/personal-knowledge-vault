@@ -13,9 +13,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlsplit
 
 from src.ai.deepseek_client import DeepSeekClient
 from src.processors.base import BaseProcessor
+from src.processors.local_file_reader import read_local_text_file
 from src.storage.markdown_store import Entry
 from src.utils.config import get_config
 from src.utils.logger import get_logger
@@ -55,11 +57,23 @@ class ChatProcessor(BaseProcessor):
 
     @classmethod
     def can_handle(cls, url: str) -> bool:
-        """Return True for .txt or .json chat files."""
-        lowered = url.lower()
+        """Return True for local .txt/.json inputs, never for remote URLs."""
+        if not isinstance(url, str) or not url.strip():
+            return False
+        candidate = url.strip()
+        try:
+            parsed = urlsplit(candidate)
+        except ValueError:
+            return False
+        # A Windows drive prefix (``C:\\``) is parsed as a one-letter scheme;
+        # every other URI authority/scheme belongs to another processor.
+        is_windows_drive = bool(re.match(r"^[A-Za-z]:[\\/]", candidate))
+        if parsed.netloc or (parsed.scheme and not is_windows_drive):
+            return False
+        lowered = candidate.lower()
         return lowered.endswith(".txt") or lowered.endswith(".json")
 
-    async def process(self, url: str) -> Entry:
+    async def process(self, url: str, *, allow_local_file: bool = False) -> Entry:
         """
         Process a chat transcript and return an Entry.
 
@@ -69,13 +83,11 @@ class ChatProcessor(BaseProcessor):
         Returns:
             Entry with parsed chat content.
         """
-        logger.info("ChatProcessor processing file=%s", url)
+        if not allow_local_file:
+            raise ValueError("ChatProcessor local files require process_file()")
+        logger.info("ChatProcessor processing input_type=file")
         file_path = Path(url)
-
-        if not file_path.exists():
-            raise FileNotFoundError(f"Chat transcript not found: {file_path}")
-
-        raw_text = await asyncio.to_thread(file_path.read_text, encoding="utf-8")
+        raw_text = await asyncio.to_thread(read_local_text_file, file_path)
         messages = self._parse_messages(file_path, raw_text)
 
         conversation_text = "\n".join(
@@ -94,7 +106,7 @@ class ChatProcessor(BaseProcessor):
         entry = Entry(
             title=f"聊天记录 - {topic}",
             source_type="chat",
-            source_url=str(file_path),
+            source_url=None,
             abstract=summary,
             summary_one_sentence=summary_one_sentence,
             summary_100_words=summary,
@@ -104,14 +116,19 @@ class ChatProcessor(BaseProcessor):
 
         entry.metadata = {
             "source_type": "chat",
-            "source_url": str(file_path),
+            "source_url": None,
             "message_count": len(messages),
             "participants": sorted({msg.sender for msg in messages if msg.sender}),
             "parsed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
-        logger.info("ChatProcessor completed file=%s messages=%s", url, len(messages))
+        logger.info("ChatProcessor completed messages=%s", len(messages))
         return entry
+
+    async def process_file(self, file_path: str | Path) -> Entry:
+        """Explicit local-file entry point used by trusted CLI imports."""
+
+        return await self.process(str(file_path), allow_local_file=True)
 
     def _parse_messages(self, file_path: Path, raw_text: str) -> List[ChatMessage]:
         """Parse raw chat content into structured messages."""
@@ -219,7 +236,10 @@ class ChatProcessor(BaseProcessor):
             tags = client.extract_tags(conversation_text, num_tags=5, temperature=0.3)
             return summary, tags
         except Exception as exc:
-            logger.warning("AI summary generation failed: %s", exc)
+            logger.warning(
+                "AI summary generation failed: error_type=%s",
+                type(exc).__name__,
+            )
             summary = self._fallback_summary(conversation_text)
             tags = self._fallback_tags(conversation_text)
             return summary, tags

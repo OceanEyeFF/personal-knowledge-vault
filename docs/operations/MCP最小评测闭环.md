@@ -1,6 +1,6 @@
 # MCP 最小评测闭环
 
-> 状态：Phase B citation 合同完成 / threshold-enforced 离线闭环；16/16 tasks、119/119 checks、`overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`
+> 状态：Phase B citation 合同完成 / threshold-enforced 离线闭环；当前 fresh run 为 16/16 tasks、151/151 checks（119 项版本化声明式检查 + 32 项自动公开 envelope 检查）、`overall=1.0`、全部维度 `1.0`、0 failed、`targets_met=true`
 >
 > 任务集：`pkv.mcp_quality_tasks.v1`
 > 基线：见 [MCP最小评测基线-2026-07-29.md](./MCP最小评测基线-2026-07-29.md)
@@ -80,16 +80,17 @@ Tool、错误参数或未来 Agent 预测不会与 gold 共用 YAML anchor/对�
 `targets_met`。Phase B citation 合同完成后的策略是 `threshold_enforced`：
 
 - 默认 CI 必须运行 `tests/integration/test_mcp_quality_eval.py`
-- 集成回归固定 schema、16 条任务、119 项期望检查与独立 proposals；是否全通过只由对应工作树的受控运行证据决定
-- evaluation 运行时合同在 119 项评分之外逐项读取所有 citation locator；
+- 集成回归固定 schema、16 条任务、119 项版本化声明式检查、32 项由 runner 自动执行的公开 envelope 检查与独立 proposals；是否全通过只由对应工作树的受控运行证据决定
+- evaluation 运行时合同还会逐项读取所有 citation locator；
   校验 bridge 路径连续性、完整候选邻接/断连子图和 semantic provenance，
   timeline 物理字段及 legacy 持久性，contrast provenance 完整性，并递归
   拒绝 Phase B 新公开响应中的绝对本机路径
 - CLI 通过 `--enforce-thresholds` 把任务集内的目标阈值升级为退出码门禁
-- 2026-07-31 受控运行结果为 16/16 tasks、119/119 checks、`overall=1.0`、`citability=1.0`、0 failed、`targets_met=true`，兼容字段 `thresholds_met=true`
-- 同一冻结工作树的 MCP 测试门禁为 `364 passed, 1326 deselected`，`src.mcp`
+- 2026-07-31 历史受控运行结果为 16/16 tasks、119/119 checks、`overall=1.0`、`citability=1.0`、0 failed、`targets_met=true`，兼容字段 `thresholds_met=true`
+- 2026-08-07 当前 fresh run 保留上述 119 项声明式合同，并把 Tool 可发现性与 FastMCP schema/调用公开 envelope 的 32 项自动检查计入报告：16/16 tasks、151/151 checks、`overall=1.0`、全部维度 `1.0`、0 failed、`targets_met=true`
+- 2026-07-31 同一历史冻结工作树的 MCP 测试门禁为 `364 passed, 1326 deselected`，`src.mcp`
   覆盖率 `96.88%`，满足 `--cov-fail-under=95`
-- gold call、baseline proposals、119 项断言及各维度阈值均未因本次收口降低或改写
+- gold call、baseline proposals、119 项声明式检查及各维度阈值均未因本次收口降低或改写；32 项自动公开 envelope 检查是增量门禁，不替换既有检查
 
 ## 5. 版本化资产
 
@@ -100,9 +101,9 @@ Tool、错误参数或未来 Agent 预测不会与 gold 共用 YAML anchor/对�
 - `evals/mcp_quality/scorer.py`：路径选择与通用断言评分
 - `evals/mcp_quality/runner.py`：FastMCP 执行、聚合与 CLI
 - `tests/unit/test_mcp_quality_scorer.py`：任务/评分器契约
-- `tests/integration/test_mcp_quality_eval.py`：119 项期望检查、报告 schema 与门禁回归
+- `tests/integration/test_mcp_quality_eval.py`：151 项当前总检查、报告 schema 与门禁回归
 
-后续变更必须保持 16 条任务、独立 proposals、119 项检查和现有阈值；
+后续变更必须保持 16 条任务、独立 proposals、119 项声明式检查、32 项自动公开 envelope 检查和现有阈值；
 不得通过修改 gold/proposal、删除断言或改写离线 fixture 掩盖回归。
 
 该结果只覆盖固定离线合成场景，不是对真实快照的质量结论。真实快照验证仍受
@@ -127,7 +128,8 @@ item 必须输出空 `time_value/time_source_field`、
 Tool 和 Resource 的公开负载会清空盘符、UNC、POSIX 绝对路径及 `file:`
 URI 形式的 `source_url`，相应来源回退 entry Resource；relation evidence
 中的本地引用按值递归脱敏。固定评测启动预检与真实 FastMCP 集成回归均覆盖
-这些负向 fixture，且不改变 16 条任务、119 项评分检查或阈值。
+这些负向 fixture；它们没有降低 16 条任务、119 项声明式检查或阈值。当前 runner
+另计 32 项自动公开 envelope 检查，总数为 151。
 
 entry、chunk 与 frontmatter metadata-field Resource 只允许读取/返回父 entry
 的 canonical resolved path 位于当前隔离 vault 内的普通文件；symlink escape、

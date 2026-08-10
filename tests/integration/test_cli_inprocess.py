@@ -166,7 +166,16 @@ def test_search_inprocess(
 
     assert result.exit_code == 0, result.output
     payload = _parse_json_payload(result.output)
-    assert set(payload) == {"query", "strategy", "total", "results"}
+    assert set(payload) == {
+        "status",
+        "issues",
+        "query",
+        "strategy",
+        "total",
+        "results",
+    }
+    assert payload["status"] == "success"
+    assert payload["issues"] == []
     assert payload["query"] == "python"
     assert payload["strategy"] == "bm25"
     assert payload["total"] == len(payload["results"])

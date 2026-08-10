@@ -13,8 +13,10 @@
 - **14 个 Tool**: 12 只读 + 2 写入
 - **9 个 Resource**: 条目全文/元数据、精确 chunk、时间字段、关系边、标签与统计
 - **3 个 Prompt 模板**: 搜索总结/知识问答/思想磨砺
-- **安全加固**: SSRF 防护 + 文本长度验证 + Bearer Token 认证
-- **双传输**: stdio (本地集成) + streamable-http (远程访问)
+- **安全加固**: URL DNS/连接目标/重定向/子资源 SSRF 重校验 + 文本长度验证
+- **发布传输**: M13 Developer Preview 仅支持 stdio；HTTP/Bearer 不在发布面
+
+三个探索 Tool 继续使用 `partial-v1` 合同并返回 `implementation_level=partial`。默认自动化只使用合成数据和 `.data-test` 隔离根，不连接真实 Provider、不读取真实 API key 或真实 Vault。
 
 ---
 
@@ -26,15 +28,14 @@
 # stdio 模式（Claude Code / Cursor 本地集成；默认连接用户知识库）
 .\scripts\run-windows.ps1 python -m src.mcp.server
 
-# HTTP 模式（远程访问；先按 Q4 无回显配置认证令牌）
-.\scripts\run-windows.ps1 python -m src.mcp.server --transport streamable-http --port 3000
-
 # MCP Inspector 可视化调试（强制隔离到 .data-test）
 npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Command "& '.\scripts\run-test.ps1' -DataRoot '.data-test\mcp-inspector' -Direct -Command @('python','-m','src.mcp.server')"
 
 # 自定义日志级别
 .\scripts\run-windows.ps1 python -m src.mcp.server --log-level DEBUG
 ```
+
+`--transport` 只接受 `stdio`。任何非 stdio 值都会在读取应用配置、bootstrap 数据目录或绑定端口之前 fail-closed；不存在可部署的 HTTP/Bearer 路径。
 
 ### Claude Code 集成配置
 
@@ -70,7 +71,7 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；P
 
 | Tool | 参数 | 返回 | 说明 |
 |------|------|------|------|
-| `search_knowledge` | `query`, `strategy?`, `top_k?`, `source_type?`, `tag?` | `{total, strategy_used, results[]}` | 搜索知识库,支持 auto/bm25/vector/hybrid 策略 |
+| `search_knowledge` | `query`, `strategy?`, `top_k?`, `source_type?`, `tag?` | `{status, strategy, total, results[], issues[]}` | 搜索知识库，支持 auto/bm25/vector/hybrid 五态响应 |
 | `get_entry` | `knowledge_id` | `{knowledge_id, title, tags, content, ...}` | 获取条目完整内容(含 Markdown 全文) |
 | `list_tags` | (无) | `{total_tags, tags[{name, count}]}` | 列出所有标签及计数 |
 | `list_entries` | `page?`, `per_page?`, `sort_by?`, `sort_order?`, `source_type?`, `tag?` | `{total, page, entries[]}` | 分页浏览条目列表 |
@@ -79,9 +80,9 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；P
 | `query_subgraph` | `knowledge_id`, `depth?`, `relation_types?`, `max_nodes?` | `{seed_knowledge_id, nodes[], edges[], grouped_edges}` | 受限多跳关系子图查询 |
 | `explain_relation` | `source_knowledge_id`, `target_knowledge_id`, `relation_types?`, `max_depth?` | `{found, summary, path[], evidence_items[]}` | 解释两个条目之间为何相关 |
 | `collect_evidence` | `question`, `top_k?`, `relation_max_depth?` | `{seed_knowledge_id, summary, evidence[]}` | 聚合证据包；chunk 证据含稳定 citation locator |
-| `find_bridges` | `seed_knowledge_id`, `top_k?`, `max_depth?` | `{items[], limitation_notes[]}` | 发现显式关系子图中的桥接候选及逐跳 evidence path（partial） |
-| `timeline_of` | `topic`, `top_k?`, `sort_order?` | `{items[], inferred_time_field}` | 按 `event_time > published_at > archived_at` 重建弱时间线；无持久时间时以 `unavailable` + entry locator 诚实降级（partial） |
-| `contrast` | `topic_a`, `topic_b`, `top_k?` | `{shared_tags, only_a_tags, only_b_tags, ...}` | 基于候选表面字段与来源 provenance 做主题对比（partial） |
+| `find_bridges` | `seed_knowledge_id`, `top_k?`, `max_depth?` | `{items[], limitation_notes[]}` | 发现显式关系子图中的桥接候选及逐跳 evidence path（partial-v1） |
+| `timeline_of` | `topic`, `top_k?`, `sort_order?` | `{items[], inferred_time_field}` | 按 `event_time > published_at > archived_at` 重建弱时间线；无持久时间时以 `unavailable` + entry locator 诚实降级（partial-v1） |
+| `contrast` | `topic_a`, `topic_b`, `top_k?` | `{shared_tags, only_a_tags, only_b_tags, ...}` | 基于候选表面字段与来源 provenance 做主题对比（partial-v1） |
 
 #### 写入 Tool
 
@@ -147,7 +148,7 @@ entry、chunk 与 frontmatter metadata-field Resource 在读取/返回内容前�
 - `src.retrieval`: QueryRouter, BM25/Vector/Hybrid Retriever
 - `src.workflow`: WorkflowEngine (写入 Tool 使用)
 - `src.processors`: TextFallbackProcessor (archive_text 使用)
-- `src.ai`: OpenAIClient (Embedding), DeepSeekClient (摘要)
+- `src.ai`: production Provider factory（Embedding / Chat）与 DeepSeek-compatible 摘要客户端
 
 ### 配置项
 
@@ -166,7 +167,7 @@ ai:
     dim: auto
 ```
 
-`DATA_DIR` / `DB_PATH` / `LOG_LEVEL` 仅用于进程级运行隔离；`PKV_MCP_AUTH_TOKEN` 是 HTTP 传输的部署认证令牌，不是 Provider 配置。
+`DATA_DIR` / `DB_PATH` / `LOG_LEVEL` 仅用于进程级运行隔离。`PKV_MCP_AUTH_TOKEN` 不属于当前配置合同；M13 不发布 HTTP transport 或 Bearer 认证。
 
 ### 工作流配置
 
@@ -210,16 +211,18 @@ Prompt     →  同步 def (返回 str,无 I/O)
 
 ```
 archive_url(url)
-    ├── validate_url()          # 格式验证: http/https, 有效 netloc
-    ├── is_private_ip()         # SSRF 防护: 拒绝内网地址
-    └── validate_url_security() # 综合验证
+    ├── validate_url_security_result() # 入口格式与主机预检
+    └── SafeFetcher
+        ├── 每跳重新解析 DNS 并拒绝非公网地址
+        ├── 连接已验证的固定 IP，同时保持原 Host/SNI/证书 hostname
+        ├── 每次 redirect 重新验证
+        └── 页面子资源继续走同一安全抓取器
 
 archive_text(text)
     └── validate_text_length()  # 最大 100,000 字符
 
-HTTP 传输
-    └── validate_http_auth()    # Bearer Token 验证
-        └── PKV_MCP_AUTH_TOKEN 环境变量 (未配置则拒绝所有)
+transport
+    └── stdio only              # 非 stdio 在 bootstrap/bind 前拒绝
 ```
 
 ---
@@ -299,29 +302,18 @@ npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Comm
 - 拒绝: `ftp://`, `file://`, `javascript:` 等非 HTTP 协议
 - 拒绝: 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, localhost, *.local, *.internal
 
-### Q4: HTTP 模式如何配置认证?
+### Q4: 如何启用 HTTP 或 Bearer?
 
-```powershell
-# 1. 无回显读取环境变量；实际令牌不会进入命令历史
-$secureToken = Read-Host "PKV_MCP_AUTH_TOKEN" -AsSecureString
-$env:PKV_MCP_AUTH_TOKEN = [Net.NetworkCredential]::new("", $secureToken).Password
-Remove-Variable secureToken
+M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命周期的 stdio；HTTP transport、监听端口、远程 URL 与 Bearer Token 都没有发布合同。若未来路线明确纳入 HTTP，必须重新设计并验证真实 transport 认证后才能恢复对应文档。
 
-# 2. 启动 HTTP 模式
-.\scripts\run-windows.ps1 python -m src.mcp.server --transport streamable-http --port 3000
+### Q5: get_related 没有可用结果怎么办?
 
-# 3. 客户端从秘密存储或未提交的本机配置注入 Header
-Authorization: Bearer <由秘密存储注入>
-```
+先检查五态 `status` 和 `issues`，不能只看 `results`：
 
-未配置 `PKV_MCP_AUTH_TOKEN` 时,所有 HTTP 请求将被拒绝(安全默认原则)。不要把实际令牌写入命令、截图或可提交的客户端配置。
-
-### Q5: get_related 返回空结果怎么办?
-
-可能原因:
-1. 该条目归档时未生成向量索引（检查 `config/local.yaml` 的 `ai.embedding.api_key`）
-2. 知识库条目太少,无足够相似内容
-3. hnswlib 索引文件不存在或损坏
+1. `no_hits`：请求成功，但知识库没有足够的相似内容。
+2. `degraded`：仍有可用部分结果，同时按 `issues` 处理索引或元数据问题。
+3. `invalid`：修正 knowledge ID / 参数。
+4. `error`：向量索引或元数据不可用；按稳定 issue code 排查。默认离线验证不读取真实 key、真实 Provider 或真实 Vault。
 
 ---
 
@@ -386,7 +378,7 @@ Authorization: Bearer <由秘密存储注入>
 - 创建 MCP 模块 CLAUDE.md 文档
 - M8: 实现 5 个只读 Tool + 4 个 Resource
 - M9: 实现 3 个写入/关联 Tool + 3 个 Prompt 模板
-- M9: SSRF 防护 + 文本长度验证 + Bearer Token 认证
+- M9 历史原型包含 Bearer 设计；M13 W2 已从运行入口和发布文档移除 HTTP/Bearer，并加强 URL 全链路 SSRF 重校验
 - M9: 三层测试体系 (203 tests)
 - VectorStore 新增 `get_doc_vector()` 方法(支持 get_related)
 

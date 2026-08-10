@@ -38,6 +38,8 @@ from src.relations.models import (
     TimelinePoint,
     TimelineResult,
 )
+from src.retrieval.result import is_strict_search_response
+from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.utils.text_utils import get_text_processor
 
 
@@ -314,7 +316,11 @@ class ExplorationService:
         if sort_order not in {"asc", "desc"}:
             raise ValueError("sort_order 仅支持 asc 或 desc")
 
-        results = self.query_router.search(topic_clean, limit=top_k)
+        response = self.query_router.search(topic_clean, limit=top_k)
+        results, retrieval_limitations = self._consume_retrieval_response(
+            response,
+            operation="timeline",
+        )
         time_source_priority = ["event_time", "published_at", "archived_at"]
         points: list[TimelinePoint] = []
         excluded_entry_count = 0
@@ -401,7 +407,7 @@ class ExplorationService:
         unavailable_time_count = sum(
             1 for item in points if item.time_source == "unavailable"
         )
-        limitation_notes = [
+        limitation_notes = retrieval_limitations + [
             "当前优先使用 entry/metadata 中的 event_time/published_at 真实时间字段，缺失时才回退 archived_at，不代表正文中的完整真实事件时间",
             "仅对 SQLite 或 Markdown frontmatter 中可持久读取的时间字段生成精确 locator；临时检索 metadata 或损坏 frontmatter 不作为可引用时间来源",
             "当前未接入 video_timestamps、正文事件抽取或时间语义解析",
@@ -454,8 +460,16 @@ class ExplorationService:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
 
-        raw_results_a = self.query_router.search(topic_a_clean, limit=top_k)
-        raw_results_b = self.query_router.search(topic_b_clean, limit=top_k)
+        response_a = self.query_router.search(topic_a_clean, limit=top_k)
+        response_b = self.query_router.search(topic_b_clean, limit=top_k)
+        raw_results_a, retrieval_limitations_a = self._consume_retrieval_response(
+            response_a,
+            operation="contrast_topic_a",
+        )
+        raw_results_b, retrieval_limitations_b = self._consume_retrieval_response(
+            response_b,
+            operation="contrast_topic_b",
+        )
         results_a, excluded_a = self._filter_results_by_vault(raw_results_a)
         results_b, excluded_b = self._filter_results_by_vault(raw_results_b)
 
@@ -533,7 +547,9 @@ class ExplorationService:
                 "entry_tags",
                 "entry_summary",
             ],
-            limitation_notes=[
+            limitation_notes=retrieval_limitations_a
+            + retrieval_limitations_b
+            + [
                 "当前已引入跨主题显式关系路径信号，但底层仍只依赖低歧义显式关系图与候选表层文本，不代表完整语义对比",
                 "当前未引入 contrast 关系类型，也未建模争议/补充/因果等高级语义边",
             ]
@@ -609,6 +625,46 @@ class ExplorationService:
             if self._entry_file_is_safe(entry):
                 safe_results.append(result)
         return safe_results, len(results) - len(safe_results)
+
+    @staticmethod
+    def _consume_retrieval_response(
+        response: Any,
+        *,
+        operation: str,
+    ) -> tuple[list[Any], list[str]]:
+        """Consume the strict five-state retrieval contract without erasing outages."""
+        stage = f"{operation}_retrieval"
+        if not is_strict_search_response(response):
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                "检索服务返回了无效响应",
+                stage=stage,
+                recoverable=False,
+            )
+
+        if response.status in {"success", "no_hits"}:
+            return list(response.results), []
+
+        if response.status == "degraded":
+            issue_codes = ",".join(
+                sorted({issue.code.value for issue in response.issues})
+            )
+            return list(response.results), [
+                f"{operation}_retrieval_degraded[{issue_codes}]："
+                "部分检索能力不可用，结果可能不完整"
+            ]
+
+        issue = response.issues[0]
+        if response.status == "invalid":
+            public_message = "检索请求无效"
+        else:
+            public_message = "检索服务暂不可用"
+        raise PKVRuntimeError(
+            issue.code,
+            public_message,
+            stage=stage,
+            recoverable=issue.recoverable,
+        )
 
     def _relation_endpoints_are_vault_safe(
         self,

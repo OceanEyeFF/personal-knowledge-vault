@@ -15,6 +15,49 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+_ENTRY_REQUIRED_FIELDS = frozenset({
+    "knowledge_id",
+    "title",
+    "source_type",
+    "tags",
+    "word_count",
+    "archived_at",
+})
+
+
+def _is_strict_entry(entry: Any) -> bool:
+    if type(entry) is not dict or not _ENTRY_REQUIRED_FIELDS.issubset(entry):
+        return False
+    knowledge_id = entry["knowledge_id"]
+    if type(knowledge_id) is not int or knowledge_id <= 0:
+        return False
+    if type(entry["title"]) is not str:
+        return False
+    if type(entry["source_type"]) is not str or not entry["source_type"]:
+        return False
+    tags = entry["tags"]
+    if tags is not None and type(tags) not in {str, list}:
+        return False
+    if type(tags) is list and not all(type(tag) is str for tag in tags):
+        return False
+    word_count = entry["word_count"]
+    if word_count is not None and (
+        type(word_count) is not int or word_count < 0
+    ):
+        return False
+    archived_at = entry["archived_at"]
+    return archived_at is None or type(archived_at) is str
+
+
+def validate_entry_rows(entries: Any) -> None:
+    """Reject malformed backend list projections before Qt treats them as data."""
+
+    if type(entries) is not list or not all(
+        _is_strict_entry(entry) for entry in entries
+    ):
+        raise TypeError("entry list contract violation")
+
+
 class EntryTableModel(QAbstractTableModel):
     """知识条目表格数据模型。
 
@@ -60,6 +103,7 @@ class EntryTableModel(QAbstractTableModel):
             parent: Qt 父对象，通常为 None。
         """
         super().__init__(parent)
+        validate_entry_rows(entries)
         self._entries: list[dict] = entries
 
     # ------------------------------------------------------------------
@@ -162,6 +206,7 @@ class EntryTableModel(QAbstractTableModel):
         Args:
             entries: 新的条目字典列表。
         """
+        validate_entry_rows(entries)
         self.beginResetModel()
         self._entries = entries
         self.endResetModel()

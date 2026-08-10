@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 
 from src.ai.deepseek_client import DeepSeekClient
 from src.processors.base import BaseProcessor
+from src.processors.local_file_reader import read_local_text_file
 from src.storage.markdown_store import Entry
 from src.utils.config import get_config
 from src.utils.logger import get_logger
@@ -64,16 +65,8 @@ class AIChatProcessor(BaseProcessor):
             return False
 
         candidate = url_or_text.strip()
-        if candidate.startswith("http://") or candidate.startswith("https://"):
+        if candidate.lower().startswith(("http://", "https://")):
             return False
-
-        path = Path(candidate)
-        if path.exists() and path.is_file():
-            try:
-                sample = path.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                return False
-            return cls._looks_like_ai_chat(sample)
 
         return cls._looks_like_ai_chat(candidate)
 
@@ -116,19 +109,35 @@ class AIChatProcessor(BaseProcessor):
         has_assistant = bool(re.search(r"^###\s*DeepSeek\b", text, re.MULTILINE))
         return has_user and has_assistant
 
-    async def process(self, url_or_text: str) -> Entry:
+    async def process(
+        self,
+        url_or_text: str,
+        *,
+        allow_local_file: bool = False,
+        require_local_file: bool = False,
+    ) -> Entry:
         """
         Process an AI chat export and return an Entry.
 
         Args:
-            url_or_text: File path or raw chat content.
+            url_or_text: Raw chat content, or a file path after explicit opt-in.
+            allow_local_file: Whether this call may read a local file.
+            require_local_file: Whether failure to open the local file must be
+                reported instead of treating the value as literal text.
 
         Returns:
             Entry with parsed AI chat content.
         """
-        logger.info("AIChatProcessor processing input=%s", url_or_text)
+        logger.info(
+            "AIChatProcessor processing input_length=%s",
+            len(url_or_text) if isinstance(url_or_text, str) else 0,
+        )
 
-        content, file_path = await self._load_content(url_or_text)
+        content, file_path = await self._load_content(
+            url_or_text,
+            allow_local_file=allow_local_file,
+            require_local_file=require_local_file,
+        )
         platform, content_format = self._detect_format(content)
         messages = self._parse_messages(content, platform, content_format)
 
@@ -156,7 +165,7 @@ class AIChatProcessor(BaseProcessor):
         if len(summary_one_sentence) > 50:
             summary_one_sentence = summary_one_sentence[:50]
 
-        source_url = str(file_path) if file_path is not None else None
+        source_url = None
 
         entry = Entry(
             title=title,
@@ -171,7 +180,7 @@ class AIChatProcessor(BaseProcessor):
 
         entry.metadata = {
             "source_type": "ai_chat",
-            "source_url": source_url or "",
+            "source_url": source_url,
             "ai_platform": "ChatGPT" if platform == "chatgpt" else "DeepSeek",
             "format": content_format,
             "message_count": len(messages),
@@ -187,19 +196,45 @@ class AIChatProcessor(BaseProcessor):
         )
         return entry
 
-    async def _load_content(self, url_or_text: str) -> Tuple[str, Optional[Path]]:
+    async def process_text(self, text: str) -> Entry:
+        """Process literal AI-chat text without probing the local filesystem."""
+
+        return await self.process(text, allow_local_file=False)
+
+    async def process_file(self, file_path: str | Path) -> Entry:
+        """Explicit local-file entry point used by trusted CLI imports."""
+
+        return await self.process(
+            str(file_path),
+            allow_local_file=True,
+            require_local_file=True,
+        )
+
+    async def _load_content(
+        self,
+        url_or_text: str,
+        *,
+        allow_local_file: bool = False,
+        require_local_file: bool = False,
+    ) -> Tuple[str, Optional[Path]]:
         """Load content from file or return raw text."""
         if not url_or_text or not url_or_text.strip():
             raise ValueError("Input cannot be empty")
 
         candidate = url_or_text.strip()
-        path = Path(candidate)
-        if path.exists() and path.is_file():
-            text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="ignore")
-            return text, path
-
-        if self._looks_like_file_path(candidate):
-            raise FileNotFoundError(f"AI chat export not found: {candidate}")
+        if allow_local_file:
+            path = Path(candidate)
+            try:
+                text = await asyncio.to_thread(
+                    read_local_text_file,
+                    path,
+                    errors="ignore",
+                )
+            except FileNotFoundError:
+                if require_local_file or self._looks_like_file_path(candidate):
+                    raise
+            else:
+                return text, path
 
         return candidate, None
 
@@ -393,7 +428,10 @@ class AIChatProcessor(BaseProcessor):
             tags = client.extract_tags(conversation_text, num_tags=5, temperature=0.3)
             return summary, tags
         except Exception as exc:
-            logger.warning("AI summary generation failed: %s", exc)
+            logger.warning(
+                "AI summary generation failed: error_type=%s",
+                type(exc).__name__,
+            )
             summary = self._fallback_summary(conversation_text)
             tags = self._fallback_tags(conversation_text)
             return summary, tags

@@ -20,6 +20,8 @@ from src.relations.citations import (
     resolve_vault_file_path,
 )
 from src.relations.models import CollectedEvidenceItem, CollectedEvidenceResult
+from src.retrieval.result import SearchResponse, is_strict_search_response
+from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.utils.text_utils import get_text_processor
 
 logger = logging.getLogger(__name__)
@@ -69,7 +71,12 @@ class EvidenceCollectionService:
             raise ValueError("relation_max_depth 必须大于 0")
 
         limitation_notes: list[str] = []
-        raw_search_results = self.query_router.search(question_clean, limit=top_k)
+        search_response = self.query_router.search(question_clean, limit=top_k)
+        raw_search_results, document_limitation_note = self._consume_document_response(
+            search_response
+        )
+        if document_limitation_note:
+            limitation_notes.append(document_limitation_note)
         search_results, excluded_count = self._filter_results_by_vault(
             raw_search_results
         )
@@ -93,6 +100,11 @@ class EvidenceCollectionService:
                     f"{excluded_chunk_count} 个 chunk 检索候选未通过 vault "
                     "文件边界校验，已从 chunk 证据中排除"
                 )
+            if (
+                chunk_retrieval_status == self.CHUNK_STATUS_SUCCESS
+                and not chunk_results
+            ):
+                chunk_retrieval_status = self.CHUNK_STATUS_NO_HITS
         else:
             chunk_results = []
 
@@ -210,6 +222,16 @@ class EvidenceCollectionService:
         evidence_items = self._deduplicate_evidence_items(evidence_items)
         evidence_items = self._rank_evidence_items(question_clean, evidence_items)
         evidence_items = self._trim_evidence_items(evidence_items, top_k)
+        for retrieval_rank, item in enumerate(evidence_items, start=1):
+            item.retrieval_rank = retrieval_rank
+        if (
+            chunk_retrieval_status == self.CHUNK_STATUS_SUCCESS
+            and not any(
+                item.chunk_id is not None or item.chunk_index is not None
+                for item in evidence_items
+            )
+        ):
+            chunk_retrieval_status = self.CHUNK_STATUS_NO_HITS
 
         related_count = sum(1 for item in evidence_items if item.relation_found)
         summary = (
@@ -318,21 +340,94 @@ class EvidenceCollectionService:
             )
 
         try:
-            chunk_results = chunk_searcher.search_chunks(question, limit=limit)
+            response = chunk_searcher.search_chunks(question, limit=limit)
         except Exception:
             limitation_note = self._build_chunk_degradation_note(
                 self.CHUNK_DEGRADED_REASON_SEARCH_ERROR,
                 "chunk 检索异常，已降级为文档级证据",
             )
-            logger.exception("%s", limitation_note)
+            logger.error("%s", limitation_note)
             return (
                 [],
                 self.CHUNK_STATUS_SEARCH_ERROR,
                 limitation_note,
             )
-        if not chunk_results:
+        if not is_strict_search_response(response):
+            limitation_note = self._build_chunk_degradation_note(
+                self.CHUNK_DEGRADED_REASON_SEARCH_ERROR,
+                "chunk 检索返回了无效响应，已降级为文档级证据",
+            )
+            logger.error("%s", limitation_note)
+            return (
+                [],
+                self.CHUNK_STATUS_SEARCH_ERROR,
+                limitation_note,
+            )
+        if response.status == "no_hits":
             return ([], self.CHUNK_STATUS_NO_HITS, None)
-        return (list(chunk_results), self.CHUNK_STATUS_SUCCESS, None)
+        if response.status == "success":
+            return (list(response.results), self.CHUNK_STATUS_SUCCESS, None)
+
+        limitation_note = self._build_chunk_degradation_note(
+            self.CHUNK_DEGRADED_REASON_SEARCH_ERROR,
+            (
+                "chunk 检索不完整，已保留可用结果并降级为文档级证据"
+                if response.status == "degraded" and response.results
+                else "chunk 检索失败，已降级为文档级证据"
+            ),
+        )
+        logger.warning(
+            "%s: status=%s codes=%s",
+            limitation_note,
+            response.status,
+            self._issue_codes(response),
+        )
+        return (
+            list(response.results) if response.status == "degraded" else [],
+            self.CHUNK_STATUS_SEARCH_ERROR,
+            limitation_note,
+        )
+
+    @staticmethod
+    def _consume_document_response(
+        response: object,
+    ) -> tuple[list[Any], Optional[str]]:
+        """Project the five-state document response without erasing failures."""
+
+        if not is_strict_search_response(response):
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                "文档证据检索返回了无效响应",
+                stage="evidence_document_retrieval",
+                recoverable=False,
+            )
+        if response.status in {"success", "no_hits"}:
+            return list(response.results), None
+        if response.status == "degraded":
+            codes = EvidenceCollectionService._issue_codes(response)
+            note = (
+                f"document_retrieval_degraded[{codes}] "
+                "部分检索能力不可用，文档级证据可能不完整"
+            )
+            return list(response.results), note
+
+        issue = response.issues[0]
+        message = (
+            "文档证据检索请求无效"
+            if response.status == "invalid"
+            else "文档证据检索服务暂不可用"
+        )
+        raise PKVRuntimeError(
+            issue.code,
+            message,
+            stage="evidence_document_retrieval",
+            recoverable=issue.recoverable,
+        )
+
+    @staticmethod
+    def _issue_codes(response: SearchResponse) -> str:
+        codes = [issue.code.value for issue in response.issues]
+        return ",".join(dict.fromkeys(codes)) or "retrieval_unknown"
 
     @staticmethod
     def _build_chunk_degradation_note(reason: str, message: str) -> str:

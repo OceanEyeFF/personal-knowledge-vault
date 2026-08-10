@@ -1,12 +1,12 @@
 """应用设置视图。
 
-提供 API 密钥配置、主题选择、检索策略和数据目录信息展示。
+提供 API 密钥配置、主题选择、发布版检索能力说明和数据目录信息展示。
 设置读写委托给 SettingsViewModel，主题变更通过信号通知 MainWindow。
 
 配置分组:
 - API 密钥配置: DeepSeek / OpenAI 的 API Key 和 Base URL
 - 显示设置: 界面主题（明亮 / 暗色）
-- 检索设置: 默认检索策略
+- 检索设置: Developer Preview GUI 固定使用 BM25
 - 数据目录: 只读展示当前配置的数据路径
 """
 
@@ -28,7 +28,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.gui.viewmodels.settings_viewmodel import SettingsViewModel
+from src.gui.viewmodels.settings_viewmodel import (
+    SETTINGS_PUBLIC_ERROR_MESSAGES,
+    SETTINGS_SAVE_FAILED_MESSAGE,
+    SettingsViewModel,
+)
 
 logger = logging.getLogger("pkv.gui.settings")
 
@@ -42,10 +46,7 @@ _THEME_OPTIONS: list[tuple[str, str]] = [
 ]
 
 _STRATEGY_OPTIONS: list[tuple[str, str]] = [
-    ("自动", "auto"),
-    ("BM25", "bm25"),
-    ("向量", "vector"),
-    ("混合", "hybrid"),
+    ("BM25（固定）", "bm25"),
 ]
 
 
@@ -185,7 +186,7 @@ class SettingsView(QWidget):
         return group
 
     def _build_retrieval_group(self) -> QGroupBox:
-        """构建检索设置分组。
+        """构建 Developer Preview 的只读检索能力说明。
 
         Returns:
             包含检索策略选择的 QGroupBox。
@@ -197,8 +198,18 @@ class SettingsView(QWidget):
         self._strategy_combo = QComboBox(self)
         for display_name, _ in _STRATEGY_OPTIONS:
             self._strategy_combo.addItem(display_name)
-        self._strategy_combo.setFixedWidth(120)
-        form.addRow("默认检索策略:", self._strategy_combo)
+        self._strategy_combo.setFixedWidth(140)
+        self._strategy_combo.setEnabled(False)
+        form.addRow("GUI 搜索策略:", self._strategy_combo)
+
+        self._strategy_description = QLabel(
+            "Developer Preview 的 GUI 搜索仅支持 BM25；"
+            "向量、混合与自动策略不在本次发布面。",
+            self,
+        )
+        self._strategy_description.setWordWrap(True)
+        self._strategy_description.setProperty("class", "text-muted")
+        form.addRow("发布说明:", self._strategy_description)
 
         return group
 
@@ -317,10 +328,8 @@ class SettingsView(QWidget):
         theme_index = self._find_combo_index(_THEME_OPTIONS, current_theme)
         self._theme_combo.setCurrentIndex(theme_index)
 
-        # 检索策略
-        strategy = settings.get("search_strategy", "auto")
-        strategy_index = self._find_combo_index(_STRATEGY_OPTIONS, strategy)
-        self._strategy_combo.setCurrentIndex(strategy_index)
+        # Developer Preview 的 GUI 搜索发布合同固定为 BM25。
+        self._strategy_combo.setCurrentIndex(0)
 
         # 清除状态消息
         self._status_label.setText("")
@@ -337,7 +346,6 @@ class SettingsView(QWidget):
         settings = {
             "llm_api_key": self._llm_key_input.text().strip(),
             "embedding_api_key": self._embedding_key_input.text().strip(),
-            "search_strategy": _STRATEGY_OPTIONS[self._strategy_combo.currentIndex()][1],
         }
         current_base_urls = {
             "llm_base_url": self._llm_url_input.text().strip(),
@@ -375,11 +383,15 @@ class SettingsView(QWidget):
         Args:
             message: 错误消息字符串。
         """
-        self._status_label.setText(f"保存失败: {message}")
+        safe_message = (
+            message
+            if message in SETTINGS_PUBLIC_ERROR_MESSAGES
+            else SETTINGS_SAVE_FAILED_MESSAGE
+        )
+        self._status_label.setText(safe_message)
         self._status_label.setProperty("status", "error")
         self._status_label.style().unpolish(self._status_label)
         self._status_label.style().polish(self._status_label)
-        logger.warning(f"设置保存失败: {message}")
 
     # ------------------------------------------------------------------
     # 工具方法

@@ -28,6 +28,16 @@ tasks:
         depth: 2
         max_nodes: 20
     assertions:
+      - id: subgraph_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: success
+      - id: subgraph_envelope_issues
+        dimension: degradation
+        path: issues
+        op: length_equals
+        expected: 0
       - id: correct_nodes
         dimension: result
         path: nodes[*].knowledge_id
@@ -55,6 +65,16 @@ tasks:
         relation_types: [references]
         max_nodes: 20
     assertions:
+      - id: filtered_subgraph_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: success
+      - id: filtered_subgraph_envelope_issues
+        dimension: degradation
+        path: issues
+        op: length_equals
+        expected: 0
       - id: filtered_edge_types
         dimension: result
         path: edges[*].relation_type
@@ -76,6 +96,16 @@ tasks:
         target_knowledge_id: "$beta_id"
         max_depth: 2
     assertions:
+      - id: direct_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: success
+      - id: direct_envelope_issues
+        dimension: degradation
+        path: issues
+        op: length_equals
+        expected: 0
       - id: direct_found
         dimension: result
         path: found
@@ -106,6 +136,16 @@ tasks:
         target_knowledge_id: "$delta_id"
         max_depth: 2
     assertions:
+      - id: multihop_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: success
+      - id: multihop_envelope_issues
+        dimension: degradation
+        path: issues
+        op: length_equals
+        expected: 0
       - id: path_found
         dimension: result
         path: found
@@ -137,6 +177,16 @@ tasks:
         target_knowledge_id: "$version_base_id"
         max_depth: 2
     assertions:
+      - id: unreachable_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: no_hits
+      - id: unreachable_envelope_issues
+        dimension: degradation
+        path: issues
+        op: length_equals
+        expected: 0
       - id: unreachable_not_found
         dimension: result
         path: found
@@ -159,6 +209,16 @@ tasks:
         relation_max_depth: 2
         include_chunks: false
     assertions:
+      - id: document_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: success
+      - id: document_envelope_issues
+        dimension: degradation
+        path: issues
+        op: length_equals
+        expected: 0
       - id: document_evidence_found
         dimension: result
         path: found
@@ -191,6 +251,16 @@ tasks:
         relation_max_depth: 2
         include_chunks: true
     assertions:
+      - id: chunk_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: success
+      - id: chunk_envelope_issues
+        dimension: degradation
+        path: issues
+        op: length_equals
+        expected: 0
       - id: chunk_success_status
         dimension: degradation
         path: chunk_retrieval_status
@@ -234,6 +304,16 @@ tasks:
         top_k: 2
         include_chunks: true
     assertions:
+      - id: chunk_no_hits_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: success
+      - id: chunk_no_hits_envelope_issues
+        dimension: degradation
+        path: issues
+        op: length_equals
+        expected: 0
       - id: no_hits_status
         dimension: degradation
         path: chunk_retrieval_status
@@ -260,6 +340,15 @@ tasks:
         top_k: 2
         include_chunks: true
     assertions:
+      - id: path_unavailable_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: degraded
+      - id: path_unavailable_envelope_issues
+        dimension: degradation
+        path: issues
+        op: not_empty
       - id: path_unavailable_status
         dimension: degradation
         path: chunk_retrieval_status
@@ -286,6 +375,15 @@ tasks:
         top_k: 2
         include_chunks: true
     assertions:
+      - id: search_error_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: degraded
+      - id: search_error_envelope_issues
+        dimension: degradation
+        path: issues
+        op: not_empty
       - id: search_error_status
         dimension: degradation
         path: chunk_retrieval_status
@@ -312,6 +410,16 @@ tasks:
         top_k: 5
         max_depth: 2
     assertions:
+      - id: bridge_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: success
+      - id: bridge_envelope_issues
+        dimension: degradation
+        path: issues
+        op: length_equals
+        expected: 0
       - id: bridge_partial_level
         dimension: degradation
         path: implementation_level
@@ -350,6 +458,16 @@ tasks:
         top_k: 5
         sort_order: asc
     assertions:
+      - id: timeline_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: success
+      - id: timeline_envelope_issues
+        dimension: degradation
+        path: issues
+        op: length_equals
+        expected: 0
       - id: timeline_partial_level
         dimension: degradation
         path: implementation_level
@@ -393,6 +511,16 @@ tasks:
         topic_b: Topic B
         top_k: 5
     assertions:
+      - id: contrast_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: success
+      - id: contrast_envelope_issues
+        dimension: degradation
+        path: issues
+        op: length_equals
+        expected: 0
       - id: contrast_partial_level
         dimension: degradation
         path: implementation_level
@@ -436,6 +564,16 @@ tasks:
         depth: 99
         max_nodes: 999
     assertions:
+      - id: clamped_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: success
+      - id: clamped_envelope_issues
+        dimension: degradation
+        path: issues
+        op: length_equals
+        expected: 0
       - id: depth_clamped
         dimension: parameters
         path: max_depth
@@ -455,11 +593,21 @@ tasks:
       arguments:
         question: "   "
     assertions:
+      - id: empty_question_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: invalid
+      - id: empty_question_envelope_issues
+        dimension: degradation
+        path: issues[0].stage
+        op: equals
+        expected: evidence_question_validation
       - id: empty_question_error
         dimension: parameters
         path: error
         op: equals
-        expected: question 不能为空
+        expected: 检索参数无效
 
   - id: timeline_invalid_sort_validation
     category: parameter_contract
@@ -470,8 +618,18 @@ tasks:
         topic: Alpha 时间线
         sort_order: sideways
     assertions:
+      - id: invalid_sort_envelope_status
+        dimension: degradation
+        path: status
+        op: equals
+        expected: invalid
+      - id: invalid_sort_envelope_issues
+        dimension: degradation
+        path: issues[0].stage
+        op: equals
+        expected: timeline_sort_validation
       - id: invalid_sort_error
         dimension: parameters
         path: error
-        op: contains
-        expected: sort_order
+        op: equals
+        expected: 检索参数无效

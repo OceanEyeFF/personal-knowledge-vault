@@ -8,6 +8,8 @@
 
 **PySide6 (Qt6) 桌面图形界面**：提供完整的知识管理与 AI 对话功能，包含知识浏览、全文搜索、URL/文本归档、AI 对话（流式输出 + 知识引用）、统计面板和应用设置。
 
+M13 Developer Preview 中，GUI 搜索只保证 BM25；向量/混合/自动路由不属于 GUI 发布合同。Chat 通过正常 `openai_compatible` Provider 工厂接入服务，每个已接纳请求绑定不可变的 session/config/messages 快照与唯一 `request_id`。默认自动化不连接真实 Provider，也不读取真实 API key 或真实 Vault。
+
 ### 核心理念
 
 - **MVVM 架构**: View (PySide6 Widget) + ViewModel (QObject/QThread) + Model (数据层)
@@ -89,10 +91,20 @@ AI 对话 ViewModel，管理流式输出和会话生命周期。
 
 ```python
 class ChatViewModel(QObject):
-    # Signals
-    token_received: Signal(str)              # 流式 token
-    token_usage_updated: Signal(int,int,int)  # input, output, total
+    # W2 机器可读 signals；请求级事件都带 session_id + request_id
+    chat_request_started: Signal(str, str)
+    chat_token_received: Signal(str, str, str)
+    chat_token_usage_updated: Signal(str, str, int, int, int)
+    chat_request_terminal: Signal(str, str, str, str, str)
+    # terminal: completed / stopped / error；后两项为 error_code / safe_message
+    chat_request_rejected: Signal(str, str, str, str)
+    # busy/config/state 冲突属于未启动拒绝，不冒充已启动请求终态
+
+    # 当前会话兼容投影
+    token_received: Signal(str)
+    token_usage_updated: Signal(int, int, int)
     stream_finished: Signal()
+    stream_stopped: Signal()
     error_occurred: Signal(str)
     session_created: Signal(str, str)
     url_archive_started: Signal(str)
@@ -106,11 +118,11 @@ class ChatViewModel(QObject):
     def list_sessions(self, is_archived=False) -> List[dict]:
     def set_knowledge_context(self, context_text) -> None:
     @asyncSlot()
-    async def send_message(self, user_message) -> None:
+    async def send_message(self, user_message) -> bool:
     @asyncSlot()
     async def archive_url_and_inject(self, url) -> None:
     def save_session_to_knowledge_base(self, session_id) -> bool:
-    def stop_stream(self) -> None:
+    def stop_stream(self) -> bool:
     def delete_session(self, session_id) -> bool:
 ```
 
@@ -147,18 +159,18 @@ def detect_urls(text) -> List[str]:
 
 - **PySide6**: Qt6 GUI 框架
 - **qasync**: asyncio + Qt 事件循环集成
-- **openai**: DeepSeek API SDK（流式输出）
+- **openai**: 由 `src/ai/chat_provider.py` 封装的 OpenAI-compatible 流式 transport
 - **markdown2**: Markdown 渲染
 - **pygments**: 代码语法高亮
 
-### AI 对话配置
+### AI 对话配置与终态
 
-- **API**: DeepSeek API (base_url: `https://api.deepseek.com/v1`)
-- **模型**: `deepseek-chat`
-- **最大输出**: 2000 tokens / 次
-- **上下文窗口**: 64K tokens
-- **Token 统计**: `stream_options={"include_usage": True}`
-- **知识引用截断**: 前 3000 tokens
+- `src/ai/provider_factory.py` 从 `ai.llm.provider/api_key/base_url/model/max_tokens/temperature/timeout_seconds/max_retries` 生成不可变设置快照。
+- release 只接受 `provider: openai_compatible`；不存在 `fake`、`test_mode` 或按特殊 prompt/model 选择测试场景的后门。
+- W3/W4 的 deterministic loopback harness 是 release payload 外的普通 OpenAI-compatible endpoint，应用仍走同一生产工厂。
+- 全局最多一个活动请求；切换 session 不改变已启动请求归属。
+- Stop 主动取消/关闭 stream，`completed/stopped/error` 只发射一个；stopped/error 回滚整个 turn，保存失败也不能伪装 completed。
+- **Token 统计**: `stream_options={"include_usage": True}`；**知识引用截断**: 前 3000 tokens。
 
 ---
 
@@ -229,9 +241,7 @@ class KnowledgeReference:
 
 ### 手动测试 (M12)
 
-M12 手动脚本不是默认自动化。DeepSeek 流式脚本涉及真实 Provider，必须等待
-U1/G8 user-only launcher 与明确授权；QThread/qasync 交互脚本也只由用户按文件
-说明手动运行，不得用裸 Python 作为 Agent 流程。
+M12 手动脚本不是默认自动化。真实 Provider 脚本必须等待 U1/G8 user-only launcher 与明确授权；QThread/qasync 交互脚本也只由用户按文件说明手动运行，不得用裸 Python 作为 Agent 流程。W2 自动化使用注入的离线 provider/stream doubles，并验证 session 切换、双发、Stop、provider failure 与 save failure 的互斥终态。
 
 ---
 

@@ -8,7 +8,10 @@ OpenAI-compatible Embedding API 客户端
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from dataclasses import replace
+import math
+from threading import Lock
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 import httpx
 import numpy as np
@@ -20,22 +23,72 @@ from openai import (
     RateLimitError,
 )
 
+from src.ai.provider_factory import (
+    EmbeddingProviderSettings,
+    embedding_settings_from_config,
+    safe_provider_usage_count,
+    validate_embedding_provider_settings,
+    validate_provider_base_url,
+)
+from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.utils.config import (
     get_config,
-    redact_url_credentials,
     suppress_unsafe_http_transport_logs,
 )
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+_MAX_EMBEDDING_VECTOR_DIMENSIONS = 65_536
+_INVALID_EMBEDDING_RESPONSE = "Embedding Provider 响应非法"
+
+
+def _embedding_protocol_error() -> PKVRuntimeError:
+    return PKVRuntimeError(
+        ErrorCode.PROVIDER_PROTOCOL_FAILED,
+        _INVALID_EMBEDDING_RESPONSE,
+        stage="embedding_protocol",
+        recoverable=True,
+    )
+
+
+def project_float32_cosine_vector(values: Any) -> np.ndarray:
+    """Project one vector to the exact finite, non-zero domain HNSW cosine consumes."""
+    try:
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            vector = np.asarray(values, dtype=np.float32)
+        if (
+            vector.ndim != 1
+            or not 1 <= vector.size <= _MAX_EMBEDDING_VECTOR_DIMENSIONS
+            or not bool(np.all(np.isfinite(vector)))
+        ):
+            raise _embedding_protocol_error()
+        # hnswlib's cosine path accumulates squared norms in float32.  Reject
+        # vectors that would become zero or non-finite there instead of silently
+        # normalizing corrupt Provider output into an unusable index entry.
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            norm_squared = np.sum(vector * vector, dtype=np.float32)
+        if not bool(np.isfinite(norm_squared)) or float(norm_squared) <= 0.0:
+            raise _embedding_protocol_error()
+        return vector
+    except PKVRuntimeError:
+        raise
+    except (OverflowError, TypeError, ValueError):
+        raise _embedding_protocol_error() from None
+
+
+def _safe_usage_field(usage: Any, field: str) -> int | None:
+    try:
+        value = getattr(usage, field)
+    except Exception:
+        return None
+    return safe_provider_usage_count(value)
+
 
 def split_openai_transport_url(base_url: str) -> tuple[str, httpx.QueryParams]:
     """拆分纯 SDK base_url 与保序、可重复的 endpoint query。"""
     parsed = urlsplit(base_url)
-    transport_base_url = urlunsplit(
-        (parsed.scheme, parsed.netloc, parsed.path, "", "")
-    )
+    transport_base_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
     return transport_base_url, httpx.QueryParams(parsed.query)
 
 
@@ -54,8 +107,11 @@ class OpenAIClient:
         base_url: Optional[str] = None,
         model: Optional[str] = None,
         dimensions: Optional[int] = None,
-        timeout: float = 30.0,
-        max_retries: int = 3,
+        timeout: Optional[float] = None,
+        max_retries: Optional[int] = None,
+        *,
+        settings: EmbeddingProviderSettings | None = None,
+        dimension_sink: Callable[[int], None] | None = None,
     ):
         """
         初始化 OpenAI 客户端
@@ -68,27 +124,71 @@ class OpenAIClient:
             timeout: 请求超时时间（秒）
             max_retries: 最大重试次数
         """
-        config = get_config()
-        self._config = config
-
-        self.api_key = api_key or config.embd_api_key
-        if not self.api_key:
-            raise ValueError(
-                "Embedding API Key 未配置，请检查用户数据目录中的 config/local.yaml"
+        if settings is None:
+            config = get_config()
+            effective_settings = embedding_settings_from_config(config)
+            effective_settings = replace(
+                effective_settings,
+                api_key=(effective_settings.api_key if api_key is None else api_key),
+                base_url=(
+                    effective_settings.base_url if base_url is None else base_url
+                ),
+                model=effective_settings.model if model is None else model,
+                dimensions=(
+                    effective_settings.dimensions if dimensions is None else dimensions
+                ),
+                timeout_seconds=(
+                    effective_settings.timeout_seconds if timeout is None else timeout
+                ),
+                max_retries=(
+                    effective_settings.max_retries
+                    if max_retries is None
+                    else max_retries
+                ),
             )
+            auto_dimensions_pending = bool(
+                dimensions is None
+                and getattr(config, "embedding_dim_is_auto", False) is True
+                and effective_settings.dimensions is None
+            )
+            if auto_dimensions_pending and dimension_sink is None:
+                candidate_sink = getattr(
+                    config,
+                    "set_runtime_embedding_dim",
+                    None,
+                )
+                if callable(candidate_sink):
+                    dimension_sink = candidate_sink
+        else:
+            if any(
+                value is not None
+                for value in (
+                    api_key,
+                    base_url,
+                    model,
+                    dimensions,
+                    timeout,
+                    max_retries,
+                )
+            ):
+                raise TypeError("settings 不能与单独的 Provider 参数同时传入")
+            effective_settings = settings
+            auto_dimensions_pending = effective_settings.dimensions is None
 
-        self.base_url = base_url or config.embd_base_url
-        self.model = model or config.embd_model
-        configured_dimensions = dimensions if dimensions is not None else config.embedding_dim
-        self.dimensions = int(configured_dimensions) if configured_dimensions is not None else None
-        self._auto_dimensions_pending = (
-            dimensions is None
-            and getattr(config, "embedding_dim_is_auto", False)
-            and self.dimensions is None
-        )
+        validate_embedding_provider_settings(effective_settings)
+        if dimension_sink is not None and not callable(dimension_sink):
+            raise TypeError("dimension_sink 必须可调用")
+
+        self.api_key = effective_settings.api_key
+        self.base_url = effective_settings.base_url
+        self.model = effective_settings.model
+        self.dimensions = effective_settings.dimensions
+        self._auto_dimensions_pending = auto_dimensions_pending
+        self._dimension_sink = dimension_sink
+        self._dimension_lock = Lock()
         self._use_dimensions = self.dimensions is not None
-        self.timeout = timeout
-        self.max_retries = max_retries
+        self.timeout = effective_settings.timeout_seconds
+        self.max_retries = effective_settings.max_retries
 
         # SDK 将资源路径拼接到纯 base_url，之后再合并 endpoint query；
         # fragment 按 HTTP 语义不发送。
@@ -104,10 +204,10 @@ class OpenAIClient:
             client_kwargs["http_client"] = DefaultHttpxClient(params=endpoint_query)
         self.client = OpenAI(**client_kwargs)
 
-        display_base_url = redact_url_credentials(self.base_url) or "已配置（URL 格式不可解析）"
         logger.info(
-            "OpenAI 客户端初始化成功: "
-            f"model={self.model}, base_url={display_base_url}, dimensions={self.dimensions}"
+            "Provider 客户端初始化成功: "
+            "component=embedding status=ready dimensions=%s",
+            self.dimensions,
         )
 
     def embed(self, text: str) -> List[float]:
@@ -137,16 +237,21 @@ class OpenAIClient:
 
             response = self._create_embedding_response(text)
 
-            embedding = response.data[0].embedding
-            self._validate_embedding_dimension(len(embedding))
+            embedding = self._project_embedding_response(
+                response,
+                expected_count=1,
+            )[0]
 
             # 记录 token 使用情况
-            usage = response.usage
+            usage = self._safe_response_usage(response)
+            prompt_tokens = _safe_usage_field(usage, "prompt_tokens")
+            total_tokens = _safe_usage_field(usage, "total_tokens")
             logger.info(
-                f"OpenAI Embedding 成功: "
-                f"prompt_tokens={usage.prompt_tokens}, "
-                f"total_tokens={usage.total_tokens}, "
-                f"embedding_dim={len(embedding)}"
+                "Provider 调用成功: component=embedding "
+                "prompt_tokens=%s total_tokens=%s embedding_dim=%s",
+                prompt_tokens if prompt_tokens is not None else "unknown",
+                total_tokens if total_tokens is not None else "unknown",
+                len(embedding),
             )
 
             return embedding
@@ -196,7 +301,9 @@ class OpenAIClient:
         if not valid_texts:
             raise ValueError("Embedding 文本列表中没有有效文本")
 
-        logger.info(f"开始批量生成 Embedding: total={len(valid_texts)}, batch_size={batch_size}")
+        logger.info(
+            f"开始批量生成 Embedding: total={len(valid_texts)}, batch_size={batch_size}"
+        )
 
         all_embeddings: List[List[float]] = []
 
@@ -209,18 +316,22 @@ class OpenAIClient:
 
                 response = self._create_embedding_response(batch)
 
-                # 提取 embedding
-                batch_embeddings = [item.embedding for item in response.data]
-                for embedding in batch_embeddings:
-                    self._validate_embedding_dimension(len(embedding))
+                batch_embeddings = self._project_embedding_response(
+                    response,
+                    expected_count=len(batch),
+                )
                 all_embeddings.extend(batch_embeddings)
 
                 # 记录 token 使用情况
-                usage = response.usage
+                usage = self._safe_response_usage(response)
+                prompt_tokens = _safe_usage_field(usage, "prompt_tokens")
+                total_tokens = _safe_usage_field(usage, "total_tokens")
                 logger.info(
-                    f"批次 {i // batch_size + 1} 完成: "
-                    f"prompt_tokens={usage.prompt_tokens}, "
-                    f"total_tokens={usage.total_tokens}"
+                    "Provider 批次完成: component=embedding batch=%s "
+                    "prompt_tokens=%s total_tokens=%s",
+                    i // batch_size + 1,
+                    prompt_tokens if prompt_tokens is not None else "unknown",
+                    total_tokens if total_tokens is not None else "unknown",
                 )
 
             except RateLimitError:
@@ -257,11 +368,15 @@ class OpenAIClient:
 
         try:
             response = self._create_embedding_response(self._AUTO_DIM_PROBE_TEXT)
-            embedding = response.data[0].embedding
-            self._validate_embedding_dimension(len(embedding))
+            self._project_embedding_response(
+                response,
+                expected_count=1,
+            )
             if self.dimensions is None:
                 raise RuntimeError("Embedding 维度解析失败")
             return self.dimensions
+        except PKVRuntimeError:
+            raise
         except RateLimitError:
             logger.error("Embedding 维度探测遇到 API 限流")
             raise RuntimeError("Embedding 维度探测失败：API 限流") from None
@@ -320,25 +435,98 @@ class OpenAIClient:
 
     def _validate_embedding_dimension(self, actual_dim: int) -> None:
         """校验返回向量维度与配置一致。"""
+        if not 1 <= actual_dim <= _MAX_EMBEDDING_VECTOR_DIMENSIONS:
+            raise _embedding_protocol_error()
         if self._auto_dimensions_pending or self.dimensions is None:
             self._lock_detected_dimension(actual_dim)
             return
 
         if actual_dim != self.dimensions:
-            raise ValueError(
-                f"Embedding 维度不匹配: expected={self.dimensions}, actual={actual_dim}"
-            )
+            raise _embedding_protocol_error()
 
     def _lock_detected_dimension(self, actual_dim: int) -> None:
         """在 auto 模式下锁定首次成功返回的向量维度。"""
-        self.dimensions = int(actual_dim)
-        self._auto_dimensions_pending = False
-        if hasattr(self._config, "set_runtime_embedding_dim"):
-            self._config.set_runtime_embedding_dim(self.dimensions)
-        logger.info("Embedding auto 维度已锁定: dim=%s", self.dimensions)
+        detected_dim = int(actual_dim)
+        with self._dimension_lock:
+            if self.dimensions is not None and not self._auto_dimensions_pending:
+                if self.dimensions != detected_dim:
+                    raise _embedding_protocol_error()
+                return
+            if self._dimension_sink is not None:
+                self._dimension_sink(detected_dim)
+            self.dimensions = detected_dim
+            self._auto_dimensions_pending = False
+            logger.info("Embedding auto 维度已锁定: dim=%s", self.dimensions)
+
+    def _project_embedding_response(
+        self,
+        response: Any,
+        *,
+        expected_count: int,
+    ) -> List[List[float]]:
+        """把不可信 SDK 响应投影为与输入一一对应的有限向量。"""
+
+        try:
+            data = response.data
+        except Exception:
+            raise _embedding_protocol_error() from None
+        if type(data) is not list or len(data) != expected_count:
+            raise _embedding_protocol_error()
+
+        vectors: List[List[float]] = []
+        vector_dim: int | None = None
+        for expected_index, item in enumerate(data):
+            try:
+                item_index = item.index
+                raw_vector = item.embedding
+            except Exception:
+                raise _embedding_protocol_error() from None
+
+            if type(item_index) is not int or item_index != expected_index:
+                raise _embedding_protocol_error()
+            if type(raw_vector) is not list:
+                raise _embedding_protocol_error()
+
+            current_dim = len(raw_vector)
+            if not 1 <= current_dim <= _MAX_EMBEDDING_VECTOR_DIMENSIONS:
+                raise _embedding_protocol_error()
+            if vector_dim is not None and current_dim != vector_dim:
+                raise _embedding_protocol_error()
+
+            vector: List[float] = []
+            for value in raw_vector:
+                if type(value) not in (int, float):
+                    raise _embedding_protocol_error()
+                try:
+                    projected_value = float(value)
+                except (OverflowError, TypeError, ValueError):
+                    raise _embedding_protocol_error() from None
+                if not math.isfinite(projected_value):
+                    raise _embedding_protocol_error()
+                with np.errstate(over="ignore", invalid="ignore"):
+                    float32_value = np.float32(projected_value)
+                if not bool(np.isfinite(float32_value)):
+                    raise _embedding_protocol_error()
+                vector.append(float(float32_value))
+            safe_vector = project_float32_cosine_vector(vector)
+            vectors.append([float(value) for value in safe_vector])
+            vector_dim = current_dim
+
+        if vector_dim is None:
+            raise _embedding_protocol_error()
+        self._validate_embedding_dimension(vector_dim)
+        return vectors
+
+    @staticmethod
+    def _safe_response_usage(response: Any) -> Any | None:
+        try:
+            return response.usage
+        except Exception:
+            return None
 
     def _create_embedding_response(self, input_payload: str | List[str]):
         """调用 Embedding API，并在后端不支持 dimensions 时自动回退。"""
+        validate_provider_base_url(self.base_url)
         request_kwargs = {
             "model": self.model,
             "input": input_payload,
@@ -356,8 +544,8 @@ class OpenAIClient:
                 raise
 
         logger.warning(
-            "Embedding 后端不支持 dimensions 参数，已回退为不传该参数: model=%s",
-            self.model,
+            "Provider 参数回退: component=embedding parameter=dimensions "
+            "status=retried",
         )
         self._use_dimensions = False
         fallback_kwargs = {

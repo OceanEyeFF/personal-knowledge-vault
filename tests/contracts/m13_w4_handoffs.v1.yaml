@@ -1,0 +1,61 @@
+schema_version: pkv.m13.w4.handoffs.v1
+truth_source: docs/overview/阶段开发路线与依赖-2026-03.md#86-w4artifact-e2e用户文档与发布审查
+artifact_only: true
+
+# These declarations are W2 hand-off contracts, not W4 execution evidence.
+# W4 owns the runner and may set a scenario to artifact_verified only after
+# exercising an installed Artifact without importing the source tree.
+scenarios:
+  - scenario_id: w4.url_archive_ssrf_rejection.v1
+    capability_ids: [workflow.archive_url.v1]
+    entrypoint: installed_cli
+    fixture: synthetic_private_loopback_url
+    external_harness: null
+    actions: invoke_archive_url_through_normal_cli
+    public_oracle: stable_ssrf_rejection_before_any_outbound_request
+    state: artifact_pending
+
+  - scenario_id: w4.offline_text_archive.v1
+    capability_ids: [workflow.archive_text.v1]
+    entrypoint: installed_gui
+    fixture: synthetic_utf8_text_note
+    external_harness: null
+    actions: archive_text_restart_and_open_saved_entry
+    public_oracle: durable_primary_entry_with_truthful_degraded_warning_when_provider_is_unavailable
+    state: artifact_pending
+
+  - scenario_id: w4.bm25_search.v1
+    capability_ids: [retrieval.bm25.v1, gui.search_bm25.v1]
+    entrypoint: installed_gui
+    fixture: synthetic_bm25_vault_v1
+    external_harness: null
+    actions: search_hit_no_hit_invalid_and_backend_failure
+    public_oracle: gui_distinguishes_success_no_hits_invalid_and_error
+    state: artifact_pending
+
+  - scenario_id: w4.semantic_provider_unavailable.v1
+    capability_ids: [retrieval.semantic.v1]
+    entrypoint: installed_cli
+    fixture: isolated_config_without_embedding_credentials
+    external_harness: null
+    actions: invoke_vector_and_hybrid_search_without_network
+    public_oracle: provider_failure_is_not_reported_as_no_hits_or_success
+    state: artifact_pending
+
+  - scenario_id: w4.mcp_stdio_call.v1
+    capability_ids: [mcp.stdio.v1, mcp.exploration.partial-v1]
+    entrypoint: installed_mcp_stdio
+    fixture: synthetic_mcp_vault_v1
+    external_harness: null
+    actions: initialize_discover_invoke_and_shutdown
+    public_oracle: protocol_lifecycle_and_public_tool_result_are_distinguishable
+    state: artifact_pending
+
+  - scenario_id: w4.chat_loopback.v1
+    capability_ids: [gui.chat.v1, chat.loopback_harness.v1]
+    entrypoint: installed_gui
+    fixture: synthetic_chat_session_v1
+    external_harness: w3.openai_compatible_loopback.v1
+    actions: exercise_success_stop_provider_failure_and_restart
+    public_oracle: one_request_one_session_one_terminal_and_no_fake_in_release_payload
+    state: artifact_pending

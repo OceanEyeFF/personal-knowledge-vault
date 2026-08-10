@@ -23,7 +23,12 @@ from src.relations.models import (  # noqa: E402
     RelationType,
     TimelinePoint,
 )
-from src.retrieval.result import SearchResult  # noqa: E402
+from src.retrieval.result import (  # noqa: E402
+    RetrievalIssue,
+    SearchResponse,
+    SearchResult,
+)
+from src.runtime.errors import ErrorCode, PKVRuntimeError  # noqa: E402
 
 
 class StubQueryRouter:
@@ -31,7 +36,10 @@ class StubQueryRouter:
         self.mapping = mapping
 
     def search(self, query: str, limit: int = 10):
-        return self.mapping.get(query, [])[:limit]
+        configured = self.mapping.get(query, [])
+        if isinstance(configured, SearchResponse):
+            return configured
+        return SearchResponse.completed(configured[:limit], strategy="stub")
 
 
 class StubSQLiteStore:
@@ -489,6 +497,109 @@ def test_timeline_of_sorts_by_archived_at(exploration_service):
         "pkv://entries/1/metadata/archived_at",
         "pkv://entries/2/metadata/archived_at",
     ]
+
+
+def test_timeline_of_preserves_retrieval_error_as_error():
+    message_canary = "MESSAGE_CANARY_private-token"
+    stage_canary = "STAGE_CANARY_private-path"
+    response = SearchResponse.failed_response(
+        RetrievalIssue(
+            code=ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+            message=message_canary,
+            stage=stage_canary,
+            recoverable=True,
+        ),
+        strategy="bm25",
+    )
+    service = ExplorationService(
+        query_router=StubQueryRouter({"故障时间线": response}),
+        sqlite_store=StubSQLiteStore({}),
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    with pytest.raises(PKVRuntimeError) as raised:
+        service.timeline_of("故障时间线")
+
+    assert raised.value.code == ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE
+    assert raised.value.stage == "timeline_retrieval"
+    assert raised.value.recoverable is True
+    assert str(raised.value) == "检索服务暂不可用"
+    assert message_canary not in repr(raised.value.to_dict())
+    assert stage_canary not in repr(raised.value.to_dict())
+
+
+def test_timeline_of_discloses_empty_degraded_retrieval():
+    message_canary = "MESSAGE_CANARY_private-token"
+    stage_canary = "STAGE_CANARY_private-path"
+    response = SearchResponse.degraded_response(
+        [],
+        [
+            RetrievalIssue(
+                code=ErrorCode.PROVIDER_UNAVAILABLE,
+                message=message_canary,
+                stage=stage_canary,
+                recoverable=True,
+            )
+        ],
+        strategy="hybrid",
+    )
+    service = ExplorationService(
+        query_router=StubQueryRouter({"降级时间线": response}),
+        sqlite_store=StubSQLiteStore({}),
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    result = service.timeline_of("降级时间线")
+
+    assert result.found is False
+    assert any(
+        "timeline_retrieval_degraded[provider_unavailable]" in note
+        for note in result.limitation_notes
+    )
+    assert message_canary not in repr(result.to_dict())
+    assert stage_canary not in repr(result.to_dict())
+
+
+def test_timeline_does_not_turn_corrupted_no_hits_into_not_found():
+    malformed_response = SearchResponse.completed((), strategy="bm25")
+    object.__setattr__(
+        malformed_response,
+        "strategy",
+        "bm25\r\nSTRATEGY_CANARY",
+    )
+    service = ExplorationService(
+        query_router=StubQueryRouter({"损坏时间线": malformed_response}),
+        sqlite_store=StubSQLiteStore({}),
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    with pytest.raises(PKVRuntimeError) as raised:
+        service.timeline_of("损坏时间线")
+
+    assert raised.value.code is ErrorCode.RETRIEVAL_BACKEND_FAILED
+    assert raised.value.stage == "timeline_retrieval"
+    assert str(raised.value) == "检索服务返回了无效响应"
+    assert "STRATEGY_CANARY" not in str(raised.value)
+
+
+def test_timeline_rejects_corrupted_success_result_before_consumption():
+    malformed_result = SearchResult(1, "Alpha", 0.8, "", {})
+    malformed_response = SearchResponse.completed(
+        (malformed_result,),
+        strategy="bm25",
+    )
+    object.__setattr__(malformed_result, "score", float("nan"))
+    service = ExplorationService(
+        query_router=StubQueryRouter({"损坏命中": malformed_response}),
+        sqlite_store=StubSQLiteStore({}),
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    with pytest.raises(PKVRuntimeError) as raised:
+        service.timeline_of("损坏命中")
+
+    assert raised.value.code is ErrorCode.RETRIEVAL_BACKEND_FAILED
+    assert raised.value.stage == "timeline_retrieval"
 
 
 def test_timeline_of_marks_mixed_inferred_field_for_multi_source_timeline():
@@ -983,6 +1094,35 @@ def test_contrast_returns_shared_and_distinct_tags(exploration_service):
     )
     assert result.topic_a_candidates[0].relation_signal_score > 0
     assert result.topic_b_candidates[0].relation_types == ["references"]
+
+
+def test_contrast_discloses_each_degraded_retrieval_side():
+    issue = RetrievalIssue(
+        code=ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+        message="索引暂不可用",
+        stage="bm25_search",
+        recoverable=True,
+    )
+    service = ExplorationService(
+        query_router=StubQueryRouter(
+            {
+                "主题A": SearchResponse.degraded_response(
+                    [], [issue], strategy="hybrid"
+                ),
+                "主题B": [],
+            }
+        ),
+        sqlite_store=StubSQLiteStore({}),
+        relation_query_service=StubRelationQueryService(),
+    )
+
+    result = service.contrast("主题A", "主题B")
+
+    assert result.found is False
+    assert any(
+        "contrast_topic_a_retrieval_degraded[retrieval_index_unavailable]" in note
+        for note in result.limitation_notes
+    )
 
 
 def test_timeline_of_rejects_empty_topic(exploration_service):

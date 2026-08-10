@@ -63,3 +63,15 @@ async def test_generic_processor_does_not_fake_published_at_when_source_has_no_t
     metadata = getattr(entry, "metadata", {})
     assert "published_time" not in metadata
     assert entry.published_at is None
+
+
+@pytest.mark.asyncio
+async def test_generic_empty_response_error_does_not_echo_url_secret():
+    processor = GenericProcessor()
+    secret = "pkv-url-secret"
+
+    with patch.object(processor, "_fetch_html", new=AsyncMock(return_value="")):
+        with pytest.raises(ValueError) as exc_info:
+            await processor.process(f"https://example.com/?token={secret}")
+
+    assert secret not in str(exc_info.value)

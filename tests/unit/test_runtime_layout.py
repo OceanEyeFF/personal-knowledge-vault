@@ -183,6 +183,68 @@ def test_workflow_name_cannot_escape_bundled_workflow_directory(
         config.get_workflow_config("../../config")
 
 
+def test_workflow_config_does_not_fall_back_to_legacy_base_config(
+    resource_root: Path,
+    tmp_path: Path,
+) -> None:
+    (resource_root / "config" / "config.yaml").write_text(
+        "workflows:\n  search:\n    steps: [legacy]\n",
+        encoding="utf-8",
+    )
+    layout = RuntimeLayout.resolve(
+        resources_root=resource_root,
+        user_data_root=tmp_path / "data",
+        environment={},
+    )
+    config = Config(layout=layout)
+
+    with pytest.raises(FileNotFoundError, match="search"):
+        config.get_workflow_config("search")
+
+
+def test_workflow_config_alias_resolves_real_versioned_yaml(
+    resource_root: Path,
+    tmp_path: Path,
+) -> None:
+    layout = RuntimeLayout.resolve(
+        resources_root=resource_root,
+        user_data_root=tmp_path / "data",
+        environment={},
+    )
+    config = Config(layout=layout)
+
+    loaded = config.get_workflow_config("archive_url")
+
+    assert loaded["name"] == "archive-url"
+
+
+def test_workflow_yaml_rejects_nested_duplicate_keys(
+    resource_root: Path,
+    tmp_path: Path,
+) -> None:
+    (resource_root / "config" / "workflows" / "archive-url.yaml").write_text(
+        """
+name: archive-url
+version: 1
+steps:
+  - id: fetch
+    type: fetch_content
+    on_error: fail
+    on_error: continue
+""".lstrip(),
+        encoding="utf-8",
+    )
+    layout = RuntimeLayout.resolve(
+        resources_root=resource_root,
+        user_data_root=tmp_path / "data",
+        environment={},
+    )
+    config = Config(layout=layout)
+
+    with pytest.raises(ValueError, match="工作流配置文件 YAML 格式错误"):
+        config.get_workflow_config("archive-url")
+
+
 def test_existing_link_as_data_root_is_rejected(
     resource_root: Path,
     tmp_path: Path,

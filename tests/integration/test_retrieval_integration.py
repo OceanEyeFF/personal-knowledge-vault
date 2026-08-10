@@ -23,7 +23,7 @@ from src.storage.sqlite_store import (
 from src.storage.vector_store import VectorStore
 from src.retrieval.bm25_retriever import BM25Retriever
 from src.retrieval.query_router import QueryRouter
-from src.retrieval.result import SearchResult
+from src.retrieval.result import SearchResponse, SearchResult
 from src.retrieval.vector_retriever import VectorRetriever
 
 
@@ -305,8 +305,11 @@ class StaticQueryRouter:
     def __init__(self, results: list[SearchResult]):
         self._results = results
 
-    def search(self, query: str, limit: int = 10) -> list[SearchResult]:
-        return self._results[:limit]
+    def search(self, query: str, limit: int = 10) -> SearchResponse:
+        return SearchResponse.completed(
+            self._results[:limit],
+            strategy="fixture",
+        )
 
 
 class NoopRelationQueryService:
@@ -512,20 +515,21 @@ class TestDataPipelineIntegration:
 
         # 执行 BM25 检索 - 查询包含多个词，确保召回两条
         retriever = BM25Retriever(test_paths["db_path"])
-        results = retriever.search("Python", limit=5)
+        response = retriever.search("Python", limit=5)
 
         # 验证结果
-        assert len(results) >= 2, "应该召回至少 2 条 Python 相关内容"
+        assert response.status == "success"
+        assert len(response.results) >= 2, "应该召回至少 2 条 Python 相关内容"
 
         # 验证排序（最相关的应该在前面）
-        titles = [r.title for r in results]
+        titles = [r.title for r in response.results]
         assert any("Python" in title for title in titles[:2]), "前 2 个结果应该包含 Python"
 
         # 验证 Java 不会被召回
         assert not any("Java" in title for title in titles), "Java 不应该出现在 Python 检索结果中"
 
         # 验证分数范围
-        for result in results:
+        for result in response.results:
             assert 0.0 <= result.score <= 1.0, "分数应该在 [0.0, 1.0] 范围内"
 
     def test_migration_created_db_supports_bm25(self, tmp_path: Path):
@@ -568,9 +572,9 @@ class TestDataPipelineIntegration:
             assert current is not None
             assert legacy is None
 
-        results = BM25Retriever(db_path).search("Python", limit=5)
-        assert results
-        assert results[0].knowledge_id == knowledge_id
+        response = BM25Retriever(db_path).search("Python", limit=5)
+        assert response.status == "success"
+        assert response.results[0].knowledge_id == knowledge_id
 
     def test_migration_alignment_rebuilds_existing_chinese_fts_rows(self, tmp_path: Path):
         """升级到最新 FTS 修复链后，已有条目也应回到与运行时一致的中文分词召回。"""
@@ -624,9 +628,9 @@ class TestDataPipelineIntegration:
 
         assert manager.apply_all_pending(auto_backup=False) == 3
 
-        results = BM25Retriever(db_path).search("一致性", limit=5)
-        assert results
-        assert results[0].title == "分布式系统设计"
+        response = BM25Retriever(db_path).search("一致性", limit=5)
+        assert response.status == "success"
+        assert response.results[0].title == "分布式系统设计"
 
     def test_real_legacy_knowledge_fts_database_upgrades_without_corruption(
         self, tmp_path: Path
@@ -657,9 +661,9 @@ class TestDataPipelineIntegration:
         assert FTS_TABLE_NAME in tables
         assert latest_version == "1.2.4"
 
-        results = BM25Retriever(db_path).search("alpha", limit=5)
-        assert results
-        assert results[0].title == "Alpha Legacy"
+        response = BM25Retriever(db_path).search("alpha", limit=5)
+        assert response.status == "success"
+        assert response.results[0].title == "Alpha Legacy"
 
     def test_pending_fts_repair_migration_replaces_external_content_contract(
         self, tmp_path: Path
@@ -691,10 +695,11 @@ class TestDataPipelineIntegration:
             conn.commit()
 
         assert "content=knowledge_items" not in table_sql.lower()
-        assert BM25Retriever(db_path).search("alpha", limit=5) == []
-        beta_results = BM25Retriever(db_path).search("beta", limit=5)
-        assert beta_results
-        assert beta_results[0].title == "External Beta"
+        alpha_response = BM25Retriever(db_path).search("alpha", limit=5)
+        assert alpha_response.status == "no_hits"
+        beta_response = BM25Retriever(db_path).search("beta", limit=5)
+        assert beta_response.status == "success"
+        assert beta_response.results[0].title == "External Beta"
 
     def test_initialize_created_db_uses_single_fts_contract(self, tmp_path: Path):
         """运行时初始化的新库不应保留旧 FTS 表名。"""
@@ -743,10 +748,11 @@ class TestDataPipelineIntegration:
                 ("Beta", "Beta beta body", "beta", "beta"),
             )
 
-        assert BM25Retriever(db_path).search("alpha", limit=5) == []
-        results = BM25Retriever(db_path).search("beta", limit=5)
-        assert results
-        assert results[0].title == "Beta"
+        alpha_response = BM25Retriever(db_path).search("alpha", limit=5)
+        assert alpha_response.status == "no_hits"
+        response = BM25Retriever(db_path).search("beta", limit=5)
+        assert response.status == "success"
+        assert response.results[0].title == "Beta"
 
     def test_initialize_after_migration_does_not_duplicate_schema_indexes(
         self, tmp_path: Path
@@ -856,11 +862,11 @@ class TestDataPipelineIntegration:
         total_count = len(test_queries)
 
         for test_case in test_queries:
-            results = router.search(test_case["query"], limit=5)
+            response = router.search(test_case["query"], limit=5)
 
             # 检查预期结果是否在 Top 5
-            if results:
-                top_titles = [r.title for r in results[:5]]
+            if response.results:
+                top_titles = [r.title for r in response.results[:5]]
                 if test_case["expected_title"] in top_titles:
                     correct_count += 1
 
@@ -966,12 +972,12 @@ class TestDataPipelineIntegration:
         assert report.applied_entries == 1
 
         retriever = VectorRetriever(db_path, vector_dir, embedder)
-        chunk_results = retriever.search_chunks("Alpha relation", limit=3)
+        chunk_response = retriever.search_chunks("Alpha relation", limit=3)
 
-        assert chunk_results
-        assert chunk_results[0].knowledge_id == knowledge_id
-        assert chunk_results[0].metadata["chunk_index"] == 0
-        assert "Alpha relation chunk" in chunk_results[0].metadata["chunk_text"]
+        assert chunk_response.status == "success"
+        assert chunk_response.results[0].knowledge_id == knowledge_id
+        assert chunk_response.results[0].metadata["chunk_index"] == 0
+        assert "Alpha relation chunk" in chunk_response.results[0].metadata["chunk_text"]
 
         service = EvidenceCollectionService(
             query_router=StaticQueryRouter(

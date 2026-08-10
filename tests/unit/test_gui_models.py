@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -17,17 +18,30 @@ from src.gui.models.entry_model import EntryTableModel
 Entry = dict[str, Any]
 
 
+def _entry(**overrides: Any) -> Entry:
+    value: Entry = {
+        "knowledge_id": 1,
+        "title": "默认标题",
+        "source_type": "text",
+        "tags": "",
+        "word_count": 0,
+        "archived_at": None,
+    }
+    value.update(overrides)
+    return value
+
+
 @pytest.fixture
 def entry() -> Entry:
     """返回覆盖全部展示列的代表性条目。"""
-    return {
-        "knowledge_id": 42,
-        "title": "测试文章标题",
-        "source_type": "wechat",
-        "tags": "AI, Python,机器学习,Qt",
-        "word_count": 500,
-        "archived_at": "2026-02-19 10:00:00",
-    }
+    return _entry(
+        knowledge_id=42,
+        title="测试文章标题",
+        source_type="wechat",
+        tags="AI, Python,机器学习,Qt",
+        word_count=500,
+        archived_at="2026-02-19 10:00:00",
+    )
 
 
 @pytest.fixture
@@ -108,7 +122,7 @@ class TestDisplayFormatting:
         ],
     )
     def test_title_truncation_boundary(self, title: str, expected: str) -> None:
-        title_model = EntryTableModel([{"title": title}])
+        title_model = EntryTableModel([_entry(title=title)])
 
         assert _display(title_model, EntryTableModel.COL_TITLE) == expected
 
@@ -132,7 +146,6 @@ class TestDisplayFormatting:
                 "AI Python Qt +1",
                 id="list-trimmed-filtered-and-limited",
             ),
-            pytest.param(123, "", id="unsupported-type"),
         ],
     )
     def test_tags_are_formatted_through_display_role(
@@ -140,14 +153,13 @@ class TestDisplayFormatting:
         tags: Any,
         expected: str,
     ) -> None:
-        tags_model = EntryTableModel([{"tags": tags}])
+        tags_model = EntryTableModel([_entry(tags=tags)])
 
         assert _display(tags_model, EntryTableModel.COL_TAGS) == expected
 
     @pytest.mark.parametrize(
         ("entry_fields", "expected"),
         [
-            pytest.param({}, "0", id="missing"),
             pytest.param({"word_count": 0}, "0", id="zero"),
             pytest.param({"word_count": 4200}, "4200", id="positive"),
             pytest.param({"word_count": None}, "0", id="none"),
@@ -158,7 +170,7 @@ class TestDisplayFormatting:
         entry_fields: Entry,
         expected: str,
     ) -> None:
-        word_count_model = EntryTableModel([entry_fields])
+        word_count_model = EntryTableModel([_entry(**entry_fields)])
 
         assert (
             _display(word_count_model, EntryTableModel.COL_WORD_COUNT)
@@ -184,7 +196,7 @@ class TestDisplayFormatting:
         archived_at: Any,
         expected: str,
     ) -> None:
-        date_model = EntryTableModel([{"archived_at": archived_at}])
+        date_model = EntryTableModel([_entry(archived_at=archived_at)])
 
         assert _display(date_model, EntryTableModel.COL_ARCHIVED_AT) == expected
 
@@ -216,7 +228,10 @@ class TestHeadersAndAlignment:
         )
 
     def test_vertical_headers_are_one_based_row_numbers(self) -> None:
-        two_row_model = EntryTableModel([{}, {}])
+        two_row_model = EntryTableModel([
+            _entry(knowledge_id=1),
+            _entry(knowledge_id=2),
+        ])
 
         headers = [
             two_row_model.headerData(row, Qt.Vertical, Qt.DisplayRole)
@@ -262,16 +277,16 @@ class TestEntryAccessAndReset:
         qtbot: Any,
     ) -> None:
         replacement = [
-            {
-                "knowledge_id": 7,
-                "title": "替换后的第一条",
-                "word_count": 70,
-            },
-            {
-                "knowledge_id": 8,
-                "title": "替换后的第二条",
-                "word_count": 80,
-            },
+            _entry(
+                knowledge_id=7,
+                title="替换后的第一条",
+                word_count=70,
+            ),
+            _entry(
+                knowledge_id=8,
+                title="替换后的第二条",
+                word_count=80,
+            ),
         ]
 
         with qtbot.waitSignal(model.modelReset, timeout=1000):
@@ -284,3 +299,22 @@ class TestEntryAccessAndReset:
             _display(model, EntryTableModel.COL_TITLE, row=1)
             == "替换后的第二条"
         )
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        pytest.param("", id="string-list-projection"),
+        pytest.param((), id="frozen-list-projection"),
+        pytest.param([MappingProxyType(_entry())], id="frozen-entry-mapping"),
+        pytest.param([{}], id="missing-required-fields"),
+        pytest.param([_entry(knowledge_id=True)], id="bool-id"),
+        pytest.param([_entry(source_type="")], id="empty-source-type"),
+        pytest.param([_entry(tags=["ok", 7])], id="non-string-tag"),
+        pytest.param([_entry(word_count=True)], id="bool-word-count"),
+        pytest.param([_entry(archived_at=7)], id="non-string-date"),
+    ],
+)
+def test_malformed_entry_projection_is_rejected(malformed) -> None:
+    with pytest.raises(TypeError, match="entry list contract violation"):
+        EntryTableModel(malformed)
