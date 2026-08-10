@@ -1,0 +1,242 @@
+# W4 execution evidence is deliberately independent from scenario declarations.
+# Initial pending records contain no Artifact identity, result, timestamp or
+# evidence locator; source-tree success must never populate these fields.
+schema_version: pkv.m13.w4.evidence.v1
+truth_source: docs/overview/阶段开发路线与依赖-2026-03.md#86-w4artifact-e2e用户文档与发布审查
+handoff_registry: tests/contracts/m13_w4_handoffs.v1.yaml
+artifact_only: true
+allowed_states: [artifact_pending, artifact_verified, artifact_failed]
+state_contract:
+  artifact_pending:
+    producer_lane: null
+    oracle_result: null
+    evidence_paths: empty
+  artifact_verified:
+    producer_lane: artifact-only
+    oracle_result: passed
+    required_identity_fields:
+      - artifact_id
+      - artifact_sha256
+      - normalized_manifest_sha256
+      - build_fingerprint
+      - source_revision
+      - runner_version
+      - execution_id
+      - executed_at
+      - environment_fingerprint
+      - fixture_sha256
+      - evidence_manifest_sha256
+      - source_isolation_proof_sha256
+    conditional_identity_fields:
+      - harness_sha256_when_external_harness_is_declared
+    evidence_paths: non_empty
+  artifact_failed:
+    producer_lane: artifact-only
+    oracle_result: failed
+    required_identity_fields:
+      - artifact_id
+      - artifact_sha256
+      - normalized_manifest_sha256
+      - build_fingerprint
+      - source_revision
+      - runner_version
+      - execution_id
+      - executed_at
+      - environment_fingerprint
+      - fixture_sha256
+      - evidence_manifest_sha256
+      - source_isolation_proof_sha256
+    conditional_identity_fields:
+      - harness_sha256_when_external_harness_is_declared
+    evidence_paths: non_empty
+
+records:
+  - scenario_id: w4.url_archive_ssrf_rejection.v1
+    state: artifact_pending
+    producer_lane: null
+    artifact_id: null
+    artifact_sha256: null
+    normalized_manifest_sha256: null
+    build_fingerprint: null
+    source_revision: null
+    runner_version: null
+    execution_id: null
+    executed_at: null
+    environment_fingerprint: null
+    fixture_sha256: null
+    harness_sha256: null
+    evidence_manifest_sha256: null
+    source_isolation_proof_sha256: null
+    oracle_result: null
+    evidence_paths: []
+
+  - scenario_id: w4.offline_text_archive.v1
+    state: artifact_pending
+    producer_lane: null
+    artifact_id: null
+    artifact_sha256: null
+    normalized_manifest_sha256: null
+    build_fingerprint: null
+    source_revision: null
+    runner_version: null
+    execution_id: null
+    executed_at: null
+    environment_fingerprint: null
+    fixture_sha256: null
+    harness_sha256: null
+    evidence_manifest_sha256: null
+    source_isolation_proof_sha256: null
+    oracle_result: null
+    evidence_paths: []
+
+  - scenario_id: w4.bm25_search.v1
+    state: artifact_pending
+    producer_lane: null
+    artifact_id: null
+    artifact_sha256: null
+    normalized_manifest_sha256: null
+    build_fingerprint: null
+    source_revision: null
+    runner_version: null
+    execution_id: null
+    executed_at: null
+    environment_fingerprint: null
+    fixture_sha256: null
+    harness_sha256: null
+    evidence_manifest_sha256: null
+    source_isolation_proof_sha256: null
+    oracle_result: null
+    evidence_paths: []
+
+  - scenario_id: w4.semantic_provider_unavailable.v1
+    state: artifact_pending
+    producer_lane: null
+    artifact_id: null
+    artifact_sha256: null
+    normalized_manifest_sha256: null
+    build_fingerprint: null
+    source_revision: null
+    runner_version: null
+    execution_id: null
+    executed_at: null
+    environment_fingerprint: null
+    fixture_sha256: null
+    harness_sha256: null
+    evidence_manifest_sha256: null
+    source_isolation_proof_sha256: null
+    oracle_result: null
+    evidence_paths: []
+
+  - scenario_id: w4.mcp_stdio_call.v1
+    state: artifact_pending
+    producer_lane: null
+    artifact_id: null
+    artifact_sha256: null
+    normalized_manifest_sha256: null
+    build_fingerprint: null
+    source_revision: null
+    runner_version: null
+    execution_id: null
+    executed_at: null
+    environment_fingerprint: null
+    fixture_sha256: null
+    harness_sha256: null
+    evidence_manifest_sha256: null
+    source_isolation_proof_sha256: null
+    oracle_result: null
+    evidence_paths: []
+
+  - scenario_id: w4.chat_loopback.v1
+    state: artifact_pending
+    producer_lane: null
+    artifact_id: null
+    artifact_sha256: null
+    normalized_manifest_sha256: null
+    build_fingerprint: null
+    source_revision: null
+    runner_version: null
+    execution_id: null
+    executed_at: null
+    environment_fingerprint: null
+    fixture_sha256: null
+    harness_sha256: null
+    evidence_manifest_sha256: null
+    source_isolation_proof_sha256: null
+    oracle_result: null
+    evidence_paths: []
+
+  - scenario_id: w4.application_lifecycle.v1
+    state: artifact_pending
+    producer_lane: null
+    artifact_id: null
+    artifact_sha256: null
+    normalized_manifest_sha256: null
+    build_fingerprint: null
+    source_revision: null
+    runner_version: null
+    execution_id: null
+    executed_at: null
+    environment_fingerprint: null
+    fixture_sha256: null
+    harness_sha256: null
+    evidence_manifest_sha256: null
+    source_isolation_proof_sha256: null
+    oracle_result: null
+    evidence_paths: []
+
+  - scenario_id: w4.upgrade_rejection.v1
+    state: artifact_pending
+    producer_lane: null
+    artifact_id: null
+    artifact_sha256: null
+    normalized_manifest_sha256: null
+    build_fingerprint: null
+    source_revision: null
+    runner_version: null
+    execution_id: null
+    executed_at: null
+    environment_fingerprint: null
+    fixture_sha256: null
+    harness_sha256: null
+    evidence_manifest_sha256: null
+    source_isolation_proof_sha256: null
+    oracle_result: null
+    evidence_paths: []
+
+  - scenario_id: w4.uninstall_data_retention.v1
+    state: artifact_pending
+    producer_lane: null
+    artifact_id: null
+    artifact_sha256: null
+    normalized_manifest_sha256: null
+    build_fingerprint: null
+    source_revision: null
+    runner_version: null
+    execution_id: null
+    executed_at: null
+    environment_fingerprint: null
+    fixture_sha256: null
+    harness_sha256: null
+    evidence_manifest_sha256: null
+    source_isolation_proof_sha256: null
+    oracle_result: null
+    evidence_paths: []
+
+  - scenario_id: w4.release_audit.v1
+    state: artifact_pending
+    producer_lane: null
+    artifact_id: null
+    artifact_sha256: null
+    normalized_manifest_sha256: null
+    build_fingerprint: null
+    source_revision: null
+    runner_version: null
+    execution_id: null
+    executed_at: null
+    environment_fingerprint: null
+    fixture_sha256: null
+    harness_sha256: null
+    evidence_manifest_sha256: null
+    source_isolation_proof_sha256: null
+    oracle_result: null
+    evidence_paths: []

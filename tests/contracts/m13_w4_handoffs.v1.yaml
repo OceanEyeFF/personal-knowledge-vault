@@ -1,12 +1,14 @@
 schema_version: pkv.m13.w4.handoffs.v1
 truth_source: docs/overview/阶段开发路线与依赖-2026-03.md#86-w4artifact-e2e用户文档与发布审查
 artifact_only: true
+declaration_role: artifact_scenario_handoff
+evidence_registry: tests/contracts/m13_w4_evidence.v1.yaml
 
-# These declarations are W2 hand-off contracts, not W4 execution evidence.
-# W4 owns the runner and may set a scenario to artifact_verified only after
-# exercising an installed Artifact without importing the source tree.
+# These declarations are hand-off contracts, never W4 execution evidence.
+# Execution state and proof belong only in the independent evidence registry.
 scenarios:
   - scenario_id: w4.url_archive_ssrf_rejection.v1
+    matrix_rows: [url_security_rejection]
     capability_ids: [workflow.archive_url.v1]
     entrypoint: installed_cli
     fixture: synthetic_private_loopback_url
@@ -16,6 +18,7 @@ scenarios:
     state: artifact_pending
 
   - scenario_id: w4.offline_text_archive.v1
+    matrix_rows: [offline_text_archive]
     capability_ids: [workflow.archive_text.v1]
     entrypoint: installed_gui
     fixture: synthetic_utf8_text_note
@@ -25,15 +28,17 @@ scenarios:
     state: artifact_pending
 
   - scenario_id: w4.bm25_search.v1
+    matrix_rows: [gui_read_and_bm25]
     capability_ids: [retrieval.bm25.v1, gui.search_bm25.v1]
     entrypoint: installed_gui
     fixture: synthetic_bm25_vault_v1
     external_harness: null
-    actions: search_hit_no_hit_invalid_and_backend_failure
-    public_oracle: gui_distinguishes_success_no_hits_invalid_and_error
+    actions: browse_list_open_detail_then_search_hit_no_hit_invalid_and_backend_failure
+    public_oracle: gui_browse_detail_work_and_search_distinguishes_success_no_hits_invalid_and_error
     state: artifact_pending
 
   - scenario_id: w4.semantic_provider_unavailable.v1
+    matrix_rows: [semantic_provider_unavailable]
     capability_ids: [retrieval.semantic.v1]
     entrypoint: installed_cli
     fixture: isolated_config_without_embedding_credentials
@@ -43,19 +48,58 @@ scenarios:
     state: artifact_pending
 
   - scenario_id: w4.mcp_stdio_call.v1
+    matrix_rows: [mcp_stdio_lifecycle]
     capability_ids: [mcp.stdio.v1, mcp.exploration.partial-v1]
     entrypoint: installed_mcp_stdio
     fixture: synthetic_mcp_vault_v1
     external_harness: null
-    actions: initialize_discover_invoke_and_shutdown
-    public_oracle: protocol_lifecycle_and_public_tool_result_are_distinguishable
+    actions: initialize_discover_14_tools_9_resources_3_prompts_invoke_complete_public_call_and_shutdown
+    public_oracle: exact_surface_counts_protocol_lifecycle_and_complete_public_result_are_distinguishable
     state: artifact_pending
 
   - scenario_id: w4.chat_loopback.v1
+    matrix_rows: [gui_chat_loopback]
     capability_ids: [gui.chat.v1, chat.loopback_harness.v1]
     entrypoint: installed_gui
     fixture: synthetic_chat_session_v1
     external_harness: w3.openai_compatible_loopback.v1
     actions: exercise_success_stop_provider_failure_and_restart
     public_oracle: one_request_one_session_one_terminal_and_no_fake_in_release_payload
+    state: artifact_pending
+
+release_scenarios:
+  - scenario_id: w4.application_lifecycle.v1
+    matrix_rows: [installation_and_first_run]
+    entrypoint: installed_distribution
+    fixture: synthetic_fresh_install_vault_v1
+    external_harness: null
+    actions: install_without_python_or_conda_launch_first_initialize_clean_exit_restart_and_verify_resource_user_root_separation
+    public_oracle: clean_machine_install_and_first_run_succeed_once_restart_preserves_state_and_bundled_resources_never_overlap_user_data
+    state: artifact_pending
+
+  - scenario_id: w4.upgrade_rejection.v1
+    matrix_rows: [upgrade_rejection]
+    entrypoint: installed_distribution
+    fixture: synthetic_existing_user_data_root_v1
+    external_harness: null
+    actions: attempt_unsupported_upgrade
+    public_oracle: refused_upgrade_is_explicit_and_non_mutating
+    state: artifact_pending
+
+  - scenario_id: w4.uninstall_data_retention.v1
+    matrix_rows: [uninstall_and_data_boundary]
+    entrypoint: installed_uninstaller
+    fixture: synthetic_existing_user_data_root_v1
+    external_harness: null
+    actions: default_uninstall_preserve_user_data_then_explicit_opt_in_user_data_removal
+    public_oracle: application_is_removed_default_uninstall_preserves_user_data_and_only_explicit_opt_in_removes_synthetic_user_data
+    state: artifact_pending
+
+  - scenario_id: w4.release_audit.v1
+    matrix_rows: [payload_and_provenance, documentation_version_and_decision]
+    entrypoint: installed_distribution
+    fixture: generated_release_materials_v1
+    external_harness: null
+    actions: verify_version_license_third_party_notices_sbom_build_fingerprint_payload_manifest_forbidden_payload_hash_and_release_decision
+    public_oracle: app_docs_and_artifact_are_0_8_1_provenance_is_complete_payload_has_no_secret_local_vault_test_or_harness_material_and_decision_is_release_or_hold
     state: artifact_pending

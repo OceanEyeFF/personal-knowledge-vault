@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import logging
 import os
 import sys
@@ -17,7 +18,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QCoreApplication, QSettings
 from PySide6.QtGui import QCloseEvent
 
 # 确保项目根目录在 sys.path 中
@@ -81,34 +82,102 @@ def mock_stores(tmp_path, monkeypatch):
         yield mock_store
 
 
-@pytest.fixture(scope="module", autouse=True)
-def isolate_qsettings(tmp_path_factory):
-    """Route QSettings to a session-temporary INI file, never the user registry."""
+@contextmanager
+def _restored_qt_process_globals():
+    """Restore the Qt process globals that have public snapshot APIs."""
 
-    settings_root = tmp_path_factory.mktemp("qsettings-main-window")
-    QSettings.setDefaultFormat(QSettings.IniFormat)
-    QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(settings_root))
-    QSettings.setPath(
-        QSettings.IniFormat,
-        QSettings.SystemScope,
-        str(settings_root / "system"),
-    )
-    yield
-    settings = QSettings("PKV", "MainWindow")
-    settings.clear()
-    settings.sync()
+    original_format = QSettings.defaultFormat()
+    original_organization = QCoreApplication.organizationName()
+    original_domain = QCoreApplication.organizationDomain()
+    original_application = QCoreApplication.applicationName()
+    original_version = QCoreApplication.applicationVersion()
+    try:
+        yield {
+            "default_format": original_format,
+            "organization_name": original_organization,
+            "organization_domain": original_domain,
+            "application_name": original_application,
+            "application_version": original_version,
+        }
+    finally:
+        QSettings.setDefaultFormat(original_format)
+        QCoreApplication.setOrganizationName(original_organization)
+        QCoreApplication.setOrganizationDomain(original_domain)
+        QCoreApplication.setApplicationName(original_application)
+        QCoreApplication.setApplicationVersion(original_version)
+        assert QSettings.defaultFormat() == original_format
+        assert QCoreApplication.organizationName() == original_organization
+        assert QCoreApplication.organizationDomain() == original_domain
+        assert QCoreApplication.applicationName() == original_application
+        assert QCoreApplication.applicationVersion() == original_version
 
 
 @pytest.fixture(autouse=True)
-def clean_qsettings(isolate_qsettings):
-    """每个测试前后清理隔离 QSettings，避免测试间状态污染。"""
+def restore_qt_process_globals():
+    """Restore Qt globals after every test, including failure and skip exits.
 
-    settings = QSettings("PKV", "MainWindow")
-    settings.clear()
-    yield
-    settings = QSettings("PKV", "MainWindow")
-    settings.clear()
-    settings.sync()
+    ``MainWindow`` uses an explicit ``ui.ini`` path and ``IniFormat``.  Qt has
+    no getter for process-global QSettings paths, so tests in this module are
+    forbidden from calling ``QSettings.setPath`` instead of trying to restore
+    an unknowable value.
+    """
+
+    with _restored_qt_process_globals():
+        yield
+
+
+def _mutate_restorable_qt_globals() -> None:
+    alternate_format = (
+        QSettings.IniFormat
+        if QSettings.defaultFormat() != QSettings.IniFormat
+        else QSettings.NativeFormat
+    )
+    QSettings.setDefaultFormat(alternate_format)
+    QCoreApplication.setOrganizationName("PKV-W3-T0-sentinel")
+    QCoreApplication.setOrganizationDomain("w3-t0.invalid")
+    QCoreApplication.setApplicationName("PKV-W3-T0-sentinel")
+    QCoreApplication.setApplicationVersion("0.0.0-w3-t0-sentinel")
+
+
+def _assert_qt_globals(snapshot: dict) -> None:
+    assert QSettings.defaultFormat() == snapshot["default_format"]
+    assert QCoreApplication.organizationName() == snapshot["organization_name"]
+    assert QCoreApplication.organizationDomain() == snapshot["organization_domain"]
+    assert QCoreApplication.applicationName() == snapshot["application_name"]
+    assert QCoreApplication.applicationVersion() == snapshot["application_version"]
+
+
+def test_qt_global_guard_restores_normal_exit():
+    with _restored_qt_process_globals() as snapshot:
+        _mutate_restorable_qt_globals()
+
+    _assert_qt_globals(snapshot)
+
+
+def test_qt_global_guard_restores_failure_exit():
+    with _restored_qt_process_globals() as snapshot:
+        with pytest.raises(RuntimeError, match="fixture failure sentinel"):
+            with _restored_qt_process_globals():
+                _mutate_restorable_qt_globals()
+                raise RuntimeError("fixture failure sentinel")
+
+    _assert_qt_globals(snapshot)
+
+
+def test_qt_global_guard_restores_skip_exit():
+    with _restored_qt_process_globals() as snapshot:
+        with pytest.raises(pytest.skip.Exception):
+            with _restored_qt_process_globals():
+                _mutate_restorable_qt_globals()
+                pytest.skip("fixture skip sentinel")
+
+    _assert_qt_globals(snapshot)
+
+
+def test_qsettings_path_mutation_is_forbidden_in_this_module():
+    source = Path(__file__).read_text(encoding="utf-8")
+    forbidden_call = "QSettings." + "setPath("
+    assert forbidden_call not in source
 
 
 @pytest.fixture

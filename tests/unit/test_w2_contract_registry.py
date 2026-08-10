@@ -6,7 +6,6 @@ import yaml
 
 
 REGISTRY = Path(__file__).parents[1] / "contracts" / "m13_w2.v1.yaml"
-HANDOFFS = Path(__file__).parents[1] / "contracts" / "m13_w4_handoffs.v1.yaml"
 PROJECT_ROOT = Path(__file__).parents[2]
 ALLOWED_SUPPORT_LEVELS = {"supported", "partial-v1", "unsupported", "deferred"}
 ALLOWED_STATES = {
@@ -14,8 +13,6 @@ ALLOWED_STATES = {
     "semantic_green",
     "adapter_green",
     "source_verified",
-    "artifact_pending",
-    "artifact_verified",
 }
 REQUIRED_FIELDS = {
     "contract_id",
@@ -32,12 +29,6 @@ REQUIRED_FIELDS = {
 
 def _load_registry() -> dict:
     payload = yaml.safe_load(REGISTRY.read_text(encoding="utf-8"))
-    assert isinstance(payload, dict)
-    return payload
-
-
-def _load_handoffs() -> dict:
-    payload = yaml.safe_load(HANDOFFS.read_text(encoding="utf-8"))
     assert isinstance(payload, dict)
     return payload
 
@@ -76,42 +67,17 @@ def test_w2_registry_fixtures_exist_and_are_nonempty() -> None:
             assert fixture_path.stat().st_size > 0, contract["contract_id"]
 
 
-def test_supported_w2_contracts_define_w4_handoff_without_claiming_artifact_proof() -> None:
+def test_w2_contracts_declare_handoffs_without_carrying_artifact_evidence() -> None:
     payload = _load_registry()
-    handoffs = _load_handoffs()
-    assert handoffs["schema_version"] == "pkv.m13.w4.handoffs.v1"
-    assert handoffs["artifact_only"] is True
-    scenarios = handoffs["scenarios"]
-    scenario_ids = {item["scenario_id"] for item in scenarios}
-    assert len(scenario_ids) == len(scenarios)
 
     for contract in payload["capabilities"]:
         if contract["support_level"] in {"supported", "partial-v1"}:
             assert contract["surfaces"]
             assert isinstance(contract["w4_scenario"], str)
             assert contract["w4_scenario"].startswith("w4.")
-            assert contract["w4_scenario"] in scenario_ids
         else:
             assert contract["surfaces"] == []
-        assert contract["state"] != "artifact_verified"
-
-    contract_ids = {item["contract_id"] for item in payload["capabilities"]}
-    covered_ids = set()
-    for scenario in scenarios:
-        assert scenario["state"] == "artifact_pending"
-        assert scenario["entrypoint"].startswith("installed_")
-        assert scenario["capability_ids"]
-        assert set(scenario["capability_ids"]) <= contract_ids
-        covered_ids.update(scenario["capability_ids"])
-
-    assert {
-        "workflow.archive_url.v1",
-        "workflow.archive_text.v1",
-        "retrieval.bm25.v1",
-        "retrieval.semantic.v1",
-        "mcp.stdio.v1",
-        "gui.chat.v1",
-    } <= covered_ids
+        assert not contract["state"].startswith("artifact_")
 
 
 def test_w2_status_vocabulary_matches_frozen_route() -> None:

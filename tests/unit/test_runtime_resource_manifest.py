@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 MANIFEST_PATH = PROJECT_ROOT / "packaging" / "runtime-resources.json"
+pytestmark = pytest.mark.packaging_contract
 
 
 def test_runtime_resource_manifest_expands_to_required_read_only_files() -> None:

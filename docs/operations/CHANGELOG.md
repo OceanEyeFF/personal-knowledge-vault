@@ -13,6 +13,27 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### M13 W3-T0：短期 Test 治理门禁（2026-08-10）
+
+- 冻结 `source`、`packaging-contract`、`artifact-only` 三条测试 lane 的唯一 owner、
+  允许输入/输出与禁止替代关系；默认离线门禁继续包含打包合同，但明确排除必须显式运行的
+  Artifact-only 用例。
+- 新增 fail-closed Artifact preflight runner：要求显式 Artifact、入口、manifest、fixture、
+  evidence root 与条件性 harness；从仓库外 cwd 启动，隔离 Python/Conda/Provider 环境，拒绝
+  仓库内路径、junction/reparse point、硬链接、路径嵌套、超时与遗留子进程。该 runner 只证明
+  交接边界，不产生 `artifact_verified`。
+- 冻结 W4 的 10 个 scenario / 11 行 lifecycle matrix 及 evidence 状态机；恢复 W2 capability 到
+  W4 handoff 的双向映射校验，并用合成负例拒绝跨 lane 晋级、缺失 identity/evidence、非法 hash
+  以及 Chat 缺少 harness identity。
+- QSettings 测试改为逐用例快照并恢复默认格式与 Qt organization/application identity；自动化
+  禁止调用无法可靠逆转的 `QSettings.setPath()`，异常退出路径同样执行恢复。
+- 独立 CodeReview 最终为 P0=0、P1=0。最终离线证据：默认全量
+  `3492 passed, 20 skipped, 21 deselected`；MCP coverage
+  `758 passed, 2759 deselected`、`src.mcp=95.33%`；Phase C `16/16 tasks`、
+  `151/151 checks`、全部维度 `1.0`；显式合成 Artifact lane `12 passed`。
+- W3-T0 已完成，正式 W3 可以开始；可复现 Artifact、外置 deterministic loopback harness 与
+  W4 Artifact E2E/发布审查尚未完成，当前没有 `artifact_verified` 结论。
+
 ### M13 W2：已发布功能源代码合同（2026-08-07）
 
 - Workflow 运行时合同收口到真实、版本化的 `archive-url.yaml` / `archive-text.yaml`：
@@ -39,7 +60,7 @@
   `755 passed, 5 deselected`，`src.mcp=95.33%`（门槛 `95%`）。
 - 四条冻结工作流的独立 SubAgent 复审未发现确定性 P0/P1。历史 Vector 非 seed 候选的
   全量语义扫描按 fresh-install 范围外 P2 后置，不改变当前 fail-closed 合同。
-- W2 已完成，W3 可以开始；W3 可复现 Artifact、外置 deterministic loopback harness 与
+- W2 已完成，W3-T0 Test 治理也已完成；W3 可复现 Artifact、外置 deterministic loopback harness 与
   W4 Artifact E2E/发布审查尚未完成，当前没有 `artifact_verified` 结论。
 
 ### M13 W1：运行时布局与数据安全底座（2026-08-02；2026-08-07 安全复审）

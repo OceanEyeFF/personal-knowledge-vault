@@ -56,6 +56,10 @@
 - 同一收口工作树的 MCP coverage gate 为 `755 passed, 5 deselected`，`src.mcp` 为 1671 statements / 78 miss / `95.33%`，达到 `95%` 门槛。
 - 2026-08-07 Phase C fresh run 为 16/16 tasks、151/151 checks（119 项声明式 + 32 项自动公开 envelope）、`overall=1.0`、全部维度 `1.0`、0 failed、`targets_met=true`。
 - W2 四条冻结工作流的独立复审未发现确定性 P0/P1；W3/W4 尚未完成，当前没有 `artifact_verified` 结论。
+- 2026-08-10 W3-T0 已冻结 `source` / `packaging-contract` / `artifact-only` 三条 lane；默认 source lane 排除 Artifact，显式 Artifact lane 缺任一输入、路径链接状态不可判定或超时时必须失败，禁止 skip/xfail 与源码回退。
+- W2 handoff 与 W4 evidence 已拆分为独立 registry；10 个 scenario 覆盖详细路线的 11 行 lifecycle matrix，当前仍全部 `artifact_pending`。状态 validator 拒绝 source/packaging-contract 伪造 `artifact_verified`、缺 identity/hash/evidence 及 Chat 缺 harness。
+- W3-T0 根运行证据：定向 contract `19 passed`；QSettings/Qt 全局状态 `45 passed, 1 skipped`；合成显式 Artifact lane `12 passed`；最终默认离线全量 `3492 passed, 20 skipped, 21 deselected`。
+- 同一冻结实现的 MCP coverage 为 `758 passed, 2759 deselected`、`src.mcp=95.33%`（门槛 `95%`）；Phase C 为 16/16 tasks、151/151 checks、全部维度 `1.0`、0 failed、`targets_met=true`。独立 CodeReview 为 P0=0、P1=0；W3/W4 仍未完成且没有 `artifact_verified`。
 
 ---
 
@@ -397,6 +401,15 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-08-10 (M13 W3-T0 短期 Test 治理收口)
+
+- 新增 `m13_test_lanes.v1.yaml`，冻结三条 lane 的 owner、允许输入/输出及禁止替代；`pytest.ini` 默认排除 `artifact`，packaging-contract 继续进入默认离线门禁。
+- 新增 fail-closed `scripts/run-artifact-e2e.ps1` T0 preflight 与显式 Artifact tests。runner/目标进程从仓库外 cwd 执行，清理 Python/Conda/source 注入；缺输入、repo containment、junction/reparse point、hardlink、harness 与 process-tree timeout 均有负例。
+- W4 handoff 声明与运行 evidence 分离，10 个 scenario 精确覆盖 11 行 lifecycle matrix；跨 lane 晋级、缺字段、非法 SHA、空证据和 Chat 缺 harness 均被 executable validator 拒绝。
+- `test_gui_main_window.py` 不再修改不可恢复的 `QSettings.setPath()`；default format 及 Qt organization/application name/domain/version 在 pass、fail、skip 后逐用例恢复。
+- 最终证据：contract `19 passed`；Qt/QSettings `45 passed, 1 skipped`；显式 Artifact `12 passed`；默认全量 `3492 passed, 20 skipped, 21 deselected`；MCP `758 passed, 2759 deselected`、`95.33%`；Phase C 16/151 全部通过。独立复审 P0=0、P1=0。
+- W3-T0 已完成，正式 W3 可以开始；W3 Artifact、外置 harness 与 W4 installed-Artifact evidence 尚未完成，全部记录保持 `artifact_pending`。
 
 ### 2026-08-07 (M13 W2 源代码功能合同收口)
 
