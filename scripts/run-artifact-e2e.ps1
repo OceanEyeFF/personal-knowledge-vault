@@ -704,7 +704,10 @@ function Get-TreeManifestRows {
         })
     }
     $rows = [System.Collections.Generic.List[object]]::new()
-    foreach ($relative in @(Get-Utf8SortedStrings -Values $rowsByPath.Keys)) {
+    # Keep the outer runner's tree serialization byte-for-byte aligned with
+    # W4.Driver:Get-W4SafeTreeFiles, which orders its FullName values through
+    # Sort-Object before the controller hashes the manifest.
+    foreach ($relative in @($rowsByPath.Keys | Sort-Object)) {
         $rows.Add($rowsByPath[$relative])
     }
     return @($rows)

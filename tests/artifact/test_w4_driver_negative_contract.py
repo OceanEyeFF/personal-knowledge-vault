@@ -604,6 +604,47 @@ def _run_scenario_contract_validator(
     return _run_powershell(["-Command", command], cwd=REPOSITORY_ROOT)
 
 
+def _run_outer_tree_manifest_cross_hash_probe(
+    tree_root: Path,
+) -> subprocess.CompletedProcess[str]:
+    """Compare the outer runner's in-memory tree hash with the W4 driver."""
+    command = (
+        "$ErrorActionPreference='Stop';"
+        "$tokens=$null;$parseErrors=$null;"
+        f"$ast=[System.Management.Automation.Language.Parser]::ParseFile("
+        f"'{_ps_single_quoted(RUNNER)}',[ref]$tokens,[ref]$parseErrors);"
+        "if($parseErrors.Count -ne 0){throw (($parseErrors|% Message)-join '; ')};"
+        "$definitions=@($ast.FindAll({param($node)"
+        "$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and "
+        "$node.Parent -is [System.Management.Automation.Language.NamedBlockAst]},"
+        "$true));"
+        "$needed=@('Get-CanonicalExistingPath','Get-LocalFileHash',"
+        "'Get-StringSha256','Get-Utf8SortedStrings','Get-TreeManifestRows',"
+        "'Get-TreeManifestSha256');"
+        "foreach($name in $needed){"
+        "$definition=@($definitions|Where-Object {$_.Name -ceq $name});"
+        "if($definition.Count -ne 1){throw ('runner function was not unique: '+$name)};"
+        ". ([scriptblock]::Create($definition[0].Extent.Text))};"
+        f"$module=Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' "
+        "-Force -PassThru;"
+        f"$root='{_ps_single_quoted(tree_root)}';"
+        "$outerRows=@(Get-TreeManifestRows -Root $root);"
+        "$outerHash=Get-TreeManifestSha256 -Root $root;"
+        "$driverRows=@(& $module {param($value) "
+        "Get-W4TreeManifest -Root $value} $root);"
+        "$driverHash=& $module {param($value) Get-W4TreeSha256 -Root $value} $root;"
+        "$outerPaths=@($outerRows|ForEach-Object {[string]$_.path});"
+        "$driverPaths=@($driverRows|ForEach-Object {[string]$_.path});"
+        "$legacyUtf8Paths=@(Get-Utf8SortedStrings -Values $driverPaths);"
+        "[ordered]@{outer_paths=@($outerPaths);driver_paths=@($driverPaths);"
+        "legacy_utf8_paths=@($legacyUtf8Paths);outer_manifest_json="
+        "($outerRows|ConvertTo-Json -Depth 5 -Compress);driver_manifest_json="
+        "($driverRows|ConvertTo-Json -Depth 5 -Compress);outer_hash=$outerHash;"
+        "driver_hash=$driverHash}|ConvertTo-Json -Depth 8 -Compress"
+    )
+    return _run_powershell(["-Command", command], cwd=REPOSITORY_ROOT)
+
+
 def _run_mcp_durable_seed_validator(
     tmp_path: Path, payload: dict[str, object]
 ) -> subprocess.CompletedProcess[str]:
@@ -3282,6 +3323,41 @@ def test_w4_scripts_parse_and_modules_import_in_windows_powershell_5() -> None:
     assert payload["major"] == 5
     invoked = {str(value).lower() for value in payload["commands"] if value}
     assert invoked.isdisjoint({"python", "python.exe", "py", "py.exe"})
+
+
+def test_outer_tree_manifest_hash_matches_driver_for_mixed_case_paths(
+    external_scratch: Path,
+) -> None:
+    tree_root = external_scratch / "mixed-case-controller-fixture-tree"
+    contents = {
+        "driver-manifest.json": "driver manifest\n",
+        "driver-manifest.sha256": "driver sidecar\n",
+        "Invoke-W4ArtifactE2E.ps1": "controller\n",
+        "W4.Driver.psm1": "driver module\n",
+        "W4.Scenarios.psm1": "scenario module\n",
+        "fixtures/chat-success-prompt.v1.txt": "success\n",
+        "fixtures/fixture-manifest.v1.json": "{}\n",
+        "fixtures/offline-note.v1.txt": "offline\n",
+    }
+    for relative, content in contents.items():
+        path = tree_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8", newline="\n")
+
+    rows_function = _powershell_function(_read(RUNNER), "Get-TreeManifestRows")
+    assert "Get-Utf8SortedStrings -Values $rowsByPath.Keys" not in rows_function
+    assert "$rowsByPath.Keys | Sort-Object" in rows_function
+
+    result = _run_outer_tree_manifest_cross_hash_probe(tree_root)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["legacy_utf8_paths"] != payload["driver_paths"]
+    assert payload["outer_paths"] == payload["driver_paths"]
+    assert payload["outer_manifest_json"] == payload["driver_manifest_json"]
+    assert payload["outer_hash"] == payload["driver_hash"]
+    assert payload["legacy_utf8_paths"][0] == "Invoke-W4ArtifactE2E.ps1"
+    assert payload["driver_paths"][0] == "driver-manifest.json"
 
 
 def test_scenario_contract_freezes_ten_scenarios_and_eleven_unique_rows() -> None:
