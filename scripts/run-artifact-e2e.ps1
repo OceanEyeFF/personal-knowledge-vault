@@ -2220,7 +2220,7 @@ function Invoke-FullArtifactMatrix {
     $resolvedController = Get-CanonicalExistingPath `
         -Path (Join-Path $resolvedDriverRoot 'Invoke-W4ArtifactE2E.ps1') -Kind Leaf
     $resolvedScenarioContract = Get-CanonicalExistingPath `
-        -Path (Join-Path $resolvedDriverRoot 'scenarios.v1.json') -Kind Leaf
+        -Path (Join-Path $resolvedDriverRoot 'scenarios.v2.json') -Kind Leaf
     $resolvedFixture = Get-CanonicalExistingPath `
         -Path (Join-Path $resolvedDriverRoot 'fixtures') -Kind Container
     $resolvedHarnessPackage = Get-CanonicalExistingPath -Path $HarnessPath -Kind Container
@@ -3204,7 +3204,7 @@ function Invoke-FullArtifactMatrix {
     $expectedMatrixRows = @(
         $scenarioContract.ordered_scenarios | ForEach-Object { @($_.matrix_rows) }
     )
-    if ([string]$scenarioContract.schema_version -cne 'pkv.m13.w4-driver-scenarios.v1' -or
+    if ([string]$scenarioContract.schema_version -cne 'pkv.m13.w4-driver-scenarios.v2' -or
         [string]$scenarioContract.runner_version -cne 'pkv.m13.artifact-runner.v2' -or
         $expectedScenarioIds.Count -cne 10 -or
         @($expectedScenarioIds | Sort-Object -Unique).Count -cne 10 -or

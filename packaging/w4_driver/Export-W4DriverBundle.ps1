@@ -93,7 +93,7 @@ try {
         'Invoke-W4ArtifactE2E.ps1',
         'W4.Driver.psm1',
         'W4.Scenarios.psm1',
-        'scenarios.v1.json'
+        'scenarios.v2.json'
     )
     foreach ($name in $controllerFiles) {
         $source = Join-Path $sourceRoot $name
@@ -118,7 +118,7 @@ try {
         $relative = $file.FullName.Substring($output.TrimEnd('\').Length).TrimStart('\').Replace('\', '/')
         $role = if ($relative.StartsWith('fixtures/')) {
             'synthetic_fixture'
-        } elseif ($relative -eq 'scenarios.v1.json') {
+        } elseif ($relative -eq 'scenarios.v2.json') {
             'scenario_contract'
         } elseif ($relative.EndsWith('.psm1')) {
             'controller_module'

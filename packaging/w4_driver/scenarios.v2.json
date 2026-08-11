@@ -1,5 +1,5 @@
 {
-  "schema_version": "pkv.m13.w4-driver-scenarios.v1",
+  "schema_version": "pkv.m13.w4-driver-scenarios.v2",
   "runner_version": "pkv.m13.artifact-runner.v2",
   "artifact_version": "0.8.1",
   "ordered_scenarios": [
@@ -46,7 +46,8 @@
       "matrix_rows": ["offline_text_archive"],
       "handler": "offline_text_archive",
       "timeout_seconds": 240,
-      "requires_harness": false
+      "requires_harness": false,
+      "expected_provider_requests": 3
     },
     {
       "scenario_id": "w4.bm25_search.v1",

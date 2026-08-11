@@ -236,10 +236,10 @@ function Test-W4ScenarioContract {
         'schema_version', 'runner_version', 'artifact_version', 'ordered_scenarios',
         'required_matrix_rows', 'required_artifact_files', 'mcp', 'uia'
     ) -Label 'W4 scenario contract'
-    if ([string]$Contract.schema_version -ne 'pkv.m13.w4-driver-scenarios.v1' -or
-        [string]$Contract.runner_version -ne 'pkv.m13.artifact-runner.v2' -or
-        [string]$Contract.artifact_version -ne '0.8.1') {
-        throw 'W4 scenario contract schema/runner/Artifact version is not frozen v1/v2/0.8.1'
+    if ([string]$Contract.schema_version -cne 'pkv.m13.w4-driver-scenarios.v2' -or
+        [string]$Contract.runner_version -cne 'pkv.m13.artifact-runner.v2' -or
+        [string]$Contract.artifact_version -cne '0.8.1') {
+        throw 'W4 scenario contract schema/runner/Artifact version is not frozen v2/v2/0.8.1'
     }
     $scenarios = @($Contract.ordered_scenarios)
     if ($scenarios.Count -ne 10) {
@@ -248,6 +248,27 @@ function Test-W4ScenarioContract {
     $ids = @($scenarios | ForEach-Object { [string]$_.scenario_id })
     if (@($ids | Sort-Object -Unique).Count -ne 10) {
         throw 'W4 scenario IDs are not unique'
+    }
+    foreach ($scenario in $scenarios) {
+        $scenarioFields = @(
+            'scenario_id', 'matrix_rows', 'handler', 'timeout_seconds',
+            'requires_harness'
+        )
+        if ([string]$scenario.scenario_id -ceq 'w4.offline_text_archive.v1') {
+            $scenarioFields += 'expected_provider_requests'
+        }
+        Assert-W4ExactFields -Object $scenario -Fields $scenarioFields `
+            -Label "W4 scenario row $([string]$scenario.scenario_id)"
+        if ($scenario.timeout_seconds -isnot [int] -or
+            [int]$scenario.timeout_seconds -le 0 -or
+            $scenario.requires_harness -isnot [bool]) {
+            throw "W4 scenario row types are invalid: $([string]$scenario.scenario_id)"
+        }
+        if ([string]$scenario.scenario_id -ceq 'w4.offline_text_archive.v1' -and
+            ($scenario.expected_provider_requests -isnot [int] -or
+                [int]$scenario.expected_provider_requests -ne 3)) {
+            throw 'W4 offline archive scenario must require exactly three Provider requests'
+        }
     }
     $rows = @($scenarios | ForEach-Object { @($_.matrix_rows) } | ForEach-Object { [string]$_ })
     if ($rows.Count -ne 11 -or @($rows | Sort-Object -Unique).Count -ne 11) {

@@ -3275,7 +3275,7 @@ function Start-W4GuiApplication {
         )
         if ((@($actualNavigationNames) | ConvertTo-Json -Compress) -cne
             ($expectedNavigationNames | ConvertTo-Json -Compress)) {
-            throw 'UIA navigation names/order differ from scenarios.v1.json'
+            throw 'UIA navigation names/order differ from scenarios.v2.json'
         }
         Write-W4JsonFile -Path (Join-Path $evidence 'uia-navigation-contract.json') `
             -Value ([ordered]@{
@@ -3458,7 +3458,7 @@ function Get-W4UiaSelectionProof {
     }
 
     $currentSelection = @(
-        ([System.Windows.Automation.SelectionPattern]$containerPattern).GetCurrentSelection()
+        ([System.Windows.Automation.SelectionPattern]$containerPattern).Current.GetSelection()
     )
     if ($currentSelection.Count -ne 1) {
         throw "UIA selection container must expose exactly one selected item; count=$($currentSelection.Count)"
@@ -3906,6 +3906,174 @@ function Assert-W4GatedProviderRequestLine {
     }
 }
 
+function Receive-W4ExpectedProviderGateRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$AcceptTask,
+        [Parameter(Mandatory = $true)][System.Net.Sockets.TcpListener]$Listener,
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [ValidateRange(1, 3)][int]$Ordinal,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet(
+            'text_fallback_summarize',
+            'workflow_summarize',
+            'workflow_extract_tags'
+        )]
+        [string]$Stage,
+        [ValidateRange(1000, 30000)][int]$AcceptTimeoutMilliseconds = 20000,
+        [ValidateRange(100, 5000)][int]$OwnerTimeoutMilliseconds = 2000,
+        [ValidateRange(100, 10000)][int]$RequestLineTimeoutMilliseconds = 5000,
+        [ValidateRange(64, 4096)][int]$RequestLineMaxBytes = 2048,
+        [switch]$StopListenerAfterAccept
+    )
+
+    $client = $null
+    try {
+        if ($StopListenerAfterAccept -and $Ordinal -ne 3) {
+            throw 'Only the final expected Provider request may stop the listener after accept'
+        }
+        try {
+            $expectedServerEndpoint = [System.Net.IPEndPoint]$Listener.LocalEndpoint
+        } catch {
+            throw "Offline archive Provider listener inspection failed at expected request ordinal $Ordinal"
+        }
+        try {
+            $accepted = [bool]$AcceptTask.Wait($AcceptTimeoutMilliseconds)
+        } catch {
+            throw "Offline archive Provider accept failed at expected request ordinal $Ordinal"
+        }
+        if (-not $accepted) {
+            throw "Offline archive Provider request was missing at expected ordinal $Ordinal"
+        }
+        try {
+            $client = $AcceptTask.GetAwaiter().GetResult()
+        } catch {
+            throw "Offline archive Provider accept result failed at expected request ordinal $Ordinal"
+        }
+        if ($StopListenerAfterAccept) {
+            $Listener.Stop()
+        }
+
+        try {
+            $peer = $client.Client.RemoteEndPoint -as [System.Net.IPEndPoint]
+        } catch {
+            throw "Offline archive Provider peer inspection failed at expected request ordinal $Ordinal"
+        }
+        if ($null -eq $peer -or
+            $peer.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or
+            -not [System.Net.IPAddress]::IsLoopback($peer.Address)) {
+            throw "Offline archive Provider peer was not exact IPv4 loopback at expected request ordinal $Ordinal"
+        }
+        try {
+            $owner = Assert-W4TcpClientOwnedByProcess -Client $client `
+                -ExpectedServerEndpoint $expectedServerEndpoint `
+                -Process $Process -TimeoutMilliseconds $OwnerTimeoutMilliseconds
+        } catch {
+            throw "Offline archive Provider owner verification failed at expected request ordinal $Ordinal"
+        }
+        if (-not [bool]$owner.OwnerVerified -or
+            [int]$owner.OwnerProcessId -ne [int]$Process.Id) {
+            throw "Offline archive Provider owner identity was not exact at expected request ordinal $Ordinal"
+        }
+
+        try {
+            $requestLine = Read-W4BoundedHttpRequestLine -Client $client `
+                -TimeoutMilliseconds $RequestLineTimeoutMilliseconds `
+                -MaxBytes $RequestLineMaxBytes
+        } catch {
+            throw "Offline archive Provider request-line read failed at expected request ordinal $Ordinal"
+        }
+        try {
+            Assert-W4GatedProviderRequestLine -RequestLine $requestLine
+        } catch {
+            throw "Offline archive Provider request-line contract failed at expected request ordinal $Ordinal"
+        }
+
+        return [pscustomobject]@{
+            Client = $client
+            Evidence = [pscustomobject][ordered]@{
+                ordinal = $Ordinal
+                stage = $Stage
+                owner_verified = $true
+                owner_process_id = [int]$owner.OwnerProcessId
+                request_method = 'POST'
+                request_path = '/v1/chat/completions'
+                request_http_version = 'HTTP/1.1'
+                accept_timeout_milliseconds = $AcceptTimeoutMilliseconds
+                owner_timeout_milliseconds = $OwnerTimeoutMilliseconds
+                request_line_timeout_milliseconds = $RequestLineTimeoutMilliseconds
+                request_line_max_bytes = $RequestLineMaxBytes
+                listener_stopped_after_accept = [bool]$StopListenerAfterAccept
+            }
+        }
+    } catch {
+        if ($null -ne $client) {
+            $client.Dispose()
+        }
+        throw
+    }
+}
+
+function Write-W4ProviderGateCheckpoint {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [ValidateRange(1, 3)][int]$ExpectedProviderRequests,
+        [Parameter(Mandatory = $true)][object[]]$ProviderRequests,
+        [Parameter(Mandatory = $true)][bool]$ListenerStopped
+    )
+
+    $validatedCount = @($ProviderRequests).Count
+    if ($validatedCount -lt 1 -or $validatedCount -gt $ExpectedProviderRequests) {
+        throw 'Offline archive Provider checkpoint count is outside the versioned contract'
+    }
+    $expectedStages = @(
+        'text_fallback_summarize',
+        'workflow_summarize',
+        'workflow_extract_tags'
+    )
+    for ($index = 0; $index -lt $validatedCount; $index += 1) {
+        $row = @($ProviderRequests)[$index]
+        Assert-W4ExactObjectFields -Object $row -Fields @(
+            'ordinal', 'stage', 'owner_verified', 'owner_process_id',
+            'request_method', 'request_path', 'request_http_version',
+            'accept_timeout_milliseconds', 'owner_timeout_milliseconds',
+            'request_line_timeout_milliseconds', 'request_line_max_bytes',
+            'listener_stopped_after_accept'
+        ) -Label "offline Provider checkpoint request $($index + 1)"
+        Assert-W4ExactBoolean -Value $row.owner_verified -Expected $true `
+            -Label "offline Provider checkpoint owner $($index + 1)"
+        Assert-W4ExactBoolean -Value $row.listener_stopped_after_accept `
+            -Expected ($index -eq 2) `
+            -Label "offline Provider checkpoint listener state $($index + 1)"
+        if ([int]$row.ordinal -ne ($index + 1) -or
+            [string]$row.stage -cne $expectedStages[$index] -or
+            [int]$row.owner_process_id -le 0 -or
+            [string]$row.request_method -cne 'POST' -or
+            [string]$row.request_path -cne '/v1/chat/completions' -or
+            [string]$row.request_http_version -cne 'HTTP/1.1') {
+            throw 'Offline archive Provider checkpoint request row is not exact'
+        }
+    }
+    $last = @($ProviderRequests)[$validatedCount - 1]
+    if ([int]$last.ordinal -ne $validatedCount -or
+        -not [bool]$last.owner_verified) {
+        throw 'Offline archive Provider checkpoint rows are not contiguous and owner-verified'
+    }
+    Write-W4JsonFile -Path $Path -Value ([ordered]@{
+        schema_version = 'pkv.w4.archive-provider-gate-checkpoint.v1'
+        expected_provider_requests = $ExpectedProviderRequests
+        validated_provider_requests = $validatedCount
+        last_validated_ordinal = [int]$last.ordinal
+        last_validated_stage = [string]$last.stage
+        all_peers_ipv4_loopback = $true
+        all_tcp_owners_verified = $true
+        all_request_lines_validated = $true
+        listener_stopped = $ListenerStopped
+        provider_requests = @($ProviderRequests)
+    })
+}
+
 function Invoke-W4OfflineTextArchiveScenario {
     [CmdletBinding()]
     param(
@@ -3913,6 +4081,15 @@ function Invoke-W4OfflineTextArchiveScenario {
         [Parameter(Mandatory = $true)]$ScenarioContext
     )
 
+    Assert-W4ExactObjectFields -Object $ScenarioContext.Scenario -Fields @(
+        'scenario_id', 'matrix_rows', 'handler', 'timeout_seconds',
+        'requires_harness', 'expected_provider_requests'
+    ) -Label 'offline text archive scenario contract'
+    if ($ScenarioContext.Scenario.expected_provider_requests -isnot [int] -or
+        [int]$ScenarioContext.Scenario.expected_provider_requests -ne 3) {
+        throw 'Offline archive scenario contract must require exactly three Provider requests'
+    }
+    $expectedProviderRequests = [int]$ScenarioContext.Scenario.expected_provider_requests
     [void](Invoke-W4Install -RunContext $RunContext -ScenarioContext $ScenarioContext)
     $note = [System.IO.File]::ReadAllText(
         (Join-Path $RunContext.FixtureRoot 'offline-note.v1.txt'),
@@ -3924,6 +4101,7 @@ function Invoke-W4OfflineTextArchiveScenario {
         0
     )
     $providerGateClient = $null
+    $providerRequestEvidence = [System.Collections.Generic.List[object]]::new()
     $providerGate.Start(1)
     try {
         $providerGatePort = ([System.Net.IPEndPoint]$providerGate.LocalEndpoint).Port
@@ -3932,6 +4110,8 @@ function Invoke-W4OfflineTextArchiveScenario {
         $gui = Start-W4GuiApplication -ScenarioContext $ScenarioContext -EvidenceName 'gui-archive'
         $closed = $false
         try {
+            $providerCheckpointPath = Join-Path $gui.Evidence `
+                'archive-provider-gate-checkpoint.json'
             Select-W4NavigationItem -Gui $gui -Name '归档'
             Assert-W4UiaContractSegment -Gui $gui -AutomationIds @(
                 'archive_view', 'archive_tabs', 'archive_url_input', 'archive_url_submit'
@@ -3948,28 +4128,18 @@ function Invoke-W4OfflineTextArchiveScenario {
             $providerAcceptTask = $providerGate.AcceptTcpClientAsync()
             Invoke-W4UiaElement -Element $textSubmit
 
-            # The loopback listener deliberately withholds an HTTP response.
-            # An accepted, validated request is an external causal barrier: the
-            # worker cannot reach its degraded terminal before this UIA proof.
-            if (-not $providerAcceptTask.Wait(20000)) {
-                throw 'Offline archive did not reach the gated loopback Provider within 20 seconds'
-            }
-            $providerGateClient = $providerAcceptTask.GetAwaiter().GetResult()
-            $providerPeer = [System.Net.IPEndPoint]$providerGateClient.Client.RemoteEndPoint
-            if (-not [System.Net.IPAddress]::IsLoopback($providerPeer.Address)) {
-                throw "Offline archive Provider gate accepted a non-loopback peer: $($providerPeer.Address)"
-            }
-            $providerOwner = Assert-W4TcpClientOwnedByProcess `
-                -Client $providerGateClient `
-                -ExpectedServerEndpoint ([System.Net.IPEndPoint]$providerGate.LocalEndpoint) `
-                -Process $gui.Process -TimeoutMilliseconds 2000
-            if (-not [bool]$providerOwner.OwnerVerified -or
-                [int]$providerOwner.OwnerProcessId -ne [int]$gui.Process.Id) {
-                throw 'Offline archive Provider gate TCP owner evidence was not exact'
-            }
-            $requestLine = Read-W4BoundedHttpRequestLine -Client $providerGateClient `
-                -TimeoutMilliseconds 5000 -MaxBytes 2048
-            Assert-W4GatedProviderRequestLine -RequestLine $requestLine
+            # The first accepted request is held as an external causal barrier:
+            # the worker cannot reach a degraded terminal before the running-state
+            # UIA proof. Every request is independently bound to the GUI process.
+            $providerRequest = Receive-W4ExpectedProviderGateRequest `
+                -AcceptTask $providerAcceptTask -Listener $providerGate `
+                -Process $gui.Process -Ordinal 1 -Stage 'text_fallback_summarize'
+            $providerGateClient = $providerRequest.Client
+            [void]$providerRequestEvidence.Add($providerRequest.Evidence)
+            Write-W4ProviderGateCheckpoint -Path $providerCheckpointPath `
+                -ExpectedProviderRequests $expectedProviderRequests `
+                -ProviderRequests $providerRequestEvidence.ToArray() `
+                -ListenerStopped $false
             $progressStatus = Get-W4UiaElementById -Root $gui.Window `
                 -AutomationId 'archive_progress_status'
             $progressText = Get-W4UiaText -Element $progressStatus
@@ -3989,12 +4159,65 @@ function Invoke-W4OfflineTextArchiveScenario {
             Assert-W4UiaContractSegment -Gui $gui -AutomationIds @(
                 'archive_view', 'archive_progress_status'
             ) -EvidenceName 'uia-contract-archive-running.json'
+            # Pre-arm each next accept before releasing the current request. This
+            # prevents a deterministic follow-up call from entering an unobserved
+            # listener backlog and waiting for the product HTTP timeout.
+            $providerAcceptTask = $providerGate.AcceptTcpClientAsync()
             $providerGateClient.Dispose()
             $providerGateClient = $null
-            $providerGate.Stop()
+            $providerRequest = Receive-W4ExpectedProviderGateRequest `
+                -AcceptTask $providerAcceptTask -Listener $providerGate `
+                -Process $gui.Process -Ordinal 2 -Stage 'workflow_summarize'
+            $providerGateClient = $providerRequest.Client
+            [void]$providerRequestEvidence.Add($providerRequest.Evidence)
+            Write-W4ProviderGateCheckpoint -Path $providerCheckpointPath `
+                -ExpectedProviderRequests $expectedProviderRequests `
+                -ProviderRequests $providerRequestEvidence.ToArray() `
+                -ListenerStopped $false
 
-            $resultTitle = Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_title'
-            [void](Wait-W4UiaTextContains -Element $resultTitle -Text '归档成功（降级）' -TimeoutSeconds 90)
+            $providerAcceptTask = $providerGate.AcceptTcpClientAsync()
+            $providerGateClient.Dispose()
+            $providerGateClient = $null
+            $providerRequest = Receive-W4ExpectedProviderGateRequest `
+                -AcceptTask $providerAcceptTask -Listener $providerGate `
+                -Process $gui.Process -Ordinal 3 -Stage 'workflow_extract_tags' `
+                -StopListenerAfterAccept
+            $providerGateClient = $providerRequest.Client
+            [void]$providerRequestEvidence.Add($providerRequest.Evidence)
+            Write-W4ProviderGateCheckpoint -Path $providerCheckpointPath `
+                -ExpectedProviderRequests $expectedProviderRequests `
+                -ProviderRequests $providerRequestEvidence.ToArray() `
+                -ListenerStopped $true
+            if ($providerRequestEvidence.Count -ne $expectedProviderRequests) {
+                throw 'Offline archive Provider request count did not match the versioned scenario contract'
+            }
+
+            # Request three stopped the listener immediately after accept, before
+            # owner/request-line validation. The final client remains held until
+            # validation completes, so no unauthenticated or unhandled fourth
+            # Provider request is authorized or processed by this gate.
+            $providerGateClient.Dispose()
+            $providerGateClient = $null
+
+            # Element creation and terminal text share one fresh 90-second absolute
+            # deadline; the old implicit 20-second lookup made the text wait moot.
+            $resultDeadline = [DateTime]::UtcNow.AddSeconds(90)
+            $resultLookupSeconds = [int][Math]::Ceiling(
+                ($resultDeadline - [DateTime]::UtcNow).TotalSeconds
+            )
+            if ($resultLookupSeconds -le 0) {
+                throw 'Offline archive result fresh-reacquire deadline expired'
+            }
+            $resultTitle = Get-W4UiaElementById -Root $gui.Window `
+                -AutomationId 'archive_result_title' -TimeoutSeconds $resultLookupSeconds
+            $resultRemainingSeconds = [int][Math]::Ceiling(
+                ($resultDeadline - [DateTime]::UtcNow).TotalSeconds
+            )
+            if ($resultRemainingSeconds -le 0) {
+                throw 'Offline archive result fresh-reacquire deadline expired'
+            }
+            [void](Wait-W4UiaTextContains -Element $resultTitle `
+                -Text '归档成功（降级）' -TimeoutSeconds $resultRemainingSeconds)
             $modalDismissed = [bool](Dismiss-W4ProcessModal -ProcessId $gui.Process.Id `
                 -MainWindow $gui.Window -ExpectedTitle '归档降级警告' -TimeoutSeconds 10)
             Write-W4JsonFile -Path (Join-Path $gui.Evidence 'archive-modal-observation.json') `
@@ -4021,18 +4244,15 @@ function Invoke-W4OfflineTextArchiveScenario {
                 -AutomationId 'archive_text_submit' -Expected $true -TimeoutSeconds 10)
             Write-W4JsonFile -Path (Join-Path $gui.Evidence 'archive-provider-gate.json') `
                 -Value ([ordered]@{
-                    schema_version = 'pkv.w4.archive-provider-gate.v1'
-                    host = '127.0.0.1'
-                    port = [int]$providerGatePort
-                    accept_timeout_milliseconds = 20000
-                    request_line_timeout_milliseconds = 5000
-                    request_method = 'POST'
-                    request_path = '/v1/chat/completions'
-                    request_http_version = 'HTTP/1.1'
-                    request_line_validated = $true
-                    peer_loopback = $true
-                    tcp_owner_verified = $true
-                    tcp_owner_pid = [int]$providerOwner.OwnerProcessId
+                    schema_version = 'pkv.w4.archive-provider-gate.v2'
+                    # This is the versioned ordered gate plan actually verified;
+                    # it is not a claim about unobservable global TCP attempts.
+                    expected_provider_requests = $expectedProviderRequests
+                    accepted_provider_requests = $providerRequestEvidence.Count
+                    provider_requests = @($providerRequestEvidence)
+                    listener_stopped_after_final_accept = $true
+                    unexpected_provider_requests_processed = $false
+                    result_fresh_reacquire_deadline_seconds = 90
                     progress_visible = $true
                     progress_text_nonempty = $true
                     submits_disabled_while_running = $true
@@ -4237,7 +4457,7 @@ function Wait-W4UiaSelectionCount {
                 throw "UIA selection container does not expose SelectionPattern: $AutomationId"
             }
             $actualCount = @(
-                ([System.Windows.Automation.SelectionPattern]$selectionPattern).GetCurrentSelection()
+                ([System.Windows.Automation.SelectionPattern]$selectionPattern).Current.GetSelection()
             ).Count
             if ($actualCount -eq $ExpectedCount) {
                 return $elements.Item(0)

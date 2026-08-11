@@ -6,6 +6,7 @@ They do not import ``src`` and do not require a built product Artifact.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -28,7 +29,8 @@ DRIVER_ROOT = REPOSITORY_ROOT / "packaging" / "w4_driver"
 CONTROLLER = DRIVER_ROOT / "Invoke-W4ArtifactE2E.ps1"
 DRIVER_MODULE = DRIVER_ROOT / "W4.Driver.psm1"
 SCENARIO_MODULE = DRIVER_ROOT / "W4.Scenarios.psm1"
-SCENARIO_CONTRACT = DRIVER_ROOT / "scenarios.v1.json"
+SCENARIO_CONTRACT = DRIVER_ROOT / "scenarios.v2.json"
+DRIVER_EXPORTER = DRIVER_ROOT / "Export-W4DriverBundle.ps1"
 ARTIFACT_ID = "PersonalKnowledgeVault-0.8.1-windows-x86_64"
 EXPECTED_MATRIX_ROWS = {
     "payload_and_provenance",
@@ -207,6 +209,30 @@ def _run_build_environment_contract_validator(
     return _run_powershell(["-Command", command], cwd=REPOSITORY_ROOT)
 
 
+def _run_scenario_contract_validator(
+    tmp_path: Path, contract: dict[str, object]
+) -> subprocess.CompletedProcess[str]:
+    contract_path = tmp_path / f"scenario-contract-{uuid.uuid4().hex}.json"
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' -Force;"
+        "$tokens=$null;$parseErrors=$null;"
+        f"$ast=[System.Management.Automation.Language.Parser]::ParseFile("
+        f"'{_ps_single_quoted(CONTROLLER)}',[ref]$tokens,[ref]$parseErrors);"
+        "if($parseErrors.Count -ne 0){throw (($parseErrors|% Message)-join '; ')};"
+        "$definitions=@($ast.FindAll({param($node)"
+        "$node -is [System.Management.Automation.Language.FunctionDefinitionAst]},"
+        "$true));"
+        "foreach($definition in $definitions){"
+        ". ([scriptblock]::Create($definition.Extent.Text))};"
+        f"$contract=[IO.File]::ReadAllText('{_ps_single_quoted(contract_path)}')|"
+        "ConvertFrom-Json;"
+        "Test-W4ScenarioContract -Contract $contract"
+    )
+    return _run_powershell(["-Command", command], cwd=REPOSITORY_ROOT)
+
+
 def _run_mcp_durable_seed_validator(
     tmp_path: Path, payload: dict[str, object]
 ) -> subprocess.CompletedProcess[str]:
@@ -363,6 +389,280 @@ def _run_tcp_owner_contract_probe() -> subprocess.CompletedProcess[str]:
         "if($null -ne $other){"
         "try{$other.Refresh();if(-not $other.HasExited){$other.Kill();"
         "[void]$other.WaitForExit(5000)}}catch{};$other.Dispose()}"
+        "}"
+    )
+    return _run_powershell(
+        ["-Command", command], cwd=REPOSITORY_ROOT, timeout=30
+    )
+
+
+def _run_uia_selection_pattern_probe() -> subprocess.CompletedProcess[str]:
+    title = f"W4SelectionProbe-{uuid.uuid4().hex}"
+    child_script = f"""
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
+$window = [System.Windows.Window]::new()
+$window.Title = '{title}'
+$window.Width = 360
+$window.Height = 240
+$window.WindowStartupLocation = [System.Windows.WindowStartupLocation]::Manual
+$window.Left = 120
+$window.Top = 120
+$list = [System.Windows.Controls.ListBox]::new()
+$list.SelectionMode = [System.Windows.Controls.SelectionMode]::Single
+[System.Windows.Automation.AutomationProperties]::SetAutomationId(
+    $list,
+    'w4_selection_probe_list'
+)
+[void]$list.Items.Add('alpha')
+[void]$list.Items.Add('beta')
+$list.UnselectAll()
+$window.Content = $list
+$window.Add_ContentRendered({{
+    $list.UnselectAll()
+    [void]$window.Activate()
+}})
+[void]$window.ShowDialog()
+"""
+    encoded_child = base64.b64encode(child_script.encode("utf-16le")).decode("ascii")
+    command = (
+        "$ErrorActionPreference='Stop';"
+        "Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop;"
+        "Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop;"
+        f"Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' -Force;"
+        f"$module=Import-Module '{_ps_single_quoted(SCENARIO_MODULE)}' "
+        "-Force -PassThru;"
+        "$process=$null;"
+        "try {"
+        "$psi=[Diagnostics.ProcessStartInfo]::new();"
+        "$psi.FileName=(Join-Path $PSHOME 'powershell.exe');"
+        f"$psi.Arguments='-NoLogo -NoProfile -NonInteractive -Sta -EncodedCommand "
+        f"{encoded_child}';"
+        "$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;"
+        "$process=[Diagnostics.Process]::Start($psi);"
+        "if($null -eq $process){throw 'UIA selection probe process did not start'};"
+        "$desktop=[System.Windows.Automation.AutomationElement]::RootElement;"
+        "$pidCondition=[System.Windows.Automation.PropertyCondition]::new("
+        "[System.Windows.Automation.AutomationElement]::ProcessIdProperty,"
+        "[int]$process.Id);"
+        "$nameCondition=[System.Windows.Automation.PropertyCondition]::new("
+        "[System.Windows.Automation.AutomationElement]::NameProperty,"
+        f"'{title}');"
+        "$windowCondition=[System.Windows.Automation.AndCondition]::new("
+        "[System.Windows.Automation.Condition[]]@($pidCondition,$nameCondition));"
+        "$deadline=[DateTime]::UtcNow.AddSeconds(15);$window=$null;"
+        "do {"
+        "$window=$desktop.FindFirst("
+        "[System.Windows.Automation.TreeScope]::Children,$windowCondition);"
+        "if($null -ne $window){break};"
+        "$process.Refresh();"
+        "if($process.HasExited){throw 'UIA selection probe exited before discovery'};"
+        "Start-Sleep -Milliseconds 50"
+        "}while([DateTime]::UtcNow -lt $deadline);"
+        "if($null -eq $window){throw 'UIA selection probe window was not found'};"
+        "$listCondition=[System.Windows.Automation.PropertyCondition]::new("
+        "[System.Windows.Automation.AutomationElement]::AutomationIdProperty,"
+        "'w4_selection_probe_list');"
+        "$listDeadline=[DateTime]::UtcNow.AddSeconds(10);$list=$null;"
+        "do {$listMatches=$window.FindAll("
+        "[System.Windows.Automation.TreeScope]::Descendants,$listCondition);"
+        "if($listMatches.Count -eq 1){$list=$listMatches.Item(0);break};"
+        "if($listMatches.Count -gt 1){throw 'UIA selection probe list was duplicated'};"
+        "Start-Sleep -Milliseconds 50"
+        "}while([DateTime]::UtcNow -lt $listDeadline);"
+        "if($null -eq $list){throw 'UIA selection probe list was not found'};"
+        "$zeroPattern=$null;"
+        "if(-not $list.TryGetCurrentPattern("
+        "[System.Windows.Automation.SelectionPattern]::Pattern,"
+        "[ref]$zeroPattern)){throw 'Probe list lacks SelectionPattern'};"
+        "$zeroCount=@(([System.Windows.Automation.SelectionPattern]"
+        "$zeroPattern).Current.GetSelection()).Count;"
+        "if($zeroCount -ne 0){throw 'Probe list did not begin with zero selection'};"
+        "$list=& $module {param($root) Wait-W4UiaSelectionCount -Root $root "
+        "-AutomationId 'w4_selection_probe_list' -ExpectedCount 0 "
+        "-TimeoutSeconds 10} $window;"
+        "$item=& $module {param($root) Select-W4FirstListItem -Root $root} $list;"
+        "$oneList=& $module {param($root) Wait-W4UiaSelectionCount -Root $root "
+        "-AutomationId 'w4_selection_probe_list' -ExpectedCount 1 "
+        "-TimeoutSeconds 10} $window;"
+        "$onePattern=$null;"
+        "if(-not $oneList.TryGetCurrentPattern("
+        "[System.Windows.Automation.SelectionPattern]::Pattern,"
+        "[ref]$onePattern)){throw 'Probe list lost SelectionPattern'};"
+        "$selection=@(([System.Windows.Automation.SelectionPattern]"
+        "$onePattern).Current.GetSelection());"
+        "$itemRuntimeId=@($item.GetRuntimeId());"
+        "$selectedRuntimeId=@($selection[0].GetRuntimeId());"
+        "$runtimeIdsMatch=($itemRuntimeId.Count -gt 0 -and "
+        "$itemRuntimeId.Count -eq $selectedRuntimeId.Count);"
+        "if($runtimeIdsMatch){"
+        "for($index=0;$index -lt $itemRuntimeId.Count;$index+=1){"
+        "if([int]$itemRuntimeId[$index] -ne "
+        "[int]$selectedRuntimeId[$index]){$runtimeIdsMatch=$false;break}}};"
+        "$proof=& $module {param($root,$item) "
+        "Get-W4UiaSelectionProof -Root $root -Item $item} $oneList $item;"
+        "[ordered]@{zero_count=[int]$zeroCount;"
+        "one_count=[int]$selection.Count;runtime_ids_match=[bool]$runtimeIdsMatch;"
+        "selected_runtime_id=@($selectedRuntimeId);proof=$proof}"
+        "|ConvertTo-Json -Depth 10 -Compress"
+        "}finally{"
+        "if($null -ne $process){try{$process.Refresh();"
+        "if(-not $process.HasExited){$process.Kill();"
+        "[void]$process.WaitForExit(5000)}}catch{};$process.Dispose()}"
+        "}"
+    )
+    return _run_powershell(
+        ["-Command", command], cwd=REPOSITORY_ROOT, timeout=45
+    )
+
+
+def _run_provider_gate_sequence_probe(
+    mode: str, checkpoint_path: Path,
+) -> subprocess.CompletedProcess[str]:
+    assert mode in {"success", "wrong_line", "missing_third"}
+    exact_line = "POST /v1/chat/completions HTTP/1.1"
+    lines = {
+        "success": [exact_line, exact_line, exact_line],
+        "wrong_line": [
+            "GET /v1/chat/completions?token=w4-sensitive-gate-canary HTTP/1.1"
+        ],
+        "missing_third": [exact_line, exact_line],
+    }[mode]
+    line_literals = ",".join(f"'{line}'" for line in lines)
+    child_script = f"""
+$ErrorActionPreference = 'Stop'
+$port = [int]$env:PKV_W4_GATE_PROBE_PORT
+$lines = @({line_literals})
+foreach ($line in $lines) {{
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {{
+        $client.Connect([System.Net.IPAddress]::Loopback, $port)
+        $stream = $client.GetStream()
+        $bytes = [System.Text.Encoding]::ASCII.GetBytes($line + "`r`n")
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush()
+        $stream.ReadTimeout = 15000
+        try {{
+            while ($stream.ReadByte() -ge 0) {{}}
+        }} catch [System.IO.IOException] {{}}
+    }} finally {{
+        $client.Dispose()
+    }}
+}}
+"""
+    encoded_child = base64.b64encode(child_script.encode("utf-16le")).decode("ascii")
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' -Force;"
+        f"$module=Import-Module '{_ps_single_quoted(SCENARIO_MODULE)}' "
+        "-Force -PassThru;"
+        f"$mode='{mode}';"
+        f"$checkpointPath='{_ps_single_quoted(checkpoint_path)}';"
+        "$listener=$null;$process=$null;"
+        "$client1=$null;$client2=$null;$client3=$null;$client4=$null;"
+        "$rows=[System.Collections.Generic.List[object]]::new();"
+        "$prearmed=[System.Collections.Generic.List[int]]::new();"
+        "$caught=$null;$listenerStoppedBeforeFinalRelease=$false;"
+        "$fourthRequestProcessed=$false;"
+        "$stopwatch=[Diagnostics.Stopwatch]::StartNew();"
+        "try {"
+        "$listener=[Net.Sockets.TcpListener]::new("
+        "[Net.IPAddress]::Loopback,0);$listener.Start(1);"
+        "$port=([Net.IPEndPoint]$listener.LocalEndpoint).Port;"
+        "$accept1=$listener.AcceptTcpClientAsync();[void]$prearmed.Add(1);"
+        "$psi=[Diagnostics.ProcessStartInfo]::new();"
+        "$psi.FileName=(Join-Path $PSHOME 'powershell.exe');"
+        f"$psi.Arguments='-NoLogo -NoProfile -NonInteractive -EncodedCommand "
+        f"{encoded_child}';"
+        "$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;"
+        "$psi.EnvironmentVariables['PKV_W4_GATE_PROBE_PORT']=[string]$port;"
+        "$process=[Diagnostics.Process]::Start($psi);"
+        "if($null -eq $process){throw 'Provider gate probe process did not start'};"
+        "try {"
+        "$request1=& $module {param($task,$listener,$process)"
+        "Receive-W4ExpectedProviderGateRequest -AcceptTask $task "
+        "-Listener $listener -Process $process -Ordinal 1 "
+        "-Stage 'text_fallback_summarize' -AcceptTimeoutMilliseconds 5000 "
+        "-OwnerTimeoutMilliseconds 2000 -RequestLineTimeoutMilliseconds 5000 "
+        "-RequestLineMaxBytes 2048} $accept1 $listener $process;"
+        "$client1=$request1.Client;[void]$rows.Add($request1.Evidence);"
+        "& $module {param($path,[object[]]$rows) "
+        "Write-W4ProviderGateCheckpoint "
+        "-Path $path -ExpectedProviderRequests 3 -ProviderRequests $rows "
+        "-ListenerStopped $false} $checkpointPath $rows.ToArray();"
+        "if($mode -ceq 'wrong_line'){"
+        "throw 'Wrong Provider request line was unexpectedly accepted'};"
+        "$accept2=$listener.AcceptTcpClientAsync();"
+        "if($accept2.IsCompleted){throw 'Provider accept two was not prearmed'};"
+        "[void]$prearmed.Add(2);$client1.Dispose();$client1=$null;"
+        "$request2=& $module {param($task,$listener,$process)"
+        "Receive-W4ExpectedProviderGateRequest -AcceptTask $task "
+        "-Listener $listener -Process $process -Ordinal 2 "
+        "-Stage 'workflow_summarize' -AcceptTimeoutMilliseconds 5000 "
+        "-OwnerTimeoutMilliseconds 2000 -RequestLineTimeoutMilliseconds 5000 "
+        "-RequestLineMaxBytes 2048} $accept2 $listener $process;"
+        "$client2=$request2.Client;[void]$rows.Add($request2.Evidence);"
+        "& $module {param($path,[object[]]$rows) "
+        "Write-W4ProviderGateCheckpoint "
+        "-Path $path -ExpectedProviderRequests 3 -ProviderRequests $rows "
+        "-ListenerStopped $false} $checkpointPath $rows.ToArray();"
+        "$accept3=$listener.AcceptTcpClientAsync();"
+        "if($accept3.IsCompleted){throw 'Provider accept three was not prearmed'};"
+        "[void]$prearmed.Add(3);$client2.Dispose();$client2=$null;"
+        "$thirdAcceptTimeout=if($mode -ceq 'missing_third'){1200}else{5000};"
+        "$request3=& $module {param($task,$listener,$process,$timeout)"
+        "Receive-W4ExpectedProviderGateRequest -AcceptTask $task "
+        "-Listener $listener -Process $process -Ordinal 3 "
+        "-Stage 'workflow_extract_tags' -AcceptTimeoutMilliseconds $timeout "
+        "-OwnerTimeoutMilliseconds 2000 -RequestLineTimeoutMilliseconds 5000 "
+        "-RequestLineMaxBytes 2048 -StopListenerAfterAccept} "
+        "$accept3 $listener $process $thirdAcceptTimeout;"
+        "$client3=$request3.Client;[void]$rows.Add($request3.Evidence);"
+        "$listenerStoppedBeforeFinalRelease="
+        "[bool]$request3.Evidence.listener_stopped_after_accept;"
+        "if($listener.Server.IsBound){throw 'Provider listener remained bound'};"
+        "& $module {param($path,[object[]]$rows) "
+        "Write-W4ProviderGateCheckpoint "
+        "-Path $path -ExpectedProviderRequests 3 -ProviderRequests $rows "
+        "-ListenerStopped $true} $checkpointPath $rows.ToArray();"
+        "$client4=[Net.Sockets.TcpClient]::new();"
+        "$completed4=$false;"
+        "try{$connect4=$client4.ConnectAsync([Net.IPAddress]::Loopback,$port);"
+        "try{$completed4=[bool]$connect4.Wait(2000)}"
+        "catch [AggregateException]{$completed4=$false}"
+        "catch [Net.Sockets.SocketException]{$completed4=$false};"
+        "if($completed4 -and $client4.Connected){"
+        "try{$stream4=$client4.GetStream();$stream4.ReadTimeout=2000;"
+        "$line4=[Text.Encoding]::ASCII.GetBytes("
+        "'POST /v1/chat/completions HTTP/1.1'+\"`r`n\");"
+        "$stream4.Write($line4,0,$line4.Length);$stream4.Flush();"
+        "$read4=$stream4.ReadByte();if($read4 -ge 0){"
+        "$fourthRequestProcessed=$true;"
+        "throw 'Fourth Provider request received an application response'};"
+        "}catch [IO.IOException]{}catch [Net.Sockets.SocketException]{}}"
+        "}finally{$client4.Dispose();$client4=$null};"
+        "$client3.Dispose();$client3=$null"
+        "}catch{$caught=$_.Exception.Message};"
+        "$stopwatch.Stop();"
+        "$checkpoint=$null;if(Test-Path -LiteralPath $checkpointPath -PathType Leaf){"
+        "$checkpoint=Get-Content -LiteralPath $checkpointPath -Raw|ConvertFrom-Json};"
+        "[ordered]@{mode=$mode;process_id=[int]$process.Id;"
+        "prearmed_ordinals=@($prearmed);requests=@($rows);"
+        "listener_stopped_before_final_release="
+        "[bool]$listenerStoppedBeforeFinalRelease;"
+        "fourth_request_processed=[bool]$fourthRequestProcessed;"
+        "checkpoint=$checkpoint;"
+        "caught=$caught;elapsed_milliseconds=[int64]$stopwatch.ElapsedMilliseconds}"
+        "|ConvertTo-Json -Depth 10 -Compress"
+        "}finally{"
+        "if($null -ne $client1){$client1.Dispose()};"
+        "if($null -ne $client2){$client2.Dispose()};"
+        "if($null -ne $client3){$client3.Dispose()};"
+        "if($null -ne $client4){$client4.Dispose()};"
+        "if($null -ne $listener){$listener.Stop()};"
+        "if($null -ne $process){try{$process.Refresh();"
+        "if(-not $process.HasExited){$process.Kill();"
+        "[void]$process.WaitForExit(5000)}}catch{};$process.Dispose()}"
         "}"
     )
     return _run_powershell(
@@ -1308,7 +1608,7 @@ def _new_launcher_fixture(root: Path) -> dict[str, Path]:
         (controller_root / module_name).write_text(
             "# synthetic launcher boundary module\n", encoding="utf-8"
         )
-    scenario_contract = controller_root / "scenarios.v1.json"
+    scenario_contract = controller_root / "scenarios.v2.json"
     shutil.copy2(SCENARIO_CONTRACT, scenario_contract)
     (fixture / "fixture-manifest.v1.json").write_text(
         json.dumps(
@@ -1528,6 +1828,7 @@ def test_scenario_contract_freezes_ten_scenarios_and_eleven_unique_rows() -> Non
     scenario_ids = [item["scenario_id"] for item in scenarios]
     rows = [row for item in scenarios for row in item["matrix_rows"]]
 
+    assert contract["schema_version"] == "pkv.m13.w4-driver-scenarios.v2"
     assert len(scenarios) == 10
     assert len(scenario_ids) == len(set(scenario_ids)) == 10
     assert len(rows) == len(set(rows)) == 11
@@ -1537,6 +1838,83 @@ def test_scenario_contract_freezes_ten_scenarios_and_eleven_unique_rows() -> Non
         item["scenario_id"] for item in scenarios if item["requires_harness"]
     ]
     assert harness_scenarios == ["w4.chat_loopback.v1"]
+
+    common_fields = {
+        "scenario_id",
+        "matrix_rows",
+        "handler",
+        "timeout_seconds",
+        "requires_harness",
+    }
+    offline = next(
+        item
+        for item in scenarios
+        if item["scenario_id"] == "w4.offline_text_archive.v1"
+    )
+    assert set(offline) == common_fields | {"expected_provider_requests"}
+    assert type(offline["expected_provider_requests"]) is int
+    assert offline["expected_provider_requests"] == 3
+    assert all(set(item) == common_fields for item in scenarios if item is not offline)
+
+
+def test_scenario_contract_v2_filename_and_schema_are_used_end_to_end() -> None:
+    assert SCENARIO_CONTRACT.is_file()
+    assert not (DRIVER_ROOT / "scenarios.v1.json").exists()
+
+    sources = {
+        "controller": _read(CONTROLLER),
+        "exporter": _read(DRIVER_EXPORTER),
+        "outer_runner": _read(RUNNER),
+        "scenario_module": _read(SCENARIO_MODULE),
+    }
+    for source in sources.values():
+        assert "scenarios.v1.json" not in source
+        assert "pkv.m13.w4-driver-scenarios.v1" not in source
+
+    assert "pkv.m13.w4-driver-scenarios.v2" in sources["controller"]
+    assert "scenarios.v2.json" in sources["exporter"]
+    assert "scenarios.v2.json" in sources["outer_runner"]
+    assert "pkv.m13.w4-driver-scenarios.v2" in sources["outer_runner"]
+    assert "scenarios.v2.json" in sources["scenario_module"]
+
+
+def test_scenario_contract_v2_schema_is_case_sensitive(tmp_path: Path) -> None:
+    contract = json.loads(_read(SCENARIO_CONTRACT))
+    contract["schema_version"] = "pkv.m13.w4-driver-scenarios.V2"
+
+    result = _run_scenario_contract_validator(tmp_path, contract)
+
+    assert result.returncode != 0
+    assert "schema/runner/Artifact version is not frozen v2/v2/0.8.1" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("mutation", "value"),
+    [
+        ("missing", None),
+        ("wrong_count", 2),
+        ("wrong_type", "3"),
+    ],
+)
+def test_scenario_contract_rejects_missing_or_wrong_provider_request_count(
+    tmp_path: Path, mutation: str, value: object
+) -> None:
+    contract = json.loads(_read(SCENARIO_CONTRACT))
+    offline = next(
+        item
+        for item in contract["ordered_scenarios"]
+        if item["scenario_id"] == "w4.offline_text_archive.v1"
+    )
+    if mutation == "missing":
+        offline.pop("expected_provider_requests")
+    else:
+        offline["expected_provider_requests"] = value
+
+    result = _run_scenario_contract_validator(tmp_path, contract)
+
+    assert result.returncode != 0
+    assert "offline" in result.stderr.lower()
+    assert "provider" in result.stderr.lower()
 
 
 def test_controller_consumes_the_complete_uia_registry() -> None:
@@ -2901,7 +3279,7 @@ def test_selection_count_wait_freshly_resolves_exact_selection_container() -> No
     selection_pattern = helper.index(
         "[System.Windows.Automation.SelectionPattern]::Pattern", exact_one
     )
-    current_selection = helper.index(".GetCurrentSelection()", selection_pattern)
+    current_selection = helper.index(".Current.GetSelection()", selection_pattern)
     expected = helper.index("$actualCount -eq $ExpectedCount", current_selection)
     fresh_return = helper.index("return $elements.Item(0)", expected)
     loop_end = helper.index("} while ([DateTime]::UtcNow -lt $deadline)", fresh_return)
@@ -2923,6 +3301,7 @@ def test_selection_count_wait_freshly_resolves_exact_selection_container() -> No
     assert "$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)" in helper
     assert "Start-Sleep -Milliseconds 50" in helper
     assert "selection count did not reach expected value" in helper
+    assert ".GetCurrentSelection()" not in helper
 
 
 def test_bm25_search_recovery_crosses_distinct_terminal_before_target_rerun() -> None:
@@ -3382,10 +3761,21 @@ def test_tcp_owner_helper_accepts_self_client_and_rejects_different_live_root() 
 
 
 def test_archive_running_state_is_bound_to_a_loopback_provider_gate() -> None:
-    block = _powershell_function(
-        _read(SCENARIO_MODULE), "Invoke-W4OfflineTextArchiveScenario"
-    )
+    source = _read(SCENARIO_MODULE)
+    block = _powershell_function(source, "Invoke-W4OfflineTextArchiveScenario")
     compact = _compact_powershell(block)
+    receiver = _compact_powershell(
+        _powershell_function(source, "Receive-W4ExpectedProviderGateRequest")
+    )
+
+    contract_guard = compact.index(
+        "Assert-W4ExactObjectFields -Object $ScenarioContext.Scenario"
+    )
+    expected_count = compact.index(
+        "$expectedProviderRequests = "
+        "[int]$ScenarioContext.Scenario.expected_provider_requests",
+        contract_guard,
+    )
     listener = compact.index(
         "[System.Net.Sockets.TcpListener]::new( "
         "[System.Net.IPAddress]::Parse('127.0.0.1'), 0 )"
@@ -3405,39 +3795,25 @@ def test_archive_running_state_is_bound_to_a_loopback_provider_gate() -> None:
         "$providerAcceptTask = $providerGate.AcceptTcpClientAsync()", text_submit
     )
     submit = compact.index("Invoke-W4UiaElement -Element $textSubmit", accept_task)
-    timeout_guard = compact.index(
-        "if (-not $providerAcceptTask.Wait(20000))", submit
+    receive_one = compact.index(
+        "Receive-W4ExpectedProviderGateRequest "
+        "-AcceptTask $providerAcceptTask -Listener $providerGate "
+        "-Process $gui.Process -Ordinal 1 -Stage 'text_fallback_summarize'",
+        submit,
     )
-    accept = compact.index(
-        "$providerGateClient = $providerAcceptTask.GetAwaiter().GetResult()",
-        timeout_guard,
+    bind_one = compact.index(
+        "$providerGateClient = $providerRequest.Client", receive_one
     )
-    peer = compact.index("$providerGateClient.Client.RemoteEndPoint", accept)
-    loopback_check = compact.index(
-        "[System.Net.IPAddress]::IsLoopback($providerPeer.Address)", peer
+    evidence_one = compact.index(
+        "$providerRequestEvidence.Add($providerRequest.Evidence)", bind_one
     )
-    owner_check = compact.index(
-        "Assert-W4TcpClientOwnedByProcess -Client $providerGateClient "
-        "-ExpectedServerEndpoint ([System.Net.IPEndPoint]$providerGate.LocalEndpoint) "
-        "-Process $gui.Process -TimeoutMilliseconds 2000",
-        loopback_check,
-    )
-    owner_exact = compact.index(
-        "[int]$providerOwner.OwnerProcessId -ne [int]$gui.Process.Id",
-        owner_check,
-    )
-    request_line = compact.index(
-        "Read-W4BoundedHttpRequestLine -Client $providerGateClient "
-        "-TimeoutMilliseconds 5000 -MaxBytes 2048",
-        owner_exact,
-    )
-    request_contract = compact.index(
-        "Assert-W4GatedProviderRequestLine -RequestLine $requestLine", request_line
+    checkpoint_one = compact.index(
+        "Write-W4ProviderGateCheckpoint -Path $providerCheckpointPath", evidence_one
     )
     progress_lookup = compact.index(
         "$progressStatus = Get-W4UiaElementById -Root $gui.Window "
         "-AutomationId 'archive_progress_status'",
-        request_contract,
+        checkpoint_one,
     )
     progress_text = compact.index(
         "$progressText = Get-W4UiaText -Element $progressStatus", progress_lookup
@@ -3468,11 +3844,62 @@ def test_archive_running_state_is_bound_to_a_loopback_provider_gate() -> None:
         url_disabled,
     )
     running = compact.index("'uia-contract-archive-running.json'", text_still_disabled)
-    client_close = compact.index("$providerGateClient.Dispose()", running)
-    listener_stop = compact.index("$providerGate.Stop()", client_close)
+    accept_two = compact.index(
+        "$providerAcceptTask = $providerGate.AcceptTcpClientAsync()", running
+    )
+    close_one = compact.index("$providerGateClient.Dispose()", accept_two)
+    receive_two = compact.index(
+        "Receive-W4ExpectedProviderGateRequest "
+        "-AcceptTask $providerAcceptTask -Listener $providerGate "
+        "-Process $gui.Process -Ordinal 2 -Stage 'workflow_summarize'",
+        close_one,
+    )
+    bind_two = compact.index(
+        "$providerGateClient = $providerRequest.Client", receive_two
+    )
+    evidence_two = compact.index(
+        "$providerRequestEvidence.Add($providerRequest.Evidence)", bind_two
+    )
+    checkpoint_two = compact.index(
+        "Write-W4ProviderGateCheckpoint -Path $providerCheckpointPath", evidence_two
+    )
+    accept_three = compact.index(
+        "$providerAcceptTask = $providerGate.AcceptTcpClientAsync()", checkpoint_two
+    )
+    close_two = compact.index("$providerGateClient.Dispose()", accept_three)
+    receive_three = compact.index(
+        "Receive-W4ExpectedProviderGateRequest "
+        "-AcceptTask $providerAcceptTask -Listener $providerGate "
+        "-Process $gui.Process -Ordinal 3 -Stage 'workflow_extract_tags'",
+        close_two,
+    )
+    final_stop_switch = compact.index("-StopListenerAfterAccept", receive_three)
+    bind_three = compact.index(
+        "$providerGateClient = $providerRequest.Client", final_stop_switch
+    )
+    evidence_three = compact.index(
+        "$providerRequestEvidence.Add($providerRequest.Evidence)", bind_three
+    )
+    checkpoint_three = compact.index(
+        "Write-W4ProviderGateCheckpoint -Path $providerCheckpointPath", evidence_three
+    )
+    exact_count_guard = compact.index(
+        "$providerRequestEvidence.Count -ne $expectedProviderRequests",
+        checkpoint_three,
+    )
+    close_three = compact.index("$providerGateClient.Dispose()", exact_count_guard)
+    result_deadline = compact.index(
+        "$resultDeadline = [DateTime]::UtcNow.AddSeconds(90)", close_three
+    )
+    lookup_timeout = compact.index(
+        "-AutomationId 'archive_result_title' "
+        "-TimeoutSeconds $resultLookupSeconds",
+        result_deadline,
+    )
     result = compact.index(
-        "Wait-W4UiaTextContains -Element $resultTitle -Text '归档成功（降级）'",
-        listener_stop,
+        "Wait-W4UiaTextContains -Element $resultTitle "
+        "-Text '归档成功（降级）' -TimeoutSeconds $resultRemainingSeconds",
+        lookup_timeout,
     )
     terminal_absence = compact.index(
         "'uia-absence-archive-terminal.json'", result
@@ -3512,20 +3939,18 @@ def test_archive_running_state_is_bound_to_a_loopback_provider_gate() -> None:
     warning_suffix = compact.index("$warning.EndsWith(", warning_issue)
 
     assert (
-        listener
+        contract_guard
+        < expected_count
+        < listener
         < listener_start
         < local_config
         < text_submit
         < accept_task
         < submit
-        < timeout_guard
-        < accept
-        < peer
-        < loopback_check
-        < owner_check
-        < owner_exact
-        < request_line
-        < request_contract
+        < receive_one
+        < bind_one
+        < evidence_one
+        < checkpoint_one
         < progress_lookup
         < progress_text
         < progress_pid
@@ -3535,8 +3960,23 @@ def test_archive_running_state_is_bound_to_a_loopback_provider_gate() -> None:
         < url_disabled
         < text_still_disabled
         < running
-        < client_close
-        < listener_stop
+        < accept_two
+        < close_one
+        < receive_two
+        < bind_two
+        < evidence_two
+        < checkpoint_two
+        < accept_three
+        < close_two
+        < receive_three
+        < final_stop_switch
+        < bind_three
+        < evidence_three
+        < checkpoint_three
+        < exact_count_guard
+        < close_three
+        < result_deadline
+        < lookup_timeout
         < result
         < terminal_absence
         < text_enabled
@@ -3552,36 +3992,176 @@ def test_archive_running_state_is_bound_to_a_loopback_provider_gate() -> None:
         < warning_suffix
     )
     assert "Start-Sleep" not in block
-    assert "schema_version = 'pkv.w4.archive-provider-gate.v1'" in compact
-    for exact_field in (
-        "host = '127.0.0.1'",
-        "accept_timeout_milliseconds = 20000",
-        "request_line_timeout_milliseconds = 5000",
-        "request_method = 'POST'",
-        "request_path = '/v1/chat/completions'",
-        "request_http_version = 'HTTP/1.1'",
-        "request_line_validated = $true",
-        "peer_loopback = $true",
-        "tcp_owner_verified = $true",
-        "tcp_owner_pid = [int]$providerOwner.OwnerProcessId",
-        "progress_visible = $true",
-        "progress_text_nonempty = $true",
-        "submits_disabled_while_running = $true",
-        "submits_enabled_after_terminal = $true",
-        "release_action = 'close_without_response'",
-        "induced_workflow_issue_code = 'workflow_step_failed'",
-    ):
-        assert exact_field in compact
+    assert compact.count("$providerGate.AcceptTcpClientAsync()") == 3
+    assert compact.count("Receive-W4ExpectedProviderGateRequest") == 3
+    assert compact.count("$providerRequestEvidence.Add($providerRequest.Evidence)") == 3
+    assert compact.count("Write-W4ProviderGateCheckpoint") == 3
+    assert compact.count("$providerGateClient.Dispose()") >= 4
+    assert "expected_provider_requests -isnot [int]" in compact
+    assert "expected_provider_requests -ne 3" in compact
+    assert (
+        "throw 'Offline archive scenario contract must require exactly three "
+        "Provider requests'" in compact
+    )
+    assert (
+        "throw 'Offline archive Provider request count did not match the "
+        "versioned scenario contract'" in compact
+    )
+    assert compact.count("[DateTime]::UtcNow.AddSeconds(90)") == 1
+    assert compact.count(
+        "($resultDeadline - [DateTime]::UtcNow).TotalSeconds"
+    ) == 2
+    assert "-TimeoutSeconds $resultLookupSeconds" in compact
+    assert "-TimeoutSeconds $resultRemainingSeconds" in compact
+
+    stage_match = re.search(
+        r"\[ValidateSet\((.*?)\)\]\s*\[string\]\$Stage", receiver
+    )
+    assert stage_match is not None
+    assert _extract_single_quoted_values(stage_match.group(1)) == {
+        "text_fallback_summarize",
+        "workflow_summarize",
+        "workflow_extract_tags",
+    }
+    assert "[ValidateRange(1, 3)][int]$Ordinal" in receiver
+    endpoint_cache = receiver.index(
+        "$expectedServerEndpoint = "
+        "[System.Net.IPEndPoint]$Listener.LocalEndpoint"
+    )
+    accept_wait = receiver.index(
+        "$AcceptTask.Wait($AcceptTimeoutMilliseconds)", endpoint_cache
+    )
+    accept_result = receiver.index("$AcceptTask.GetAwaiter().GetResult()", accept_wait)
+    listener_stop = receiver.index("$Listener.Stop()", accept_result)
+    peer = receiver.index("$client.Client.RemoteEndPoint", listener_stop)
+    ipv4 = receiver.index(
+        "$peer.AddressFamily -ne "
+        "[System.Net.Sockets.AddressFamily]::InterNetwork",
+        peer,
+    )
+    loopback = receiver.index(
+        "[System.Net.IPAddress]::IsLoopback($peer.Address)", ipv4
+    )
+    owner = receiver.index(
+        "Assert-W4TcpClientOwnedByProcess -Client $client "
+        "-ExpectedServerEndpoint $expectedServerEndpoint "
+        "-Process $Process -TimeoutMilliseconds $OwnerTimeoutMilliseconds",
+        loopback,
+    )
+    owner_exact = receiver.index(
+        "[int]$owner.OwnerProcessId -ne [int]$Process.Id", owner
+    )
+    request_read = receiver.index(
+        "Read-W4BoundedHttpRequestLine -Client $client "
+        "-TimeoutMilliseconds $RequestLineTimeoutMilliseconds "
+        "-MaxBytes $RequestLineMaxBytes",
+        owner_exact,
+    )
+    request_assert = receiver.index(
+        "Assert-W4GatedProviderRequestLine -RequestLine $requestLine",
+        request_read,
+    )
+    evidence_return = receiver.index(
+        "Evidence = [pscustomobject][ordered]@{", request_assert
+    )
+    assert (
+        endpoint_cache
+        < accept_wait
+        < accept_result
+        < listener_stop
+        < peer
+        < ipv4
+        < loopback
+        < owner
+        < owner_exact
+        < request_read
+        < request_assert
+        < evidence_return
+    )
+
+    receiver_evidence_match = re.search(
+        r"Evidence = \[pscustomobject\]\[ordered\]@\{(.*?)\}\s*\}\s*\}\s*catch",
+        receiver,
+    )
+    assert receiver_evidence_match is not None
+    receiver_evidence = receiver_evidence_match.group(1)
+    receiver_evidence_fields = re.findall(
+        r"\b([a-z][a-z0-9_]*)\s*=", receiver_evidence
+    )
+    assert receiver_evidence_fields == [
+        "ordinal",
+        "stage",
+        "owner_verified",
+        "owner_process_id",
+        "request_method",
+        "request_path",
+        "request_http_version",
+        "accept_timeout_milliseconds",
+        "owner_timeout_milliseconds",
+        "request_line_timeout_milliseconds",
+        "request_line_max_bytes",
+        "listener_stopped_after_accept",
+    ]
+    assert "$requestLine" not in receiver_evidence
+    assert "$peer" not in receiver_evidence
+    assert "LocalEndpoint" not in receiver_evidence
+
+    classified_throws = " ".join(
+        re.findall(r"throw\s+(?:'[^']*'|\"[^\"]*\")", receiver)
+    )
+    assert classified_throws
+    assert "$requestLine" not in classified_throws
+    assert "$peer" not in classified_throws
+    assert "$_.Exception" not in receiver
+    for sensitive_marker in ("raw", "header", "body", "token"):
+        assert sensitive_marker not in receiver_evidence.casefold()
+
+    assert "schema_version = 'pkv.w4.archive-provider-gate.v2'" in compact
+    gate_evidence_match = re.search(
+        r"'archive-provider-gate\.json'\) -Value \(\[ordered\]@\{(.*?)\}\)",
+        compact,
+    )
+    assert gate_evidence_match is not None
+    gate_evidence = gate_evidence_match.group(1)
+    gate_evidence_fields = re.findall(
+        r"\b([a-z][a-z0-9_]*)\s*=", gate_evidence
+    )
+    assert gate_evidence_fields == [
+        "schema_version",
+        "expected_provider_requests",
+        "accepted_provider_requests",
+        "provider_requests",
+        "listener_stopped_after_final_accept",
+        "unexpected_provider_requests_processed",
+        "result_fresh_reacquire_deadline_seconds",
+        "progress_visible",
+        "progress_text_nonempty",
+        "submits_disabled_while_running",
+        "submits_enabled_after_terminal",
+        "release_action",
+        "induced_workflow_issue_code",
+    ]
+    assert "expected_provider_requests = $expectedProviderRequests" in gate_evidence
+    assert (
+        "accepted_provider_requests = $providerRequestEvidence.Count" in gate_evidence
+    )
+    assert "provider_requests = @($providerRequestEvidence)" in gate_evidence
+    assert "listener_stopped_after_final_accept = $true" in gate_evidence
+    assert "unexpected_provider_requests_processed = $false" in gate_evidence
+    assert "result_fresh_reacquire_deadline_seconds = 90" in gate_evidence
     assert "workflow_issue_code = 'workflow_step_failed'" in compact
     assert "$warning -notmatch 'provider'" not in compact
-    evidence_end = compact.index("})", evidence)
-    gate_evidence = compact[evidence:evidence_end]
-    assert set(re.findall(r"\btcp_owner_[a-z_]+", gate_evidence)) == {
-        "tcp_owner_verified",
-        "tcp_owner_pid",
-    }
-    assert "OwnerStartTimeUtcTicks" not in gate_evidence
-    assert "$providerPeer" not in gate_evidence
+    for sensitive_marker in (
+        "endpoint",
+        "raw",
+        "header",
+        "body",
+        "token",
+        "$requestline",
+        "$peer",
+        "$providergateport",
+    ):
+        assert sensitive_marker not in gate_evidence.casefold()
     request_validator = _compact_powershell(
         _powershell_function(
             _read(SCENARIO_MODULE), "Assert-W4GatedProviderRequestLine"
@@ -3614,6 +4194,132 @@ def test_archive_running_state_is_bound_to_a_loopback_provider_gate() -> None:
     assert "return $elements.Item(0)" in enabled_wait
     assert "$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)" in enabled_wait
     assert "Start-Sleep -Milliseconds 50" in enabled_wait
+
+
+def test_provider_gate_receiver_handles_three_prearmed_external_requests(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "provider-gate-checkpoint.json"
+    result = _run_provider_gate_sequence_probe("success", checkpoint_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["mode"] == "success"
+    assert payload["caught"] is None
+    assert payload["prearmed_ordinals"] == [1, 2, 3]
+    assert payload["listener_stopped_before_final_release"] is True
+    assert payload["fourth_request_processed"] is False
+    assert payload["elapsed_milliseconds"] < 15000
+
+    requests = payload["requests"]
+    assert [row["ordinal"] for row in requests] == [1, 2, 3]
+    assert [row["stage"] for row in requests] == [
+        "text_fallback_summarize",
+        "workflow_summarize",
+        "workflow_extract_tags",
+    ]
+    expected_fields = {
+        "ordinal",
+        "stage",
+        "owner_verified",
+        "owner_process_id",
+        "request_method",
+        "request_path",
+        "request_http_version",
+        "accept_timeout_milliseconds",
+        "owner_timeout_milliseconds",
+        "request_line_timeout_milliseconds",
+        "request_line_max_bytes",
+        "listener_stopped_after_accept",
+    }
+    for index, row in enumerate(requests):
+        assert set(row) == expected_fields
+        assert row["owner_verified"] is True
+        assert row["owner_process_id"] == payload["process_id"]
+        assert row["request_method"] == "POST"
+        assert row["request_path"] == "/v1/chat/completions"
+        assert row["request_http_version"] == "HTTP/1.1"
+        assert row["accept_timeout_milliseconds"] == 5000
+        assert row["owner_timeout_milliseconds"] == 2000
+        assert row["request_line_timeout_milliseconds"] == 5000
+        assert row["request_line_max_bytes"] == 2048
+        assert row["listener_stopped_after_accept"] is (index == 2)
+    checkpoint = payload["checkpoint"]
+    assert set(checkpoint) == {
+        "schema_version",
+        "expected_provider_requests",
+        "validated_provider_requests",
+        "last_validated_ordinal",
+        "last_validated_stage",
+        "all_peers_ipv4_loopback",
+        "all_tcp_owners_verified",
+        "all_request_lines_validated",
+        "listener_stopped",
+        "provider_requests",
+    }
+    assert checkpoint["schema_version"] == (
+        "pkv.w4.archive-provider-gate-checkpoint.v1"
+    )
+    assert checkpoint["expected_provider_requests"] == 3
+    assert checkpoint["validated_provider_requests"] == 3
+    assert checkpoint["last_validated_ordinal"] == 3
+    assert checkpoint["last_validated_stage"] == "workflow_extract_tags"
+    assert checkpoint["all_peers_ipv4_loopback"] is True
+    assert checkpoint["all_tcp_owners_verified"] is True
+    assert checkpoint["all_request_lines_validated"] is True
+    assert checkpoint["listener_stopped"] is True
+    assert checkpoint["provider_requests"] == requests
+    serialized = json.dumps(payload, sort_keys=True).casefold()
+    for sensitive_marker in ("endpoint", "raw", "header", "body", "token"):
+        assert sensitive_marker not in serialized
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_error", "expected_rows"),
+    [
+        (
+            "wrong_line",
+            "Offline archive Provider request-line contract failed at expected "
+            "request ordinal 1",
+            0,
+        ),
+        (
+            "missing_third",
+            "Offline archive Provider request was missing at expected ordinal 3",
+            2,
+        ),
+    ],
+)
+def test_provider_gate_receiver_rejects_wrong_or_missing_request_without_leak(
+    tmp_path: Path, mode: str, expected_error: str, expected_rows: int
+) -> None:
+    checkpoint_path = tmp_path / f"provider-gate-checkpoint-{mode}.json"
+    result = _run_provider_gate_sequence_probe(mode, checkpoint_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["mode"] == mode
+    assert payload["caught"] == expected_error
+    assert len(payload["requests"]) == expected_rows
+    assert payload["elapsed_milliseconds"] < 15000
+    if mode == "wrong_line":
+        assert payload["prearmed_ordinals"] == [1]
+        assert payload["checkpoint"] is None
+    else:
+        assert payload["prearmed_ordinals"] == [1, 2, 3]
+        assert [row["ordinal"] for row in payload["requests"]] == [1, 2]
+        checkpoint = payload["checkpoint"]
+        assert checkpoint["validated_provider_requests"] == 2
+        assert checkpoint["last_validated_ordinal"] == 2
+        assert checkpoint["last_validated_stage"] == "workflow_summarize"
+        assert checkpoint["listener_stopped"] is False
+        assert [
+            row["listener_stopped_after_accept"]
+            for row in checkpoint["provider_requests"]
+        ] == [False, False]
+    combined_output = result.stdout + result.stderr
+    assert "w4-sensitive-gate-canary" not in combined_output
+    assert "GET /v1/chat/completions?token=" not in combined_output
 
 
 def test_gated_request_line_mismatch_is_fixed_and_does_not_leak_raw_input(
@@ -3719,7 +4425,7 @@ def test_chat_restart_selection_proof_binds_container_item_and_runtime_id() -> N
     assert "SelectionPattern]::Pattern" in proof_block
     assert "SelectionItemPattern]::Pattern" in proof_block
     assert "SelectionItemPattern]$itemPattern).Current.IsSelected" in proof_block
-    assert "SelectionPattern]$containerPattern).GetCurrentSelection()" in proof_block
+    assert "SelectionPattern]$containerPattern).Current.GetSelection()" in proof_block
     assert "$currentSelection.Count -ne 1" in proof_block
     assert len(re.findall(r"\.GetRuntimeId\(\)", proof_block)) >= 2
     assert "$expectedRuntimeId.Count -ne $actualRuntimeId.Count" in proof_block
@@ -3728,6 +4434,22 @@ def test_chat_restart_selection_proof_binds_container_item_and_runtime_id() -> N
         in proof_block
     )
     assert "pkv.w4.uia-selection-proof.v1" in proof_block
+    assert ".GetCurrentSelection()" not in source
+
+
+def test_selection_helpers_use_real_windows_uia_current_selection() -> None:
+    result = _run_uia_selection_pattern_probe()
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["zero_count"] == 0
+    assert payload["one_count"] == 1
+    assert payload["runtime_ids_match"] is True
+    assert payload["selected_runtime_id"]
+    assert payload["proof"]["schema_version"] == "pkv.w4.uia-selection-proof.v1"
+    assert payload["proof"]["selection_count"] == 1
+    assert payload["proof"]["selection_item_is_selected"] is True
+    assert payload["proof"]["selected_runtime_id"] == payload["selected_runtime_id"]
 
 
 def test_chat_restart_waits_for_round_then_freshly_resolves_messages() -> None:
