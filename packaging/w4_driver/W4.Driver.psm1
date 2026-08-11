@@ -197,12 +197,16 @@ function Initialize-W4FileIdentityInspector {
     $reparsePointType = 'PkvW4.ReparsePointInspector' -as [type]
     $tcpConnectionType = 'PkvW4.TcpConnectionInspector' -as [type]
     $windowCaptureType = 'PkvW4.WindowCaptureInspector' -as [type]
+    $processExitType = 'PkvW4.ProcessExitInspector' -as [type]
+    $retainedProcessExitType = 'PkvW4.RetainedProcessExitHandle' -as [type]
     if ($fileIdentityType -and $processTreeType -and $reparsePointType -and
-        $tcpConnectionType -and $windowCaptureType) {
+        $tcpConnectionType -and $windowCaptureType -and $processExitType -and
+        $retainedProcessExitType) {
         return
     }
     if ($fileIdentityType -or $processTreeType -or $reparsePointType -or
-        $tcpConnectionType -or $windowCaptureType) {
+        $tcpConnectionType -or $windowCaptureType -or $processExitType -or
+        $retainedProcessExitType) {
         throw 'A partial or stale PkvW4 native-inspector type set is already loaded; start a fresh PowerShell process'
     }
     Add-Type -TypeDefinition @'
@@ -219,6 +223,379 @@ namespace PkvW4 {
         public ProcessSnapshotEntry(int processId, int parentProcessId) {
             ProcessId = processId;
             ParentProcessId = parentProcessId;
+        }
+    }
+
+    internal sealed class OwnedProcessExitHandle : SafeHandleZeroOrMinusOneIsInvalid {
+        public OwnedProcessExitHandle(IntPtr value) : base(true) {
+            SetHandle(value);
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        protected override bool ReleaseHandle() {
+            return CloseHandle(handle);
+        }
+    }
+
+    public sealed class RetainedProcessExitHandle : IDisposable {
+        private OwnedProcessExitHandle _handle;
+        private readonly int _processId;
+        private readonly long _startTimeUtcTicks;
+
+        internal RetainedProcessExitHandle(
+            OwnedProcessExitHandle handle,
+            int processId,
+            long startTimeUtcTicks
+        ) {
+            _handle = handle;
+            _processId = processId;
+            _startTimeUtcTicks = startTimeUtcTicks;
+        }
+
+        public int ProcessId { get { return _processId; } }
+        public long StartTimeUtcTicks { get { return _startTimeUtcTicks; } }
+        public bool IsClosed { get { return _handle == null || _handle.IsClosed; } }
+
+        public bool WaitForExit(int timeoutMilliseconds) {
+            if (_handle == null || _handle.IsClosed || _handle.IsInvalid) {
+                throw new InvalidOperationException("Retained process exit handle is closed or invalid");
+            }
+            return ProcessExitInspector.WaitForExit(_handle, timeoutMilliseconds);
+        }
+
+        public int ReadExitedExitCode() {
+            if (_handle == null || _handle.IsClosed || _handle.IsInvalid) {
+                throw new InvalidOperationException("Retained process exit handle is closed or invalid");
+            }
+            return ProcessExitInspector.ReadExitedExitCode(_handle);
+        }
+
+        public void Dispose() {
+            if (_handle != null) {
+                _handle.Dispose();
+                _handle = null;
+            }
+        }
+    }
+
+    public static class ProcessExitInspector {
+        private const uint STILL_ACTIVE = 259;
+        private const uint WAIT_OBJECT_0 = 0;
+        private const uint WAIT_TIMEOUT = 258;
+        private const uint WAIT_FAILED = 0xffffffff;
+        private const uint DUPLICATE_SAME_ACCESS = 0x00000002;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FILETIME {
+            public uint LowDateTime;
+            public uint HighDateTime;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr GetCurrentProcess();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool DuplicateHandle(
+            IntPtr sourceProcess,
+            SafeHandle sourceHandle,
+            IntPtr targetProcess,
+            out IntPtr targetHandle,
+            uint desiredAccess,
+            [MarshalAs(UnmanagedType.Bool)] bool inheritHandle,
+            uint options
+        );
+
+        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "GetProcessId")]
+        private static extern uint GetProcessIdSource(SafeHandle processHandle);
+
+        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "GetProcessId")]
+        private static extern uint GetProcessIdRetained(OwnedProcessExitHandle processHandle);
+
+        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "GetProcessTimes")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetProcessTimesSource(
+            SafeHandle processHandle,
+            out FILETIME creationTime,
+            out FILETIME exitTime,
+            out FILETIME kernelTime,
+            out FILETIME userTime
+        );
+
+        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "GetProcessTimes")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetProcessTimesRetained(
+            OwnedProcessExitHandle processHandle,
+            out FILETIME creationTime,
+            out FILETIME exitTime,
+            out FILETIME kernelTime,
+            out FILETIME userTime
+        );
+
+        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "GetExitCodeProcess")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetExitCodeProcessSource(
+            SafeHandle processHandle,
+            out uint exitCode
+        );
+
+        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "GetExitCodeProcess")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetExitCodeProcessRetained(
+            OwnedProcessExitHandle processHandle,
+            out uint exitCode
+        );
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint WaitForSingleObject(
+            OwnedProcessExitHandle handle,
+            uint milliseconds
+        );
+
+        private static long DecodeCreationUtcTicks(FILETIME creationTime) {
+            ulong rawFileTime = ((ulong)creationTime.HighDateTime << 32) |
+                (ulong)creationTime.LowDateTime;
+            if (rawFileTime > (ulong)long.MaxValue) {
+                throw new InvalidOperationException("Process creation time is outside DateTime range");
+            }
+            return DateTime.FromFileTimeUtc((long)rawFileTime).Ticks;
+        }
+
+        private static long GetCreationUtcTicksSource(SafeHandle processHandle) {
+            FILETIME creationTime;
+            FILETIME exitTime;
+            FILETIME kernelTime;
+            FILETIME userTime;
+            if (!GetProcessTimesSource(
+                    processHandle,
+                    out creationTime,
+                    out exitTime,
+                    out kernelTime,
+                    out userTime
+                )) {
+                throw new System.ComponentModel.Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "GetProcessTimes failed"
+                );
+            }
+            return DecodeCreationUtcTicks(creationTime);
+        }
+
+        private static long GetCreationUtcTicksRetained(
+            OwnedProcessExitHandle processHandle
+        ) {
+            FILETIME creationTime;
+            FILETIME exitTime;
+            FILETIME kernelTime;
+            FILETIME userTime;
+            if (!GetProcessTimesRetained(
+                    processHandle,
+                    out creationTime,
+                    out exitTime,
+                    out kernelTime,
+                    out userTime
+                )) {
+                throw new System.ComponentModel.Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "GetProcessTimes failed"
+                );
+            }
+            return DecodeCreationUtcTicks(creationTime);
+        }
+
+        private static void AssertIdentity(
+            SafeHandle processHandle,
+            int expectedProcessId,
+            long expectedStartTimeUtcTicks
+        ) {
+            if (processHandle == null || processHandle.IsInvalid || processHandle.IsClosed ||
+                expectedProcessId <= 0 ||
+                expectedStartTimeUtcTicks <= 0) {
+                throw new ArgumentException("Process exit observation identity is invalid");
+            }
+            uint actualProcessId = GetProcessIdSource(processHandle);
+            if (actualProcessId == 0) {
+                throw new System.ComponentModel.Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "GetProcessId failed"
+                );
+            }
+            if (actualProcessId != checked((uint)expectedProcessId)) {
+                throw new InvalidOperationException("Process exit observation PID did not match its expected identity");
+            }
+            if (GetCreationUtcTicksSource(processHandle) != expectedStartTimeUtcTicks) {
+                throw new InvalidOperationException("Process exit observation start time did not match its expected identity");
+            }
+        }
+
+        private static void AssertIdentity(
+            OwnedProcessExitHandle processHandle,
+            int expectedProcessId,
+            long expectedStartTimeUtcTicks
+        ) {
+            if (processHandle == null || processHandle.IsInvalid || processHandle.IsClosed ||
+                expectedProcessId <= 0 || expectedStartTimeUtcTicks <= 0) {
+                throw new ArgumentException("Process exit observation identity is invalid");
+            }
+            uint actualProcessId = GetProcessIdRetained(processHandle);
+            if (actualProcessId == 0) {
+                throw new System.ComponentModel.Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "GetProcessId failed"
+                );
+            }
+            if (actualProcessId != checked((uint)expectedProcessId)) {
+                throw new InvalidOperationException("Process exit observation PID did not match its expected identity");
+            }
+            if (GetCreationUtcTicksRetained(processHandle) != expectedStartTimeUtcTicks) {
+                throw new InvalidOperationException("Process exit observation start time did not match its expected identity");
+            }
+        }
+
+        private static void AssertStillActive(SafeHandle processHandle) {
+            uint exitCode;
+            if (!GetExitCodeProcessSource(processHandle, out exitCode)) {
+                throw new System.ComponentModel.Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "GetExitCodeProcess failed"
+                );
+            }
+            if (exitCode != STILL_ACTIVE) {
+                throw new InvalidOperationException("Process exit observation root was not live at capture");
+            }
+        }
+
+        private static void AssertStillActive(OwnedProcessExitHandle processHandle) {
+            uint exitCode;
+            if (!GetExitCodeProcessRetained(processHandle, out exitCode)) {
+                throw new System.ComponentModel.Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "GetExitCodeProcess failed"
+                );
+            }
+            if (exitCode != STILL_ACTIVE) {
+                throw new InvalidOperationException("Process exit observation root was not live at capture");
+            }
+        }
+
+        public static RetainedProcessExitHandle Capture(
+            System.Diagnostics.Process sourceProcess,
+            int expectedProcessId,
+            long expectedStartTimeUtcTicks
+        ) {
+            if (sourceProcess == null) {
+                throw new ArgumentNullException("sourceProcess");
+            }
+            SafeHandle sourceHandle;
+            try {
+                sourceHandle = sourceProcess.SafeHandle;
+            } catch (Exception exception) {
+                throw new InvalidOperationException(
+                    "Process exit observation source handle was unavailable",
+                    exception
+                );
+            }
+            if (sourceHandle == null || sourceHandle.IsInvalid || sourceHandle.IsClosed) {
+                throw new InvalidOperationException(
+                    "Process exit observation source handle was unavailable"
+                );
+            }
+
+            // Keep the source SafeHandle alive only for the exact native
+            // identity-check/duplicate critical section.  We deliberately do
+            // not extract a raw pointer: each native call marshals the safe
+            // handle itself, and the duplicated result is immediately wrapped
+            // in an independently owned SafeHandle below.
+            bool sourceHandleRefAdded = false;
+            try {
+                sourceHandle.DangerousAddRef(ref sourceHandleRefAdded);
+                AssertIdentity(sourceHandle, expectedProcessId, expectedStartTimeUtcTicks);
+                AssertStillActive(sourceHandle);
+
+                IntPtr duplicateHandle;
+                if (!DuplicateHandle(
+                        GetCurrentProcess(),
+                        sourceHandle,
+                        GetCurrentProcess(),
+                        out duplicateHandle,
+                        0,
+                        false,
+                        DUPLICATE_SAME_ACCESS
+                    ) || duplicateHandle == IntPtr.Zero || duplicateHandle == new IntPtr(-1)) {
+                    throw new System.ComponentModel.Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "DuplicateHandle failed"
+                    );
+                }
+
+                OwnedProcessExitHandle retained = new OwnedProcessExitHandle(duplicateHandle);
+                try {
+                    AssertIdentity(retained, expectedProcessId, expectedStartTimeUtcTicks);
+                    AssertStillActive(retained);
+                    return new RetainedProcessExitHandle(
+                        retained,
+                        expectedProcessId,
+                        expectedStartTimeUtcTicks
+                    );
+                } catch {
+                    retained.Dispose();
+                    throw;
+                }
+            } catch {
+                throw;
+            } finally {
+                if (sourceHandleRefAdded) {
+                    sourceHandle.DangerousRelease();
+                }
+            }
+        }
+
+        internal static bool WaitForExit(
+            OwnedProcessExitHandle processHandle,
+            int timeoutMilliseconds
+        ) {
+            if (processHandle == null || processHandle.IsInvalid || processHandle.IsClosed ||
+                timeoutMilliseconds < 0) {
+                throw new ArgumentException("Retained process exit wait arguments were invalid");
+            }
+            uint wait = WaitForSingleObject(processHandle, checked((uint)timeoutMilliseconds));
+            if (wait == WAIT_TIMEOUT) {
+                return false;
+            }
+            if (wait == WAIT_FAILED) {
+                throw new System.ComponentModel.Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "WaitForSingleObject failed"
+                );
+            }
+            if (wait != WAIT_OBJECT_0) {
+                throw new InvalidOperationException("Retained process exit handle returned an unexpected wait result");
+            }
+            return true;
+        }
+
+        internal static int ReadExitedExitCode(OwnedProcessExitHandle processHandle) {
+            if (!WaitForExit(processHandle, 0)) {
+                throw new InvalidOperationException("Retained process exit handle still reports an active process");
+            }
+
+            uint exitCode;
+            if (!GetExitCodeProcessRetained(processHandle, out exitCode)) {
+                throw new System.ComponentModel.Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "GetExitCodeProcess failed"
+                );
+            }
+            if (exitCode == STILL_ACTIVE) {
+                throw new InvalidOperationException("Retained process exit handle still reports an active process");
+            }
+            if (exitCode > (uint)int.MaxValue) {
+                throw new InvalidOperationException("Retained process exit code is outside Int32 range");
+            }
+            return checked((int)exitCode);
         }
     }
 
@@ -1228,6 +1605,43 @@ function New-W4ProcessTreeIdentitySnapshot {
     $snapshotMaterial = Get-W4ProcessTreeSnapshotAuthorityMaterial -Snapshot $snapshot
     $script:ProcessTreeSnapshotAuthorities.Add($snapshot, $snapshotMaterial)
     return $snapshot
+}
+
+function New-W4RetainedProcessExitObservation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, [int]::MaxValue)][int]$ExpectedProcessId,
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, [int64]::MaxValue)][int64]$ExpectedStartTimeUtcTicks,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if ([Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+        throw 'W4 retained process-exit observations require Windows'
+    }
+    $captureFailure = "$Label did not retain a confirmed live process exit handle"
+    $hasExited = $null
+    try {
+        $hasExited = $Process.HasExited
+    } catch {
+        throw $captureFailure
+    }
+    if ($hasExited -isnot [bool] -or $hasExited -ne $false) {
+        throw $captureFailure
+    }
+
+    Initialize-W4FileIdentityInspector
+    try {
+        return [PkvW4.ProcessExitInspector]::Capture(
+            $Process,
+            $ExpectedProcessId,
+            $ExpectedStartTimeUtcTicks
+        )
+    } catch {
+        throw $captureFailure
+    }
 }
 
 function Assert-W4TcpClientOwnedByProcess {
@@ -2711,6 +3125,7 @@ Export-ModuleMember -Function @(
     'Invoke-W4SqliteStatement',
     'Invoke-W4UiaElement',
     'New-W4ProcessTreeIdentitySnapshot',
+    'New-W4RetainedProcessExitObservation',
     'New-W4IsolatedEnvironment',
     'Read-W4JsonFile',
     'Save-W4Screenshot',

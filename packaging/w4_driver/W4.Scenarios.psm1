@@ -4909,6 +4909,7 @@ function Start-W4LoopbackHarness {
     $runtimeIdentity = $null
     $launcherTreeSnapshot = $null
     $runtimeTreeSnapshot = $null
+    $runtimeExitObservation = $null
     try {
         $readyPath = Join-Path $state 'ready.json'
         $deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -4946,6 +4947,13 @@ function Start-W4LoopbackHarness {
             New-W4ProcessTreeIdentitySnapshot `
                 -Process ([System.Diagnostics.Process]$runtimeIdentity.RuntimeProcess)
         }
+        if (-not [bool]$runtimeIdentity.RuntimeIsLauncher) {
+            $runtimeExitObservation = New-W4RetainedProcessExitObservation `
+                -Process ([System.Diagnostics.Process]$runtimeIdentity.RuntimeProcess) `
+                -ExpectedProcessId ([int]$runtimeTreeSnapshot.RootProcessId) `
+                -ExpectedStartTimeUtcTicks ([int64]$runtimeTreeSnapshot.RootStartTimeUtcTicks) `
+                -Label 'Harness runtime'
+        }
         if ([string]$ready.harness_sha256 -ne $exeSha -or
             [string]$ready.manifest_sha256 -ne $manifestSha -or
             [string]$ready.contract_sha256 -ne $contractSha -or
@@ -4976,6 +4984,7 @@ function Start-W4LoopbackHarness {
             RuntimeProcess = $runtimeIdentity.RuntimeProcess
             LauncherProcessTreeSnapshot = $launcherTreeSnapshot
             RuntimeProcessTreeSnapshot = $runtimeTreeSnapshot
+            RuntimeExitObservation = $runtimeExitObservation
             LauncherPid = [int]$runtimeIdentity.LauncherPid
             RuntimePid = [int]$runtimeIdentity.RuntimePid
             StdoutTask = $stdoutTask
@@ -4989,30 +4998,49 @@ function Start-W4LoopbackHarness {
             ScriptSha256 = $scriptSha
         }
     } catch {
-        if ($null -ne $runtimeIdentity -and
-            [int]$runtimeIdentity.RuntimePid -ne $process.Id) {
-            $runtimeChild = [System.Diagnostics.Process]$runtimeIdentity.RuntimeProcess
-            if (-not $runtimeChild.HasExited) {
-                $runtimeFailureSnapshot = if ($null -ne $runtimeTreeSnapshot) {
-                    $runtimeTreeSnapshot
-                } else {
-                    New-W4ProcessTreeIdentitySnapshot -Process $runtimeChild
+        try {
+            # A failure after the duplicate has been captured must not let a
+            # runtime cleanup exception bypass launcher reconciliation.  Each
+            # owned Process/object is released in its own finally; the retained
+            # kernel observation is closed by the outermost finally below.
+            try {
+                if ($null -ne $runtimeIdentity -and
+                    [int]$runtimeIdentity.RuntimePid -ne $process.Id) {
+                    $runtimeChild = [System.Diagnostics.Process]$runtimeIdentity.RuntimeProcess
+                    try {
+                        if (-not $runtimeChild.HasExited) {
+                            $runtimeFailureSnapshot = if ($null -ne $runtimeTreeSnapshot) {
+                                $runtimeTreeSnapshot
+                            } else {
+                                New-W4ProcessTreeIdentitySnapshot -Process $runtimeChild
+                            }
+                            Stop-W4ProcessTree -Process $runtimeChild `
+                                -IdentitySnapshot $runtimeFailureSnapshot
+                        }
+                    } finally {
+                        $runtimeChild.Dispose()
+                    }
                 }
-                Stop-W4ProcessTree -Process $runtimeChild `
-                    -IdentitySnapshot $runtimeFailureSnapshot
+            } finally {
+                try {
+                    if (-not $process.HasExited) {
+                        $launcherFailureSnapshot = if ($null -ne $launcherTreeSnapshot) {
+                            $launcherTreeSnapshot
+                        } else {
+                            New-W4ProcessTreeIdentitySnapshot -Process $process
+                        }
+                        Stop-W4ProcessTree -Process $process `
+                            -IdentitySnapshot $launcherFailureSnapshot
+                    }
+                } finally {
+                    $process.Dispose()
+                }
             }
-            $runtimeChild.Dispose()
-        }
-        if (-not $process.HasExited) {
-            $launcherFailureSnapshot = if ($null -ne $launcherTreeSnapshot) {
-                $launcherTreeSnapshot
-            } else {
-                New-W4ProcessTreeIdentitySnapshot -Process $process
+        } finally {
+            if ($null -ne $runtimeExitObservation) {
+                $runtimeExitObservation.Dispose()
             }
-            Stop-W4ProcessTree -Process $process `
-                -IdentitySnapshot $launcherFailureSnapshot
         }
-        $process.Dispose()
         throw
     }
 }
@@ -5058,6 +5086,55 @@ function Get-W4ExitedProcessExitCode {
     }
 }
 
+function Wait-W4RetainedProcessExit {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$ExitObservation,
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(0, 30000)][int]$TimeoutMilliseconds,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    # The duplicated kernel handle is the only runtime-exit wait authority.
+    # Do not let a frozen onefile runtime's managed Process wrapper decide
+    # whether its own terminated kernel object is still queryable.
+    try {
+        $exited = $ExitObservation.WaitForExit($TimeoutMilliseconds)
+    } catch {
+        throw "$Label did not expose a confirmed native process-exit wait state"
+    }
+    if ($exited -isnot [bool]) {
+        throw "$Label did not expose a confirmed native process-exit wait state"
+    }
+    return [bool]$exited
+}
+
+function Get-W4RetainedExitedProcessExitCode {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$ExitObservation,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $captureFailure = "$Label did not expose a confirmed exited process exit code"
+    # The retained kernel handle, rather than the managed Process wrapper, is
+    # the post-shutdown authority.  Some frozen onefile runtimes leave an
+    # exited Process object unable to expose ExitCode (or even properties) even
+    # though its kernel process object remains queryable through this duplicate.
+    # ReadExitedExitCode performs the OS-level zero-time wait and rejects an
+    # active, invalid, or otherwise unqueryable process object fail-closed.
+    $rawExitCode = $null
+    try {
+        $rawExitCode = $ExitObservation.ReadExitedExitCode()
+    } catch {
+        throw $captureFailure
+    }
+    if ($null -eq $rawExitCode -or $rawExitCode -isnot [int]) {
+        throw $captureFailure
+    }
+    return [int]$rawExitCode
+}
+
 function Stop-W4LoopbackHarness {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)]$Harness)
@@ -5066,32 +5143,49 @@ function Stop-W4LoopbackHarness {
     $runtimeProcess = [System.Diagnostics.Process]$Harness.RuntimeProcess
     $launcherTreeSnapshot = $Harness.LauncherProcessTreeSnapshot
     $runtimeTreeSnapshot = $Harness.RuntimeProcessTreeSnapshot
-    $launcherPid = [int]$Harness.LauncherPid
-    $runtimePid = [int]$Harness.RuntimePid
-    if ($launcherPid -lt 1 -or $runtimePid -lt 1) {
-        throw 'Harness cached launcher/runtime PIDs must be positive before shutdown'
-    }
-    $runtimeIsLauncher = $runtimePid -eq $launcherPid
-    if ($null -eq $launcherTreeSnapshot -or $null -eq $runtimeTreeSnapshot) {
-        throw 'Harness process-tree snapshots are missing before shutdown'
-    }
-    if (-not $process.HasExited) {
-        $launcherTreeSnapshot = New-W4ProcessTreeIdentitySnapshot -Process $process
-        $Harness.LauncherProcessTreeSnapshot = $launcherTreeSnapshot
-    }
-    if ($runtimeIsLauncher) {
-        $runtimeTreeSnapshot = $launcherTreeSnapshot
-        $Harness.RuntimeProcessTreeSnapshot = $runtimeTreeSnapshot
-    } elseif (-not $runtimeProcess.HasExited) {
-        $runtimeTreeSnapshot = New-W4ProcessTreeIdentitySnapshot -Process $runtimeProcess
-        $Harness.RuntimeProcessTreeSnapshot = $runtimeTreeSnapshot
-    }
-    $shutdown = Join-Path $Harness.StateDirectory 'shutdown.request'
-    [System.IO.File]::WriteAllText($shutdown, "shutdown`n", [System.Text.UTF8Encoding]::new($false))
-    $forced = $false
-    $launcherExitCode = $null
-    $runtimeExitCode = $null
+    $runtimeExitObservation = $Harness.RuntimeExitObservation
+    $launcherPid = $null
+    $runtimePid = $null
     try {
+        # Read PID scalars inside the observation-owning try/finally.  Even a
+        # malformed harness object must not strand a duplicated native handle.
+        $launcherPid = [int]$Harness.LauncherPid
+        $runtimePid = [int]$Harness.RuntimePid
+        if ($launcherPid -lt 1 -or $runtimePid -lt 1) {
+            throw 'Harness cached launcher/runtime PIDs must be positive before shutdown'
+        }
+        $runtimeIsLauncher = $runtimePid -eq $launcherPid
+        if ($null -eq $launcherTreeSnapshot -or $null -eq $runtimeTreeSnapshot) {
+            throw 'Harness process-tree snapshots are missing before shutdown'
+        }
+        if (-not $runtimeIsLauncher -and $null -eq $runtimeExitObservation) {
+            throw 'Harness runtime retained exit observation is missing before shutdown'
+        }
+        if ($runtimeIsLauncher -and $null -ne $runtimeExitObservation) {
+            throw 'Harness launcher/runtime identity unexpectedly retained a distinct runtime exit observation'
+        }
+        if (-not $process.HasExited) {
+            $launcherTreeSnapshot = New-W4ProcessTreeIdentitySnapshot -Process $process
+            $Harness.LauncherProcessTreeSnapshot = $launcherTreeSnapshot
+        }
+        if ($runtimeIsLauncher) {
+            $runtimeTreeSnapshot = $launcherTreeSnapshot
+            $Harness.RuntimeProcessTreeSnapshot = $runtimeTreeSnapshot
+        } elseif (-not (Wait-W4RetainedProcessExit `
+                -ExitObservation $runtimeExitObservation -TimeoutMilliseconds 0 `
+                -Label 'Harness runtime')) {
+            # Refresh the reconciliation snapshot only while the retained
+            # kernel handle proves the runtime is still live.  This is not an
+            # exit-code observation and deliberately avoids a volatile managed
+            # Process.HasExited read on the onefile child.
+            $runtimeTreeSnapshot = New-W4ProcessTreeIdentitySnapshot -Process $runtimeProcess
+            $Harness.RuntimeProcessTreeSnapshot = $runtimeTreeSnapshot
+        }
+        $shutdown = Join-Path $Harness.StateDirectory 'shutdown.request'
+        [System.IO.File]::WriteAllText($shutdown, "shutdown`n", [System.Text.UTF8Encoding]::new($false))
+        $forced = $false
+        $launcherExitCode = $null
+        $runtimeExitCode = $null
         if (-not $process.WaitForExit(30000)) {
             $forced = $true
             Stop-W4ProcessTree -Process $process `
@@ -5102,17 +5196,16 @@ function Stop-W4LoopbackHarness {
         }
         if ($runtimeIsLauncher) {
             $runtimeExitCode = $launcherExitCode
-        } elseif (-not $runtimeProcess.HasExited) {
-            if (-not $runtimeProcess.WaitForExit(5000)) {
+        } elseif (-not (Wait-W4RetainedProcessExit `
+                -ExitObservation $runtimeExitObservation -TimeoutMilliseconds 5000 `
+                -Label 'Harness runtime')) {
                 $forced = $true
                 Stop-W4ProcessTree -Process $runtimeProcess `
                     -IdentitySnapshot $runtimeTreeSnapshot
-            } else {
-                $runtimeProcess.WaitForExit()
-                $runtimeExitCode = Get-W4ExitedProcessExitCode -Process $runtimeProcess -Label 'Harness runtime'
-            }
         } else {
-            $runtimeExitCode = Get-W4ExitedProcessExitCode -Process $runtimeProcess -Label 'Harness runtime'
+            $runtimeExitCode = Get-W4RetainedExitedProcessExitCode `
+                -ExitObservation $runtimeExitObservation `
+                -Label 'Harness runtime'
         }
         if (-not $runtimeIsLauncher) {
             Stop-W4ProcessTree -Process $runtimeProcess `
@@ -5129,6 +5222,11 @@ function Stop-W4LoopbackHarness {
             runtime_pid = $runtimePid
             exit_code = $launcherExitCode
             runtime_exit_code = $runtimeExitCode
+            runtime_exit_source = if ($runtimeIsLauncher) {
+                'launcher_managed_exit_code'
+            } else {
+                'retained_native_handle'
+            }
             forced_termination = $forced
             timed_out = $forced
         }
@@ -5150,14 +5248,31 @@ function Stop-W4LoopbackHarness {
         Write-W4JsonFile -Path (Join-Path $Harness.Evidence 'result.json') -Value $result
         return $result
     } finally {
-        if (-not $runtimeIsLauncher) {
-            Stop-W4ProcessTree -Process $runtimeProcess `
-                -IdentitySnapshot $runtimeTreeSnapshot
-            $runtimeProcess.Dispose()
+        try {
+            if ($runtimePid -ne $launcherPid -and $null -ne $runtimeTreeSnapshot) {
+                try {
+                    Stop-W4ProcessTree -Process $runtimeProcess `
+                        -IdentitySnapshot $runtimeTreeSnapshot
+                } finally {
+                    $runtimeProcess.Dispose()
+                }
+            }
+        } finally {
+            try {
+                if ($null -ne $launcherTreeSnapshot) {
+                    Stop-W4ProcessTree -Process $process `
+                        -IdentitySnapshot $launcherTreeSnapshot
+                }
+            } finally {
+                try {
+                    $process.Dispose()
+                } finally {
+                    if ($null -ne $runtimeExitObservation) {
+                        $runtimeExitObservation.Dispose()
+                    }
+                }
+            }
         }
-        Stop-W4ProcessTree -Process $process `
-            -IdentitySnapshot $launcherTreeSnapshot
-        $process.Dispose()
     }
 }
 
@@ -5315,9 +5430,34 @@ function Invoke-W4ChatLoopbackScenario {
         $harnessStopped = $true
     } finally {
         if (-not $harnessStopped) {
-            Stop-W4ProcessTree -Process $harness.Process `
-                -IdentitySnapshot $harness.LauncherProcessTreeSnapshot
-            $harness.Process.Dispose()
+            # Start-W4LoopbackHarness owns a duplicated runtime kernel handle.
+            # If a scenario failure bypasses Stop-W4LoopbackHarness, retain the
+            # existing snapshot-only reconciliation while still releasing that
+            # handle and the distinct runtime Process in every cleanup branch.
+            $harnessRuntimeIsLauncher = [int]$harness.RuntimePid -eq [int]$harness.LauncherPid
+            try {
+                if (-not $harnessRuntimeIsLauncher) {
+                    try {
+                        Stop-W4ProcessTree -Process $harness.RuntimeProcess `
+                            -IdentitySnapshot $harness.RuntimeProcessTreeSnapshot
+                    } finally {
+                        $harness.RuntimeProcess.Dispose()
+                    }
+                }
+            } finally {
+                try {
+                    Stop-W4ProcessTree -Process $harness.Process `
+                        -IdentitySnapshot $harness.LauncherProcessTreeSnapshot
+                } finally {
+                    try {
+                        $harness.Process.Dispose()
+                    } finally {
+                        if ($null -ne $harness.RuntimeExitObservation) {
+                            $harness.RuntimeExitObservation.Dispose()
+                        }
+                    }
+                }
+            }
         }
     }
     $oracle = [ordered]@{

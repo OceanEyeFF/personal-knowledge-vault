@@ -7,6 +7,8 @@ They do not import ``src`` and do not require a built product Artifact.
 from __future__ import annotations
 
 import base64
+import ctypes
+from ctypes import wintypes
 import hashlib
 import json
 import os
@@ -15,6 +17,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 import zipfile
 
@@ -170,6 +173,374 @@ def _run_powershell(
         timeout=timeout,
         check=False,
     )
+
+
+_PROCESS_QUERY_INFORMATION = 0x0400
+_SYNCHRONIZE = 0x00100000
+_ERROR_INVALID_PARAMETER = 87
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+_FILETIME_TO_DATETIME_TICKS = 504_911_232_000_000_000
+_STILL_ACTIVE = 259
+
+
+class _W4IoCounters(ctypes.Structure):
+    _fields_ = [
+        ("read_operation_count", ctypes.c_uint64),
+        ("write_operation_count", ctypes.c_uint64),
+        ("other_operation_count", ctypes.c_uint64),
+        ("read_transfer_count", ctypes.c_uint64),
+        ("write_transfer_count", ctypes.c_uint64),
+        ("other_transfer_count", ctypes.c_uint64),
+    ]
+
+
+class _W4JobBasicLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("per_process_user_time_limit", ctypes.c_int64),
+        ("per_job_user_time_limit", ctypes.c_int64),
+        ("limit_flags", wintypes.DWORD),
+        ("minimum_working_set_size", ctypes.c_size_t),
+        ("maximum_working_set_size", ctypes.c_size_t),
+        ("active_process_limit", wintypes.DWORD),
+        ("affinity", ctypes.c_size_t),
+        ("priority_class", wintypes.DWORD),
+        ("scheduling_class", wintypes.DWORD),
+    ]
+
+
+class _W4JobExtendedLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("basic_limit_information", _W4JobBasicLimitInformation),
+        ("io_info", _W4IoCounters),
+        ("process_memory_limit", ctypes.c_size_t),
+        ("job_memory_limit", ctypes.c_size_t),
+        ("peak_process_memory_used", ctypes.c_size_t),
+        ("peak_job_memory_used", ctypes.c_size_t),
+    ]
+
+
+if os.name == "nt":
+    _W4_KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _W4_KERNEL32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+    _W4_KERNEL32.CreateJobObjectW.restype = wintypes.HANDLE
+    _W4_KERNEL32.SetInformationJobObject.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    _W4_KERNEL32.SetInformationJobObject.restype = wintypes.BOOL
+    _W4_KERNEL32.OpenProcess.argtypes = (
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+    )
+    _W4_KERNEL32.OpenProcess.restype = wintypes.HANDLE
+    _W4_KERNEL32.GetProcessId.argtypes = (wintypes.HANDLE,)
+    _W4_KERNEL32.GetProcessId.restype = wintypes.DWORD
+    _W4_KERNEL32.AssignProcessToJobObject.argtypes = (
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+    )
+    _W4_KERNEL32.AssignProcessToJobObject.restype = wintypes.BOOL
+    _W4_KERNEL32.IsProcessInJob.argtypes = (
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.BOOL),
+    )
+    _W4_KERNEL32.IsProcessInJob.restype = wintypes.BOOL
+    _W4_KERNEL32.GetProcessTimes.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    )
+    _W4_KERNEL32.GetProcessTimes.restype = wintypes.BOOL
+    _W4_KERNEL32.GetExitCodeProcess.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    _W4_KERNEL32.GetExitCodeProcess.restype = wintypes.BOOL
+    _W4_KERNEL32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _W4_KERNEL32.TerminateJobObject.restype = wintypes.BOOL
+    _W4_KERNEL32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _W4_KERNEL32.CloseHandle.restype = wintypes.BOOL
+else:
+    _W4_KERNEL32 = None
+
+
+def _w4_raise_last_error(operation: str) -> None:
+    error = ctypes.get_last_error()
+    raise OSError(error, f"{operation} failed: {ctypes.FormatError(error).strip()}")
+
+
+def _w4_filetime_to_datetime_ticks(value: wintypes.FILETIME) -> int:
+    raw = (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
+    return raw + _FILETIME_TO_DATETIME_TICKS
+
+
+def _w4_close_handle(handle: wintypes.HANDLE) -> None:
+    assert _W4_KERNEL32 is not None
+    if not _W4_KERNEL32.CloseHandle(handle):
+        _w4_raise_last_error("CloseHandle")
+
+
+def _w4_open_process_for_identity(process_id: int) -> wintypes.HANDLE | None:
+    assert _W4_KERNEL32 is not None
+    access = _PROCESS_QUERY_INFORMATION | _SYNCHRONIZE
+    handle = _W4_KERNEL32.OpenProcess(access, False, process_id)
+    if handle:
+        return handle
+    if ctypes.get_last_error() == _ERROR_INVALID_PARAMETER:
+        return None
+    _w4_raise_last_error(f"OpenProcess(pid={process_id})")
+
+
+def _w4_process_start_ticks(handle: wintypes.HANDLE) -> int:
+    assert _W4_KERNEL32 is not None
+    created = wintypes.FILETIME()
+    exited = wintypes.FILETIME()
+    kernel = wintypes.FILETIME()
+    user = wintypes.FILETIME()
+    if not _W4_KERNEL32.GetProcessTimes(
+        handle,
+        ctypes.byref(created),
+        ctypes.byref(exited),
+        ctypes.byref(kernel),
+        ctypes.byref(user),
+    ):
+        _w4_raise_last_error("GetProcessTimes")
+    return _w4_filetime_to_datetime_ticks(created)
+
+
+class _W4KillOnCloseJob:
+    """Test-only ownership of a job that kills its entire tree when closed."""
+
+    def __init__(self) -> None:
+        if _W4_KERNEL32 is None:
+            raise RuntimeError("W4 UIA probe requires Windows Job Object APIs")
+        if ctypes.sizeof(_W4JobBasicLimitInformation) not in (48, 64):
+            raise RuntimeError("unexpected JOBOBJECT_BASIC_LIMIT_INFORMATION layout")
+        if ctypes.sizeof(_W4JobExtendedLimitInformation) not in (112, 144):
+            raise RuntimeError("unexpected JOBOBJECT_EXTENDED_LIMIT_INFORMATION layout")
+        handle = _W4_KERNEL32.CreateJobObjectW(None, None)
+        if not handle:
+            _w4_raise_last_error("CreateJobObjectW")
+        self._handle: wintypes.HANDLE | None = handle
+        try:
+            information = _W4JobExtendedLimitInformation()
+            information.basic_limit_information.limit_flags = (
+                _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            )
+            if not _W4_KERNEL32.SetInformationJobObject(
+                handle,
+                _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                ctypes.cast(ctypes.byref(information), ctypes.c_void_p),
+                ctypes.sizeof(information),
+            ):
+                _w4_raise_last_error("SetInformationJobObject")
+        except BaseException:
+            _w4_close_handle(handle)
+            self._handle = None
+            raise
+
+    def assign_controller_handle(self, controller: subprocess.Popen[str]) -> int:
+        assert _W4_KERNEL32 is not None
+        if self._handle is None:
+            raise RuntimeError("Job Object handle is already closed")
+        raw_handle = getattr(controller, "_handle", None)
+        if raw_handle is None:
+            raise RuntimeError("controller did not expose its retained native process handle")
+        try:
+            controller_handle = wintypes.HANDLE(int(raw_handle))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "controller retained native process handle was not representable"
+            ) from exc
+        expected_process_id = int(controller.pid)
+        observed_process_id = int(_W4_KERNEL32.GetProcessId(controller_handle))
+        if observed_process_id <= 0:
+            _w4_raise_last_error("GetProcessId(controller handle)")
+        if observed_process_id != expected_process_id:
+            raise RuntimeError("controller retained handle did not bind its Popen PID")
+        if controller.poll() is not None:
+            raise RuntimeError("controller exited before Job Object assignment")
+        start_ticks = _w4_process_start_ticks(controller_handle)
+        if not _W4_KERNEL32.AssignProcessToJobObject(self._handle, controller_handle):
+            _w4_raise_last_error(
+                f"AssignProcessToJobObject(controller pid={expected_process_id})"
+            )
+        in_job = wintypes.BOOL()
+        if not _W4_KERNEL32.IsProcessInJob(
+            controller_handle, self._handle, ctypes.byref(in_job)
+        ):
+            _w4_raise_last_error("IsProcessInJob(controller handle)")
+        if not bool(in_job.value):
+            raise RuntimeError("UIA selection probe controller was not contained by its Job Object")
+        if controller.poll() is not None:
+            raise RuntimeError("controller exited immediately after Job Object assignment")
+        return start_ticks
+
+    def assert_process_is_member(
+        self,
+        process_id: int,
+        *,
+        expected_start_ticks: int | None = None,
+        label: str,
+    ) -> int:
+        assert _W4_KERNEL32 is not None
+        if self._handle is None:
+            raise RuntimeError("Job Object handle is already closed")
+        process_handle = _w4_open_process_for_identity(process_id)
+        if process_handle is None:
+            raise RuntimeError(f"UIA selection probe {label} exited before Job Object validation")
+        try:
+            actual_start_ticks = _w4_process_start_ticks(process_handle)
+            if (
+                expected_start_ticks is not None
+                and actual_start_ticks != expected_start_ticks
+            ):
+                raise RuntimeError(
+                    f"UIA selection probe {label} identity did not match its ready record"
+                )
+            in_job = wintypes.BOOL()
+            if not _W4_KERNEL32.IsProcessInJob(
+                process_handle, self._handle, ctypes.byref(in_job)
+            ):
+                _w4_raise_last_error("IsProcessInJob")
+            if not bool(in_job.value):
+                raise RuntimeError(
+                    f"UIA selection probe {label} was not contained by the controller Job Object"
+                )
+            return actual_start_ticks
+        finally:
+            _w4_close_handle(process_handle)
+
+    def terminate(self) -> None:
+        assert _W4_KERNEL32 is not None
+        if self._handle is None:
+            return
+        if not _W4_KERNEL32.TerminateJobObject(self._handle, 1):
+            _w4_raise_last_error("TerminateJobObject")
+
+    def close(self) -> None:
+        if self._handle is None:
+            return
+        handle = self._handle
+        self._handle = None
+        _w4_close_handle(handle)
+
+
+def _w4_same_process_identity_is_live(process_id: int, start_ticks: int) -> bool:
+    handle = _w4_open_process_for_identity(process_id)
+    if handle is None:
+        return False
+    try:
+        if _w4_process_start_ticks(handle) != start_ticks:
+            return False
+        exit_code = wintypes.DWORD()
+        if not _W4_KERNEL32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            _w4_raise_last_error("GetExitCodeProcess")
+        return int(exit_code.value) == _STILL_ACTIVE
+    finally:
+        _w4_close_handle(handle)
+
+
+def _w4_wait_for_process_identity_absent(process_id: int, start_ticks: int) -> None:
+    deadline = time.monotonic() + 5
+    while _w4_same_process_identity_is_live(process_id, start_ticks):
+        if time.monotonic() >= deadline:
+            raise AssertionError("UIA selection probe identity survived Job Object cleanup")
+        time.sleep(0.05)
+
+
+def _w4_reap_controller_after_job_failure(
+    controller: subprocess.Popen[str], job: _W4KillOnCloseJob | None
+) -> None:
+    """Fail closed after Job setup/termination failures without trusting a PID."""
+
+    failures: list[BaseException] = []
+    if job is not None:
+        try:
+            job.terminate()
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            try:
+                job.close()
+            except BaseException as exc:
+                failures.append(exc)
+
+    # `Popen` owns a handle to the exact controller process object.  Unlike a
+    # PID reopen this remains safe if the numeric PID has already been reused.
+    kill_error: BaseException | None = None
+    try:
+        if controller.poll() is None:
+            controller.kill()
+    except BaseException as exc:
+        kill_error = exc
+    try:
+        controller.wait(timeout=5)
+    except BaseException as exc:
+        failures.append(exc)
+    if controller.poll() is None:
+        if kill_error is not None:
+            failures.append(kill_error)
+        failures.append(
+            AssertionError("UIA selection probe controller survived bounded cleanup")
+        )
+    if failures:
+        raise RuntimeError("UIA selection probe cleanup failed closed") from failures[0]
+
+
+def _w4_read_uia_probe_identity(
+    ready_path: Path,
+    *,
+    nonce: str,
+    title: str,
+) -> tuple[int, int]:
+    payload = json.loads(ready_path.read_text(encoding="utf-8"))
+    assert set(payload) == {
+        "nonce",
+        "process_id",
+        "start_time_utc_ticks",
+        "title",
+        "automation_id",
+    }
+    assert payload["nonce"] == nonce
+    assert type(payload["process_id"]) is int and payload["process_id"] > 0
+    assert (
+        type(payload["start_time_utc_ticks"]) is int
+        and payload["start_time_utc_ticks"] > 0
+    )
+    assert payload["title"] == title
+    assert payload["automation_id"] == "w4_selection_probe_window"
+    return payload["process_id"], payload["start_time_utc_ticks"]
+
+
+def _w4_wait_for_uia_probe_identity(
+    controller: subprocess.Popen[str],
+    ready_path: Path,
+    *,
+    nonce: str,
+    title: str,
+) -> tuple[int, int]:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if ready_path.is_file():
+            try:
+                return _w4_read_uia_probe_identity(ready_path, nonce=nonce, title=title)
+            except (OSError, json.JSONDecodeError):
+                # The child publishes through a same-directory atomic move.  A
+                # short-lived read race must remain bounded and must never turn
+                # a partial sidecar into accepted readiness.
+                pass
+        if controller.poll() is not None:
+            raise AssertionError("UIA selection probe controller exited before readiness")
+        time.sleep(0.05)
+    raise AssertionError("UIA selection probe did not publish bounded readiness")
 
 
 def _read(path: Path) -> str:
@@ -396,22 +767,57 @@ def _run_tcp_owner_contract_probe() -> subprocess.CompletedProcess[str]:
     )
 
 
-def _run_uia_selection_pattern_probe() -> subprocess.CompletedProcess[str]:
+def _run_uia_selection_pattern_probe_bounded(
+    tmp_path: Path,
+    *,
+    force_controller_failure: bool = False,
+    force_outer_timeout: bool = False,
+) -> tuple[subprocess.CompletedProcess[str] | None, Path, dict[str, object] | None]:
     title = f"W4SelectionProbe-{uuid.uuid4().hex}"
+    nonce = uuid.uuid4().hex
+    launch_gate = tmp_path / f"uia-selection-launch-{uuid.uuid4().hex}.gate"
+    enable_gate = tmp_path / f"uia-selection-enable-{uuid.uuid4().hex}.gate"
+    close_request = tmp_path / f"uia-selection-close-{uuid.uuid4().hex}.request"
+    close_ack = tmp_path / f"uia-selection-close-{uuid.uuid4().hex}.ack"
+    ready_path = tmp_path / f"uia-selection-ready-{uuid.uuid4().hex}.json"
+    cleanup_path = tmp_path / f"uia-selection-cleanup-{uuid.uuid4().hex}.json"
+    result_path = tmp_path / f"uia-selection-result-{uuid.uuid4().hex}.json"
+    error_path = tmp_path / f"uia-selection-error-{uuid.uuid4().hex}.txt"
+    expected_title = title
+    discovery_seconds = 15
+    outer_timeout_seconds = 3 if force_outer_timeout else 45
+    force_controller_failure_literal = (
+        "$true" if force_controller_failure else "$false"
+    )
+    force_outer_timeout_literal = "$true" if force_outer_timeout else "$false"
+
     child_script = f"""
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
+$launchGate = '{_ps_single_quoted(launch_gate)}'
+$readyPath = '{_ps_single_quoted(ready_path)}'
+$closeRequest = '{_ps_single_quoted(close_request)}'
+$closeAck = '{_ps_single_quoted(close_ack)}'
+$nonce = '{nonce}'
+$title = '{title}'
+$automationId = 'w4_selection_probe_window'
+$gateDeadline = [DateTime]::UtcNow.AddSeconds(10)
+while (-not (Test-Path -LiteralPath $launchGate -PathType Leaf)) {{
+    if ([DateTime]::UtcNow -ge $gateDeadline) {{
+        throw 'UIA selection probe launch gate was not released'
+    }}
+    Start-Sleep -Milliseconds 25
+}}
 $window = [System.Windows.Window]::new()
-$window.Title = '{title}'
+$window.Title = $title
 $window.Width = 360
 $window.Height = 240
 $window.WindowStartupLocation = [System.Windows.WindowStartupLocation]::Manual
 $window.Left = 120
 $window.Top = 120
-[System.Windows.Automation.AutomationProperties]::SetAutomationId(
-    $window,
-    'w4_selection_probe_window'
-)
+$window.Topmost = $true
+$window.ShowActivated = $true
+[System.Windows.Automation.AutomationProperties]::SetAutomationId($window, $automationId)
 $list = [System.Windows.Controls.ListBox]::new()
 $list.SelectionMode = [System.Windows.Controls.SelectionMode]::Single
 [System.Windows.Automation.AutomationProperties]::SetAutomationId(
@@ -425,8 +831,55 @@ $window.Content = $list
 $window.Add_ContentRendered({{
     $list.UnselectAll()
     [void]$window.Activate()
+    $ready = [ordered]@{{
+        nonce = $nonce
+        process_id = [int]$PID
+        start_time_utc_ticks = [int64]([Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks)
+        title = $title
+        automation_id = $automationId
+    }}
+    $readyTempPath = "$readyPath.$PID.$([Guid]::NewGuid().ToString('N')).tmp"
+    try {{
+        [System.IO.File]::WriteAllText(
+            $readyTempPath,
+            ($ready | ConvertTo-Json -Compress),
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        [System.IO.File]::Move($readyTempPath, $readyPath)
+    }} finally {{
+        if (Test-Path -LiteralPath $readyTempPath -PathType Leaf) {{
+            Remove-Item -LiteralPath $readyTempPath -Force -ErrorAction SilentlyContinue
+        }}
+    }}
 }})
-[void]$window.ShowDialog()
+$selfExpiry = [DateTime]::UtcNow.AddSeconds(30)
+$closeTimer = [System.Windows.Threading.DispatcherTimer]::new()
+$closeTimer.Interval = [TimeSpan]::FromMilliseconds(100)
+$closeTimer.Add_Tick({{
+    $reason = $null
+    if (Test-Path -LiteralPath $closeRequest -PathType Leaf) {{
+        $reason = 'close_request'
+    }} elseif ([DateTime]::UtcNow -ge $selfExpiry) {{
+        $reason = 'self_expiry'
+    }}
+    if ($null -ne $reason) {{
+        try {{
+            [System.IO.File]::WriteAllText(
+                $closeAck,
+                $reason,
+                [System.Text.UTF8Encoding]::new($false)
+            )
+        }} catch {{}}
+        $closeTimer.Stop()
+        $window.Close()
+    }}
+}})
+$closeTimer.Start()
+try {{
+    [void]$window.ShowDialog()
+}} finally {{
+    $closeTimer.Stop()
+}}
 """
     encoded_child = base64.b64encode(child_script.encode("utf-16le")).decode("ascii")
     command = (
@@ -434,66 +887,76 @@ $window.Add_ContentRendered({{
         "Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop;"
         "Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop;"
         f"Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' -Force;"
-        f"$module=Import-Module '{_ps_single_quoted(SCENARIO_MODULE)}' "
-        "-Force -PassThru;"
-        "$process=$null;"
-        "try {"
+        f"$module=Import-Module '{_ps_single_quoted(SCENARIO_MODULE)}' -Force -PassThru;"
+        f"$launchGate='{_ps_single_quoted(launch_gate)}';"
+        f"$enableGate='{_ps_single_quoted(enable_gate)}';"
+        f"$closeRequest='{_ps_single_quoted(close_request)}';"
+        f"$closeAck='{_ps_single_quoted(close_ack)}';"
+        f"$cleanupPath='{_ps_single_quoted(cleanup_path)}';"
+        f"$resultPath='{_ps_single_quoted(result_path)}';"
+        f"$errorPath='{_ps_single_quoted(error_path)}';"
+        "$process=$null;$childStdoutTask=$null;$childStderrTask=$null;"
+        "$childPid=$null;$childStartTicks=$null;$cleanupRequested=$false;"
+        "$cleanupFallbackKill=$false;$cleanupExited=$false;"
+        "$cleanupSameIdentityLive=$false;$controllerError=$null;"
+        "try{"
+        "$launchDeadline=[DateTime]::UtcNow.AddSeconds(10);"
+        "while(-not(Test-Path -LiteralPath $launchGate -PathType Leaf)){"
+        "if([DateTime]::UtcNow -ge $launchDeadline){throw 'UIA selection probe launch gate was not released'};"
+        "Start-Sleep -Milliseconds 25};"
         "$psi=[Diagnostics.ProcessStartInfo]::new();"
         "$psi.FileName=(Join-Path $PSHOME 'powershell.exe');"
-        f"$psi.Arguments='-NoLogo -NoProfile -NonInteractive -Sta -EncodedCommand "
-        f"{encoded_child}';"
+        f"$psi.Arguments='-NoLogo -NoProfile -NonInteractive -Sta -EncodedCommand {encoded_child}';"
         "$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;"
+        "$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;"
         "$process=[Diagnostics.Process]::Start($psi);"
         "if($null -eq $process){throw 'UIA selection probe process did not start'};"
+        "$childStdoutTask=$process.StandardOutput.ReadToEndAsync();"
+        "$childStderrTask=$process.StandardError.ReadToEndAsync();"
+        "$childPid=[int]$process.Id;"
+        "$childStartTicks=[int64]$process.StartTime.ToUniversalTime().Ticks;"
+        "$enableDeadline=[DateTime]::UtcNow.AddSeconds(15);"
+        "while(-not(Test-Path -LiteralPath $enableGate -PathType Leaf)){"
+        "$process.Refresh();if($process.HasExited){throw 'UIA selection probe exited before Job Object enablement'};"
+        "if([DateTime]::UtcNow -ge $enableDeadline){throw "
+        "'UIA selection probe Job Object enable gate was not released'};"
+        "Start-Sleep -Milliseconds 25};"
+        f"if({force_controller_failure_literal}){{throw "
+        "'UIA selection probe forced controller failure'};"
+        f"if({force_outer_timeout_literal}){{Start-Sleep -Seconds 120}};"
         "$desktop=[System.Windows.Automation.AutomationElement]::RootElement;"
         "$pidCondition=[System.Windows.Automation.PropertyCondition]::new("
-        "[System.Windows.Automation.AutomationElement]::ProcessIdProperty,"
-        "[int]$process.Id);"
+        "[System.Windows.Automation.AutomationElement]::ProcessIdProperty,[int]$process.Id);"
         "$nameCondition=[System.Windows.Automation.PropertyCondition]::new("
         "[System.Windows.Automation.AutomationElement]::NameProperty,"
-        f"'{title}');"
+        f"'{expected_title}');"
         "$windowAutomationCondition=[System.Windows.Automation.PropertyCondition]::new("
         "[System.Windows.Automation.AutomationElement]::AutomationIdProperty,"
         "'w4_selection_probe_window');"
         "$windowCondition=[System.Windows.Automation.AndCondition]::new("
-        "[System.Windows.Automation.Condition[]]@($pidCondition,$nameCondition,"
-        "$windowAutomationCondition));"
-        "$deadline=[DateTime]::UtcNow.AddSeconds(15);$window=$null;"
-        "do {"
-        "$window=$desktop.FindFirst("
-        "[System.Windows.Automation.TreeScope]::Children,$windowCondition);"
-        "if($null -ne $window){"
-        "try {if(-not [bool]$window.Current.IsOffscreen){break}}"
-        "catch [System.Windows.Automation.ElementNotAvailableException]{};"
-        "$window=$null};"
-        "$process.Refresh();"
-        "if($process.HasExited){throw 'UIA selection probe exited before discovery'};"
-        "Start-Sleep -Milliseconds 50"
-        "}while([DateTime]::UtcNow -lt $deadline);"
+        "[System.Windows.Automation.Condition[]]@($pidCondition,$nameCondition,$windowAutomationCondition));"
+        f"$deadline=[DateTime]::UtcNow.AddSeconds({discovery_seconds});$window=$null;"
+        "do{$window=$desktop.FindFirst([System.Windows.Automation.TreeScope]::Children,$windowCondition);"
+        "if($null -ne $window){try{if(-not [bool]$window.Current.IsOffscreen){break}}"
+        "catch [System.Windows.Automation.ElementNotAvailableException]{};$window=$null};"
+        "$process.Refresh();if($process.HasExited){throw 'UIA selection probe exited before discovery'};"
+        "Start-Sleep -Milliseconds 50}while([DateTime]::UtcNow -lt $deadline);"
         "if($null -eq $window){throw 'UIA selection probe window was not found'};"
         "$listCondition=[System.Windows.Automation.PropertyCondition]::new("
-        "[System.Windows.Automation.AutomationElement]::AutomationIdProperty,"
-        "'w4_selection_probe_list');"
+        "[System.Windows.Automation.AutomationElement]::AutomationIdProperty,'w4_selection_probe_list');"
         "$listDeadline=[DateTime]::UtcNow.AddSeconds(10);$list=$null;"
-        "do {$window=$desktop.FindFirst("
-        "[System.Windows.Automation.TreeScope]::Children,$windowCondition);"
-        "if($null -ne $window){try{"
-        "if(-not [bool]$window.Current.IsOffscreen){"
-        "$listMatches=$window.FindAll("
-        "[System.Windows.Automation.TreeScope]::Descendants,$listCondition);"
+        "do{$window=$desktop.FindFirst([System.Windows.Automation.TreeScope]::Children,$windowCondition);"
+        "if($null -ne $window){try{if(-not [bool]$window.Current.IsOffscreen){"
+        "$listMatches=$window.FindAll([System.Windows.Automation.TreeScope]::Descendants,$listCondition);"
         "if($listMatches.Count -eq 1){$list=$listMatches.Item(0);break};"
         "if($listMatches.Count -gt 1){throw 'UIA selection probe list was duplicated'}}}"
-        "catch [System.Windows.Automation.ElementNotAvailableException]{};"
-        "$window=$null};"
-        "Start-Sleep -Milliseconds 50"
-        "}while([DateTime]::UtcNow -lt $listDeadline);"
+        "catch [System.Windows.Automation.ElementNotAvailableException]{};$window=$null};"
+        "Start-Sleep -Milliseconds 50}while([DateTime]::UtcNow -lt $listDeadline);"
         "if($null -eq $list){throw 'UIA selection probe list was not found'};"
-        "$zeroPattern=$null;"
-        "if(-not $list.TryGetCurrentPattern("
-        "[System.Windows.Automation.SelectionPattern]::Pattern,"
-        "[ref]$zeroPattern)){throw 'Probe list lacks SelectionPattern'};"
-        "$zeroCount=@(([System.Windows.Automation.SelectionPattern]"
-        "$zeroPattern).Current.GetSelection()).Count;"
+        "$zeroPattern=$null;if(-not $list.TryGetCurrentPattern("
+        "[System.Windows.Automation.SelectionPattern]::Pattern,[ref]$zeroPattern)){"
+        "throw 'Probe list lacks SelectionPattern'};"
+        "$zeroCount=@(([System.Windows.Automation.SelectionPattern]$zeroPattern).Current.GetSelection()).Count;"
         "if($zeroCount -ne 0){throw 'Probe list did not begin with zero selection'};"
         "$list=& $module {param($root) Wait-W4UiaSelectionCount -Root $root "
         "-AutomationId 'w4_selection_probe_list' -ExpectedCount 0 "
@@ -502,35 +965,120 @@ $window.Add_ContentRendered({{
         "$oneList=& $module {param($root) Wait-W4UiaSelectionCount -Root $root "
         "-AutomationId 'w4_selection_probe_list' -ExpectedCount 1 "
         "-TimeoutSeconds 10} $window;"
-        "$onePattern=$null;"
-        "if(-not $oneList.TryGetCurrentPattern("
-        "[System.Windows.Automation.SelectionPattern]::Pattern,"
-        "[ref]$onePattern)){throw 'Probe list lost SelectionPattern'};"
-        "$selection=@(([System.Windows.Automation.SelectionPattern]"
-        "$onePattern).Current.GetSelection());"
-        "$itemRuntimeId=@($item.GetRuntimeId());"
-        "$selectedRuntimeId=@($selection[0].GetRuntimeId());"
-        "$runtimeIdsMatch=($itemRuntimeId.Count -gt 0 -and "
-        "$itemRuntimeId.Count -eq $selectedRuntimeId.Count);"
-        "if($runtimeIdsMatch){"
-        "for($index=0;$index -lt $itemRuntimeId.Count;$index+=1){"
-        "if([int]$itemRuntimeId[$index] -ne "
-        "[int]$selectedRuntimeId[$index]){$runtimeIdsMatch=$false;break}}};"
-        "$proof=& $module {param($root,$item) "
-        "Get-W4UiaSelectionProof -Root $root -Item $item} $oneList $item;"
-        "[ordered]@{zero_count=[int]$zeroCount;"
-        "one_count=[int]$selection.Count;runtime_ids_match=[bool]$runtimeIdsMatch;"
-        "selected_runtime_id=@($selectedRuntimeId);proof=$proof}"
-        "|ConvertTo-Json -Depth 10 -Compress"
-        "}finally{"
-        "if($null -ne $process){try{$process.Refresh();"
-        "if(-not $process.HasExited){$process.Kill();"
-        "[void]$process.WaitForExit(5000)}}catch{};$process.Dispose()}"
-        "}"
+        "$onePattern=$null;if(-not $oneList.TryGetCurrentPattern("
+        "[System.Windows.Automation.SelectionPattern]::Pattern,[ref]$onePattern)){"
+        "throw 'Probe list lost SelectionPattern'};"
+        "$selection=@(([System.Windows.Automation.SelectionPattern]$onePattern).Current.GetSelection());"
+        "$itemRuntimeId=@($item.GetRuntimeId());$selectedRuntimeId=@($selection[0].GetRuntimeId());"
+        "$runtimeIdsMatch=($itemRuntimeId.Count -gt 0 -and $itemRuntimeId.Count -eq $selectedRuntimeId.Count);"
+        "if($runtimeIdsMatch){for($index=0;$index -lt $itemRuntimeId.Count;$index+=1){"
+        "if([int]$itemRuntimeId[$index] -ne [int]$selectedRuntimeId[$index]){$runtimeIdsMatch=$false;break}}};"
+        "$proof=& $module {param($root,$item) Get-W4UiaSelectionProof -Root $root -Item $item} $oneList $item;"
+        "$result=[ordered]@{zero_count=[int]$zeroCount;one_count=[int]$selection.Count;"
+        "runtime_ids_match=[bool]$runtimeIdsMatch;selected_runtime_id=@($selectedRuntimeId);proof=$proof};"
+        "[IO.File]::WriteAllText($resultPath,"
+        "($result|ConvertTo-Json -Depth 10 -Compress),"
+        "[Text.UTF8Encoding]::new($false))"
+        "}catch{$controllerError=$_.Exception.Message;"
+        "try{[IO.File]::WriteAllText($errorPath,$controllerError,[Text.UTF8Encoding]::new($false))}catch{}}"
+        "finally{if($null -ne $process){try{"
+        "try{$process.Refresh();$cleanupExited=[bool]$process.HasExited}catch{$cleanupExited=$false};"
+        "if(-not $cleanupExited){[IO.File]::WriteAllText($closeRequest,'close',[Text.UTF8Encoding]::new($false));"
+        "$cleanupRequested=$true;$cleanupDeadline=[DateTime]::UtcNow.AddSeconds(5);"
+        "do{try{if($process.WaitForExit(100)){$cleanupExited=$true;break}}"
+        "catch{break}}while([DateTime]::UtcNow -lt $cleanupDeadline);"
+        "if(-not $cleanupExited){$cleanupFallbackKill=$true;try{$process.Kill()}catch{};"
+        "try{$cleanupExited=[bool]$process.WaitForExit(3000)}catch{$cleanupExited=$false}}};"
+        "if(-not $cleanupExited){throw 'UIA selection probe child did not exit during bounded cleanup'};"
+        "$freshProcess=$null;try{$freshProcess=[Diagnostics.Process]::GetProcessById($childPid);"
+        "$freshStartTicks=[int64]$freshProcess.StartTime.ToUniversalTime().Ticks;"
+        "$cleanupSameIdentityLive=($freshStartTicks -eq $childStartTicks)}"
+        "catch [ArgumentException]{$cleanupSameIdentityLive=$false}"
+        "finally{if($null -ne $freshProcess){$freshProcess.Dispose()}};"
+        "if($cleanupSameIdentityLive){throw 'UIA selection probe child identity remained live after bounded cleanup'}"
+        "}finally{$closeAckValue='';if(Test-Path -LiteralPath $closeAck -PathType Leaf){"
+        "try{$closeAckValue=[IO.File]::ReadAllText($closeAck,[Text.Encoding]::UTF8).Trim()}catch{}};"
+        "$cleanup=[ordered]@{child_pid=$childPid;child_start_time_utc_ticks=$childStartTicks;"
+        "close_request_written=[bool]$cleanupRequested;close_ack=$closeAckValue;"
+        "fallback_kill=[bool]$cleanupFallbackKill;process_exited=[bool]$cleanupExited;"
+        "same_identity_live_after_cleanup=[bool]$cleanupSameIdentityLive};"
+        "[IO.File]::WriteAllText($cleanupPath,($cleanup|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));"
+        "if($null -ne $childStdoutTask){try{[void]$childStdoutTask.GetAwaiter().GetResult()}catch{}};"
+        "if($null -ne $childStderrTask){try{[void]$childStderrTask.GetAwaiter()"
+        ".GetResult()}catch{}};$process.Dispose()}}};"
+        "if($null -ne $controllerError){exit 1}"
     )
-    return _run_powershell(
-        ["-Command", command], cwd=REPOSITORY_ROOT, timeout=45
+    controller_args = [
+        str(_windows_powershell()),
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        command,
+    ]
+    controller = subprocess.Popen(
+        controller_args,
+        cwd=REPOSITORY_ROOT,
+        env=os.environ.copy(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        text=True,
     )
+    job: _W4KillOnCloseJob | None = None
+    identity: tuple[int, int] | None = None
+    try:
+        job = _W4KillOnCloseJob()
+        controller_start_ticks = job.assign_controller_handle(controller)
+        if controller_start_ticks <= 0:
+            raise AssertionError("UIA selection probe controller did not expose start ticks")
+        launch_gate.write_text(nonce, encoding="utf-8")
+        identity = _w4_wait_for_uia_probe_identity(
+            controller, ready_path, nonce=nonce, title=title
+        )
+        job.assert_process_is_member(
+            identity[0], expected_start_ticks=identity[1], label="child"
+        )
+        enable_gate.write_text(nonce, encoding="utf-8")
+        try:
+            controller.wait(timeout=outer_timeout_seconds)
+        except subprocess.TimeoutExpired:
+            try:
+                _w4_reap_controller_after_job_failure(controller, job)
+            finally:
+                job = None
+            _w4_wait_for_process_identity_absent(*identity)
+            return None, cleanup_path, {
+                "controller_timed_out": True,
+                "job_terminated": True,
+                "same_identity_live_after_job_cleanup": False,
+            }
+        job.close()
+        job = None
+        _w4_wait_for_process_identity_absent(*identity)
+        stdout = result_path.read_text(encoding="utf-8") if result_path.is_file() else ""
+        stderr = error_path.read_text(encoding="utf-8") if error_path.is_file() else ""
+        return (
+            subprocess.CompletedProcess(
+                controller_args, int(controller.returncode), stdout, stderr
+            ),
+            cleanup_path,
+            None,
+        )
+    except BaseException:
+        try:
+            _w4_reap_controller_after_job_failure(controller, job)
+        finally:
+            job = None
+            if identity is not None:
+                _w4_wait_for_process_identity_absent(*identity)
+        raise
+    finally:
+        if job is not None:
+            _w4_reap_controller_after_job_failure(controller, job)
 
 
 def _run_window_capture_probe(
@@ -735,91 +1283,345 @@ def _run_bounded_capture_worker_timeout_probe() -> subprocess.CompletedProcess[s
     )
 
 
-def _run_loopback_exit_code_snapshot_probe(
-    tmp_path: Path, mode: str
+def _run_loopback_retained_exit_observation_probe(
+    tmp_path: Path,
+    topology: str = "split",
+    runtime_mode: str = "success",
+    invalidate_runtime_before_native_read: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    """Exercise pre-reconciliation loopback exit-code capture on real handles."""
-    assert mode in {"record_then_unavailable", "unreadable_at_capture"}
+    """Exercise retained native exit observations through the real stop path."""
+    assert topology in {"split", "same"}
+    assert runtime_mode in {"success", "nonzero", "ignore_shutdown"}
+    assert not invalidate_runtime_before_native_read or topology == "split"
+    assert runtime_mode == "success" or not invalidate_runtime_before_native_read
     state = tmp_path / f"loopback-exit-state-{uuid.uuid4().hex}"
     evidence = tmp_path / f"loopback-exit-evidence-{uuid.uuid4().hex}"
-    encoded_exit = base64.b64encode("exit 0".encode("utf-16le")).decode("ascii")
+    shutdown = state / "shutdown.request"
+    runtime_shutdown_marker = state / "runtime-shutdown-observed.marker"
+
+    def shutdown_child_script(exit_code: int) -> str:
+        return (
+            "$ErrorActionPreference='Stop';"
+            f"$shutdown='{_ps_single_quoted(shutdown)}';"
+            "$deadline=[DateTime]::UtcNow.AddSeconds(20);"
+            "while(-not (Test-Path -LiteralPath $shutdown -PathType Leaf)){"
+            "if([DateTime]::UtcNow -ge $deadline){exit 91};"
+            "Start-Sleep -Milliseconds 20};"
+            "$request=[IO.File]::ReadAllText($shutdown,[Text.Encoding]::UTF8);"
+            "if($request -cne \"shutdown`n\"){exit 92};"
+            f"exit {exit_code}"
+        )
+
+    def ignore_shutdown_child_script() -> str:
+        return (
+            "$ErrorActionPreference='Stop';"
+            f"$shutdown='{_ps_single_quoted(shutdown)}';"
+            f"$marker='{_ps_single_quoted(runtime_shutdown_marker)}';"
+            "$deadline=[DateTime]::UtcNow.AddSeconds(20);"
+            "while(-not (Test-Path -LiteralPath $shutdown -PathType Leaf)){"
+            "if([DateTime]::UtcNow -ge $deadline){exit 91};"
+            "Start-Sleep -Milliseconds 20};"
+            "$request=[IO.File]::ReadAllText($shutdown,[Text.Encoding]::UTF8);"
+            "if($request -cne \"shutdown`n\"){exit 92};"
+            "[IO.File]::WriteAllText($marker,'observed',"
+            "[Text.UTF8Encoding]::new($false));"
+            "Start-Sleep -Seconds 20;exit 0"
+        )
+
+    launcher_script = shutdown_child_script(0)
+    runtime_script = (
+        shutdown_child_script(0)
+        if runtime_mode == "success"
+        else shutdown_child_script(17)
+        if runtime_mode == "nonzero"
+        else ignore_shutdown_child_script()
+    )
+    encoded_launcher = base64.b64encode(
+        launcher_script.encode("utf-16le")
+    ).decode("ascii")
+    encoded_runtime = base64.b64encode(
+        runtime_script.encode("utf-16le")
+    ).decode("ascii")
+    runtime_start = (
+        "$runtimeInfo=[Diagnostics.ProcessStartInfo]::new();"
+        f"$runtimeInfo.FileName='{_ps_single_quoted(_windows_powershell())}';"
+        "$runtimeInfo.Arguments='-NoLogo -NoProfile -NonInteractive "
+        f"-EncodedCommand {encoded_runtime}';"
+        "$runtimeInfo.UseShellExecute=$false;$runtimeInfo.CreateNoWindow=$true;"
+        "$runtimeSource=[Diagnostics.Process]::Start($runtimeInfo);"
+        "if($null -eq $runtimeSource){throw 'loopback runtime did not start'};"
+        "$runtime=[Diagnostics.Process]::GetProcessById([int]$runtimeSource.Id);"
+        "$runtimeSource.Dispose();$runtimeSource=$null;"
+        "$runtimeSourceAcquiredViaGetProcessById=$true;"
+        if topology == "split"
+        else "$runtime=$launcher;$runtimeSourceAcquiredViaGetProcessById=$false;"
+    )
+    runtime_ticks = (
+        "$runtimeTicks=[int64]$runtime.StartTime.ToUniversalTime().Ticks;"
+        if topology == "split"
+        else ""
+    )
+    runtime_snapshot = (
+        "$runtimeSnapshot=New-W4ProcessTreeIdentitySnapshot -Process $runtime;"
+        if topology == "split"
+        else "$runtimeSnapshot=$launcherSnapshot;"
+    )
+    runtime_observation = (
+        "$runtimeObservation=New-W4RetainedProcessExitObservation "
+        "-Process $runtime -ExpectedProcessId $runtimePid "
+        "-ExpectedStartTimeUtcTicks $runtimeTicks -Label 'Harness runtime';"
+        if topology == "split"
+        else "$runtimeObservation=$null;"
+    )
+    wait_override_setup = (
+        "& $module {"
+        "$script:W4LoopbackProbeRuntimeToInvalidate=$null;"
+        "$script:W4LoopbackProbeRuntimeWasInvalidated=$false;"
+        "function script:Wait-W4RetainedProcessExit {"
+        "param($ExitObservation,$TimeoutMilliseconds,$Label);"
+        "$exited=[bool]$ExitObservation.WaitForExit($TimeoutMilliseconds);"
+        "if($TimeoutMilliseconds -eq 5000 -and $exited -and "
+        "$null -ne $script:W4LoopbackProbeRuntimeToInvalidate){"
+        "$script:W4LoopbackProbeRuntimeToInvalidate.Dispose();"
+        "$script:W4LoopbackProbeRuntimeToInvalidate=$null;"
+        "$script:W4LoopbackProbeRuntimeWasInvalidated=$true};"
+        "return [bool]$exited"
+        "}"
+        "};"
+        "& $module {param($value) "
+        "$script:W4LoopbackProbeRuntimeToInvalidate=$value} $runtime;"
+        if invalidate_runtime_before_native_read
+        else ""
+    )
+    wait_override_result = (
+        "& $module {[bool]$script:W4LoopbackProbeRuntimeWasInvalidated};"
+        if invalidate_runtime_before_native_read
+        else "$false;"
+    )
+    use_real_tree_cleanup = runtime_mode != "success"
+    tree_cleanup_setup = (
+        "& $module {"
+        "function script:Stop-W4ProcessTree {"
+        "param([System.Diagnostics.Process]$Process,$IdentitySnapshot);"
+        "$script:W4LoopbackProbeTreeReconcileCount += 1;"
+        "try{$Process.Refresh();if(-not $Process.HasExited){$Process.Kill();"
+        "[void]$Process.WaitForExit(2000)}}catch{};"
+        "try{$Process.Dispose()}catch{}"
+        "}"
+        "};"
+        "& $module {$script:W4LoopbackProbeTreeReconcileCount=0};"
+        if not use_real_tree_cleanup
+        else ""
+    )
+    tree_reconcile_count = (
+        "& $module {[int]$script:W4LoopbackProbeTreeReconcileCount};"
+        if not use_real_tree_cleanup
+        else "$null;"
+    )
     command = (
         "$ErrorActionPreference='Stop';"
         f"Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' -Force;"
         f"$module=Import-Module '{_ps_single_quoted(SCENARIO_MODULE)}' "
         "-Force -PassThru;"
-        f"$mode='{mode}';"
         f"$state='{_ps_single_quoted(state)}';"
         f"$evidence='{_ps_single_quoted(evidence)}';"
-        "$launcher=$null;$runtime=$null;$unreadable=$null;"
+        "$launcher=$null;$runtime=$null;"
+        "$runtimeObservation=$null;"
         "$caught=$null;$stopResult=$null;$processRecord=$null;"
-        "$treeReconcileCount=0;"
+        "$treeReconcileCount=$null;$runtimeSourceAcquiredViaGetProcessById=$false;"
         "try{"
         "[void][IO.Directory]::CreateDirectory($state);"
         "[void][IO.Directory]::CreateDirectory($evidence);"
         "$startInfo=[Diagnostics.ProcessStartInfo]::new();"
         f"$startInfo.FileName='{_ps_single_quoted(_windows_powershell())}';"
         "$startInfo.Arguments='-NoLogo -NoProfile -NonInteractive "
-        f"-EncodedCommand {encoded_exit}';"
+        f"-EncodedCommand {encoded_launcher}';"
         "$startInfo.UseShellExecute=$false;$startInfo.CreateNoWindow=$true;"
-        "$unreadable=[Diagnostics.Process]::Start($startInfo);"
-        "if($null -eq $unreadable){throw 'real exit-code capture probe did not start'};"
-        "if(-not $unreadable.WaitForExit(10000)){throw 'real exit-code capture probe did not exit'};"
-        "if($mode -ceq 'unreadable_at_capture'){"
-        "$unreadable.Dispose();"
-        "try{& $module {param($target) "
-        "Get-W4ExitedProcessExitCode -Process $target -Label 'Harness unreadable'} "
-        "$unreadable}catch{$caught=$_.Exception.Message};"
-        "[ordered]@{mode=$mode;caught=$caught}|ConvertTo-Json -Compress;"
-        "return"
-        "};"
-        "$unreadable.Dispose();$unreadable=$null;"
         "$launcher=[Diagnostics.Process]::Start($startInfo);"
-        "$runtime=[Diagnostics.Process]::Start($startInfo);"
-        "if($null -eq $launcher -or $null -eq $runtime){"
-        "throw 'loopback stop snapshot probe did not start both processes'};"
-        "if(-not $launcher.WaitForExit(10000) -or -not $runtime.WaitForExit(10000)){"
-        "throw 'loopback stop snapshot probe processes did not exit'};"
-        "$harnessResult=[ordered]@{"
+        + runtime_start
+        + "if($null -eq $launcher -or $null -eq $runtime){"
+        "throw 'loopback retained-observation probe did not start both processes'};"
+        "Start-Sleep -Milliseconds 100;$launcher.Refresh();$runtime.Refresh();"
+        "if($launcher.HasExited -or $runtime.HasExited){"
+        "throw 'loopback retained-observation probe child exited before capture'};"
+        "$launcherPid=[int]$launcher.Id;$runtimePid=[int]$runtime.Id;"
+        + runtime_ticks
+        + "$launcherSnapshot=New-W4ProcessTreeIdentitySnapshot -Process $launcher;"
+        + runtime_snapshot
+        + runtime_observation
+        + "$harnessResult=[ordered]@{"
         "schema_version='pkv.w3.loopback.result.v1';result='passed';"
         "completed_steps=3;total_steps=3}|ConvertTo-Json -Compress;"
         "[IO.File]::WriteAllText((Join-Path $state 'result.json'),"
         "$harnessResult,[Text.UTF8Encoding]::new($false));"
         "$harness=[pscustomobject]@{"
         "Process=$launcher;RuntimeProcess=$runtime;"
-        "LauncherProcessTreeSnapshot=[pscustomobject]@{test='launcher'};"
-        "RuntimeProcessTreeSnapshot=[pscustomobject]@{test='runtime'};"
-        "LauncherPid=[int]$launcher.Id;RuntimePid=[int]$runtime.Id;"
+        "LauncherProcessTreeSnapshot=$launcherSnapshot;"
+        "RuntimeProcessTreeSnapshot=$runtimeSnapshot;"
+        "LauncherPid=$launcherPid;RuntimePid=$runtimePid;"
+        "RuntimeExitObservation=$runtimeObservation;"
         "StdoutTask=[Threading.Tasks.Task[string]]::FromResult('');"
         "StderrTask=[Threading.Tasks.Task[string]]::FromResult('');"
         "StateDirectory=$state;Evidence=$evidence};"
-        "& $module {"
-        "function script:Stop-W4ProcessTree {"
-        "param([System.Diagnostics.Process]$Process,$IdentitySnapshot);"
-        "$script:W4LoopbackProbeTreeReconcileCount += 1;"
-        "$Process.Dispose()"
-        "}"
-        "};"
-        "& $module {$script:W4LoopbackProbeTreeReconcileCount=0};"
+        + wait_override_setup
+        + tree_cleanup_setup
+        + "$stopwatch=[Diagnostics.Stopwatch]::StartNew();"
         "try{$stopResult=& $module {param($value) "
         "Stop-W4LoopbackHarness -Harness $value} $harness}catch{"
         "$caught=$_.Exception.Message};"
-        "$treeReconcileCount=& $module {$script:W4LoopbackProbeTreeReconcileCount};"
+        "$stopwatch.Stop();"
+        "$runtimeWrapperInvalidated="
+        + wait_override_result
+        + "$runtimeObservationClosed=if($null -eq $runtimeObservation){$null}else{"
+        "[bool]$runtimeObservation.IsClosed};"
+        "$runtimeObservationReadAfterCloseRejected=$null;"
+        "$runtimeObservationWaitAfterCloseRejected=$null;"
+        "if($runtimeObservationClosed -eq $true){"
+        "try{[void]$runtimeObservation.ReadExitedExitCode()}catch{"
+        "$runtimeObservationReadAfterCloseRejected=$true};"
+        "try{[void]$runtimeObservation.WaitForExit(0)}catch{"
+        "$runtimeObservationWaitAfterCloseRejected=$true}};"
+        "$treeReconcileCount="
+        + tree_reconcile_count
+        + "$evidenceResultExists=[bool](Test-Path -LiteralPath "
+        "(Join-Path $evidence 'result.json') -PathType Leaf);"
+        "$runtimeShutdownMarkerExists=[bool](Test-Path -LiteralPath "
+        f"'{_ps_single_quoted(runtime_shutdown_marker)}' -PathType Leaf);"
         "if(Test-Path -LiteralPath (Join-Path $evidence 'process.json') -PathType Leaf){"
         "$processRecord=[IO.File]::ReadAllText("
         "(Join-Path $evidence 'process.json'))|ConvertFrom-Json};"
-        "[ordered]@{mode=$mode;caught=$caught;"
+        f"[ordered]@{{topology='{topology}';runtime_mode='{runtime_mode}';"
+        "runtime_source_acquired_via_get_process_by_id="
+        "[bool]$runtimeSourceAcquiredViaGetProcessById;"
+        "runtime_wrapper_invalidated=[bool]$runtimeWrapperInvalidated;"
+        "runtime_observation_closed=$runtimeObservationClosed;"
+        "runtime_observation_read_after_close_rejected="
+        "$runtimeObservationReadAfterCloseRejected;"
+        "runtime_observation_wait_after_close_rejected="
+        "$runtimeObservationWaitAfterCloseRejected;"
+        "runtime_shutdown_marker_exists=[bool]$runtimeShutdownMarkerExists;"
+        "evidence_result_exists=[bool]$evidenceResultExists;"
+        "stop_elapsed_milliseconds=[int64]$stopwatch.ElapsedMilliseconds;caught=$caught;"
         "stop_result=if($null -eq $stopResult){$null}else{[string]$stopResult.result};"
-        "tree_reconcile_count=[int]$treeReconcileCount;"
+        "tree_reconcile_count=if($null -eq $treeReconcileCount){$null}else{"
+        "[int]$treeReconcileCount};"
+        f"tree_cleanup_is_real={'$true' if use_real_tree_cleanup else '$false'};"
         "process_record=$processRecord}|ConvertTo-Json -Depth 10 -Compress"
         "}finally{"
-        "foreach($candidate in @($runtime,$launcher,$unreadable)){"
+        "foreach($observation in @($runtimeObservation)){"
+        "if($null -ne $observation){try{$observation.Dispose()}catch{}}"
+        "};"
+        "foreach($candidate in @($runtime,$launcher)){"
         "if($null -eq $candidate){continue};"
         "try{if(-not $candidate.HasExited){$candidate.Kill();"
         "[void]$candidate.WaitForExit(1000)}}catch{};"
         "try{$candidate.Dispose()}catch{}"
         "}"
         "}"
+    )
+    return _run_powershell(
+        ["-Command", command], cwd=REPOSITORY_ROOT, timeout=30
+    )
+
+
+def _run_retained_process_exit_observation_lifecycle_probe(
+    tmp_path: Path,
+) -> subprocess.CompletedProcess[str]:
+    """Prove a duplicated native exit handle survives managed-process disposal."""
+    root = tmp_path / f"retained-exit-observation-{uuid.uuid4().hex}"
+    release = root / "release.signal"
+    child_script = (
+        "$ErrorActionPreference='Stop';"
+        f"$release='{_ps_single_quoted(release)}';"
+        "$deadline=[DateTime]::UtcNow.AddSeconds(20);"
+        "while(-not (Test-Path -LiteralPath $release -PathType Leaf)){"
+        "if([DateTime]::UtcNow -ge $deadline){exit 91};"
+        "Start-Sleep -Milliseconds 20};"
+        "exit 17"
+    )
+    encoded_child = base64.b64encode(child_script.encode("utf-16le")).decode("ascii")
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' -Force;"
+        f"$root='{_ps_single_quoted(root)}';"
+        f"$release='{_ps_single_quoted(release)}';"
+        "$launch=$null;$child=$null;$observation=$null;$bootstrap=$null;"
+        "$wrongPidRejections=0;$wrongTicksRejections=0;"
+        "$stillActiveRejected=$false;$stillActiveWait=$null;$managedDisposed=$false;"
+        "$managedPostExitUnavailable=$false;$managedPostExitCode=$null;"
+        "$retainedExitCode=$null;$retainedExitedWait=$null;"
+        "$observationDisposed=$false;$observationClosed=$false;"
+        "$disposedReadRejected=$false;"
+        "try{"
+        "[void][IO.Directory]::CreateDirectory($root);"
+        "$startInfo=[Diagnostics.ProcessStartInfo]::new();"
+        f"$startInfo.FileName='{_ps_single_quoted(_windows_powershell())}';"
+        "$startInfo.Arguments='-NoLogo -NoProfile -NonInteractive "
+        f"-EncodedCommand {encoded_child}';"
+        "$startInfo.UseShellExecute=$false;$startInfo.CreateNoWindow=$true;"
+        "$launch=[Diagnostics.Process]::Start($startInfo);"
+        "if($null -eq $launch){throw 'retained exit-observation probe child did not start'};"
+        "$child=[Diagnostics.Process]::GetProcessById([int]$launch.Id);"
+        "$launch.Dispose();$launch=$null;"
+        "Start-Sleep -Milliseconds 100;$child.Refresh();"
+        "if($child.HasExited){throw 'retained exit-observation probe child exited before capture'};"
+        "$expectedPid=[int]$child.Id;"
+        "$expectedTicks=[int64]$child.StartTime.ToUniversalTime().Ticks;"
+        "$bootstrap=New-W4RetainedProcessExitObservation -Process $child "
+        "-ExpectedProcessId $expectedPid -ExpectedStartTimeUtcTicks $expectedTicks "
+        "-Label 'retained exit bootstrap';$bootstrap.Dispose();$bootstrap=$null;"
+        "for($index=0;$index -lt 3;$index+=1){"
+        "try{[void](New-W4RetainedProcessExitObservation -Process $child "
+        "-ExpectedProcessId ($expectedPid + 1) "
+        "-ExpectedStartTimeUtcTicks $expectedTicks -Label 'wrong pid')}"
+        "catch{$wrongPidRejections+=1};"
+        "try{[void](New-W4RetainedProcessExitObservation -Process $child "
+        "-ExpectedProcessId $expectedPid "
+        "-ExpectedStartTimeUtcTicks ($expectedTicks + 1) -Label 'wrong start ticks')}"
+        "catch{$wrongTicksRejections+=1}"
+        "};"
+        "$Error.Clear();"
+        "$observation=New-W4RetainedProcessExitObservation -Process $child "
+        "-ExpectedProcessId $expectedPid -ExpectedStartTimeUtcTicks $expectedTicks "
+        "-Label 'retained exit child';"
+        "$stillActiveWait=[bool]$observation.WaitForExit(0);"
+        "try{[void]$observation.ReadExitedExitCode()}catch{$stillActiveRejected=$true};"
+        "[IO.File]::WriteAllText($release,'release',[Text.UTF8Encoding]::new($false));"
+        "if(-not $child.WaitForExit(10000)){throw 'retained exit-observation child did not exit'};"
+        "$child.Dispose();$managedDisposed=$true;"
+        "try{$managedPostExitCode=[int]$child.ExitCode}catch{$managedPostExitUnavailable=$true};"
+        "$retainedExitedWait=[bool]$observation.WaitForExit(0);"
+        "$retainedExitCode=[int]$observation.ReadExitedExitCode();"
+        "$observation.Dispose();$observationDisposed=$true;"
+        "$observationClosed=[bool]$observation.IsClosed;"
+        "try{[void]$observation.ReadExitedExitCode()}catch{$disposedReadRejected=$true};"
+        "$paths=@(Get-ChildItem -LiteralPath $root -Force | "
+        "ForEach-Object {$_.Name});"
+        "[ordered]@{source_acquired_via_get_process_by_id=$true;"
+        "wrong_pid_rejections=$wrongPidRejections;"
+        "wrong_start_ticks_rejections=$wrongTicksRejections;"
+        "still_active_rejected=[bool]$stillActiveRejected;"
+        "still_active_wait=[bool]$stillActiveWait;"
+        "managed_process_disposed=[bool]$managedDisposed;"
+        "managed_post_exit_unavailable=[bool]$managedPostExitUnavailable;"
+        "managed_post_exit_code=$managedPostExitCode;"
+        "retained_exited_wait=[bool]$retainedExitedWait;"
+        "retained_exit_code=$retainedExitCode;"
+        "observation_disposed=[bool]$observationDisposed;"
+        "observation_closed=[bool]$observationClosed;"
+        "disposed_read_rejected=[bool]$disposedReadRejected;"
+        "probe_paths=@($paths)}|ConvertTo-Json -Depth 10 -Compress"
+        "}finally{"
+        "if($null -ne $bootstrap){try{$bootstrap.Dispose()}catch{}};"
+        "if($null -ne $observation -and -not $observationDisposed){"
+        "try{$observation.Dispose()}catch{}};"
+        "if($null -ne $launch){try{$launch.Dispose()}catch{}};"
+        "if($null -ne $child){"
+        "try{if(-not $child.HasExited){$child.Kill();"
+        "[void]$child.WaitForExit(1000)}}catch{};"
+        "if(-not $managedDisposed){try{$child.Dispose()}catch{}}"
+        "}"
+        "};exit 0"
     )
     return _run_powershell(
         ["-Command", command], cwd=REPOSITORY_ROOT, timeout=30
@@ -5245,51 +6047,256 @@ def test_chat_restart_selection_proof_binds_container_item_and_runtime_id() -> N
     assert ".GetCurrentSelection()" not in source
 
 
-def test_selection_helpers_use_real_windows_uia_current_selection() -> None:
-    result = _run_uia_selection_pattern_probe()
+def test_selection_helpers_use_real_windows_uia_current_selection(
+    tmp_path: Path,
+) -> None:
+    for _ in range(5):
+        result, cleanup_path, timeout = _run_uia_selection_pattern_probe_bounded(
+            tmp_path
+        )
 
-    assert result.returncode == 0, result.stderr
-    payload = json.loads(result.stdout.strip().splitlines()[-1])
-    assert payload["zero_count"] == 0
-    assert payload["one_count"] == 1
-    assert payload["runtime_ids_match"] is True
-    assert payload["selected_runtime_id"]
-    assert payload["proof"]["schema_version"] == "pkv.w4.uia-selection-proof.v1"
-    assert payload["proof"]["selection_count"] == 1
-    assert payload["proof"]["selection_item_is_selected"] is True
-    assert payload["proof"]["selected_runtime_id"] == payload["selected_runtime_id"]
+        assert timeout is None
+        assert result is not None
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["zero_count"] == 0
+        assert payload["one_count"] == 1
+        assert payload["runtime_ids_match"] is True
+        assert payload["selected_runtime_id"]
+        assert payload["proof"]["schema_version"] == "pkv.w4.uia-selection-proof.v1"
+        assert payload["proof"]["selection_count"] == 1
+        assert payload["proof"]["selection_item_is_selected"] is True
+        assert payload["proof"]["selected_runtime_id"] == payload["selected_runtime_id"]
+
+        cleanup = json.loads(cleanup_path.read_text(encoding="utf-8"))
+        assert cleanup["child_pid"] > 0
+        assert cleanup["child_start_time_utc_ticks"] > 0
+        assert cleanup["close_request_written"] is True
+        assert cleanup["close_ack"] == "close_request"
+        assert cleanup["fallback_kill"] is False
+        assert cleanup["process_exited"] is True
+        assert cleanup["same_identity_live_after_cleanup"] is False
+
+    failed, cleanup_path, timeout = _run_uia_selection_pattern_probe_bounded(
+        tmp_path, force_controller_failure=True
+    )
+    assert timeout is None
+    assert failed is not None
+    assert failed.returncode != 0
+    assert "UIA selection probe forced controller failure" in failed.stderr
+    cleanup = json.loads(cleanup_path.read_text(encoding="utf-8"))
+    assert cleanup["child_pid"] > 0
+    assert cleanup["child_start_time_utc_ticks"] > 0
+    assert cleanup["close_request_written"] is True
+    assert cleanup["close_ack"] == "close_request"
+    assert cleanup["fallback_kill"] is False
+    assert cleanup["process_exited"] is True
+    assert cleanup["same_identity_live_after_cleanup"] is False
+
+    timed_out, timeout_cleanup, timeout = _run_uia_selection_pattern_probe_bounded(
+        tmp_path, force_outer_timeout=True
+    )
+    assert timed_out is None
+    assert not timeout_cleanup.exists()
+    assert timeout == {
+        "controller_timed_out": True,
+        "job_terminated": True,
+        "same_identity_live_after_job_cleanup": False,
+    }
 
 
-def test_loopback_harness_snapshots_strict_exit_scalars_and_cached_pids() -> None:
-    source = _read(SCENARIO_MODULE)
-    capture = _compact_powershell(
-        _powershell_function(source, "Get-W4ExitedProcessExitCode")
+def test_uia_selection_probe_assignment_failure_reaps_unassigned_controller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _read(Path(__file__))
+    helper_start = source.index("def _w4_reap_controller_after_job_failure")
+    helper_end = source.index("\n\ndef _w4_read_uia_probe_identity", helper_start)
+    helper = source[helper_start:helper_end]
+    assert "job.terminate()" in helper
+    assert "job.close()" in helper
+    assert "controller.kill()" in helper
+    assert "controller.wait(timeout=5)" in helper
+    assert helper.index("job.close()") < helper.index("controller.kill()")
+    assert "taskkill" not in helper.lower()
+
+    observed: dict[str, object] = {}
+
+    def reject_before_assignment(
+        self: _W4KillOnCloseJob, controller: subprocess.Popen[str]
+    ) -> int:
+        del self
+        controller_handle = wintypes.HANDLE(int(controller._handle))
+        observed["controller"] = controller
+        observed["process_id"] = controller.pid
+        observed["start_ticks"] = _w4_process_start_ticks(controller_handle)
+        raise RuntimeError("injected controller Job assignment failure")
+
+    monkeypatch.setattr(
+        _W4KillOnCloseJob, "assign_controller_handle", reject_before_assignment
+    )
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="injected controller Job assignment failure"):
+        _run_uia_selection_pattern_probe_bounded(tmp_path)
+    assert time.monotonic() - started < 5
+    controller = observed["controller"]
+    assert isinstance(controller, subprocess.Popen)
+    assert controller.poll() is not None
+    assert controller.wait(timeout=0) is not None
+    assert not _w4_same_process_identity_is_live(
+        int(observed["process_id"]), int(observed["start_ticks"])
+    )
+    assert not list(tmp_path.glob("uia-selection-launch-*.gate"))
+    assert not list(tmp_path.glob("uia-selection-ready-*.json"))
+
+
+def test_uia_selection_probe_terminate_failure_reaps_assigned_controller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _W4_KERNEL32 is not None
+    observed: dict[str, object] = {}
+    original_assign = _W4KillOnCloseJob.assign_controller_handle
+    termination_calls: list[tuple[wintypes.HANDLE, wintypes.UINT]] = []
+
+    def reject_after_assignment(
+        self: _W4KillOnCloseJob, controller: subprocess.Popen[str]
+    ) -> int:
+        start_ticks = original_assign(self, controller)
+        observed["controller"] = controller
+        observed["process_id"] = controller.pid
+        observed["start_ticks"] = start_ticks
+        raise RuntimeError("injected controller post-assignment failure")
+
+    def reject_job_termination(
+        handle: wintypes.HANDLE, exit_code: wintypes.UINT
+    ) -> wintypes.BOOL:
+        termination_calls.append((handle, exit_code))
+        ctypes.set_last_error(5)
+        return wintypes.BOOL(False)
+
+    monkeypatch.setattr(
+        _W4KillOnCloseJob, "assign_controller_handle", reject_after_assignment
+    )
+    monkeypatch.setattr(_W4_KERNEL32, "TerminateJobObject", reject_job_termination)
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="UIA selection probe cleanup failed closed"):
+        _run_uia_selection_pattern_probe_bounded(tmp_path)
+    assert time.monotonic() - started < 5
+    assert len(termination_calls) == 1
+    controller = observed["controller"]
+    assert isinstance(controller, subprocess.Popen)
+    assert controller.poll() is not None
+    assert controller.wait(timeout=0) is not None
+    assert not _w4_same_process_identity_is_live(
+        int(observed["process_id"]), int(observed["start_ticks"])
+    )
+    assert not list(tmp_path.glob("uia-selection-launch-*.gate"))
+    assert not list(tmp_path.glob("uia-selection-enable-*.gate"))
+    assert not list(tmp_path.glob("uia-selection-ready-*.json"))
+
+
+def test_loopback_harness_uses_retained_identity_bound_native_exit_handles() -> None:
+    driver_source = _read(DRIVER_MODULE)
+    scenario_source = _read(SCENARIO_MODULE)
+    initializer = _compact_powershell(
+        _powershell_function(driver_source, "Initialize-W4FileIdentityInspector")
+    )
+    observation = _compact_powershell(
+        _powershell_function(
+            driver_source, "New-W4RetainedProcessExitObservation"
+        )
+    )
+    retained_capture = _compact_powershell(
+        _powershell_function(
+            scenario_source, "Get-W4RetainedExitedProcessExitCode"
+        )
+    )
+    retained_wait = _compact_powershell(
+        _powershell_function(scenario_source, "Wait-W4RetainedProcessExit")
+    )
+    start = _compact_powershell(
+        _powershell_function(scenario_source, "Start-W4LoopbackHarness")
     )
     stop = _compact_powershell(
-        _powershell_function(source, "Stop-W4LoopbackHarness")
+        _powershell_function(scenario_source, "Stop-W4LoopbackHarness")
     )
+
+    assert "$processExitType = 'PkvW4.ProcessExitInspector' -as [type]" in initializer
+    assert "$processExitType -and" in initializer
+    assert "$processExitType -or" in initializer
+    assert "public sealed class RetainedProcessExitHandle : IDisposable" in initializer
+    assert "DuplicateHandle(" in initializer
+    assert 'EntryPoint = "GetProcessId"' in initializer
+    assert 'EntryPoint = "GetProcessTimes"' in initializer
+    assert 'EntryPoint = "GetExitCodeProcess"' in initializer
+    assert "STILL_ACTIVE = 259" in initializer
+    assert "DateTime.FromFileTimeUtc" in initializer
+    assert ".Ticks" in initializer
+    assert "ReadExitedExitCode" in initializer
+    assert "public bool WaitForExit(int timeoutMilliseconds)" in initializer
+    assert "CloseHandle(" in initializer
+    assert "SafeHandleZeroOrMinusOneIsInvalid" in initializer
+    assert "WaitForSingleObject(" in initializer
+    assert "sourceProcess.SafeHandle" in initializer
+    assert "DangerousAddRef" in initializer
+    assert "DangerousRelease" in initializer
+    assert "DangerousGetHandle" not in initializer
+    assert "AssertIdentity(retained" in initializer
+    assert "retained.Dispose();" in initializer
+    assert "exitCode == STILL_ACTIVE" in initializer
 
     assert (
         "[Parameter(Mandatory = $true)]"
-        "[System.Diagnostics.Process]$Process" in capture
+        "[System.Diagnostics.Process]$Process" in observation
     )
-    assert "[Parameter(Mandatory = $true)][string]$Label" in capture
+    assert "[ValidateRange(1, [int]::MaxValue)][int]$ExpectedProcessId" in observation
+    assert "$ExpectedStartTimeUtcTicks" in observation
+    assert "[Parameter(Mandatory = $true)][string]$Label" in observation
+    assert "$hasExited = $Process.HasExited" in observation
+    assert "$hasExited -isnot [bool] -or $hasExited -ne $false" in observation
+    assert "Initialize-W4FileIdentityInspector" in observation
+    assert "[PkvW4.ProcessExitInspector]::Capture(" in observation
+
+    assert "[Parameter(Mandatory = $true)]$ExitObservation" in retained_capture
+    assert "[Parameter(Mandatory = $true)][string]$Label" in retained_capture
+    assert "$ExitObservation.ReadExitedExitCode()" in retained_capture
+    assert "$Process.ExitCode" not in retained_capture
+    assert "$Process.HasExited" not in retained_capture
+    assert "[Parameter(Mandatory = $true)]$ExitObservation" in retained_wait
+    assert "[ValidateRange(0, 30000)][int]$TimeoutMilliseconds" in retained_wait
+    assert "$ExitObservation.WaitForExit($TimeoutMilliseconds)" in retained_wait
+    assert "$Process" not in retained_wait
+
+    identity = start.index("$runtimeIdentity = Get-W4ValidatedProcessIdentity")
+    launcher_snapshot = start.index(
+        "$launcherTreeSnapshot = New-W4ProcessTreeIdentitySnapshot", identity
+    )
+    runtime_snapshot = start.index("$runtimeTreeSnapshot = if", launcher_snapshot)
+    runtime_guard = start.index(
+        "if (-not [bool]$runtimeIdentity.RuntimeIsLauncher) {", runtime_snapshot
+    )
+    runtime_observation = start.index(
+        "$runtimeExitObservation = New-W4RetainedProcessExitObservation",
+        runtime_guard,
+    )
+    returned_observations = start.index(
+        "RuntimeExitObservation = $runtimeExitObservation", runtime_observation
+    )
+    assert "$runtimeExitObservation.Dispose()" in start
+    assert "LauncherExitObservation" not in start
     assert (
-        "$captureFailure = \"$Label did not expose a confirmed exited process "
-        "exit code\""
-    ) in capture
-    assert "$hasExited = $Process.HasExited" in capture
-    assert "$hasExited -isnot [bool] -or $hasExited -ne $true" in capture
-    assert capture.count("$Process.ExitCode") == 1
-    assert "$null -eq $rawExitCode" in capture
-    assert "$rawExitCode -is [System.Collections.IEnumerable]" in capture
-    assert "[System.Convert]::ToInt32(" in capture
-    assert capture.count("throw $captureFailure") == 5
+        identity
+        < launcher_snapshot
+        < runtime_snapshot
+        < runtime_guard
+        < runtime_observation
+        < returned_observations
+    )
 
     assert "$launcherPid = [int]$Harness.LauncherPid" in stop
     assert "$runtimePid = [int]$Harness.RuntimePid" in stop
     assert "$launcherPid -lt 1 -or $runtimePid -lt 1" in stop
     assert "$runtimeIsLauncher = $runtimePid -eq $launcherPid" in stop
+    assert "$runtimeExitObservation = $Harness.RuntimeExitObservation" in stop
     assert ".Id" not in stop
     assert ".ExitCode" not in stop
     assert "$launcherExitCode = $null" in stop
@@ -5305,16 +6312,29 @@ def test_loopback_harness_snapshots_strict_exit_scalars_and_cached_pids() -> Non
     assert "[int]$processRecord.runtime_exit_code -ne 0" in stop
     assert "launcher=$launcherExitDisplay runtime=$runtimeExitDisplay" in stop
     assert "'<unconfirmed>'" in stop
+    assert "$runtimeExitObservation.Dispose()" in stop
+    assert "runtime_exit_source = if ($runtimeIsLauncher)" in stop
+    assert "'retained_native_handle'" in stop
+    assert "Get-W4RetainedExitedProcessExitCode" in stop
+    assert "Wait-W4RetainedProcessExit" in stop
+    assert "$runtimeProcess.HasExited" not in stop
+    assert "$runtimeProcess.WaitForExit" not in stop
 
+    pre_runtime_wait = stop.index("Wait-W4RetainedProcessExit")
+    pre_runtime_timeout = stop.index("-TimeoutMilliseconds 0", pre_runtime_wait)
+    runtime_snapshot_refresh = stop.index(
+        "$runtimeTreeSnapshot = New-W4ProcessTreeIdentitySnapshot", pre_runtime_wait
+    )
     launcher_wait = stop.index("$process.WaitForExit()")
     launcher_capture = stop.index(
         "$launcherExitCode = Get-W4ExitedProcessExitCode", launcher_wait
     )
     same_runtime = stop.index("if ($runtimeIsLauncher) {", launcher_capture)
     same_runtime_reuse = stop.index("$runtimeExitCode = $launcherExitCode", same_runtime)
-    runtime_wait = stop.index("$runtimeProcess.WaitForExit()", same_runtime_reuse)
+    runtime_wait = stop.index("Wait-W4RetainedProcessExit", same_runtime_reuse)
+    runtime_wait_timeout = stop.index("-TimeoutMilliseconds 5000", runtime_wait)
     runtime_capture = stop.index(
-        "$runtimeExitCode = Get-W4ExitedProcessExitCode", runtime_wait
+        "$runtimeExitCode = Get-W4RetainedExitedProcessExitCode", runtime_wait
     )
     runtime_reconcile = stop.index("if (-not $runtimeIsLauncher) {", runtime_capture)
     runtime_stop = stop.index(
@@ -5324,7 +6344,10 @@ def test_loopback_harness_snapshots_strict_exit_scalars_and_cached_pids() -> Non
     process_record = stop.index("$processRecord = [ordered]@{", runtime_capture)
     normality = stop.index("if ($forced -or", process_record)
     assert (
-        launcher_wait
+        pre_runtime_wait
+        < pre_runtime_timeout
+        < runtime_snapshot_refresh
+        < launcher_wait
         < launcher_capture
         < same_runtime
         < same_runtime_reuse
@@ -5336,17 +6359,28 @@ def test_loopback_harness_snapshots_strict_exit_scalars_and_cached_pids() -> Non
         < process_record
         < normality
     )
+    assert runtime_wait < runtime_wait_timeout < runtime_capture
 
 
-def test_loopback_harness_uses_cached_exit_record_after_handles_become_unavailable(
+def test_loopback_harness_uses_retained_exit_handles_after_managed_handles_become_unavailable(
     tmp_path: Path,
 ) -> None:
-    result = _run_loopback_exit_code_snapshot_probe(
-        tmp_path, "record_then_unavailable"
+    result = _run_loopback_retained_exit_observation_probe(
+        tmp_path, invalidate_runtime_before_native_read=True
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
     payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["topology"] == "split"
+    assert payload["runtime_mode"] == "success"
+    assert payload["runtime_source_acquired_via_get_process_by_id"] is True
+    assert payload["runtime_wrapper_invalidated"] is True
+    assert payload["runtime_observation_closed"] is True
+    assert payload["runtime_observation_read_after_close_rejected"] is True
+    assert payload["runtime_observation_wait_after_close_rejected"] is True
+    assert payload["runtime_shutdown_marker_exists"] is False
+    assert payload["evidence_result_exists"] is True
+    assert payload["tree_cleanup_is_real"] is False
     assert payload["caught"] is None
     assert payload["stop_result"] == "passed"
     assert payload["tree_reconcile_count"] >= 4
@@ -5355,6 +6389,7 @@ def test_loopback_harness_uses_cached_exit_record_after_handles_become_unavailab
         "runtime_pid": payload["process_record"]["runtime_pid"],
         "exit_code": 0,
         "runtime_exit_code": 0,
+        "runtime_exit_source": "retained_native_handle",
         "forced_termination": False,
         "timed_out": False,
     }
@@ -5366,19 +6401,138 @@ def test_loopback_harness_uses_cached_exit_record_after_handles_become_unavailab
     )
 
 
-def test_loopback_exit_code_capture_fails_closed_when_handle_is_unreadable(
+def test_loopback_harness_same_pid_uses_launcher_managed_exit_authority(
     tmp_path: Path,
 ) -> None:
-    result = _run_loopback_exit_code_snapshot_probe(tmp_path, "unreadable_at_capture")
+    result = _run_loopback_retained_exit_observation_probe(tmp_path, topology="same")
 
     assert result.returncode == 0, result.stderr or result.stdout
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    assert payload == {
-        "mode": "unreadable_at_capture",
-        "caught": (
-            "Harness unreadable did not expose a confirmed exited process exit code"
-        ),
+    assert payload["topology"] == "same"
+    assert payload["runtime_mode"] == "success"
+    assert payload["runtime_source_acquired_via_get_process_by_id"] is False
+    assert payload["runtime_wrapper_invalidated"] is False
+    assert payload["runtime_observation_closed"] is None
+    assert payload["runtime_observation_read_after_close_rejected"] is None
+    assert payload["runtime_observation_wait_after_close_rejected"] is None
+    assert payload["runtime_shutdown_marker_exists"] is False
+    assert payload["evidence_result_exists"] is True
+    assert payload["tree_cleanup_is_real"] is False
+    assert payload["caught"] is None
+    assert payload["stop_result"] == "passed"
+    assert payload["tree_reconcile_count"] >= 2
+    assert payload["process_record"] == {
+        "launcher_pid": payload["process_record"]["launcher_pid"],
+        "runtime_pid": payload["process_record"]["runtime_pid"],
+        "exit_code": 0,
+        "runtime_exit_code": 0,
+        "runtime_exit_source": "launcher_managed_exit_code",
+        "forced_termination": False,
+        "timed_out": False,
     }
+    assert payload["process_record"]["launcher_pid"] > 0
+    assert (
+        payload["process_record"]["launcher_pid"]
+        == payload["process_record"]["runtime_pid"]
+    )
+
+
+def test_loopback_harness_split_nonzero_runtime_fails_and_closes_observation(
+    tmp_path: Path,
+) -> None:
+    result = _run_loopback_retained_exit_observation_probe(
+        tmp_path, runtime_mode="nonzero"
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["topology"] == "split"
+    assert payload["runtime_mode"] == "nonzero"
+    assert payload["runtime_source_acquired_via_get_process_by_id"] is True
+    assert payload["runtime_wrapper_invalidated"] is False
+    assert payload["runtime_observation_closed"] is True
+    assert payload["runtime_observation_read_after_close_rejected"] is True
+    assert payload["runtime_observation_wait_after_close_rejected"] is True
+    assert payload["runtime_shutdown_marker_exists"] is False
+    assert payload["evidence_result_exists"] is False
+    assert payload["tree_cleanup_is_real"] is True
+    assert payload["stop_result"] is None
+    assert payload["caught"] == (
+        "Harness did not exit normally after exact shutdown request: "
+        "launcher=0 runtime=17"
+    )
+    assert payload["tree_reconcile_count"] is None
+    assert payload["process_record"] == {
+        "launcher_pid": payload["process_record"]["launcher_pid"],
+        "runtime_pid": payload["process_record"]["runtime_pid"],
+        "exit_code": 0,
+        "runtime_exit_code": 17,
+        "runtime_exit_source": "retained_native_handle",
+        "forced_termination": False,
+        "timed_out": False,
+    }
+
+
+def test_loopback_harness_split_native_timeout_forces_failure_and_closes_observation(
+    tmp_path: Path,
+) -> None:
+    result = _run_loopback_retained_exit_observation_probe(
+        tmp_path, runtime_mode="ignore_shutdown"
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["topology"] == "split"
+    assert payload["runtime_mode"] == "ignore_shutdown"
+    assert payload["runtime_source_acquired_via_get_process_by_id"] is True
+    assert payload["runtime_wrapper_invalidated"] is False
+    assert payload["runtime_observation_closed"] is True
+    assert payload["runtime_observation_read_after_close_rejected"] is True
+    assert payload["runtime_observation_wait_after_close_rejected"] is True
+    assert payload["runtime_shutdown_marker_exists"] is True
+    assert payload["evidence_result_exists"] is False
+    assert payload["tree_cleanup_is_real"] is True
+    assert 4500 <= payload["stop_elapsed_milliseconds"] < 10000
+    assert payload["stop_result"] is None
+    assert payload["caught"] == (
+        "Harness did not exit normally after exact shutdown request: "
+        "launcher=0 runtime=<unconfirmed>"
+    )
+    assert payload["tree_reconcile_count"] is None
+    assert payload["process_record"] == {
+        "launcher_pid": payload["process_record"]["launcher_pid"],
+        "runtime_pid": payload["process_record"]["runtime_pid"],
+        "exit_code": 0,
+        "runtime_exit_code": None,
+        "runtime_exit_source": "retained_native_handle",
+        "forced_termination": True,
+        "timed_out": True,
+    }
+
+
+def test_retained_native_exit_observation_survives_managed_process_disposal(
+    tmp_path: Path,
+) -> None:
+    result = _run_retained_process_exit_observation_lifecycle_probe(tmp_path)
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["source_acquired_via_get_process_by_id"] is True
+    assert payload["wrong_pid_rejections"] == 3
+    assert payload["wrong_start_ticks_rejections"] == 3
+    assert payload["still_active_rejected"] is True
+    assert payload["still_active_wait"] is False
+    assert payload["managed_process_disposed"] is True
+    assert (
+        payload["managed_post_exit_unavailable"] is True
+        or payload["managed_post_exit_code"] == 0
+    )
+    assert payload["retained_exited_wait"] is True
+    assert payload["retained_exit_code"] == 17
+    assert payload["observation_disposed"] is True
+    assert payload["observation_closed"] is True
+    assert payload["disposed_read_rejected"] is True
+    assert payload["probe_paths"] == ["release.signal"]
 
 
 def test_screenshot_is_hwnd_pid_bound_bounded_and_nonuniform_before_publish() -> None:
