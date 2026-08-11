@@ -1517,6 +1517,135 @@ function Remove-W4ScenarioInstallRoot {
     }
 }
 
+function Remove-W4KnownWindowsInternetCacheJunction {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$ScenarioContext)
+
+    $workspace = [System.IO.Path]::GetFullPath([string]$ScenarioContext.Workspace).TrimEnd('\')
+    $profileRoot = [System.IO.Path]::GetFullPath((Join-Path $workspace 'profile')).TrimEnd('\')
+    $cacheRoot = [System.IO.Path]::GetFullPath(
+        (Join-Path $profileRoot 'AppData\Local\Microsoft\Windows\INetCache')
+    ).TrimEnd('\')
+    $junctionPath = [System.IO.Path]::GetFullPath(
+        (Join-Path $cacheRoot 'Content.IE5')
+    ).TrimEnd('\')
+    $expectedTarget = [System.IO.Path]::GetFullPath(
+        (Join-Path $cacheRoot 'IE')
+    ).TrimEnd('\')
+    $evidencePath = Join-Path $ScenarioContext.Evidence 'windows-cache-cleanup.json'
+    $aliasRelativePath = 'profile/AppData/Local/Microsoft/Windows/INetCache/Content.IE5'
+    $targetRelativePath = 'profile/AppData/Local/Microsoft/Windows/INetCache/IE'
+
+    if (-not (Test-W4PathContainedBy -Candidate $junctionPath -Root $profileRoot) -or
+        -not (Test-W4PathContainedBy -Candidate $expectedTarget -Root $profileRoot) -or
+        [System.IO.Path]::GetDirectoryName($junctionPath) -cne
+            [System.IO.Path]::GetDirectoryName($expectedTarget)) {
+        throw 'Known Windows cache compatibility paths escaped the scenario profile or are not siblings'
+    }
+    Assert-W4SafePathChain -Path $cacheRoot -Label 'known Windows cache parent'
+
+    $junctionItem = $null
+    try {
+        $junctionItem = Get-Item -LiteralPath $junctionPath -Force -ErrorAction Stop
+    } catch [System.Management.Automation.ItemNotFoundException] {
+        $junctionItem = $null
+    }
+    if ($null -eq $junctionItem) {
+        $cacheTreeSha256 = $null
+        if (Test-Path -LiteralPath $cacheRoot -PathType Container) {
+            $cacheTreeSha256 = Get-W4TreeSha256 -Root $cacheRoot
+        }
+        Write-W4JsonFile -Path $evidencePath -Value ([ordered]@{
+            schema_version = 'pkv.m13.w4-windows-cache-cleanup.v1'
+            status = 'already_absent'
+            alias_relative_path = $aliasRelativePath
+            target_relative_path = $targetRelativePath
+            reparse_tag = $null
+            substitute_name = $null
+            target_preserved = (Test-Path -LiteralPath $expectedTarget -PathType Container)
+            cache_tree_sha256_after = $cacheTreeSha256
+        })
+        return
+    }
+
+    if (($junctionItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
+        if (-not $junctionItem.PSIsContainer) {
+            throw "Known Windows cache alias is an unexpected normal file: $junctionPath"
+        }
+        $cacheTreeSha256 = Get-W4TreeSha256 -Root $cacheRoot
+        Write-W4JsonFile -Path $evidencePath -Value ([ordered]@{
+            schema_version = 'pkv.m13.w4-windows-cache-cleanup.v1'
+            status = 'ordinary_directory_preserved'
+            alias_relative_path = $aliasRelativePath
+            target_relative_path = $targetRelativePath
+            reparse_tag = $null
+            substitute_name = $null
+            target_preserved = (Test-Path -LiteralPath $expectedTarget -PathType Container)
+            cache_tree_sha256_after = $cacheTreeSha256
+        })
+        return
+    }
+    if (-not $junctionItem.PSIsContainer) {
+        throw "Known Windows cache alias is not a directory reparse point: $junctionPath"
+    }
+    $reparse = Get-W4ReparsePointData -Path $junctionPath
+    $mountPointTag = [Convert]::ToUInt32('A0000003', 16)
+    if ([uint32]$reparse.Tag -ne $mountPointTag) {
+        throw ("Known Windows cache alias has unexpected reparse tag: 0x{0:x8}" -f [uint32]$reparse.Tag)
+    }
+    $substituteName = [string]$reparse.SubstituteName
+    $nativePathPrefix = '\??\'
+    if ([string]::IsNullOrWhiteSpace($substituteName) -or
+        -not $substituteName.StartsWith($nativePathPrefix, [System.StringComparison]::Ordinal)) {
+        throw 'Known Windows cache junction has a non-canonical substitute name'
+    }
+    $substitutePath = $substituteName.Substring($nativePathPrefix.Length)
+    if ($substitutePath.StartsWith('UNC\', [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [System.IO.Path]::IsPathRooted($substitutePath)) {
+        throw 'Known Windows cache junction substitute target is not a canonical local absolute path'
+    }
+    $resolvedTarget = [System.IO.Path]::GetFullPath($substitutePath).TrimEnd('\')
+    if (-not $resolvedTarget.Equals($expectedTarget, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Known Windows cache junction target is not the exact sibling IE directory: $resolvedTarget"
+    }
+    if (-not (Test-W4PathContainedBy -Candidate $resolvedTarget -Root $workspace) -or
+        -not (Test-W4PathContainedBy -Candidate $resolvedTarget -Root $profileRoot)) {
+        throw 'Known Windows cache junction target escaped the scenario workspace/profile'
+    }
+    Assert-W4SafePathChain -Path $resolvedTarget -Label 'known Windows cache target'
+    $targetItem = Get-Item -LiteralPath $resolvedTarget -Force -ErrorAction Stop
+    if (-not $targetItem.PSIsContainer -or
+        ($targetItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Known Windows cache junction target is not a normal directory: $resolvedTarget"
+    }
+
+    # Delete only the validated mount-point directory entry.  Recursive deletion
+    # is forbidden here because the sibling target and its cache data must survive.
+    [System.IO.Directory]::Delete($junctionPath, $false)
+    if (Test-Path -LiteralPath $junctionPath) {
+        throw "Known Windows cache junction remained after non-recursive unlink: $junctionPath"
+    }
+    Assert-W4SafePathChain -Path $resolvedTarget -Label 'known Windows cache target after unlink'
+    $targetAfter = Get-Item -LiteralPath $resolvedTarget -Force -ErrorAction Stop
+    if (-not $targetAfter.PSIsContainer -or
+        ($targetAfter.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Known Windows cache target was changed by compatibility cleanup'
+    }
+    # The standard strict walker remains the final oracle.  No reparse allowlist is
+    # added to either the controller or outer runner.
+    $cacheTreeSha256 = Get-W4TreeSha256 -Root $cacheRoot
+    Write-W4JsonFile -Path $evidencePath -Value ([ordered]@{
+        schema_version = 'pkv.m13.w4-windows-cache-cleanup.v1'
+        status = 'removed_known_junction'
+        alias_relative_path = $aliasRelativePath
+        target_relative_path = $targetRelativePath
+        reparse_tag = '0xa0000003'
+        substitute_name = $substituteName
+        target_preserved = $true
+        cache_tree_sha256_after = $cacheTreeSha256
+    })
+}
+
 function Invoke-W4Install {
     [CmdletBinding()]
     param(
@@ -3019,8 +3148,9 @@ function Invoke-W4McpStdioScenario {
         $processResult = Stop-W4McpSession -Session $session -EvidenceDirectory $evidence
         $closed = $true
     } finally {
-        if (-not $closed -and $null -ne $session.Process -and -not $session.Process.HasExited) {
-            Stop-W4ProcessTree -Process $session.Process
+        if (-not $closed -and $null -ne $session.Process) {
+            Stop-W4ProcessTree -Process $session.Process `
+                -IdentitySnapshot $session.ProcessTreeSnapshot
             $session.Process.Dispose()
         }
     }
@@ -3079,6 +3209,7 @@ function Start-W4GuiApplication {
             StdoutTask = $stdoutTask
             StderrTask = $stderrTask
             Evidence = $evidence
+            ProcessTreeSnapshot = $null
         }
         Assert-W4UiaContractSegment -Gui $gui `
             -AutomationIds @('pkv_main_window', 'pkv_central', 'pkv_view_stack', 'nav_list', 'app_status') `
@@ -3120,9 +3251,13 @@ function Start-W4GuiApplication {
                 navigation_names = @($actualNavigationNames)
                 exact = $true
             })
+        $gui.ProcessTreeSnapshot = New-W4ProcessTreeIdentitySnapshot -Process $process
         return $gui
     } catch {
-        Stop-W4ProcessTree -Process $process
+        if (-not $process.HasExited) {
+            $failureSnapshot = New-W4ProcessTreeIdentitySnapshot -Process $process
+            Stop-W4ProcessTree -Process $process -IdentitySnapshot $failureSnapshot
+        }
         [System.IO.File]::WriteAllText(
             (Join-Path $evidence 'stdout.txt'),
             $stdoutTask.GetAwaiter().GetResult(),
@@ -3146,6 +3281,14 @@ function Stop-W4GuiApplication {
     )
 
     $process = [System.Diagnostics.Process]$Gui.Process
+    $identitySnapshot = $Gui.ProcessTreeSnapshot
+    if ($null -eq $identitySnapshot) {
+        throw 'GUI process-tree snapshot is missing before close'
+    }
+    if (-not $process.HasExited) {
+        $identitySnapshot = New-W4ProcessTreeIdentitySnapshot -Process $process
+        $Gui.ProcessTreeSnapshot = $identitySnapshot
+    }
     $forced = $false
     try {
         if (-not $process.HasExited) {
@@ -3159,9 +3302,12 @@ function Stop-W4GuiApplication {
             ([System.Windows.Automation.WindowPattern]$pattern).Close()
             if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
                 $forced = $true
-                Stop-W4ProcessTree -Process $process
+                Stop-W4ProcessTree -Process $process -IdentitySnapshot $identitySnapshot
             } else {
                 $process.WaitForExit()
+                # Confirm that no snapshotted onefile runtime descendant survived
+                # the launcher/window close race.
+                Stop-W4ProcessTree -Process $process -IdentitySnapshot $identitySnapshot
             }
         }
         $stdout = $Gui.StdoutTask.GetAwaiter().GetResult()
@@ -3190,9 +3336,7 @@ function Stop-W4GuiApplication {
         }
         return $record
     } finally {
-        if (-not $process.HasExited) {
-            Stop-W4ProcessTree -Process $process
-        }
+        Stop-W4ProcessTree -Process $process -IdentitySnapshot $identitySnapshot
         $process.Dispose()
     }
 }
@@ -3453,8 +3597,9 @@ function Invoke-W4OfflineTextArchiveScenario {
         [void](Stop-W4GuiApplication -Gui $gui)
         $closed = $true
     } finally {
-        if (-not $closed -and -not $gui.Process.HasExited) {
-            Stop-W4ProcessTree -Process $gui.Process
+        if (-not $closed) {
+            Stop-W4ProcessTree -Process $gui.Process `
+                -IdentitySnapshot $gui.ProcessTreeSnapshot
             $gui.Process.Dispose()
         }
     }
@@ -3472,8 +3617,9 @@ function Invoke-W4OfflineTextArchiveScenario {
         [void](Stop-W4GuiApplication -Gui $restart)
         $restartClosed = $true
     } finally {
-        if (-not $restartClosed -and -not $restart.Process.HasExited) {
-            Stop-W4ProcessTree -Process $restart.Process
+        if (-not $restartClosed) {
+            Stop-W4ProcessTree -Process $restart.Process `
+                -IdentitySnapshot $restart.ProcessTreeSnapshot
             $restart.Process.Dispose()
         }
     }
@@ -3564,8 +3710,9 @@ function Invoke-W4Bm25SearchScenario {
         [void](Stop-W4GuiApplication -Gui $gui)
         $closed = $true
     } finally {
-        if (-not $closed -and -not $gui.Process.HasExited) {
-            Stop-W4ProcessTree -Process $gui.Process
+        if (-not $closed) {
+            Stop-W4ProcessTree -Process $gui.Process `
+                -IdentitySnapshot $gui.ProcessTreeSnapshot
             $gui.Process.Dispose()
         }
     }
@@ -3759,6 +3906,8 @@ function Start-W4LoopbackHarness {
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
     $runtimeIdentity = $null
+    $launcherTreeSnapshot = $null
+    $runtimeTreeSnapshot = $null
     try {
         $readyPath = Join-Path $state 'ready.json'
         $deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -3789,6 +3938,13 @@ function Start-W4LoopbackHarness {
         }
         $runtimeIdentity = Get-W4ValidatedProcessIdentity -LauncherProcess $process `
             -RuntimeProcessId ([int]$ready.pid)
+        $launcherTreeSnapshot = New-W4ProcessTreeIdentitySnapshot -Process $process
+        $runtimeTreeSnapshot = if ([int]$runtimeIdentity.RuntimePid -eq $process.Id) {
+            $launcherTreeSnapshot
+        } else {
+            New-W4ProcessTreeIdentitySnapshot `
+                -Process ([System.Diagnostics.Process]$runtimeIdentity.RuntimeProcess)
+        }
         if ([string]$ready.harness_sha256 -ne $exeSha -or
             [string]$ready.manifest_sha256 -ne $manifestSha -or
             [string]$ready.contract_sha256 -ne $contractSha -or
@@ -3817,6 +3973,8 @@ function Start-W4LoopbackHarness {
         return [pscustomobject]@{
             Process = $process
             RuntimeProcess = $runtimeIdentity.RuntimeProcess
+            LauncherProcessTreeSnapshot = $launcherTreeSnapshot
+            RuntimeProcessTreeSnapshot = $runtimeTreeSnapshot
             LauncherPid = [int]$runtimeIdentity.LauncherPid
             RuntimePid = [int]$runtimeIdentity.RuntimePid
             StdoutTask = $stdoutTask
@@ -3834,11 +3992,25 @@ function Start-W4LoopbackHarness {
             [int]$runtimeIdentity.RuntimePid -ne $process.Id) {
             $runtimeChild = [System.Diagnostics.Process]$runtimeIdentity.RuntimeProcess
             if (-not $runtimeChild.HasExited) {
-                Stop-W4ProcessTree -Process $runtimeChild
+                $runtimeFailureSnapshot = if ($null -ne $runtimeTreeSnapshot) {
+                    $runtimeTreeSnapshot
+                } else {
+                    New-W4ProcessTreeIdentitySnapshot -Process $runtimeChild
+                }
+                Stop-W4ProcessTree -Process $runtimeChild `
+                    -IdentitySnapshot $runtimeFailureSnapshot
             }
             $runtimeChild.Dispose()
         }
-        Stop-W4ProcessTree -Process $process
+        if (-not $process.HasExited) {
+            $launcherFailureSnapshot = if ($null -ne $launcherTreeSnapshot) {
+                $launcherTreeSnapshot
+            } else {
+                New-W4ProcessTreeIdentitySnapshot -Process $process
+            }
+            Stop-W4ProcessTree -Process $process `
+                -IdentitySnapshot $launcherFailureSnapshot
+        }
         $process.Dispose()
         throw
     }
@@ -3848,26 +4020,50 @@ function Stop-W4LoopbackHarness {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)]$Harness)
 
-    $shutdown = Join-Path $Harness.StateDirectory 'shutdown.request'
-    [System.IO.File]::WriteAllText($shutdown, "shutdown`n", [System.Text.UTF8Encoding]::new($false))
     $process = [System.Diagnostics.Process]$Harness.Process
     $runtimeProcess = [System.Diagnostics.Process]$Harness.RuntimeProcess
+    $launcherTreeSnapshot = $Harness.LauncherProcessTreeSnapshot
+    $runtimeTreeSnapshot = $Harness.RuntimeProcessTreeSnapshot
+    if ($null -eq $launcherTreeSnapshot -or $null -eq $runtimeTreeSnapshot) {
+        throw 'Harness process-tree snapshots are missing before shutdown'
+    }
+    if (-not $process.HasExited) {
+        $launcherTreeSnapshot = New-W4ProcessTreeIdentitySnapshot -Process $process
+        $Harness.LauncherProcessTreeSnapshot = $launcherTreeSnapshot
+    }
+    if ($runtimeProcess.Id -eq $process.Id) {
+        $runtimeTreeSnapshot = $launcherTreeSnapshot
+        $Harness.RuntimeProcessTreeSnapshot = $runtimeTreeSnapshot
+    } elseif (-not $runtimeProcess.HasExited) {
+        $runtimeTreeSnapshot = New-W4ProcessTreeIdentitySnapshot -Process $runtimeProcess
+        $Harness.RuntimeProcessTreeSnapshot = $runtimeTreeSnapshot
+    }
+    $shutdown = Join-Path $Harness.StateDirectory 'shutdown.request'
+    [System.IO.File]::WriteAllText($shutdown, "shutdown`n", [System.Text.UTF8Encoding]::new($false))
     $forced = $false
     try {
         if (-not $process.WaitForExit(30000)) {
             $forced = $true
-            Stop-W4ProcessTree -Process $process
+            Stop-W4ProcessTree -Process $process `
+                -IdentitySnapshot $launcherTreeSnapshot
         } else {
             $process.WaitForExit()
         }
         if ($runtimeProcess.Id -ne $process.Id -and -not $runtimeProcess.HasExited) {
             if (-not $runtimeProcess.WaitForExit(5000)) {
                 $forced = $true
-                Stop-W4ProcessTree -Process $runtimeProcess
+                Stop-W4ProcessTree -Process $runtimeProcess `
+                    -IdentitySnapshot $runtimeTreeSnapshot
             } else {
                 $runtimeProcess.WaitForExit()
             }
         }
+        if ($runtimeProcess.Id -ne $process.Id) {
+            Stop-W4ProcessTree -Process $runtimeProcess `
+                -IdentitySnapshot $runtimeTreeSnapshot
+        }
+        Stop-W4ProcessTree -Process $process `
+            -IdentitySnapshot $launcherTreeSnapshot
         $stdout = $Harness.StdoutTask.GetAwaiter().GetResult()
         $stderr = $Harness.StderrTask.GetAwaiter().GetResult()
         [System.IO.File]::WriteAllText((Join-Path $Harness.Evidence 'stdout.txt'), $stdout, [System.Text.UTF8Encoding]::new($false))
@@ -3896,14 +4092,12 @@ function Stop-W4LoopbackHarness {
         return $result
     } finally {
         if ($runtimeProcess.Id -ne $process.Id) {
-            if (-not $runtimeProcess.HasExited) {
-                Stop-W4ProcessTree -Process $runtimeProcess
-            }
+            Stop-W4ProcessTree -Process $runtimeProcess `
+                -IdentitySnapshot $runtimeTreeSnapshot
             $runtimeProcess.Dispose()
         }
-        if (-not $process.HasExited) {
-            Stop-W4ProcessTree -Process $process
-        }
+        Stop-W4ProcessTree -Process $process `
+            -IdentitySnapshot $launcherTreeSnapshot
         $process.Dispose()
     }
 }
@@ -3994,8 +4188,9 @@ function Invoke-W4ChatLoopbackScenario {
             [void](Stop-W4GuiApplication -Gui $gui)
             $guiClosed = $true
         } finally {
-            if (-not $guiClosed -and -not $gui.Process.HasExited) {
-                Stop-W4ProcessTree -Process $gui.Process
+            if (-not $guiClosed) {
+                Stop-W4ProcessTree -Process $gui.Process `
+                    -IdentitySnapshot $gui.ProcessTreeSnapshot
                 $gui.Process.Dispose()
             }
         }
@@ -4019,8 +4214,9 @@ function Invoke-W4ChatLoopbackScenario {
             [void](Stop-W4GuiApplication -Gui $restart)
             $restartClosed = $true
         } finally {
-            if (-not $restartClosed -and -not $restart.Process.HasExited) {
-                Stop-W4ProcessTree -Process $restart.Process
+            if (-not $restartClosed) {
+                Stop-W4ProcessTree -Process $restart.Process `
+                    -IdentitySnapshot $restart.ProcessTreeSnapshot
                 $restart.Process.Dispose()
             }
         }
@@ -4053,8 +4249,9 @@ function Invoke-W4ChatLoopbackScenario {
         $harnessResult = Stop-W4LoopbackHarness -Harness $harness
         $harnessStopped = $true
     } finally {
-        if (-not $harnessStopped -and -not $harness.Process.HasExited) {
-            Stop-W4ProcessTree -Process $harness.Process
+        if (-not $harnessStopped) {
+            Stop-W4ProcessTree -Process $harness.Process `
+                -IdentitySnapshot $harness.LauncherProcessTreeSnapshot
             $harness.Process.Dispose()
         }
     }
@@ -4258,13 +4455,26 @@ function Invoke-W4Scenario {
         $scenarioFailure = $_
         throw
     } finally {
+        $cleanupFailures = [System.Collections.Generic.List[string]]::new()
+        try {
+            # Scenario handlers own their process objects and return only after the
+            # process-tree postconditions have passed.  The narrowly identified
+            # WinINet compatibility junction is therefore unlinked only now.
+            Remove-W4KnownWindowsInternetCacheJunction -ScenarioContext $context
+        } catch {
+            $cleanupFailures.Add("Windows cache cleanup failed: $($_.Exception.Message)")
+        }
         try {
             Remove-W4ScenarioInstallRoot -ScenarioContext $context
         } catch {
+            $cleanupFailures.Add("InstallRoot cleanup failed: $($_.Exception.Message)")
+        }
+        if ($cleanupFailures.Count -gt 0) {
+            $cleanupMessage = @($cleanupFailures) -join '; '
             if ($null -ne $scenarioFailure) {
-                throw "Scenario failed ($($scenarioFailure.Exception.Message)); InstallRoot cleanup also failed: $($_.Exception.Message)"
+                throw "Scenario failed ($($scenarioFailure.Exception.Message)); cleanup also failed: $cleanupMessage"
             }
-            throw
+            throw $cleanupMessage
         }
     }
     return [pscustomobject]@{

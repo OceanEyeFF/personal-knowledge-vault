@@ -190,8 +190,14 @@ function Get-W4FileSegmentSha256 {
 }
 
 function Initialize-W4FileIdentityInspector {
-    if ('PkvW4.FileIdentity' -as [type]) {
+    $fileIdentityType = 'PkvW4.FileIdentity' -as [type]
+    $processTreeType = 'PkvW4.ProcessTreeInspector' -as [type]
+    $reparsePointType = 'PkvW4.ReparsePointInspector' -as [type]
+    if ($fileIdentityType -and $processTreeType -and $reparsePointType) {
         return
+    }
+    if ($fileIdentityType -or $processTreeType -or $reparsePointType) {
+        throw 'A partial or stale PkvW4 native-inspector type set is already loaded; start a fresh PowerShell process'
     }
     Add-Type -TypeDefinition @'
 using System;
@@ -200,6 +206,220 @@ using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
 namespace PkvW4 {
+    public sealed class ProcessSnapshotEntry {
+        public int ProcessId { get; private set; }
+        public int ParentProcessId { get; private set; }
+
+        public ProcessSnapshotEntry(int processId, int parentProcessId) {
+            ProcessId = processId;
+            ParentProcessId = parentProcessId;
+        }
+    }
+
+    public static class ProcessTreeInspector {
+        private const uint TH32CS_SNAPPROCESS = 0x00000002;
+        private static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct PROCESSENTRY32 {
+            public uint dwSize;
+            public uint cntUsage;
+            public uint th32ProcessID;
+            public UIntPtr th32DefaultHeapID;
+            public uint th32ModuleID;
+            public uint cntThreads;
+            public uint th32ParentProcessID;
+            public int pcPriClassBase;
+            public uint dwFlags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+            public string szExeFile;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool Process32FirstW(IntPtr snapshot, ref PROCESSENTRY32 entry);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool Process32NextW(IntPtr snapshot, ref PROCESSENTRY32 entry);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        public static ProcessSnapshotEntry[] Snapshot() {
+            IntPtr snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (snapshot == INVALID_HANDLE_VALUE) {
+                throw new System.ComponentModel.Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "CreateToolhelp32Snapshot failed"
+                );
+            }
+            try {
+                var rows = new System.Collections.Generic.List<ProcessSnapshotEntry>();
+                PROCESSENTRY32 entry = new PROCESSENTRY32();
+                entry.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+                if (!Process32FirstW(snapshot, ref entry)) {
+                    int error = Marshal.GetLastWin32Error();
+                    if (error == 18) {
+                        return rows.ToArray();
+                    }
+                    throw new System.ComponentModel.Win32Exception(
+                        error,
+                        "Process32FirstW failed"
+                    );
+                }
+                do {
+                    rows.Add(new ProcessSnapshotEntry(
+                        checked((int)entry.th32ProcessID),
+                        checked((int)entry.th32ParentProcessID)
+                    ));
+                    entry.dwSize = (uint)Marshal.SizeOf(typeof(PROCESSENTRY32));
+                } while (Process32NextW(snapshot, ref entry));
+                int finalError = Marshal.GetLastWin32Error();
+                if (finalError != 18) {
+                    throw new System.ComponentModel.Win32Exception(
+                        finalError,
+                        "Process32NextW failed"
+                    );
+                }
+                return rows.ToArray();
+            } finally {
+                CloseHandle(snapshot);
+            }
+        }
+    }
+
+    public sealed class ReparsePointData {
+        public uint Tag { get; private set; }
+        public string SubstituteName { get; private set; }
+        public string PrintName { get; private set; }
+
+        public ReparsePointData(uint tag, string substituteName, string printName) {
+            Tag = tag;
+            SubstituteName = substituteName;
+            PrintName = printName;
+        }
+    }
+
+    public static class ReparsePointInspector {
+        private const uint FSCTL_GET_REPARSE_POINT = 0x000900A8;
+        private const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+        private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+        private const uint FILE_SHARE_READ = 0x00000001;
+        private const uint FILE_SHARE_WRITE = 0x00000002;
+        private const uint FILE_SHARE_DELETE = 0x00000004;
+        private const uint OPEN_EXISTING = 3;
+        private const uint IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003;
+        private const int MAXIMUM_REPARSE_DATA_BUFFER_SIZE = 16 * 1024;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFileW(
+            string fileName,
+            uint desiredAccess,
+            uint shareMode,
+            IntPtr securityAttributes,
+            uint creationDisposition,
+            uint flagsAndAttributes,
+            IntPtr templateFile
+        );
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool DeviceIoControl(
+            SafeFileHandle device,
+            uint controlCode,
+            IntPtr inputBuffer,
+            uint inputBufferSize,
+            [Out] byte[] outputBuffer,
+            uint outputBufferSize,
+            out uint bytesReturned,
+            IntPtr overlapped
+        );
+
+        private static ushort ReadUInt16(byte[] buffer, int offset) {
+            return BitConverter.ToUInt16(buffer, offset);
+        }
+
+        private static string ReadName(
+            byte[] buffer,
+            int pathBufferOffset,
+            ushort nameOffset,
+            ushort nameLength,
+            uint bytesReturned,
+            ushort reparseDataLength
+        ) {
+            if ((nameOffset % 2) != 0 || (nameLength % 2) != 0) {
+                throw new InvalidDataException("Mount-point name offset/length is not UTF-16 aligned");
+            }
+            int start = checked(pathBufferOffset + nameOffset);
+            int end = checked(start + nameLength);
+            int dataEnd = checked(8 + reparseDataLength);
+            if (start < pathBufferOffset || end > bytesReturned || end > dataEnd) {
+                throw new InvalidDataException("Mount-point name is outside reparse data");
+            }
+            return System.Text.Encoding.Unicode.GetString(buffer, start, nameLength);
+        }
+
+        public static ReparsePointData Read(string path) {
+            using (SafeFileHandle handle = CreateFileW(
+                path,
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                IntPtr.Zero,
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                IntPtr.Zero
+            )) {
+                if (handle.IsInvalid) {
+                    throw new System.ComponentModel.Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "CreateFileW for reparse point failed"
+                    );
+                }
+                byte[] buffer = new byte[MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
+                uint bytesReturned;
+                if (!DeviceIoControl(
+                    handle,
+                    FSCTL_GET_REPARSE_POINT,
+                    IntPtr.Zero,
+                    0,
+                    buffer,
+                    (uint)buffer.Length,
+                    out bytesReturned,
+                    IntPtr.Zero
+                )) {
+                    throw new System.ComponentModel.Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "FSCTL_GET_REPARSE_POINT failed"
+                    );
+                }
+                if (bytesReturned < 8) {
+                    throw new InvalidDataException("Reparse data header is truncated");
+                }
+                uint tag = BitConverter.ToUInt32(buffer, 0);
+                ushort dataLength = ReadUInt16(buffer, 4);
+                if (checked(8 + dataLength) > bytesReturned) {
+                    throw new InvalidDataException("Reparse data payload is truncated");
+                }
+                if (tag != IO_REPARSE_TAG_MOUNT_POINT) {
+                    return new ReparsePointData(tag, null, null);
+                }
+                if (bytesReturned < 16 || dataLength < 8) {
+                    throw new InvalidDataException("Mount-point reparse data is truncated");
+                }
+                ushort substituteOffset = ReadUInt16(buffer, 8);
+                ushort substituteLength = ReadUInt16(buffer, 10);
+                ushort printOffset = ReadUInt16(buffer, 12);
+                ushort printLength = ReadUInt16(buffer, 14);
+                return new ReparsePointData(
+                    tag,
+                    ReadName(buffer, 16, substituteOffset, substituteLength, bytesReturned, dataLength),
+                    ReadName(buffer, 16, printOffset, printLength, bytesReturned, dataLength)
+                );
+            }
+        }
+    }
+
     public static class FileIdentity {
         [StructLayout(LayoutKind.Sequential)]
         private struct BY_HANDLE_FILE_INFORMATION {
@@ -280,6 +500,22 @@ function Get-W4SafeTreeFiles {
         }
     }
     return @($files | Sort-Object FullName)
+}
+
+function Get-W4ReparsePointData {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+        throw 'W4 reparse-point identity checks require Windows'
+    }
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $item = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
+        throw "Path is not a reparse point: $fullPath"
+    }
+    Initialize-W4FileIdentityInspector
+    return [PkvW4.ReparsePointInspector]::Read($fullPath)
 }
 
 function Assert-W4SafePathChain {
@@ -508,20 +744,290 @@ function Start-W4RedirectedProcess {
     }
 }
 
-function Stop-W4ProcessTree {
+function Get-W4ProcessTreeIdentitySnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$RootProcessId,
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, [int64]::MaxValue)]
+        [int64]$ExpectedRootStartTimeUtcTicks
+    )
+
+    if ([Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+        throw 'W4 process-tree identity checks require Windows'
+    }
+    Initialize-W4FileIdentityInspector
+    $nativeSnapshot = @([PkvW4.ProcessTreeInspector]::Snapshot())
+    if (@($nativeSnapshot | Where-Object { [int]$_.ProcessId -eq $RootProcessId }).Count -ne 1) {
+        throw "Process-tree root PID $RootProcessId was absent before its identity snapshot"
+    }
+    $rootIdentity = [pscustomobject]@{
+        ProcessId = $RootProcessId
+        StartTimeUtcTicks = $ExpectedRootStartTimeUtcTicks
+        Depth = 0
+    }
+    $liveRoot = Get-W4LiveProcessForIdentity -Identity $rootIdentity
+    if ($null -eq $liveRoot) {
+        throw "Process-tree root PID $RootProcessId changed identity before its descendant snapshot"
+    }
+    $liveRoot.Dispose()
+
+    $childrenByParent = @{}
+    foreach ($row in $nativeSnapshot) {
+        $parentId = [int]$row.ParentProcessId
+        if (-not $childrenByParent.ContainsKey($parentId)) {
+            $childrenByParent[$parentId] = [System.Collections.Generic.List[int]]::new()
+        }
+        $childrenByParent[$parentId].Add([int]$row.ProcessId)
+    }
+
+    $pending = [System.Collections.Generic.Queue[object]]::new()
+    $pending.Enqueue([pscustomobject]@{ ProcessId = $RootProcessId; Depth = 0 })
+    $seen = [System.Collections.Generic.HashSet[int]]::new()
+    $identities = [System.Collections.Generic.List[object]]::new()
+    while ($pending.Count -gt 0) {
+        $current = $pending.Dequeue()
+        $processId = [int]$current.ProcessId
+        if (-not $seen.Add($processId)) {
+            continue
+        }
+        try {
+            $candidate = [System.Diagnostics.Process]::GetProcessById($processId)
+            try {
+                $identities.Add([pscustomobject]@{
+                    ProcessId = $processId
+                    StartTimeUtcTicks = [int64]$candidate.StartTime.ToUniversalTime().Ticks
+                    Depth = [int]$current.Depth
+                })
+            } finally {
+                $candidate.Dispose()
+            }
+        } catch [System.ArgumentException] {
+            # The snapshot relationship is still useful for finding a living
+            # descendant after its short-lived parent has already exited.
+        } catch [System.InvalidOperationException] {
+            # The process exited while its immutable identity was captured.
+        }
+        if ($childrenByParent.ContainsKey($processId)) {
+            foreach ($childId in @($childrenByParent[$processId])) {
+                $pending.Enqueue([pscustomobject]@{
+                    ProcessId = [int]$childId
+                    Depth = [int]$current.Depth + 1
+                })
+            }
+        }
+    }
+    return @($identities | Sort-Object -Property @(
+        @{ Expression = { [int]$_.Depth }; Descending = $true },
+        @{ Expression = { [int]$_.ProcessId }; Descending = $false }
+    ))
+}
+
+function Get-W4LiveProcessForIdentity {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$Identity)
+
+    try {
+        $candidate = [System.Diagnostics.Process]::GetProcessById([int]$Identity.ProcessId)
+        try {
+            $startTicks = [int64]$candidate.StartTime.ToUniversalTime().Ticks
+            if ($startTicks -ne [int64]$Identity.StartTimeUtcTicks) {
+                $candidate.Dispose()
+                return $null
+            }
+            return $candidate
+        } catch {
+            $candidate.Dispose()
+            throw
+        }
+    } catch [System.ArgumentException] {
+        return $null
+    } catch [System.InvalidOperationException] {
+        return $null
+    }
+}
+
+function Invoke-W4TaskKillTree {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][ValidateRange(1, [int]::MaxValue)][int]$ProcessId)
+
+    $systemRoot = [Environment]::GetEnvironmentVariable('SystemRoot')
+    if ([string]::IsNullOrWhiteSpace($systemRoot)) {
+        throw 'SystemRoot is required to locate taskkill.exe'
+    }
+    $taskKill = Join-Path $systemRoot 'System32\taskkill.exe'
+    if (-not (Test-Path -LiteralPath $taskKill -PathType Leaf)) {
+        throw "Required taskkill executable is missing: $taskKill"
+    }
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $taskKill
+    $startInfo.Arguments = "/PID $ProcessId /T /F"
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $startInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    $killer = [System.Diagnostics.Process]::new()
+    $killer.StartInfo = $startInfo
+    try {
+        if (-not $killer.Start()) {
+            throw "taskkill.exe did not start for PID $ProcessId"
+        }
+        $stdoutTask = $killer.StandardOutput.ReadToEndAsync()
+        $stderrTask = $killer.StandardError.ReadToEndAsync()
+        if (-not $killer.WaitForExit(10000)) {
+            try { $killer.Kill() } catch { }
+            throw "taskkill.exe timed out for PID $ProcessId"
+        }
+        $killer.WaitForExit()
+        return [pscustomobject]@{
+            ExitCode = [int]$killer.ExitCode
+            StandardOutput = [string]$stdoutTask.GetAwaiter().GetResult()
+            StandardError = [string]$stderrTask.GetAwaiter().GetResult()
+        }
+    } finally {
+        $killer.Dispose()
+    }
+}
+
+function New-W4ProcessTreeIdentitySnapshot {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
 
+    $expectedRootStartTimeUtcTicks = [int64]$Process.StartTime.ToUniversalTime().Ticks
     if ($Process.HasExited) {
-        return
+        throw "Process-tree root PID $($Process.Id) exited before its identity snapshot"
     }
-    try {
-        $Process.Kill($true)
-    } catch {
-        $taskKill = Join-Path ([Environment]::GetEnvironmentVariable('SystemRoot')) 'System32\taskkill.exe'
-        & $taskKill /PID $Process.Id /T /F *> $null
+    $identities = @(Get-W4ProcessTreeIdentitySnapshot -RootProcessId $Process.Id `
+        -ExpectedRootStartTimeUtcTicks $expectedRootStartTimeUtcTicks)
+    if ($identities.Count -eq 0) {
+        throw "Process-tree identity snapshot was unexpectedly empty for PID $($Process.Id)"
     }
-    [void]$Process.WaitForExit(5000)
+    $rootIdentity = @($identities | Where-Object { [int]$_.Depth -eq 0 })
+    if ($rootIdentity.Count -ne 1 -or
+        [int]$rootIdentity[0].ProcessId -ne $Process.Id -or
+        [int64]$rootIdentity[0].StartTimeUtcTicks -ne $expectedRootStartTimeUtcTicks) {
+        throw "Process-tree root identity was not exact for PID $($Process.Id)"
+    }
+    return [pscustomobject]@{
+        RootProcessId = [int]$Process.Id
+        RootStartTimeUtcTicks = $expectedRootStartTimeUtcTicks
+        Identities = @($identities)
+    }
+}
+
+function Stop-W4ProcessTree {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [AllowNull()]$IdentitySnapshot = $null
+    )
+
+    # Capture and bind the root identity before expanding any numeric parent-PID
+    # relationships.  Callers may capture while the root is alive, then pass the
+    # immutable snapshot after a close/exit race.  Without such a snapshot an
+    # already-exited/reused root is rejected rather than re-authorizing its PID.
+    if ($null -eq $IdentitySnapshot) {
+        $IdentitySnapshot = New-W4ProcessTreeIdentitySnapshot -Process $Process
+    }
+    $expectedRootStartTimeUtcTicks = [int64]$Process.StartTime.ToUniversalTime().Ticks
+    if ([int]$IdentitySnapshot.RootProcessId -ne $Process.Id -or
+        [int64]$IdentitySnapshot.RootStartTimeUtcTicks -ne $expectedRootStartTimeUtcTicks) {
+        throw "Process-tree identity snapshot does not bind the supplied root PID $($Process.Id)"
+    }
+    $identities = @($IdentitySnapshot.Identities)
+    $rootIdentity = @($identities | Where-Object { [int]$_.Depth -eq 0 })
+    if ($rootIdentity.Count -ne 1 -or
+        [int]$rootIdentity[0].ProcessId -ne $Process.Id -or
+        [int64]$rootIdentity[0].StartTimeUtcTicks -ne $expectedRootStartTimeUtcTicks) {
+        throw "Process-tree root identity was not exact for PID $($Process.Id)"
+    }
+
+    $rootBeforeKill = Get-W4LiveProcessForIdentity -Identity $rootIdentity[0]
+    if ($null -ne $rootBeforeKill) {
+        try {
+            $rootBeforeKill.Kill($true)
+        } catch {
+            # Kill(entireProcessTree) is unavailable on Windows PowerShell 5.1.
+            # The absolute, redirected taskkill invocation below is the fallback.
+        } finally {
+            $rootBeforeKill.Dispose()
+        }
+    }
+
+    $live = @($identities | Where-Object {
+        $probe = Get-W4LiveProcessForIdentity -Identity $_
+        if ($null -ne $probe) {
+            $probe.Dispose()
+            return $true
+        }
+        return $false
+    })
+    $taskKillResult = $null
+    if ($live.Count -gt 0) {
+        $rootBeforeTaskKill = Get-W4LiveProcessForIdentity -Identity $rootIdentity[0]
+        if ($null -ne $rootBeforeTaskKill) {
+            $safeRootHandle = $rootBeforeTaskKill.SafeHandle
+            $rootHandlePinned = $false
+            try {
+                # Keep the verified process object alive so Windows cannot recycle
+                # its numeric PID between the StartTime check and taskkill /T.
+                $safeRootHandle.DangerousAddRef([ref]$rootHandlePinned)
+                $taskKillResult = Invoke-W4TaskKillTree -ProcessId $Process.Id
+            } finally {
+                if ($rootHandlePinned) {
+                    $safeRootHandle.DangerousRelease()
+                }
+                $rootBeforeTaskKill.Dispose()
+            }
+        }
+    }
+
+    # If the launcher disappeared before taskkill inspected its children, target
+    # the still-live snapshotted identities directly.  A non-zero taskkill exit is
+    # only diagnostic; the immutable postcondition below is the success oracle.
+    foreach ($identity in $identities) {
+        $survivor = Get-W4LiveProcessForIdentity -Identity $identity
+        if ($null -eq $survivor) {
+            continue
+        }
+        try {
+            $survivor.Kill()
+        } catch {
+            # Preserve the race-safe postcondition as the only terminal decision.
+        } finally {
+            $survivor.Dispose()
+        }
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        $stillAlive = [System.Collections.Generic.List[object]]::new()
+        foreach ($identity in $identities) {
+            $probe = Get-W4LiveProcessForIdentity -Identity $identity
+            if ($null -ne $probe) {
+                $stillAlive.Add($identity)
+                $probe.Dispose()
+            }
+        }
+        if ($stillAlive.Count -eq 0) {
+            try { [void]$Process.WaitForExit(100) } catch { }
+            return
+        }
+        [System.Threading.Thread]::Sleep(50)
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    $taskKillDiagnostic = if ($null -eq $taskKillResult) {
+        'not-invoked'
+    } else {
+        "exit=$($taskKillResult.ExitCode) stdout=$($taskKillResult.StandardOutput.Trim()) stderr=$($taskKillResult.StandardError.Trim())"
+    }
+    $survivorIds = @($stillAlive | ForEach-Object { [int]$_.ProcessId }) -join ','
+    throw "Process-tree termination postcondition failed; live snapshotted PIDs=$survivorIds; taskkill=$taskKillDiagnostic"
 }
 
 function Invoke-W4Process {
@@ -566,6 +1072,7 @@ function Invoke-W4Process {
     $startedAt = [DateTime]::UtcNow
     $timedOut = $false
     $forcedTermination = $false
+    $terminationSnapshot = $null
     try {
         if (-not (Start-W4RedirectedProcess -Process $process -RedirectInput:$redirectInput)) {
             throw "Process did not start: $FileName"
@@ -579,7 +1086,8 @@ function Invoke-W4Process {
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             $timedOut = $true
             $forcedTermination = $true
-            Stop-W4ProcessTree -Process $process
+            $terminationSnapshot = New-W4ProcessTreeIdentitySnapshot -Process $process
+            Stop-W4ProcessTree -Process $process -IdentitySnapshot $terminationSnapshot
         } else {
             $process.WaitForExit()
         }
@@ -613,7 +1121,10 @@ function Invoke-W4Process {
         }
     } finally {
         if (-not $process.HasExited) {
-            Stop-W4ProcessTree -Process $process
+            if ($null -eq $terminationSnapshot) {
+                $terminationSnapshot = New-W4ProcessTreeIdentitySnapshot -Process $process
+            }
+            Stop-W4ProcessTree -Process $process -IdentitySnapshot $terminationSnapshot
         }
         $process.Dispose()
     }
@@ -791,15 +1302,20 @@ function Start-W4McpSession {
             method = 'notifications/initialized'
             params = [ordered]@{}
         }) -TranscriptPath $TranscriptPath
+        $processTreeSnapshot = New-W4ProcessTreeIdentitySnapshot -Process $process
         return [pscustomobject]@{
             Process = $process
+            ProcessTreeSnapshot = $processTreeSnapshot
             Initialize = $initialize
             TranscriptPath = $TranscriptPath
             NextId = 2
             StderrTask = $stderrTask
         }
     } catch {
-        Stop-W4ProcessTree -Process $process
+        if (-not $process.HasExited) {
+            $failureSnapshot = New-W4ProcessTreeIdentitySnapshot -Process $process
+            Stop-W4ProcessTree -Process $process -IdentitySnapshot $failureSnapshot
+        }
         $startupStderr = $stderrTask.GetAwaiter().GetResult()
         [System.IO.File]::WriteAllText(
             (Join-Path ([System.IO.Path]::GetDirectoryName($TranscriptPath)) 'mcp-stderr.txt'),
@@ -820,6 +1336,14 @@ function Stop-W4McpSession {
     )
 
     $process = [System.Diagnostics.Process]$Session.Process
+    $identitySnapshot = $Session.ProcessTreeSnapshot
+    if ($null -eq $identitySnapshot) {
+        throw 'MCP process-tree snapshot is missing before stdin close'
+    }
+    if (-not $process.HasExited) {
+        $identitySnapshot = New-W4ProcessTreeIdentitySnapshot -Process $process
+        $Session.ProcessTreeSnapshot = $identitySnapshot
+    }
     $forced = $false
     try {
         # No request reader is outstanding here.  Start draining the remaining
@@ -829,9 +1353,10 @@ function Stop-W4McpSession {
         $process.StandardInput.Close()
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             $forced = $true
-            Stop-W4ProcessTree -Process $process
+            Stop-W4ProcessTree -Process $process -IdentitySnapshot $identitySnapshot
         } else {
             $process.WaitForExit()
+            Stop-W4ProcessTree -Process $process -IdentitySnapshot $identitySnapshot
         }
         $stdoutTail = $stdoutTailTask.GetAwaiter().GetResult()
         $stderr = $Session.StderrTask.GetAwaiter().GetResult()
@@ -888,9 +1413,7 @@ function Stop-W4McpSession {
         }
         return $result
     } finally {
-        if (-not $process.HasExited) {
-            Stop-W4ProcessTree -Process $process
-        }
+        Stop-W4ProcessTree -Process $process -IdentitySnapshot $identitySnapshot
         $process.Dispose()
     }
 }
@@ -1240,6 +1763,7 @@ Export-ModuleMember -Function @(
     'Get-W4CanonicalJsonSha256',
     'Get-W4FileSha256',
     'Get-W4FileSegmentSha256',
+    'Get-W4ReparsePointData',
     'Get-W4StringSha256',
     'Get-W4TreeManifest',
     'Get-W4TreeSha256',
@@ -1251,6 +1775,7 @@ Export-ModuleMember -Function @(
     'Invoke-W4Process',
     'Invoke-W4SqliteStatement',
     'Invoke-W4UiaElement',
+    'New-W4ProcessTreeIdentitySnapshot',
     'New-W4IsolatedEnvironment',
     'Read-W4JsonFile',
     'Save-W4Screenshot',

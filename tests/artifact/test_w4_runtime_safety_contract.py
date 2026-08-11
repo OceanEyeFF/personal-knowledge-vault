@@ -64,6 +64,38 @@ def _run_ps(command: str, *, timeout: int = 60) -> subprocess.CompletedProcess[s
     )
 
 
+def _create_junction(junction: Path, target: Path) -> None:
+    command_processor = shutil.which("cmd.exe")
+    assert command_processor is not None
+    result = subprocess.run(
+        [command_processor, "/d", "/c", "mklink", "/J", str(junction), str(target)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0 and junction.exists(), result.stderr
+
+
+def _remove_junction(junction: Path) -> None:
+    if not junction.exists():
+        return
+    command_processor = shutil.which("cmd.exe")
+    assert command_processor is not None
+    result = subprocess.run(
+        [command_processor, "/d", "/c", "rmdir", str(junction)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0 and not junction.exists(), result.stderr
+
+
 def test_redirected_stdin_is_utf8_without_bom_on_both_start_paths(
     tmp_path: Path,
 ) -> None:
@@ -170,6 +202,124 @@ def test_harness_runtime_pid_must_be_launcher_or_real_descendant() -> None:
     assert "PROCESS_TREE_OK" in result.stdout
 
 
+def test_process_tree_stop_accepts_launcher_exit_race_only_after_child_is_gone(
+    tmp_path: Path,
+) -> None:
+    child_pid_file = tmp_path / "child.pid"
+    exit_request = tmp_path / "exit.request"
+    launcher_script = tmp_path / "short-lived-launcher.ps1"
+    launcher_script.write_text(
+        (
+            "$hostPath=(Get-Process -Id $PID).Path\n"
+            "$child=Start-Process -FilePath $hostPath -ArgumentList @("
+            "'-NoLogo','-NoProfile','-NonInteractive','-Command',"
+            "'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru\n"
+            f"[IO.File]::WriteAllText('{_ps_quote(child_pid_file)}',"
+            "$child.Id.ToString(),[Text.UTF8Encoding]::new($false))\n"
+            f"while(-not(Test-Path -LiteralPath '{_ps_quote(exit_request)}' "
+            "-PathType Leaf)){[Threading.Thread]::Sleep(20)}\n"
+        ),
+        encoding="utf-8",
+    )
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_quote(DRIVER_MODULE)}' -Force;"
+        "$hostPath=(Get-Process -Id $PID).Path;"
+        "$launcher=Start-Process -FilePath $hostPath -ArgumentList @("
+        "'-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',"
+        f"'-File','{_ps_quote(launcher_script)}') -WindowStyle Hidden -PassThru;"
+        f"$pidFile='{_ps_quote(child_pid_file)}';"
+        "$deadline=[DateTime]::UtcNow.AddSeconds(5);"
+        "while(-not(Test-Path -LiteralPath $pidFile -PathType Leaf)){"
+        "if([DateTime]::UtcNow -ge $deadline){throw 'child pid was not published'};"
+        "[Threading.Thread]::Sleep(20)};"
+        "$childPid=[int][IO.File]::ReadAllText($pidFile);"
+        "if($null -eq (Get-Process -Id $childPid -ErrorAction SilentlyContinue)){"
+        "throw 'child exited before stop regression'};"
+        "$snapshot=New-W4ProcessTreeIdentitySnapshot -Process $launcher;"
+        f"[IO.File]::WriteAllText('{_ps_quote(exit_request)}','exit',"
+        "[Text.UTF8Encoding]::new($false));"
+        "if(-not $launcher.WaitForExit(10000)){throw 'launcher did not exit'};"
+        "Stop-W4ProcessTree -Process $launcher -IdentitySnapshot $snapshot;"
+        "if($null -ne (Get-Process -Id $childPid -ErrorAction SilentlyContinue)){"
+        "throw 'snapshotted child survived process-tree stop'};"
+        "$launcher.Dispose();'PROCESS_EXIT_RACE_OK'"
+    )
+
+    result = _run_ps(command, timeout=30)
+
+    assert result.returncode == 0, result.stderr
+    assert "PROCESS_EXIT_RACE_OK" in result.stdout
+
+
+def test_process_tree_stop_rejects_exited_root_without_prior_snapshot(
+    tmp_path: Path,
+) -> None:
+    child_pid_file = tmp_path / "untrusted-child.pid"
+    launcher_script = tmp_path / "exited-launcher.ps1"
+    launcher_script.write_text(
+        (
+            "$hostPath=(Get-Process -Id $PID).Path\n"
+            "$child=Start-Process -FilePath $hostPath -ArgumentList @("
+            "'-NoLogo','-NoProfile','-NonInteractive','-Command',"
+            "'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru\n"
+            f"[IO.File]::WriteAllText('{_ps_quote(child_pid_file)}',"
+            "$child.Id.ToString(),[Text.UTF8Encoding]::new($false))\n"
+        ),
+        encoding="utf-8",
+    )
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_quote(DRIVER_MODULE)}' -Force;"
+        "$hostPath=(Get-Process -Id $PID).Path;"
+        "$launcher=Start-Process -FilePath $hostPath -ArgumentList @("
+        "'-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',"
+        f"'-File','{_ps_quote(launcher_script)}') -WindowStyle Hidden -PassThru;"
+        "if(-not $launcher.WaitForExit(10000)){throw 'launcher did not exit'};"
+        f"$childPid=[int][IO.File]::ReadAllText('{_ps_quote(child_pid_file)}');"
+        "$rejected=$false;try{Stop-W4ProcessTree -Process $launcher}catch{"
+        "$rejected=$_.Exception.Message -like '*exited before its identity snapshot*'};"
+        "try{if(-not $rejected){throw 'exited root was not rejected'};"
+        "if($null -eq(Get-Process -Id $childPid -ErrorAction SilentlyContinue)){"
+        "throw 'untrusted descendant was killed through a stale root PID'};"
+        "'EXITED_ROOT_REJECTED'}finally{"
+        "$child=Get-Process -Id $childPid -ErrorAction SilentlyContinue;"
+        "if($null -ne $child){$child.Kill();$child.Dispose()};$launcher.Dispose()}"
+    )
+
+    result = _run_ps(command, timeout=30)
+
+    assert result.returncode == 0, result.stderr
+    assert "EXITED_ROOT_REJECTED" in result.stdout
+
+
+def test_process_tree_snapshot_rejects_wrong_root_start_tick_without_killing() -> None:
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_quote(DRIVER_MODULE)}' -Force;"
+        "$hostPath=(Get-Process -Id $PID).Path;"
+        "$root=Start-Process -FilePath $hostPath -ArgumentList @("
+        "'-NoLogo','-NoProfile','-NonInteractive','-Command',"
+        "'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru;"
+        "try{$valid=New-W4ProcessTreeIdentitySnapshot -Process $root;"
+        "$forged=[pscustomobject]@{RootProcessId=$valid.RootProcessId;"
+        "RootStartTimeUtcTicks=([int64]$valid.RootStartTimeUtcTicks+1);"
+        "Identities=$valid.Identities};$rejected=$false;"
+        "try{Stop-W4ProcessTree -Process $root -IdentitySnapshot $forged}catch{"
+        "$rejected=$_.Exception.Message -like '*does not bind the supplied root*'};"
+        "if(-not $rejected){throw 'wrong root start tick was accepted'};"
+        "if($root.HasExited){throw 'wrong root identity killed the live process'};"
+        "Stop-W4ProcessTree -Process $root -IdentitySnapshot $valid;"
+        "'REUSED_PID_IDENTITY_REJECTED'}finally{"
+        "if(-not $root.HasExited){$root.Kill()};$root.Dispose()}"
+    )
+
+    result = _run_ps(command, timeout=30)
+
+    assert result.returncode == 0, result.stderr
+    assert "REUSED_PID_IDENTITY_REJECTED" in result.stdout
+
+
 def test_scenario_cleanup_removes_only_exact_install_root(tmp_path: Path) -> None:
     workspace = tmp_path / "scenario-workspace"
     install = (
@@ -214,6 +364,158 @@ def test_scenario_cleanup_removes_only_exact_install_root(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stderr
     assert "INSTALL_CLEANUP_OK" in result.stdout
     assert sentinel.is_file()
+
+
+def test_known_windows_cache_cleanup_unlinks_only_exact_mount_point(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "scenario-workspace"
+    evidence = tmp_path / "scenario-evidence"
+    cache_root = (
+        workspace
+        / "profile"
+        / "AppData"
+        / "Local"
+        / "Microsoft"
+        / "Windows"
+        / "INetCache"
+    )
+    target = cache_root / "IE"
+    target.mkdir(parents=True)
+    evidence.mkdir()
+    sentinel = target / "container.dat"
+    sentinel.write_bytes(b"known-cache-target\n")
+    junction = cache_root / "Content.IE5"
+    _create_junction(junction, target)
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_quote(DRIVER_MODULE)}' -Force;"
+        f"$module=Import-Module '{_ps_quote(SCENARIO_MODULE)}' -Force -PassThru;"
+        "$context=[pscustomobject]@{"
+        f"Workspace='{_ps_quote(workspace)}';Evidence='{_ps_quote(evidence)}'"
+        "};& $module {param($context) Remove-W4KnownWindowsInternetCacheJunction "
+        "-ScenarioContext $context} $context;'CACHE_JUNCTION_OK'"
+    )
+
+    result = _run_ps(command)
+
+    assert result.returncode == 0, result.stderr
+    assert "CACHE_JUNCTION_OK" in result.stdout
+    assert not junction.exists()
+    assert sentinel.read_bytes() == b"known-cache-target\n"
+    record = json.loads((evidence / "windows-cache-cleanup.json").read_text("utf-8"))
+    assert record == {
+        "schema_version": "pkv.m13.w4-windows-cache-cleanup.v1",
+        "status": "removed_known_junction",
+        "alias_relative_path": (
+            "profile/AppData/Local/Microsoft/Windows/INetCache/Content.IE5"
+        ),
+        "target_relative_path": "profile/AppData/Local/Microsoft/Windows/INetCache/IE",
+        "reparse_tag": "0xa0000003",
+        "substitute_name": "\\??\\" + str(target),
+        "target_preserved": True,
+        "cache_tree_sha256_after": record["cache_tree_sha256_after"],
+    }
+    assert len(record["cache_tree_sha256_after"]) == 64
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_status"),
+    [("absent", "already_absent"), ("ordinary", "ordinary_directory_preserved")],
+)
+def test_known_windows_cache_cleanup_preserves_safe_nonjunction_states(
+    tmp_path: Path,
+    mode: str,
+    expected_status: str,
+) -> None:
+    workspace = tmp_path / "scenario-workspace"
+    evidence = tmp_path / "scenario-evidence"
+    cache_root = (
+        workspace
+        / "profile"
+        / "AppData"
+        / "Local"
+        / "Microsoft"
+        / "Windows"
+        / "INetCache"
+    )
+    evidence.mkdir()
+    sentinel: Path | None = None
+    if mode == "ordinary":
+        ordinary = cache_root / "Content.IE5"
+        ordinary.mkdir(parents=True)
+        sentinel = ordinary / "preserve.txt"
+        sentinel.write_text("preserve\n", encoding="utf-8")
+    else:
+        (workspace / "profile").mkdir(parents=True)
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_quote(DRIVER_MODULE)}' -Force;"
+        f"$module=Import-Module '{_ps_quote(SCENARIO_MODULE)}' -Force -PassThru;"
+        "$context=[pscustomobject]@{"
+        f"Workspace='{_ps_quote(workspace)}';Evidence='{_ps_quote(evidence)}'"
+        "};& $module {param($context) Remove-W4KnownWindowsInternetCacheJunction "
+        "-ScenarioContext $context} $context"
+    )
+
+    result = _run_ps(command)
+
+    assert result.returncode == 0, result.stderr
+    record = json.loads((evidence / "windows-cache-cleanup.json").read_text("utf-8"))
+    assert record["status"] == expected_status
+    assert record["reparse_tag"] is None
+    assert record["substitute_name"] is None
+    if sentinel is not None:
+        assert sentinel.read_text(encoding="utf-8") == "preserve\n"
+
+
+@pytest.mark.parametrize("target_kind", ["wrong-sibling", "outside-profile"])
+def test_known_windows_cache_cleanup_rejects_wrong_or_external_target(
+    tmp_path: Path,
+    target_kind: str,
+) -> None:
+    workspace = tmp_path / "scenario-workspace"
+    evidence = tmp_path / "scenario-evidence"
+    cache_root = (
+        workspace
+        / "profile"
+        / "AppData"
+        / "Local"
+        / "Microsoft"
+        / "Windows"
+        / "INetCache"
+    )
+    expected_target = cache_root / "IE"
+    expected_target.mkdir(parents=True)
+    evidence.mkdir()
+    target = (
+        cache_root / "Unexpected"
+        if target_kind == "wrong-sibling"
+        else tmp_path / "outside-cache-target"
+    )
+    target.mkdir(parents=True)
+    sentinel = target / "preserve.txt"
+    sentinel.write_text("preserve\n", encoding="utf-8")
+    junction = cache_root / "Content.IE5"
+    _create_junction(junction, target)
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_quote(DRIVER_MODULE)}' -Force;"
+        f"$module=Import-Module '{_ps_quote(SCENARIO_MODULE)}' -Force -PassThru;"
+        "$context=[pscustomobject]@{"
+        f"Workspace='{_ps_quote(workspace)}';Evidence='{_ps_quote(evidence)}'"
+        "};& $module {param($context) Remove-W4KnownWindowsInternetCacheJunction "
+        "-ScenarioContext $context} $context"
+    )
+    try:
+        result = _run_ps(command)
+        assert result.returncode != 0
+        assert "not the exact sibling IE directory" in result.stderr
+        assert junction.exists()
+        assert sentinel.read_text(encoding="utf-8") == "preserve\n"
+        assert not (evidence / "windows-cache-cleanup.json").exists()
+    finally:
+        _remove_junction(junction)
 
 
 def test_semantic_fixture_manifest_cannot_escape_bundle_or_target(tmp_path: Path) -> None:
@@ -319,6 +621,13 @@ def test_controller_statically_requires_disk_preflight_and_finally_cleanup() -> 
     assert "Assert-SafeTree -Root $resolvedEvidence" in outer_text
     assert "Assert-SafeTree -Root $resolvedWorkspace" in outer_text
     assert "W4 launcher evidence root escaped its mutable authority" in outer_text
+    assert "FSCTL_GET_REPARSE_POINT" in driver_text
+    assert "CreateToolhelp32Snapshot" in driver_text
+    assert "function Remove-W4KnownWindowsInternetCacheJunction" in scenario_text
+    assert "Remove-W4KnownWindowsInternetCacheJunction -ScenarioContext $context" in scenario_text
+    assert "[System.IO.Directory]::Delete($junctionPath, $false)" in scenario_text
+    assert "Content.IE5" not in outer_text
+    assert "Content.IE5" not in CONTROLLER.read_text(encoding="utf-8")
 
 
 def test_runtime_safety_evidence_schema_is_json_serializable() -> None:
