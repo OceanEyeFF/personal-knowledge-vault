@@ -3432,6 +3432,60 @@ function Select-W4FirstListItem {
     return $item
 }
 
+function Get-W4UiaSelectionProof {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Automation.AutomationElement]$Root,
+        [Parameter(Mandatory = $true)][System.Windows.Automation.AutomationElement]$Item
+    )
+
+    $containerPattern = $null
+    if (-not $Root.TryGetCurrentPattern(
+        [System.Windows.Automation.SelectionPattern]::Pattern,
+        [ref]$containerPattern
+    )) {
+        throw "UIA selection container does not support SelectionPattern: $($Root.Current.AutomationId)"
+    }
+    $itemPattern = $null
+    if (-not $Item.TryGetCurrentPattern(
+        [System.Windows.Automation.SelectionItemPattern]::Pattern,
+        [ref]$itemPattern
+    )) {
+        throw 'Selected UIA ListItem no longer supports SelectionItemPattern'
+    }
+    if (-not ([System.Windows.Automation.SelectionItemPattern]$itemPattern).Current.IsSelected) {
+        throw 'Selected UIA ListItem did not remain selected after SelectionItemPattern.Select'
+    }
+
+    $currentSelection = @(
+        ([System.Windows.Automation.SelectionPattern]$containerPattern).GetCurrentSelection()
+    )
+    if ($currentSelection.Count -ne 1) {
+        throw "UIA selection container must expose exactly one selected item; count=$($currentSelection.Count)"
+    }
+    $expectedRuntimeId = @($Item.GetRuntimeId())
+    $actualRuntimeId = @($currentSelection[0].GetRuntimeId())
+    if ($expectedRuntimeId.Count -eq 0 -or
+        $expectedRuntimeId.Count -ne $actualRuntimeId.Count) {
+        throw 'UIA selected item did not expose a stable matching RuntimeId'
+    }
+    for ($index = 0; $index -lt $expectedRuntimeId.Count; $index += 1) {
+        if ([int]$expectedRuntimeId[$index] -ne [int]$actualRuntimeId[$index]) {
+            throw 'UIA container selection does not match the item selected by the driver'
+        }
+    }
+
+    return [ordered]@{
+        schema_version = 'pkv.w4.uia-selection-proof.v1'
+        container_automation_id = [string]$Root.Current.AutomationId
+        selected_control_type = [string]$Item.Current.ControlType.ProgrammaticName
+        selected_name = [string]$Item.Current.Name
+        selected_runtime_id = @($expectedRuntimeId)
+        selection_count = 1
+        selection_item_is_selected = $true
+    }
+}
+
 function Assert-W4UiaContractSegment {
     [CmdletBinding()]
     param(
@@ -3450,7 +3504,7 @@ function Assert-W4UiaContractSegment {
     )
     $selectionIds = @(
         'nav_list', 'browser_entry_table', 'search_result_table',
-        'archive_tabs', 'session_list'
+        'session_list'
     )
     $expandCollapseIds = @('search_strategy')
     $records = [System.Collections.Generic.List[object]]::new()
@@ -3507,6 +3561,50 @@ function Assert-W4UiaContractSegment {
     Write-W4JsonFile -Path (Join-Path $Gui.Evidence $EvidenceName) -Value @($records)
 }
 
+function Assert-W4UiaAutomationIdsAbsent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Gui,
+        [Parameter(Mandatory = $true)][string[]]$AutomationIds,
+        [Parameter(Mandatory = $true)][string]$EvidenceName,
+        [ValidateRange(1, 30)][int]$TimeoutSeconds = 10
+    )
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($automationId in $AutomationIds) {
+        if ([string]::IsNullOrWhiteSpace($automationId) -or -not $seen.Add($automationId)) {
+            throw "UIA absence proof contains an empty or duplicate AutomationId: $automationId"
+        }
+        $condition = [System.Windows.Automation.PropertyCondition]::new(
+            [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+            $automationId
+        )
+        $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        do {
+            $elements = $Gui.Window.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                $condition
+            )
+            if ($elements.Count -eq 0) {
+                break
+            }
+            Start-Sleep -Milliseconds 50
+        } while ([DateTime]::UtcNow -lt $deadline)
+        if ($elements.Count -ne 0) {
+            throw "UIA AutomationId remained visible after its terminal state: $automationId count=$($elements.Count)"
+        }
+    }
+    Write-W4JsonFile -Path (Join-Path $Gui.Evidence $EvidenceName) `
+        -Value ([ordered]@{
+            schema_version = 'pkv.w4.uia-absence-proof.v1'
+            process_id = [int]$Gui.Process.Id
+            automation_ids = @($AutomationIds)
+            exact_zero = $true
+        })
+}
+
 function Wait-W4UiaTextContains {
     [CmdletBinding()]
     param(
@@ -3527,13 +3625,62 @@ function Wait-W4UiaTextContains {
     throw "UIA text did not contain expected text. expected=$Text actual=$actual"
 }
 
+function Wait-W4FreshUiaTextByIdContains {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Automation.AutomationElement]$Root,
+        [Parameter(Mandatory = $true)][string]$AutomationId,
+        [Parameter(Mandatory = $true)][string]$Text,
+        [ValidateRange(1, 180)][int]$TimeoutSeconds = 30
+    )
+
+    $condition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+        $AutomationId
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $actual = ''
+    do {
+        $matches = $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+        if ($matches.Count -gt 1) {
+            throw "AutomationId must remain unique while waiting for fresh text: $AutomationId count=$($matches.Count)"
+        }
+        if ($matches.Count -eq 1) {
+            try {
+                $actual = Get-W4UiaText -Element $matches.Item(0)
+                if ($actual.IndexOf($Text, [System.StringComparison]::Ordinal) -ge 0) {
+                    return $actual
+                }
+            } catch [System.Windows.Automation.ElementNotAvailableException] {
+                $actual = ''
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Fresh UIA text did not contain expected text. automation_id=$AutomationId expected=$Text actual=$actual"
+}
+
 function Dismiss-W4ProcessModal {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][int]$ProcessId,
-        [ValidateRange(1, 30)][int]$TimeoutSeconds = 10,
-        [switch]$AllowAbsent
+        [Parameter(Mandatory = $true)][System.Windows.Automation.AutomationElement]$MainWindow,
+        [Parameter(Mandatory = $true)][string]$ExpectedTitle,
+        [ValidateRange(1, 30)][int]$TimeoutSeconds = 10
     )
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedTitle)) {
+        throw 'Expected modal title must be non-empty'
+    }
+    if ([int]$MainWindow.Current.ProcessId -ne $ProcessId -or
+        [string]$MainWindow.Current.AutomationId -cne 'pkv_main_window' -or
+        $MainWindow.Current.ControlType -ne [System.Windows.Automation.ControlType]::Window) {
+        throw 'Expected modal main-window identity is not exact'
+    }
+    $mainWindowRuntimeId = @($MainWindow.GetRuntimeId())
+    if ($mainWindowRuntimeId.Count -eq 0) {
+        throw 'Expected modal main-window RuntimeId is empty'
+    }
 
     $desktop = [System.Windows.Automation.AutomationElement]::RootElement
     $pidCondition = [System.Windows.Automation.PropertyCondition]::new(
@@ -3544,36 +3691,219 @@ function Dismiss-W4ProcessModal {
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::Button
     )
+    $windowType = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Window
+    )
+    $processWindowCondition = [System.Windows.Automation.AndCondition]::new(
+        $pidCondition,
+        $windowType
+    )
+    $processButtonCondition = [System.Windows.Automation.AndCondition]::new(
+        $pidCondition,
+        $buttonType
+    )
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $sawProcessModal = $false
     do {
-        $windows = $desktop.FindAll([System.Windows.Automation.TreeScope]::Children, $pidCondition)
+        $windows = $desktop.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            $processWindowCondition
+        )
+        $processModals = @()
         for ($windowIndex = 0; $windowIndex -lt $windows.Count; $windowIndex += 1) {
             $window = $windows.Item($windowIndex)
-            if ([string]$window.Current.AutomationId -eq 'pkv_main_window') {
-                continue
-            }
-            $buttons = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $buttonType)
-            $accepted = @()
-            for ($buttonIndex = 0; $buttonIndex -lt $buttons.Count; $buttonIndex += 1) {
-                $button = $buttons.Item($buttonIndex)
-                if (@('OK', '确定') -contains [string]$button.Current.Name) {
-                    $accepted += $button
+            $windowRuntimeId = @($window.GetRuntimeId())
+            $isMainWindow = $windowRuntimeId.Count -eq $mainWindowRuntimeId.Count
+            if ($isMainWindow) {
+                for ($runtimeIndex = 0; $runtimeIndex -lt $mainWindowRuntimeId.Count; $runtimeIndex += 1) {
+                    if ([int]$windowRuntimeId[$runtimeIndex] -ne
+                        [int]$mainWindowRuntimeId[$runtimeIndex]) {
+                        $isMainWindow = $false
+                        break
+                    }
                 }
             }
-            if ($accepted.Count -eq 1) {
-                Invoke-W4UiaElement -Element $accepted[0]
-                return $true
+            if ($isMainWindow) {
+                continue
             }
-            if ($accepted.Count -gt 1) {
-                throw 'Modal contains more than one exact OK/确定 button'
+            $processModals += $window
+        }
+        if ($processModals.Count -gt 1) {
+            throw "More than one non-main process window appeared for PID $ProcessId"
+        }
+        if ($processModals.Count -eq 1) {
+            $sawProcessModal = $true
+            $modal = $processModals[0]
+            if ($modal.Current.ControlType -ne [System.Windows.Automation.ControlType]::Window) {
+                throw "Non-main process element is not a UIA Window for PID $ProcessId"
+            }
+            $actualTitle = [string]$modal.Current.Name
+            if ($actualTitle -cne $ExpectedTitle) {
+                throw "Unexpected process modal title for PID ${ProcessId}: $actualTitle"
+            }
+            if ([bool]$modal.Current.IsOffscreen) {
+                throw "Expected process modal is offscreen: $ExpectedTitle"
+            }
+            $windowPattern = $null
+            if (-not $modal.TryGetCurrentPattern(
+                    [System.Windows.Automation.WindowPattern]::Pattern,
+                    [ref]$windowPattern
+                )) {
+                throw "Expected process modal does not expose WindowPattern: $ExpectedTitle"
+            }
+            if (-not ([System.Windows.Automation.WindowPattern]$windowPattern).Current.IsModal) {
+                throw "Expected process window is not modal: $ExpectedTitle"
+            }
+            $buttons = $modal.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                $processButtonCondition
+            )
+            if ($buttons.Count -gt 1) {
+                throw "Expected process modal contains more than one UIA Button: $ExpectedTitle"
+            }
+            if ($buttons.Count -eq 1) {
+                $button = $buttons.Item(0)
+                if ([int]$button.Current.ProcessId -ne $ProcessId -or
+                    [bool]$button.Current.IsOffscreen -or
+                    -not [bool]$button.Current.IsEnabled -or
+                    -not (@('OK', '确定') -ccontains [string]$button.Current.Name)) {
+                    throw "Expected process modal has an unexpected button: $($button.Current.Name)"
+                }
+                $invokePattern = $null
+                if (-not $button.TryGetCurrentPattern(
+                        [System.Windows.Automation.InvokePattern]::Pattern,
+                        [ref]$invokePattern
+                    )) {
+                    throw "Expected process modal button does not expose InvokePattern: $ExpectedTitle"
+                }
+                $dismissedModalRuntimeId = @($modal.GetRuntimeId())
+                if ($dismissedModalRuntimeId.Count -eq 0) {
+                    throw "Expected process modal RuntimeId is empty: $ExpectedTitle"
+                }
+                ([System.Windows.Automation.InvokePattern]$invokePattern).Invoke()
+                do {
+                    $remainingWindows = $desktop.FindAll(
+                        [System.Windows.Automation.TreeScope]::Descendants,
+                        $processWindowCondition
+                    )
+                    $remainingNonMain = @()
+                    for ($remainingIndex = 0; $remainingIndex -lt $remainingWindows.Count; $remainingIndex += 1) {
+                        $remainingWindow = $remainingWindows.Item($remainingIndex)
+                        $remainingRuntimeId = @($remainingWindow.GetRuntimeId())
+                        $remainingIsMain = $remainingRuntimeId.Count -eq $mainWindowRuntimeId.Count
+                        if ($remainingIsMain) {
+                            for ($runtimeIndex = 0; $runtimeIndex -lt $mainWindowRuntimeId.Count; $runtimeIndex += 1) {
+                                if ([int]$remainingRuntimeId[$runtimeIndex] -ne
+                                    [int]$mainWindowRuntimeId[$runtimeIndex]) {
+                                    $remainingIsMain = $false
+                                    break
+                                }
+                            }
+                        }
+                        if (-not $remainingIsMain) {
+                            $remainingNonMain += [pscustomobject]@{
+                                Element = $remainingWindow
+                                RuntimeId = $remainingRuntimeId
+                            }
+                        }
+                    }
+                    if ($remainingNonMain.Count -eq 0) {
+                        return $true
+                    }
+                    if ($remainingNonMain.Count -gt 1) {
+                        throw "Modal dismissal left ambiguous non-main process windows for PID $ProcessId"
+                    }
+                    $remainingId = @($remainingNonMain[0].RuntimeId)
+                    $sameDismissedModal = $remainingId.Count -eq $dismissedModalRuntimeId.Count
+                    if ($sameDismissedModal) {
+                        for ($runtimeIndex = 0; $runtimeIndex -lt $dismissedModalRuntimeId.Count; $runtimeIndex += 1) {
+                            if ([int]$remainingId[$runtimeIndex] -ne
+                                [int]$dismissedModalRuntimeId[$runtimeIndex]) {
+                                $sameDismissedModal = $false
+                                break
+                            }
+                        }
+                    }
+                    if (-not $sameDismissedModal) {
+                        throw "Modal dismissal produced a replacement process window for PID $ProcessId"
+                    }
+                    Start-Sleep -Milliseconds 50
+                } while ([DateTime]::UtcNow -lt $deadline)
+                throw "Expected process modal remained after InvokePattern: $ExpectedTitle"
             }
         }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
-    if ($AllowAbsent) {
-        return $false
+    if ($sawProcessModal) {
+        throw "Expected process modal did not expose one exact OK/确定 Invoke button: $ExpectedTitle"
     }
-    throw "No process modal with exact OK/确定 button appeared for PID $ProcessId"
+    throw "No process modal with exact title appeared for PID ${ProcessId}: $ExpectedTitle"
+}
+
+function Read-W4BoundedHttpRequestLine {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Net.Sockets.TcpClient]$Client,
+        [ValidateRange(100, 10000)][int]$TimeoutMilliseconds = 5000,
+        [ValidateRange(64, 4096)][int]$MaxBytes = 2048
+    )
+
+    $stream = $Client.GetStream()
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $bytes = [System.Collections.Generic.List[byte]]::new()
+    $terminated = $false
+    for ($index = 0; $index -lt $MaxBytes; $index += 1) {
+        $remaining = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+        if ($remaining -le 0) {
+            throw 'Gated Provider request-line deadline expired'
+        }
+        $stream.ReadTimeout = [Math]::Max(1, [Math]::Min($remaining, $TimeoutMilliseconds))
+        try {
+            $value = $stream.ReadByte()
+        } catch [System.IO.IOException] {
+            throw 'Gated Provider request-line read failed before the absolute deadline'
+        }
+        if ($value -lt 0) {
+            throw 'Gated Provider closed before sending an HTTP request line'
+        }
+        if ($value -eq 13) {
+            $remaining = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+            if ($remaining -le 0) {
+                throw 'Gated Provider request-line deadline expired before CRLF'
+            }
+            $stream.ReadTimeout = [Math]::Max(1, [Math]::Min($remaining, $TimeoutMilliseconds))
+            try {
+                $lineFeed = $stream.ReadByte()
+            } catch [System.IO.IOException] {
+                throw 'Gated Provider request-line CRLF read failed before the absolute deadline'
+            }
+            if ($lineFeed -ne 10) {
+                throw 'Gated Provider request line did not use exact CRLF framing'
+            }
+            $terminated = $true
+            break
+        }
+        if ($value -eq 10 -or $value -lt 32 -or $value -gt 126) {
+            throw 'Gated Provider request line contains invalid ASCII framing'
+        }
+        $bytes.Add([byte]$value)
+    }
+    if (-not $terminated) {
+        throw "Gated Provider request line exceeded $MaxBytes bytes"
+    }
+    return [System.Text.Encoding]::ASCII.GetString($bytes.ToArray())
+}
+
+function Assert-W4GatedProviderRequestLine {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$RequestLine)
+
+    if ($RequestLine -cne 'POST /v1/chat/completions HTTP/1.1') {
+        # The caller's raw request line is untrusted and may contain sensitive
+        # query material. Keep the exception/failure evidence classification-only.
+        throw 'Offline archive Provider request-line contract mismatch'
+    }
 }
 
 function Invoke-W4OfflineTextArchiveScenario {
@@ -3589,57 +3919,175 @@ function Invoke-W4OfflineTextArchiveScenario {
         [System.Text.Encoding]::UTF8
     ).Trim()
     $title = 'W4 合成离线知识条目'
-    $gui = Start-W4GuiApplication -ScenarioContext $ScenarioContext -EvidenceName 'gui-archive'
-    $closed = $false
+    $providerGate = [System.Net.Sockets.TcpListener]::new(
+        [System.Net.IPAddress]::Parse('127.0.0.1'),
+        0
+    )
+    $providerGateClient = $null
+    $providerGate.Start(1)
     try {
-        Select-W4NavigationItem -Gui $gui -Name '归档'
-        $tabs = Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_tabs'
-        [void](Select-W4UiaItemByName -Root $tabs -Name '文本归档')
-        Set-W4UiaValue -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_text_title') -Value $title
-        Set-W4UiaValue -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_text_content') -Value $note
-        Invoke-W4UiaElement -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_text_submit')
-        $resultTitle = Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_title'
-        [void](Wait-W4UiaTextContains -Element $resultTitle -Text '归档成功（降级）' -TimeoutSeconds 90)
-        $modalDismissed = [bool](Dismiss-W4ProcessModal -ProcessId $gui.Process.Id `
-            -TimeoutSeconds 2 -AllowAbsent)
-        Write-W4JsonFile -Path (Join-Path $gui.Evidence 'archive-modal-observation.json') `
-            -Value ([ordered]@{
-                schema_version = 'pkv.w4.optional-modal-observation.v1'
-                exact_ok_button_dismissed = $modalDismissed
-            })
-        $warning = Get-W4UiaText -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_warning')
-        if ([string]::IsNullOrWhiteSpace($warning) -or $warning -notmatch 'provider') {
-            throw "Offline archive did not expose a truthful Provider degraded warning: $warning"
+        $providerGatePort = ([System.Net.IPEndPoint]$providerGate.LocalEndpoint).Port
+        Write-W4ChatLocalConfig -ScenarioContext $ScenarioContext `
+            -BaseUrl "http://127.0.0.1:$providerGatePort/v1"
+        $gui = Start-W4GuiApplication -ScenarioContext $ScenarioContext -EvidenceName 'gui-archive'
+        $closed = $false
+        try {
+            Select-W4NavigationItem -Gui $gui -Name '归档'
+            Assert-W4UiaContractSegment -Gui $gui -AutomationIds @(
+                'archive_view', 'archive_tabs', 'archive_url_input', 'archive_url_submit'
+            ) -EvidenceName 'uia-contract-archive-url-default.json'
+            $tabs = Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_tabs'
+            [void](Select-W4UiaItemByName -Root $tabs -Name '文本归档')
+            Assert-W4UiaContractSegment -Gui $gui -AutomationIds @(
+                'archive_view', 'archive_tabs', 'archive_text_title',
+                'archive_text_content', 'archive_text_submit'
+            ) -EvidenceName 'uia-contract-archive-text-active.json'
+            Set-W4UiaValue -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_text_title') -Value $title
+            Set-W4UiaValue -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_text_content') -Value $note
+            $textSubmit = Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_text_submit'
+            $providerAcceptTask = $providerGate.AcceptTcpClientAsync()
+            Invoke-W4UiaElement -Element $textSubmit
+
+            # The loopback listener deliberately withholds an HTTP response.
+            # An accepted, validated request is an external causal barrier: the
+            # worker cannot reach its degraded terminal before this UIA proof.
+            if (-not $providerAcceptTask.Wait(20000)) {
+                throw 'Offline archive did not reach the gated loopback Provider within 20 seconds'
+            }
+            $providerGateClient = $providerAcceptTask.GetAwaiter().GetResult()
+            $providerPeer = [System.Net.IPEndPoint]$providerGateClient.Client.RemoteEndPoint
+            if (-not [System.Net.IPAddress]::IsLoopback($providerPeer.Address)) {
+                throw "Offline archive Provider gate accepted a non-loopback peer: $($providerPeer.Address)"
+            }
+            $providerOwner = Assert-W4TcpClientOwnedByProcess `
+                -Client $providerGateClient `
+                -ExpectedServerEndpoint ([System.Net.IPEndPoint]$providerGate.LocalEndpoint) `
+                -Process $gui.Process -TimeoutMilliseconds 2000
+            if (-not [bool]$providerOwner.OwnerVerified -or
+                [int]$providerOwner.OwnerProcessId -ne [int]$gui.Process.Id) {
+                throw 'Offline archive Provider gate TCP owner evidence was not exact'
+            }
+            $requestLine = Read-W4BoundedHttpRequestLine -Client $providerGateClient `
+                -TimeoutMilliseconds 5000 -MaxBytes 2048
+            Assert-W4GatedProviderRequestLine -RequestLine $requestLine
+            $progressStatus = Get-W4UiaElementById -Root $gui.Window `
+                -AutomationId 'archive_progress_status'
+            $progressText = Get-W4UiaText -Element $progressStatus
+            if ([int]$progressStatus.Current.ProcessId -ne [int]$gui.Process.Id -or
+                [bool]$progressStatus.Current.IsOffscreen -or
+                [string]::IsNullOrWhiteSpace($progressText)) {
+                throw 'Offline archive running state was not visibly exposed through fresh UIA'
+            }
+            [void](Wait-W4UiaElementEnabledState -Root $gui.Window `
+                -AutomationId 'archive_text_submit' -Expected $false -TimeoutSeconds 10)
+            [void](Select-W4UiaItemByName -Root $tabs -Name 'URL 归档')
+            [void](Wait-W4UiaElementEnabledState -Root $gui.Window `
+                -AutomationId 'archive_url_submit' -Expected $false -TimeoutSeconds 10)
+            [void](Select-W4UiaItemByName -Root $tabs -Name '文本归档')
+            [void](Wait-W4UiaElementEnabledState -Root $gui.Window `
+                -AutomationId 'archive_text_submit' -Expected $false -TimeoutSeconds 10)
+            Assert-W4UiaContractSegment -Gui $gui -AutomationIds @(
+                'archive_view', 'archive_progress_status'
+            ) -EvidenceName 'uia-contract-archive-running.json'
+            $providerGateClient.Dispose()
+            $providerGateClient = $null
+            $providerGate.Stop()
+
+            $resultTitle = Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_title'
+            [void](Wait-W4UiaTextContains -Element $resultTitle -Text '归档成功（降级）' -TimeoutSeconds 90)
+            $modalDismissed = [bool](Dismiss-W4ProcessModal -ProcessId $gui.Process.Id `
+                -MainWindow $gui.Window -ExpectedTitle '归档降级警告' -TimeoutSeconds 10)
+            Write-W4JsonFile -Path (Join-Path $gui.Evidence 'archive-modal-observation.json') `
+                -Value ([ordered]@{
+                    schema_version = 'pkv.w4.required-modal-observation.v1'
+                    expected_title = '归档降级警告'
+                    is_modal = $true
+                    modal_visible = $true
+                    action_visible = $true
+                    action_enabled = $true
+                    exact_ok_button_dismissed = $modalDismissed
+                    unrecognized_process_window_accepted = $false
+                })
+            Assert-W4UiaAutomationIdsAbsent -Gui $gui `
+                -AutomationIds @('archive_progress_status') `
+                -EvidenceName 'uia-absence-archive-terminal.json'
+            [void](Wait-W4UiaElementEnabledState -Root $gui.Window `
+                -AutomationId 'archive_text_submit' -Expected $true -TimeoutSeconds 10)
+            [void](Select-W4UiaItemByName -Root $tabs -Name 'URL 归档')
+            [void](Wait-W4UiaElementEnabledState -Root $gui.Window `
+                -AutomationId 'archive_url_submit' -Expected $true -TimeoutSeconds 10)
+            [void](Select-W4UiaItemByName -Root $tabs -Name '文本归档')
+            [void](Wait-W4UiaElementEnabledState -Root $gui.Window `
+                -AutomationId 'archive_text_submit' -Expected $true -TimeoutSeconds 10)
+            Write-W4JsonFile -Path (Join-Path $gui.Evidence 'archive-provider-gate.json') `
+                -Value ([ordered]@{
+                    schema_version = 'pkv.w4.archive-provider-gate.v1'
+                    host = '127.0.0.1'
+                    port = [int]$providerGatePort
+                    accept_timeout_milliseconds = 20000
+                    request_line_timeout_milliseconds = 5000
+                    request_method = 'POST'
+                    request_path = '/v1/chat/completions'
+                    request_http_version = 'HTTP/1.1'
+                    request_line_validated = $true
+                    peer_loopback = $true
+                    tcp_owner_verified = $true
+                    tcp_owner_pid = [int]$providerOwner.OwnerProcessId
+                    progress_visible = $true
+                    progress_text_nonempty = $true
+                    submits_disabled_while_running = $true
+                    submits_enabled_after_terminal = $true
+                    release_action = 'close_without_response'
+                    induced_workflow_issue_code = 'workflow_step_failed'
+                })
+            $warning = Get-W4UiaText -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_warning')
+            $workflowWarning = '部分可选工作流步骤未完成（问题代码: workflow_step_failed）。'
+            if ([string]::IsNullOrWhiteSpace($warning) -or
+                -not $warning.StartsWith(
+                    '核心归档已完成，但本次结果处于降级状态。',
+                    [System.StringComparison]::Ordinal
+                ) -or
+                $warning.IndexOf($workflowWarning, [System.StringComparison]::Ordinal) -lt 0 -or
+                -not $warning.EndsWith(
+                    '请勿盲目重试归档。',
+                    [System.StringComparison]::Ordinal
+                )) {
+                throw "Offline archive did not expose the stable gated workflow issue code: $warning"
+            }
+            $idText = Get-W4UiaText -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_id')
+            $pathText = Get-W4UiaText -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_path')
+            if ($idText -notmatch '^ID:\s*\d+$') {
+                throw "Archive result did not expose a durable knowledge ID: $idText"
+            }
+            if ($pathText -notmatch '^文件:\s*(.+)$') {
+                throw "Archive result did not expose a durable file path: $pathText"
+            }
+            $savedPath = [System.IO.Path]::GetFullPath($Matches[1])
+            if (-not (Test-W4PathContainedBy -Candidate $savedPath -Root $ScenarioContext.UserDataRoot) -or
+                -not (Test-Path -LiteralPath $savedPath -PathType Leaf)) {
+                throw "Archive result path is not a persisted file under the synthetic user root: $savedPath"
+            }
+            Assert-W4UiaContractSegment -Gui $gui -AutomationIds @(
+                'archive_view', 'archive_tabs', 'archive_result_title',
+                'archive_result_id', 'archive_result_path', 'archive_result_warning',
+                'archive_go_browser'
+            ) -EvidenceName 'uia-contract-archive-result.json'
+            Save-W4Screenshot -Path (Join-Path $gui.Evidence 'archive-result.png') `
+                -Element $gui.Window -ProcessId $gui.Process.Id
+            [void](Stop-W4GuiApplication -Gui $gui)
+            $closed = $true
+        } finally {
+            if (-not $closed) {
+                Stop-W4ProcessTree -Process $gui.Process `
+                    -IdentitySnapshot $gui.ProcessTreeSnapshot
+                $gui.Process.Dispose()
+            }
         }
-        $idText = Get-W4UiaText -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_id')
-        $pathText = Get-W4UiaText -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_path')
-        if ($idText -notmatch '^ID:\s*\d+$') {
-            throw "Archive result did not expose a durable knowledge ID: $idText"
-        }
-        if ($pathText -notmatch '^文件:\s*(.+)$') {
-            throw "Archive result did not expose a durable file path: $pathText"
-        }
-        $savedPath = [System.IO.Path]::GetFullPath($Matches[1])
-        if (-not (Test-W4PathContainedBy -Candidate $savedPath -Root $ScenarioContext.UserDataRoot) -or
-            -not (Test-Path -LiteralPath $savedPath -PathType Leaf)) {
-            throw "Archive result path is not a persisted file under the synthetic user root: $savedPath"
-        }
-        Assert-W4UiaContractSegment -Gui $gui -AutomationIds @(
-            'archive_view', 'archive_tabs', 'archive_url_input', 'archive_url_submit',
-            'archive_text_title', 'archive_text_content', 'archive_text_submit',
-            'archive_progress_status', 'archive_result_title', 'archive_result_id',
-            'archive_result_path', 'archive_result_warning', 'archive_go_browser'
-        ) -EvidenceName 'uia-contract-archive.json'
-        Save-W4Screenshot -Path (Join-Path $gui.Evidence 'archive-result.png') `
-            -Element $gui.Window -ProcessId $gui.Process.Id
-        [void](Stop-W4GuiApplication -Gui $gui)
-        $closed = $true
     } finally {
-        if (-not $closed) {
-            Stop-W4ProcessTree -Process $gui.Process `
-                -IdentitySnapshot $gui.ProcessTreeSnapshot
-            $gui.Process.Dispose()
+        if ($null -ne $providerGateClient) {
+            $providerGateClient.Dispose()
         }
+        $providerGate.Stop()
     }
 
     $restart = Start-W4GuiApplication -ScenarioContext $ScenarioContext -EvidenceName 'gui-restart'
@@ -3667,11 +4115,196 @@ function Invoke-W4OfflineTextArchiveScenario {
         knowledge_id = $idText.Substring(3).Trim()
         saved_path_sha256 = Get-W4FileSha256 -Path $savedPath
         degraded_warning = $warning
-        optional_modal_dismissed = $modalDismissed
+        workflow_issue_code = 'workflow_step_failed'
+        required_modal_dismissed = $modalDismissed
+        progress_state_observed = $true
         restart_opened_saved_entry = $true
     }
     Write-W4JsonFile -Path (Join-Path $ScenarioContext.Evidence 'oracle.json') -Value $oracle
     return $oracle
+}
+
+function Invoke-W4WithTemporarilyMissingFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string]$BackupPath,
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $source = [System.IO.Path]::GetFullPath($FilePath)
+    $backup = [System.IO.Path]::GetFullPath($BackupPath)
+    $unexpected = $backup + '.unexpected'
+    Assert-W4SafePathChain -Path $source -Label "$Label source"
+    Assert-W4SafePathChain -Path $backup -Label "$Label backup"
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        throw "$Label source is not a normal file: $source"
+    }
+    if ((Test-Path -LiteralPath $backup) -or (Test-Path -LiteralPath $unexpected)) {
+        throw "$Label backup or quarantine path already exists"
+    }
+    $expectedSha256 = Get-W4FileSha256 -Path $source
+    $unexpectedObserved = $false
+    try {
+        [System.IO.File]::Move($source, $backup)
+        return (& $Action)
+    } finally {
+        $sourceItem = Get-Item -LiteralPath $source -Force -ErrorAction SilentlyContinue
+        $backupItem = Get-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+        if ($null -ne $sourceItem -and $null -ne $backupItem) {
+            if ($sourceItem.PSIsContainer) {
+                [System.IO.Directory]::Move($source, $unexpected)
+            } else {
+                [System.IO.File]::Move($source, $unexpected)
+            }
+            $sourceItem = $null
+            $unexpectedObserved = $true
+        }
+        if ($null -ne $backupItem) {
+            if ($backupItem.PSIsContainer) {
+                throw "$Label backup unexpectedly became a directory"
+            }
+            [System.IO.File]::Move($backup, $source)
+        }
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
+            (Get-W4FileSha256 -Path $source) -cne $expectedSha256) {
+            throw "$Label did not restore the original synthetic file bytes"
+        }
+        if ($unexpectedObserved) {
+            throw "$Label produced an unexpected replacement while the original was gated"
+        }
+    }
+}
+
+function Wait-W4UiaElementEnabledState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Automation.AutomationElement]$Root,
+        [Parameter(Mandatory = $true)][string]$AutomationId,
+        [Parameter(Mandatory = $true)][bool]$Expected,
+        [ValidateRange(1, 30)][int]$TimeoutSeconds = 10
+    )
+
+    $condition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+        $AutomationId
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $actual = $null
+    do {
+        $elements = $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+        if ($elements.Count -gt 1) {
+            throw "AutomationId must remain unique while waiting for enabled state: $AutomationId count=$($elements.Count)"
+        }
+        if ($elements.Count -eq 1) {
+            $actual = [bool]$elements.Item(0).Current.IsEnabled
+            if ($actual -eq $Expected) {
+                return $elements.Item(0)
+            }
+        }
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "UIA element did not reach expected enabled state. automation_id=$AutomationId expected=$Expected actual=$actual"
+}
+
+function Wait-W4UiaSelectionCount {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Automation.AutomationElement]$Root,
+        [Parameter(Mandatory = $true)][string]$AutomationId,
+        [ValidateRange(0, 100)][int]$ExpectedCount,
+        [ValidateRange(1, 30)][int]$TimeoutSeconds = 10
+    )
+
+    $condition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+        $AutomationId
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $actualCount = $null
+    do {
+        $elements = $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+        if ($elements.Count -gt 1) {
+            throw "AutomationId must remain unique while waiting for selection count: $AutomationId count=$($elements.Count)"
+        }
+        if ($elements.Count -eq 1) {
+            $selectionPattern = $null
+            if (-not $elements.Item(0).TryGetCurrentPattern(
+                    [System.Windows.Automation.SelectionPattern]::Pattern,
+                    [ref]$selectionPattern
+                )) {
+                throw "UIA selection container does not expose SelectionPattern: $AutomationId"
+            }
+            $actualCount = @(
+                ([System.Windows.Automation.SelectionPattern]$selectionPattern).GetCurrentSelection()
+            ).Count
+            if ($actualCount -eq $ExpectedCount) {
+                return $elements.Item(0)
+            }
+        }
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "UIA selection count did not reach expected value. automation_id=$AutomationId expected=$ExpectedCount actual=$actualCount"
+}
+
+function Invoke-W4WithFilePathBlockedByDirectory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string]$BackupPath,
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $source = [System.IO.Path]::GetFullPath($FilePath)
+    $backup = [System.IO.Path]::GetFullPath($BackupPath)
+    $unexpected = $backup + '.unexpected'
+    Assert-W4SafePathChain -Path $source -Label "$Label source"
+    Assert-W4SafePathChain -Path $backup -Label "$Label backup"
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        throw "$Label source is not a normal file: $source"
+    }
+    if ((Test-Path -LiteralPath $backup) -or (Test-Path -LiteralPath $unexpected)) {
+        throw "$Label backup or quarantine path already exists"
+    }
+    $expectedSha256 = Get-W4FileSha256 -Path $source
+    $unexpectedObserved = $false
+    try {
+        [System.IO.File]::Move($source, $backup)
+        [void][System.IO.Directory]::CreateDirectory($source)
+        return (& $Action)
+    } finally {
+        $sourceItem = Get-Item -LiteralPath $source -Force -ErrorAction SilentlyContinue
+        $backupItem = Get-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+        if ($null -ne $sourceItem -and $sourceItem.PSIsContainer) {
+            $children = @(Get-ChildItem -LiteralPath $source -Force -ErrorAction Stop)
+            if ($children.Count -eq 0) {
+                [System.IO.Directory]::Delete($source, $false)
+            } else {
+                [System.IO.Directory]::Move($source, $unexpected)
+                $unexpectedObserved = $true
+            }
+            $sourceItem = $null
+        } elseif ($null -ne $sourceItem -and $null -ne $backupItem) {
+            [System.IO.File]::Move($source, $unexpected)
+            $sourceItem = $null
+            $unexpectedObserved = $true
+        }
+        if ($null -ne $backupItem) {
+            if ($backupItem.PSIsContainer) {
+                throw "$Label backup unexpectedly became a directory"
+            }
+            [System.IO.File]::Move($backup, $source)
+        }
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
+            (Get-W4FileSha256 -Path $source) -cne $expectedSha256) {
+            throw "$Label did not restore the original synthetic database bytes"
+        }
+        if ($unexpectedObserved) {
+            throw "$Label produced unexpected content inside the blocked database path"
+        }
+    }
 }
 
 function Invoke-W4Bm25SearchScenario {
@@ -3688,25 +4321,119 @@ function Invoke-W4Bm25SearchScenario {
     ).Trim()
     Invoke-W4McpSeedText -RunContext $RunContext -ScenarioContext $ScenarioContext `
         -Text $note -Title 'W4 BM25 合成条目'
+    $vaultRoot = [System.IO.Path]::GetFullPath(
+        (Join-Path $ScenarioContext.UserDataRoot 'vault')
+    )
+    Assert-W4SafePathChain -Path $vaultRoot -Label 'BM25 synthetic vault root'
+    $previewFiles = @(
+        Get-ChildItem -LiteralPath $vaultRoot -File -Recurse -Force -ErrorAction Stop |
+            Where-Object { [string]$_.Extension -ceq '.md' }
+    )
+    if ($previewFiles.Count -ne 1) {
+        throw "BM25 seed must create exactly one synthetic Markdown file; count=$($previewFiles.Count)"
+    }
+    $previewFile = [System.IO.Path]::GetFullPath($previewFiles[0].FullName)
+    if (-not (Test-W4PathContainedBy -Candidate $previewFile -Root $vaultRoot)) {
+        throw "BM25 preview fixture escaped the synthetic vault: $previewFile"
+    }
+    Assert-W4SafePathChain -Path $previewFile -Label 'BM25 synthetic Markdown preview'
+    $previewBackup = Join-Path $ScenarioContext.Workspace 'bm25-preview-source.w4-backup'
+    if (Test-Path -LiteralPath $previewBackup) {
+        throw "BM25 preview backup path already exists: $previewBackup"
+    }
     $gui = Start-W4GuiApplication -ScenarioContext $ScenarioContext -EvidenceName 'gui-search'
     $closed = $false
     try {
+        $database = Join-Path $ScenarioContext.UserDataRoot 'db\knowledge_vault.db'
+        $entryFailureBackup = $database + '.w4-entry-status-backup'
+        Select-W4NavigationItem -Gui $gui -Name '搜索'
+        $browserEntryError = Invoke-W4WithFilePathBlockedByDirectory `
+            -FilePath $database -BackupPath $entryFailureBackup `
+            -Label 'BM25 Browser entry-status fault' -Action {
+            Select-W4NavigationItem -Gui $gui -Name '浏览'
+            $observed = Wait-W4UiaText `
+                -Element (Get-W4UiaElementById -Root $gui.Window `
+                    -AutomationId 'browser_entry_status') `
+                -Expected @('条目加载失败（错误代码：browser_entry_count_failed）') `
+                -TimeoutSeconds 30
+            Assert-W4UiaContractSegment -Gui $gui -AutomationIds @(
+                'browser_view', 'browser_entry_status'
+            ) -EvidenceName 'uia-contract-browser-entry-error.json'
+            return $observed
+        }
+
+        Select-W4NavigationItem -Gui $gui -Name '搜索'
         Select-W4NavigationItem -Gui $gui -Name '浏览'
+        $browserPreviewDegraded = Invoke-W4WithTemporarilyMissingFile `
+            -FilePath $previewFile -BackupPath $previewBackup `
+            -Label 'BM25 Browser preview degradation' -Action {
+            $browserTable = Get-W4UiaElementById -Root $gui.Window -AutomationId 'browser_entry_table'
+            [void](Select-W4FirstDataItem -Root $browserTable)
+            $observed = Wait-W4UiaText `
+                -Element (Get-W4UiaElementById -Root $gui.Window `
+                    -AutomationId 'browser_preview_status') `
+                -Expected @('预览已降级：正在显示安全摘要（错误代码：resource_missing）') `
+                -TimeoutSeconds 30
+            Assert-W4UiaContractSegment -Gui $gui -AutomationIds @(
+                'browser_view', 'browser_preview_status'
+            ) -EvidenceName 'uia-contract-browser-preview-degraded.json'
+            return $observed
+        }
+
+        Select-W4NavigationItem -Gui $gui -Name '搜索'
+        Select-W4NavigationItem -Gui $gui -Name '浏览'
+        # Browser refresh clears the previous degraded selection before it
+        # publishes the restored model. Prove that distinct public state first;
+        # otherwise the old selected row and safe-summary text could satisfy the
+        # recovery checks before UIA navigation completes.
+        [void](Wait-W4UiaSelectionCount -Root $gui.Window `
+            -AutomationId 'browser_entry_table' -ExpectedCount 0 -TimeoutSeconds 30)
+        Assert-W4UiaAutomationIdsAbsent -Gui $gui `
+            -AutomationIds @('browser_entry_status', 'browser_preview_status') `
+            -EvidenceName 'uia-absence-browser-success.json'
         $browserTable = Get-W4UiaElementById -Root $gui.Window -AutomationId 'browser_entry_table'
         [void](Select-W4FirstDataItem -Root $browserTable)
         [void](Wait-W4UiaTextContains `
             -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'browser_preview_text') `
             -Text 'artifact-e2e-orchid' -TimeoutSeconds 30)
         Assert-W4UiaContractSegment -Gui $gui -AutomationIds @(
-            'browser_view', 'browser_entry_count', 'browser_entry_status',
-            'browser_entry_table', 'browser_preview_title', 'browser_preview_status',
-            'browser_preview_text'
+            'browser_view', 'browser_entry_count', 'browser_entry_table',
+            'browser_preview_title', 'browser_preview_text'
         ) -EvidenceName 'uia-contract-browser.json'
 
         Select-W4NavigationItem -Gui $gui -Name '搜索'
         $input = Get-W4UiaElementById -Root $gui.Window -AutomationId 'search_input'
         $submit = Get-W4UiaElementById -Root $gui.Window -AutomationId 'search_submit'
         $status = Get-W4UiaElementById -Root $gui.Window -AutomationId 'search_result_status'
+        Set-W4UiaValue -Element $input -Value 'artifact-e2e-orchid'
+        $searchPreviewDegraded = Invoke-W4WithTemporarilyMissingFile `
+            -FilePath $previewFile -BackupPath $previewBackup `
+            -Label 'BM25 Search preview degradation' -Action {
+            Invoke-W4UiaElement -Element $submit
+            [void](Wait-W4UiaTextContains -Element $status -Text '找到 1 条结果' -TimeoutSeconds 30)
+            $resultTable = Get-W4UiaElementById -Root $gui.Window -AutomationId 'search_result_table'
+            [void](Select-W4FirstDataItem -Root $resultTable)
+            $observed = Wait-W4UiaText `
+                -Element (Get-W4UiaElementById -Root $gui.Window `
+                    -AutomationId 'search_preview_status') `
+                -Expected @('预览降级：Markdown 正文不可用，以下显示安全摘要（问题代码：resource_missing）') `
+                -TimeoutSeconds 30
+            Assert-W4UiaContractSegment -Gui $gui -AutomationIds @(
+                'search_view', 'search_preview_status'
+            ) -EvidenceName 'uia-contract-search-preview-degraded.json'
+            return $observed
+        }
+
+        # Force a distinct public UI terminal before rerunning the restored
+        # target query. UIA Invoke does not guarantee that the Qt handler has
+        # completed before it returns, so the old degraded hit/status must not
+        # satisfy the recovery oracle.
+        Set-W4UiaValue -Element $input -Value 'w4-no-hit-5f37c22a'
+        Invoke-W4UiaElement -Element $submit
+        [void](Wait-W4UiaTextContains -Element $status `
+            -Text '未找到匹配结果' -TimeoutSeconds 30)
+        [void](Wait-W4UiaSelectionCount -Root $gui.Window `
+            -AutomationId 'search_result_table' -ExpectedCount 0 -TimeoutSeconds 10)
         Set-W4UiaValue -Element $input -Value 'artifact-e2e-orchid'
         Invoke-W4UiaElement -Element $submit
         $hitStatus = Wait-W4UiaTextContains -Element $status -Text '找到 1 条结果' -TimeoutSeconds 30
@@ -3715,10 +4442,13 @@ function Invoke-W4Bm25SearchScenario {
         [void](Wait-W4UiaTextContains `
             -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'search_preview_text') `
             -Text 'artifact-e2e-orchid' -TimeoutSeconds 30)
+        Assert-W4UiaAutomationIdsAbsent -Gui $gui `
+            -AutomationIds @('search_preview_status') `
+            -EvidenceName 'uia-absence-search-success.json'
         Assert-W4UiaContractSegment -Gui $gui -AutomationIds @(
             'search_view', 'search_input', 'search_strategy', 'search_submit',
             'search_result_status', 'search_result_table', 'search_preview_title',
-            'search_preview_status', 'search_preview_text'
+            'search_preview_text'
         ) -EvidenceName 'uia-contract-search.json'
 
         Set-W4UiaValue -Element $input -Value 'w4-no-hit-5f37c22a'
@@ -3729,20 +4459,17 @@ function Invoke-W4Bm25SearchScenario {
         Invoke-W4UiaElement -Element $submit
         $invalidStatus = Wait-W4UiaTextContains -Element $status -Text '查询无效' -TimeoutSeconds 30
 
-        $database = Join-Path $ScenarioContext.UserDataRoot 'db\knowledge_vault.db'
         $backup = $database + '.w4-backup'
-        [System.IO.File]::Move($database, $backup)
-        [void][System.IO.Directory]::CreateDirectory($database)
-        try {
+        $errorStatus = Invoke-W4WithFilePathBlockedByDirectory `
+            -FilePath $database -BackupPath $backup `
+            -Label 'BM25 Search backend fault' -Action {
             Set-W4UiaValue -Element $input -Value 'artifact-e2e-orchid'
             Invoke-W4UiaElement -Element $submit
-            $errorStatus = Wait-W4UiaTextContains -Element $status -Text '搜索失败' -TimeoutSeconds 30
-            if ($errorStatus -match '未找到') {
+            $observed = Wait-W4UiaTextContains -Element $status -Text '搜索失败' -TimeoutSeconds 30
+            if ($observed -match '未找到') {
                 throw 'GUI disguised backend failure as no-hits'
             }
-        } finally {
-            [System.IO.Directory]::Delete($database, $false)
-            [System.IO.File]::Move($backup, $database)
+            return $observed
         }
         Save-W4Screenshot -Path (Join-Path $gui.Evidence 'search-states.png') `
             -Element $gui.Window -ProcessId $gui.Process.Id
@@ -3758,7 +4485,10 @@ function Invoke-W4Bm25SearchScenario {
     $oracle = [ordered]@{
         status = 'passed'
         browse_detail = 'success'
+        browser_entry_error = $browserEntryError
+        browser_preview_degraded = $browserPreviewDegraded
         hit = $hitStatus
+        search_preview_degraded = $searchPreviewDegraded
         no_hits = $noHitStatus
         invalid = $invalidStatus
         backend_error = $errorStatus
@@ -4240,17 +4970,20 @@ function Invoke-W4ChatLoopbackScenario {
         try {
             Select-W4NavigationItem -Gui $restart -Name '对话'
             $sessionList = Get-W4UiaElementById -Root $restart.Window -AutomationId 'session_list'
-            [void](Select-W4FirstListItem -Root $sessionList)
-            $restartMessages = Get-W4UiaElementById -Root $restart.Window -AutomationId 'chat_messages'
-            $persisted = Wait-W4UiaTextContains -Element $restartMessages -Text 'PKV_W4_SUCCESS_V1' -TimeoutSeconds 30
+            $selectedSession = Select-W4FirstListItem -Root $sessionList
+            $selectionProof = Get-W4UiaSelectionProof -Root $sessionList -Item $selectedSession
+            Write-W4JsonFile -Path (Join-Path $restart.Evidence 'chat-session-selection.json') `
+                -Value $selectionProof
+            [void](Wait-W4UiaText `
+                -Element (Get-W4UiaElementById -Root $restart.Window -AutomationId 'chat_round_count') `
+                -Expected @('轮数: 1 / 3') -TimeoutSeconds 30)
+            $persisted = Wait-W4FreshUiaTextByIdContains -Root $restart.Window `
+                -AutomationId 'chat_messages' -Text 'PKV_W4_SUCCESS_V1' -TimeoutSeconds 30
             if ($persisted.Contains($stopPrompt) -or
                 $persisted.Contains('PKV_W4_STOP_PARTIAL_V1') -or
                 $persisted.Contains($errorPrompt)) {
                 throw 'Stopped/error Chat turn leaked into durable restart state'
             }
-            [void](Wait-W4UiaText `
-                -Element (Get-W4UiaElementById -Root $restart.Window -AutomationId 'chat_round_count') `
-                -Expected @('轮数: 1 / 3') -TimeoutSeconds 10)
             [void](Stop-W4GuiApplication -Gui $restart)
             $restartClosed = $true
         } finally {

@@ -480,6 +480,9 @@ class SessionSidebar(QWidget):
         self.session_list.currentItemChanged.connect(
             self._on_current_item_changed
         )
+        self.session_list.itemSelectionChanged.connect(
+            self._sync_selected_session_to_current_item
+        )
         self.session_list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
         )
@@ -491,6 +494,22 @@ class SessionSidebar(QWidget):
         # Token 统计面板
         self.token_panel = TokenPanel()
         layout.addWidget(self.token_panel)
+
+    def _sync_selected_session_to_current_item(self) -> None:
+        """Turn one UIA-selected session into the current session item.
+
+        Native ``SelectionItemPattern.Select`` can update QListWidget
+        selection without emitting ``currentItemChanged``.  This adapter only
+        reconciles a unique, different selection; the existing current-item
+        handler remains the sole path that loads the session.
+        """
+        selected_items = self.session_list.selectedItems()
+        if len(selected_items) != 1:
+            return
+
+        selected_item = selected_items[0]
+        if selected_item is not self.session_list.currentItem():
+            self.session_list.setCurrentItem(selected_item)
 
     def _on_item_clicked(self, item: QListWidgetItem) -> None:
         """会话列表项点击事件

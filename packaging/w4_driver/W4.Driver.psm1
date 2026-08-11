@@ -193,10 +193,11 @@ function Initialize-W4FileIdentityInspector {
     $fileIdentityType = 'PkvW4.FileIdentity' -as [type]
     $processTreeType = 'PkvW4.ProcessTreeInspector' -as [type]
     $reparsePointType = 'PkvW4.ReparsePointInspector' -as [type]
-    if ($fileIdentityType -and $processTreeType -and $reparsePointType) {
+    $tcpConnectionType = 'PkvW4.TcpConnectionInspector' -as [type]
+    if ($fileIdentityType -and $processTreeType -and $reparsePointType -and $tcpConnectionType) {
         return
     }
-    if ($fileIdentityType -or $processTreeType -or $reparsePointType) {
+    if ($fileIdentityType -or $processTreeType -or $reparsePointType -or $tcpConnectionType) {
         throw 'A partial or stale PkvW4 native-inspector type set is already loaded; start a fresh PowerShell process'
     }
     Add-Type -TypeDefinition @'
@@ -286,6 +287,129 @@ namespace PkvW4 {
                 return rows.ToArray();
             } finally {
                 CloseHandle(snapshot);
+            }
+        }
+    }
+
+    public static class TcpConnectionInspector {
+        private const int AF_INET = 2;
+        private const int TCP_TABLE_OWNER_PID_CONNECTIONS = 4;
+        private const uint ERROR_INSUFFICIENT_BUFFER = 122;
+        private const uint MIB_TCP_STATE_ESTAB = 5;
+
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        private struct MIB_TCPROW_OWNER_PID {
+            public uint State;
+            public uint LocalAddress;
+            public uint LocalPort;
+            public uint RemoteAddress;
+            public uint RemotePort;
+            public uint OwningPid;
+        }
+
+        [DllImport("iphlpapi.dll", SetLastError = true)]
+        private static extern uint GetExtendedTcpTable(
+            IntPtr table,
+            ref int size,
+            [MarshalAs(UnmanagedType.Bool)] bool sort,
+            int addressFamily,
+            int tableClass,
+            uint reserved
+        );
+
+        [DllImport("ws2_32.dll")]
+        private static extern uint ntohl(uint networkLong);
+
+        [DllImport("ws2_32.dll")]
+        private static extern ushort ntohs(ushort networkShort);
+
+        private static System.Net.IPAddress DecodeAddress(uint networkAddress) {
+            uint hostAddress = ntohl(networkAddress);
+            return new System.Net.IPAddress(new byte[] {
+                (byte)((hostAddress >> 24) & 0xff),
+                (byte)((hostAddress >> 16) & 0xff),
+                (byte)((hostAddress >> 8) & 0xff),
+                (byte)(hostAddress & 0xff)
+            });
+        }
+
+        private static int DecodePort(uint networkPort) {
+            return (int)ntohs((ushort)(networkPort & 0xffff));
+        }
+
+        public static int[] FindEstablishedOwners(
+            string localAddress,
+            int localPort,
+            string remoteAddress,
+            int remotePort
+        ) {
+            System.Net.IPAddress expectedLocal = System.Net.IPAddress.Parse(localAddress);
+            System.Net.IPAddress expectedRemote = System.Net.IPAddress.Parse(remoteAddress);
+            if (expectedLocal.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork ||
+                expectedRemote.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork ||
+                localPort < 1 || localPort > 65535 || remotePort < 1 || remotePort > 65535) {
+                throw new ArgumentException("TCP owner lookup requires exact IPv4 endpoints and valid ports");
+            }
+
+            int size = 0;
+            uint result = GetExtendedTcpTable(
+                IntPtr.Zero,
+                ref size,
+                true,
+                AF_INET,
+                TCP_TABLE_OWNER_PID_CONNECTIONS,
+                0
+            );
+            if (result != ERROR_INSUFFICIENT_BUFFER || size < sizeof(uint)) {
+                throw new System.ComponentModel.Win32Exception(
+                    checked((int)result),
+                    "GetExtendedTcpTable size query failed"
+                );
+            }
+
+            IntPtr buffer = Marshal.AllocHGlobal(size);
+            try {
+                result = GetExtendedTcpTable(
+                    buffer,
+                    ref size,
+                    true,
+                    AF_INET,
+                    TCP_TABLE_OWNER_PID_CONNECTIONS,
+                    0
+                );
+                if (result != 0) {
+                    throw new System.ComponentModel.Win32Exception(
+                        checked((int)result),
+                        "GetExtendedTcpTable failed"
+                    );
+                }
+                int count = Marshal.ReadInt32(buffer);
+                int rowSize = Marshal.SizeOf(typeof(MIB_TCPROW_OWNER_PID));
+                long requiredSize = checked(4L + checked((long)count * rowSize));
+                if (count < 0 || requiredSize > size) {
+                    throw new InvalidDataException("TCP owner table is truncated or malformed");
+                }
+
+                var owners = new System.Collections.Generic.List<int>();
+                IntPtr rowPointer = IntPtr.Add(buffer, sizeof(uint));
+                for (int index = 0; index < count; index++) {
+                    MIB_TCPROW_OWNER_PID row =
+                        (MIB_TCPROW_OWNER_PID)Marshal.PtrToStructure(
+                            rowPointer,
+                            typeof(MIB_TCPROW_OWNER_PID)
+                        );
+                    if (row.State == MIB_TCP_STATE_ESTAB &&
+                        DecodeAddress(row.LocalAddress).Equals(expectedLocal) &&
+                        DecodePort(row.LocalPort) == localPort &&
+                        DecodeAddress(row.RemoteAddress).Equals(expectedRemote) &&
+                        DecodePort(row.RemotePort) == remotePort) {
+                        owners.Add(checked((int)row.OwningPid));
+                    }
+                    rowPointer = IntPtr.Add(rowPointer, rowSize);
+                }
+                return owners.ToArray();
+            } finally {
+                Marshal.FreeHGlobal(buffer);
             }
         }
     }
@@ -917,6 +1041,79 @@ function New-W4ProcessTreeIdentitySnapshot {
         RootProcessId = [int]$Process.Id
         RootStartTimeUtcTicks = $expectedRootStartTimeUtcTicks
         Identities = @($identities)
+    }
+}
+
+function Assert-W4TcpClientOwnedByProcess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Net.Sockets.TcpClient]$Client,
+        [Parameter(Mandatory = $true)][System.Net.IPEndPoint]$ExpectedServerEndpoint,
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [ValidateRange(100, 5000)][int]$TimeoutMilliseconds = 2000
+    )
+
+    if ([Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+        throw 'W4 TCP owner identity checks require Windows'
+    }
+    if ($Process.HasExited) {
+        throw 'TCP owner root process exited before identity verification'
+    }
+    $serverEndpoint = $Client.Client.LocalEndPoint -as [System.Net.IPEndPoint]
+    $peerEndpoint = $Client.Client.RemoteEndPoint -as [System.Net.IPEndPoint]
+    if ($null -eq $serverEndpoint -or $null -eq $peerEndpoint -or
+        $serverEndpoint.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or
+        $peerEndpoint.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or
+        -not $serverEndpoint.Address.Equals($ExpectedServerEndpoint.Address) -or
+        $serverEndpoint.Port -ne $ExpectedServerEndpoint.Port) {
+        throw 'Accepted Provider connection endpoints do not match the exact IPv4 listener'
+    }
+
+    $identitySnapshot = New-W4ProcessTreeIdentitySnapshot -Process $Process
+    $rootIdentity = @($identitySnapshot.Identities | Where-Object {
+        [int]$_.Depth -eq 0
+    })
+    if ($rootIdentity.Count -ne 1 -or
+        [int]$rootIdentity[0].ProcessId -ne $Process.Id -or
+        [int64]$rootIdentity[0].StartTimeUtcTicks -ne
+            [int64]$identitySnapshot.RootStartTimeUtcTicks) {
+        throw 'TCP owner root process identity was not exact'
+    }
+
+    Initialize-W4FileIdentityInspector
+    $ownerPids = @()
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        $ownerPids = @([PkvW4.TcpConnectionInspector]::FindEstablishedOwners(
+            $peerEndpoint.Address.ToString(),
+            $peerEndpoint.Port,
+            $serverEndpoint.Address.ToString(),
+            $serverEndpoint.Port
+        ))
+        if ($ownerPids.Count -gt 1) {
+            throw 'Accepted Provider connection did not have one exact TCP owner row'
+        }
+        if ($ownerPids.Count -eq 1) {
+            break
+        }
+        Start-Sleep -Milliseconds 25
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if ($ownerPids.Count -ne 1) {
+        throw 'Accepted Provider connection TCP owner was not observable'
+    }
+    $ownerPid = [int]$ownerPids[0]
+    if ($ownerPid -ne $Process.Id) {
+        throw 'Accepted Provider connection owner was not the GUI process identity'
+    }
+    $liveOwner = Get-W4LiveProcessForIdentity -Identity $rootIdentity[0]
+    if ($null -eq $liveOwner) {
+        throw 'Accepted Provider connection owner changed process identity'
+    }
+    $liveOwner.Dispose()
+    return [pscustomobject]@{
+        OwnerVerified = $true
+        OwnerProcessId = $ownerPid
+        OwnerStartTimeUtcTicks = [int64]$rootIdentity[0].StartTimeUtcTicks
     }
 }
 
@@ -1758,6 +1955,7 @@ Export-ModuleMember -Function @(
     'Assert-W4DisjointPaths',
     'Assert-W4JsonObjectFields',
     'Assert-W4SafePathChain',
+    'Assert-W4TcpClientOwnedByProcess',
     'ConvertFrom-W4StrictJsonText',
     'Export-W4UiaTree',
     'Get-W4CanonicalJsonSha256',

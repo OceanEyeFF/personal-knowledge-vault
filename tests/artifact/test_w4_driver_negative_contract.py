@@ -253,6 +253,140 @@ def _run_upgrade_rejection_result_validator(
     return _run_powershell(["-Command", command], cwd=REPOSITORY_ROOT)
 
 
+def _run_w4_mutation_helper(
+    tmp_path: Path, *, helper: str, mode: str
+) -> subprocess.CompletedProcess[str]:
+    assert helper in {
+        "Invoke-W4WithTemporarilyMissingFile",
+        "Invoke-W4WithFilePathBlockedByDirectory",
+    }
+    assert mode in {"success", "action_throw", "replacement"}
+    source = tmp_path / f"{helper}-{mode}.source"
+    backup = tmp_path / f"{helper}-{mode}.backup"
+    source.write_text("original-synthetic-bytes", encoding="utf-8")
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' -Force;"
+        f"$module=Import-Module '{_ps_single_quoted(SCENARIO_MODULE)}' "
+        "-Force -PassThru;"
+        f"$source='{_ps_single_quoted(source)}';"
+        f"$backup='{_ps_single_quoted(backup)}';"
+        f"$helper='{helper}';$mode='{mode}';"
+        "$result=& $module {param($source,$backup,$helper,$mode)"
+        "$caught=$null;$actionResult=$null;"
+        "try {"
+        "if($helper -ceq 'Invoke-W4WithTemporarilyMissingFile'){"
+        "$actionResult=Invoke-W4WithTemporarilyMissingFile "
+        "-FilePath $source -BackupPath $backup -Label 'contract missing' -Action {"
+        "if($mode -ceq 'action_throw'){throw 'action-sentinel'};"
+        "if($mode -ceq 'replacement'){"
+        "[IO.File]::WriteAllText($source,'replacement',[Text.Encoding]::UTF8);"
+        "return 'replacement-created'};"
+        "if(Test-Path -LiteralPath $source){throw 'source-remained-present'};"
+        "if(-not(Test-Path -LiteralPath $backup -PathType Leaf)){"
+        "throw 'backup-was-not-created'};return 'success'}"
+        "}else{"
+        "$actionResult=Invoke-W4WithFilePathBlockedByDirectory "
+        "-FilePath $source -BackupPath $backup -Label 'contract blocked' -Action {"
+        "if($mode -ceq 'action_throw'){throw 'action-sentinel'};"
+        "if(-not(Test-Path -LiteralPath $source -PathType Container)){"
+        "throw 'source-was-not-blocked-by-directory'};"
+        "if(-not(Test-Path -LiteralPath $backup -PathType Leaf)){"
+        "throw 'backup-was-not-created'};"
+        "if($mode -ceq 'replacement'){"
+        "[IO.File]::WriteAllText((Join-Path $source 'replacement.txt'),"
+        "'replacement',[Text.Encoding]::UTF8);return 'replacement-created'};"
+        "return 'success'}"
+        "}"
+        "}catch{$caught=$_.Exception.Message};"
+        "$unexpected=$backup+'.unexpected';"
+        "$unexpectedItem=Get-Item -LiteralPath $unexpected -Force "
+        "-ErrorAction SilentlyContinue;"
+        "[ordered]@{action_result=$actionResult;caught=$caught;"
+        "source_text=[IO.File]::ReadAllText($source,[Text.Encoding]::UTF8);"
+        "backup_exists=[bool](Test-Path -LiteralPath $backup);"
+        "unexpected_exists=[bool](Test-Path -LiteralPath $unexpected);"
+        "unexpected_is_directory=[bool]($null -ne $unexpectedItem -and "
+        "$unexpectedItem.PSIsContainer)}|ConvertTo-Json -Compress"
+        "} $source $backup $helper $mode;"
+        "$result"
+    )
+    return _run_powershell(["-Command", command], cwd=REPOSITORY_ROOT)
+
+
+def _run_tcp_owner_contract_probe() -> subprocess.CompletedProcess[str]:
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' -Force;"
+        "$listener=$null;$client=$null;$accepted=$null;$other=$null;"
+        "try {"
+        "$listener=[Net.Sockets.TcpListener]::new("
+        "[Net.IPAddress]::Parse('127.0.0.1'),0);$listener.Start(1);"
+        "$endpoint=[Net.IPEndPoint]$listener.LocalEndpoint;"
+        "$client=[Net.Sockets.TcpClient]::new();"
+        "$client.Connect($endpoint.Address,$endpoint.Port);"
+        "$accepted=$listener.AcceptTcpClient();"
+        "$self=[Diagnostics.Process]::GetCurrentProcess();"
+        "$positive=Assert-W4TcpClientOwnedByProcess -Client $accepted "
+        "-ExpectedServerEndpoint $endpoint -Process $self -TimeoutMilliseconds 2000;"
+        "$psi=[Diagnostics.ProcessStartInfo]::new();"
+        "$psi.FileName=(Join-Path $PSHOME 'powershell.exe');"
+        "$psi.Arguments='-NoLogo -NoProfile -NonInteractive "
+        "-Command Start-Sleep -Seconds 20';"
+        "$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;"
+        "$other=[Diagnostics.Process]::Start($psi);"
+        "if($null -eq $other){throw 'different-live-root-did-not-start'};"
+        "$negativeRejected=$false;$negativeMessage='';"
+        "try {Assert-W4TcpClientOwnedByProcess -Client $accepted "
+        "-ExpectedServerEndpoint $endpoint -Process $other "
+        "-TimeoutMilliseconds 2000|Out-Null}"
+        "catch {$negativeRejected=$true;$negativeMessage=$_.Exception.Message};"
+        "if(-not $negativeRejected){throw 'different-live-root-was-accepted'};"
+        "$client.Dispose();$client=$null;"
+        "$zeroRejected=$false;$zeroMessage='';"
+        "try {Assert-W4TcpClientOwnedByProcess -Client $accepted "
+        "-ExpectedServerEndpoint $endpoint -Process $self "
+        "-TimeoutMilliseconds 500|Out-Null}"
+        "catch {$zeroRejected=$true;$zeroMessage=$_.Exception.Message};"
+        "if(-not $zeroRejected){throw 'zero-owner-row-was-accepted'};"
+        "[ordered]@{owner_verified=[bool]$positive.OwnerVerified;"
+        "owner_pid=[int]$positive.OwnerProcessId;self_pid=[int]$self.Id;"
+        "owner_start_ticks=[int64]$positive.OwnerStartTimeUtcTicks;"
+        "different_live_root_rejected=$negativeRejected;"
+        "different_live_root_error=$negativeMessage;"
+        "zero_owner_rejected=$zeroRejected;zero_owner_error=$zeroMessage}"
+        "|ConvertTo-Json -Compress"
+        "}finally{"
+        "if($null -ne $accepted){$accepted.Dispose()};"
+        "if($null -ne $client){$client.Dispose()};"
+        "if($null -ne $listener){$listener.Stop()};"
+        "if($null -ne $other){"
+        "try{$other.Refresh();if(-not $other.HasExited){$other.Kill();"
+        "[void]$other.WaitForExit(5000)}}catch{};$other.Dispose()}"
+        "}"
+    )
+    return _run_powershell(
+        ["-Command", command], cwd=REPOSITORY_ROOT, timeout=30
+    )
+
+
+def _run_gated_request_line_validator(
+    tmp_path: Path, request_line: str
+) -> subprocess.CompletedProcess[str]:
+    request_path = tmp_path / f"request-line-{uuid.uuid4().hex}.txt"
+    request_path.write_text(request_line, encoding="utf-8")
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' -Force;"
+        f"$module=Import-Module '{_ps_single_quoted(SCENARIO_MODULE)}' "
+        "-Force -PassThru;"
+        f"$line=[IO.File]::ReadAllText('{_ps_single_quoted(request_path)}');"
+        "& $module {param($value) "
+        "Assert-W4GatedProviderRequestLine -RequestLine $value} $line"
+    )
+    return _run_powershell(["-Command", command], cwd=REPOSITORY_ROOT)
+
+
 def _upgrade_rejection_envelope(**updates: object) -> dict[str, object]:
     envelope: dict[str, object] = {
         "adapter": "cli",
@@ -280,6 +414,56 @@ def _powershell_function(source: str, name: str) -> str:
 
 def _compact_powershell(source: str) -> str:
     return re.sub(r"[`\s]+", " ", source).strip()
+
+
+def _uia_contract_segments(source: str) -> dict[str, set[str]]:
+    compact = _compact_powershell(source)
+    marker = "Assert-W4UiaContractSegment"
+    segments: dict[str, set[str]] = {}
+    calls = list(
+        re.finditer(
+            rf"{marker}\s+-Gui\b(?:(?!{marker}).)*?"
+            r"-AutomationIds @\((.*?)\) -EvidenceName '([^']+)'",
+            compact,
+        )
+    )
+    for match in calls:
+        evidence_name = match.group(2)
+        assert evidence_name not in segments, (
+            f"duplicate UIA evidence segment: {evidence_name}"
+        )
+        segments[evidence_name] = _extract_single_quoted_values(match.group(1))
+    assert len(segments) == len(re.findall(rf"{marker}\s+-Gui\b", compact))
+    return segments
+
+
+def _uia_contract_segment_ids(source: str, evidence_name: str) -> set[str]:
+    segments = _uia_contract_segments(source)
+    assert evidence_name in segments, (
+        f"UIA contract segment was not found: {evidence_name}"
+    )
+    return segments[evidence_name]
+
+
+def _uia_absence_proofs(source: str) -> dict[str, set[str]]:
+    compact = _compact_powershell(source)
+    marker = "Assert-W4UiaAutomationIdsAbsent"
+    proofs: dict[str, set[str]] = {}
+    calls = list(
+        re.finditer(
+            rf"{marker}\s+-Gui\b(?:(?!{marker}).)*?"
+            r"-AutomationIds @\((.*?)\) -EvidenceName '([^']+)'",
+            compact,
+        )
+    )
+    for match in calls:
+        evidence_name = match.group(2)
+        assert evidence_name not in proofs, (
+            f"duplicate UIA absence proof: {evidence_name}"
+        )
+        proofs[evidence_name] = _extract_single_quoted_values(match.group(1))
+    assert len(proofs) == len(re.findall(rf"{marker}\s+-Gui\b", compact))
+    return proofs
 
 
 def _full_matrix_command(bundle: dict[str, Path]) -> list[str]:
@@ -2053,7 +2237,7 @@ def test_upgrade_rejection_result_validator_rejects_wrong_channel_or_envelope(
     assert result.returncode != 0
 
 
-def test_offline_archive_treats_modal_as_optional_but_keeps_durable_oracles() -> None:
+def test_offline_archive_requires_exact_modal_and_keeps_durable_oracles() -> None:
     block = _powershell_function(
         _read(SCENARIO_MODULE), "Invoke-W4OfflineTextArchiveScenario"
     )
@@ -2061,14 +2245,57 @@ def test_offline_archive_treats_modal_as_optional_but_keeps_durable_oracles() ->
     result_wait = compact.index(
         "Wait-W4UiaTextContains -Element $resultTitle -Text '归档成功（降级）'"
     )
-    optional_modal = compact.index("Dismiss-W4ProcessModal")
-    warning_read = compact.index("-AutomationId 'archive_result_warning'")
-    path_read = compact.index("-AutomationId 'archive_result_path'")
+    required_modal = compact.index("Dismiss-W4ProcessModal", result_wait)
+    modal_evidence = compact.index("'archive-modal-observation.json'", required_modal)
+    terminal_absence = compact.index(
+        "'uia-absence-archive-terminal.json'", modal_evidence
+    )
+    enabled_check = compact.index(
+        "Wait-W4UiaElementEnabledState -Root $gui.Window", terminal_absence
+    )
+    warning_read = compact.index("-AutomationId 'archive_result_warning'", enabled_check)
+    path_read = compact.index("-AutomationId 'archive_result_path'", warning_read)
 
-    assert result_wait < optional_modal < warning_read < path_read
-    modal_call = compact[optional_modal : compact.index(")", optional_modal) + 1]
-    assert "-AllowAbsent" in modal_call
-    assert "$warning -notmatch 'provider'" in compact
+    assert (
+        result_wait
+        < required_modal
+        < modal_evidence
+        < terminal_absence
+        < enabled_check
+        < warning_read
+        < path_read
+    )
+    modal_call = compact[required_modal : compact.index(")", required_modal) + 1]
+    assert "-MainWindow $gui.Window" in modal_call
+    assert "-ExpectedTitle '归档降级警告'" in modal_call
+    assert "-TimeoutSeconds 10" in modal_call
+    assert "-AllowAbsent" not in modal_call
+    assert "schema_version = 'pkv.w4.required-modal-observation.v1'" in compact
+    assert "expected_title = '归档降级警告'" in compact
+    assert "is_modal = $true" in compact
+    assert "modal_visible = $true" in compact
+    assert "action_visible = $true" in compact
+    assert "action_enabled = $true" in compact
+    assert "exact_ok_button_dismissed = $modalDismissed" in compact
+    assert "unrecognized_process_window_accepted = $false" in compact
+    assert (
+        "$workflowWarning = "
+        "'部分可选工作流步骤未完成（问题代码: workflow_step_failed）。'"
+        in compact
+    )
+    assert (
+        "$warning.StartsWith( '核心归档已完成，但本次结果处于降级状态。', "
+        "[System.StringComparison]::Ordinal )" in compact
+    )
+    assert (
+        "$warning.IndexOf($workflowWarning, "
+        "[System.StringComparison]::Ordinal) -lt 0" in compact
+    )
+    assert (
+        "$warning.EndsWith( '请勿盲目重试归档。', "
+        "[System.StringComparison]::Ordinal )" in compact
+    )
+    assert "$warning -notmatch 'provider'" not in compact
     assert "$idText -notmatch '^ID:\\s*\\d+$'" in compact
     assert "$pathText -notmatch '^文件:\\s*(.+)$'" in compact
     assert "Test-W4PathContainedBy -Candidate $savedPath" in compact
@@ -2076,7 +2303,211 @@ def test_offline_archive_treats_modal_as_optional_but_keeps_durable_oracles() ->
     assert "workflow_terminal = 'degraded'" in compact
     assert "saved_path_sha256 = Get-W4FileSha256 -Path $savedPath" in compact
     assert "degraded_warning = $warning" in compact
+    assert "workflow_issue_code = 'workflow_step_failed'" in compact
+    assert "induced_workflow_issue_code = 'workflow_step_failed'" in compact
     assert "restart_opened_saved_entry = $true" in compact
+
+
+def test_required_process_modal_rejects_ambiguous_or_unrecognized_windows() -> None:
+    helper = _compact_powershell(
+        _powershell_function(_read(SCENARIO_MODULE), "Dismiss-W4ProcessModal")
+    )
+
+    assert (
+        "[Parameter(Mandatory = $true)]"
+        "[System.Windows.Automation.AutomationElement]$MainWindow" in helper
+    )
+    assert "[Parameter(Mandatory = $true)][string]$ExpectedTitle" in helper
+    assert "AllowAbsent" not in helper
+    assert "[string]::IsNullOrWhiteSpace($ExpectedTitle)" in helper
+    assert "AutomationElement]::ProcessIdProperty" in helper
+    assert "[int]$MainWindow.Current.ProcessId -ne $ProcessId" in helper
+    assert "$MainWindow.Current.AutomationId -cne 'pkv_main_window'" in helper
+    assert (
+        "$MainWindow.Current.ControlType -ne "
+        "[System.Windows.Automation.ControlType]::Window" in helper
+    )
+    assert "$mainWindowRuntimeId = @($MainWindow.GetRuntimeId())" in helper
+    assert "$mainWindowRuntimeId.Count -eq 0" in helper
+    assert "[System.Windows.Automation.AndCondition]::new(" in helper
+    assert "$pidCondition, $windowType" in helper
+    assert "$pidCondition, $buttonType" in helper
+    descendant_scan = helper.index(
+        "$desktop.FindAll( [System.Windows.Automation.TreeScope]::Descendants, "
+        "$processWindowCondition )"
+    )
+    runtime_read = helper.index(
+        "$windowRuntimeId = @($window.GetRuntimeId())", descendant_scan
+    )
+    runtime_count = helper.index(
+        "$windowRuntimeId.Count -eq $mainWindowRuntimeId.Count", runtime_read
+    )
+    runtime_compare = helper.index(
+        "[int]$windowRuntimeId[$runtimeIndex] -ne "
+        "[int]$mainWindowRuntimeId[$runtimeIndex]",
+        runtime_count,
+    )
+    main_window_filter = helper.index("if ($isMainWindow)", runtime_compare)
+    modal_append = helper.index("$processModals += $window", main_window_filter)
+    unique_guard = helper.index("$processModals.Count -gt 1", modal_append)
+    assert (
+        descendant_scan
+        < runtime_read
+        < runtime_count
+        < runtime_compare
+        < main_window_filter
+        < modal_append
+        < unique_guard
+    )
+    assert "$processModals.Count -gt 1" in helper
+    assert "$processModals.Count -eq 1" in helper
+    assert (
+        "$modal.Current.ControlType -ne "
+        "[System.Windows.Automation.ControlType]::Window" in helper
+    )
+    assert "$actualTitle -cne $ExpectedTitle" in helper
+    assert "[bool]$modal.Current.IsOffscreen" in helper
+    assert "WindowPattern]::Pattern" in helper
+    assert "WindowPattern]$windowPattern).Current.IsModal" in helper
+    assert "Expected process window is not modal" in helper
+    assert (
+        "$modal.FindAll( [System.Windows.Automation.TreeScope]::Descendants, "
+        "$processButtonCondition )" in helper
+    )
+    assert "$buttons.Count -gt 1" in helper
+    assert "$buttons.Count -eq 1" in helper
+    assert "[int]$button.Current.ProcessId -ne $ProcessId" in helper
+    assert "[bool]$button.Current.IsOffscreen" in helper
+    assert "-not [bool]$button.Current.IsEnabled" in helper
+    assert "@('OK', '确定') -ccontains [string]$button.Current.Name" in helper
+    assert "InvokePattern]::Pattern" in helper
+    assert "InvokePattern]$invokePattern).Invoke()" in helper
+    assert "return $true" in helper
+    assert "return $false" not in helper
+    assert "if ($sawProcessModal)" in helper
+    assert "did not expose one exact OK/确定 Invoke button" in helper
+    assert "No process modal with exact title appeared" in helper
+
+
+def test_required_modal_invoke_proves_original_runtime_id_disappeared() -> None:
+    helper = _compact_powershell(
+        _powershell_function(_read(SCENARIO_MODULE), "Dismiss-W4ProcessModal")
+    )
+    runtime_capture = helper.index(
+        "$dismissedModalRuntimeId = @($modal.GetRuntimeId())"
+    )
+    runtime_nonempty = helper.index(
+        "$dismissedModalRuntimeId.Count -eq 0", runtime_capture
+    )
+    invoke = helper.index("InvokePattern]$invokePattern).Invoke()", runtime_nonempty)
+    post_invoke_loop = helper.index("do {", invoke)
+    fresh_windows = helper.index(
+        "$remainingWindows = $desktop.FindAll( "
+        "[System.Windows.Automation.TreeScope]::Descendants, "
+        "$processWindowCondition )",
+        post_invoke_loop,
+    )
+    main_runtime_compare = helper.index(
+        "[int]$remainingRuntimeId[$runtimeIndex] -ne "
+        "[int]$mainWindowRuntimeId[$runtimeIndex]",
+        fresh_windows,
+    )
+    non_main_append = helper.index(
+        "$remainingNonMain += [pscustomobject]@{", main_runtime_compare
+    )
+    exact_zero = helper.index("$remainingNonMain.Count -eq 0", non_main_append)
+    success = helper.index("return $true", exact_zero)
+    ambiguity = helper.index("$remainingNonMain.Count -gt 1", success)
+    dismissed_runtime_compare = helper.index(
+        "$remainingId.Count -eq $dismissedModalRuntimeId.Count", ambiguity
+    )
+    replacement = helper.index("if (-not $sameDismissedModal)", dismissed_runtime_compare)
+    bounded_poll = helper.index("Start-Sleep -Milliseconds 50", replacement)
+    original_deadline = helper.index(
+        "} while ([DateTime]::UtcNow -lt $deadline)", bounded_poll
+    )
+    remained = helper.index(
+        "Expected process modal remained after InvokePattern", original_deadline
+    )
+
+    assert (
+        runtime_capture
+        < runtime_nonempty
+        < invoke
+        < post_invoke_loop
+        < fresh_windows
+        < main_runtime_compare
+        < non_main_append
+        < exact_zero
+        < success
+        < ambiguity
+        < dismissed_runtime_compare
+        < replacement
+        < bounded_poll
+        < original_deadline
+        < remained
+    )
+    assert "Expected process modal RuntimeId is empty" in helper
+    assert "Modal dismissal left ambiguous non-main process windows" in helper
+    assert "Modal dismissal produced a replacement process window" in helper
+    assert "Expected process modal remained after InvokePattern" in helper
+    assert helper.count("$deadline = [DateTime]::UtcNow.AddSeconds") == 1
+
+
+def test_required_process_modal_rejects_empty_expected_title() -> None:
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' -Force;"
+        f"$module=Import-Module '{_ps_single_quoted(SCENARIO_MODULE)}' "
+        "-Force -PassThru;"
+        "Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop;"
+        "Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop;"
+        "& $module {Dismiss-W4ProcessModal -ProcessId $PID "
+        "-MainWindow ([System.Windows.Automation.AutomationElement]::RootElement) "
+        "-ExpectedTitle '   ' -TimeoutSeconds 1}"
+    )
+
+    result = _run_powershell(["-Command", command], cwd=REPOSITORY_ROOT)
+
+    assert result.returncode != 0
+    assert "Expected modal title must be non-empty" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "warning",
+    [
+        (
+            "核心归档已完成，但本次结果处于降级状态。"
+            "部分可选工作流步骤未完成。"
+            "请勿盲目重试归档。"
+        ),
+        (
+            "核心归档已完成，但本次结果处于降级状态。"
+            "部分可选工作流步骤未完成（问题代码: provider_unavailable）。"
+            "请勿盲目重试归档。"
+        ),
+    ],
+    ids=["missing-issue-code", "wrong-issue-code"],
+)
+def test_archive_warning_projection_rejects_missing_or_wrong_issue_code(
+    warning: str,
+) -> None:
+    prefix = "核心归档已完成，但本次结果处于降级状态。"
+    marker = "部分可选工作流步骤未完成（问题代码: workflow_step_failed）。"
+    suffix = "请勿盲目重试归档。"
+    compact = _compact_powershell(
+        _powershell_function(
+            _read(SCENARIO_MODULE), "Invoke-W4OfflineTextArchiveScenario"
+        )
+    )
+
+    assert warning.startswith(prefix)
+    assert warning.endswith(suffix)
+    assert marker not in warning
+    assert "$warning.IndexOf($workflowWarning, " in compact
+    assert "[System.StringComparison]::Ordinal) -lt 0" in compact
+    assert "induced_workflow_issue_code = 'workflow_step_failed'" in compact
+    assert "workflow_issue_code = 'workflow_step_failed'" in compact
 
 
 def test_chat_stop_is_resolved_only_after_the_stop_request_is_running() -> None:
@@ -2119,3 +2550,1256 @@ def test_chat_stop_is_resolved_only_after_the_stop_request_is_running() -> None:
     )
     assert "Get-W4UiaElementById" in compact[stop_lookup:stop_invoke]
     assert compact[:stop_prompt].count("-AutomationId 'chat_stop'") == 0
+
+
+def test_bm25_success_uia_segments_exclude_hidden_status_placeholders() -> None:
+    block = _powershell_function(_read(SCENARIO_MODULE), "Invoke-W4Bm25SearchScenario")
+    browser_ids = _uia_contract_segment_ids(block, "uia-contract-browser.json")
+    search_ids = _uia_contract_segment_ids(block, "uia-contract-search.json")
+
+    assert browser_ids == {
+        "browser_view",
+        "browser_entry_count",
+        "browser_entry_table",
+        "browser_preview_title",
+        "browser_preview_text",
+    }
+    assert browser_ids.isdisjoint(
+        {"browser_entry_status", "browser_preview_status"}
+    )
+    assert search_ids == {
+        "search_view",
+        "search_input",
+        "search_strategy",
+        "search_submit",
+        "search_result_status",
+        "search_result_table",
+        "search_preview_title",
+        "search_preview_text",
+    }
+    assert "search_preview_status" not in search_ids
+
+    registry = json.loads(_read(SCENARIO_CONTRACT))["uia"][
+        "required_automation_ids"
+    ]
+    for hidden_id in (
+        "browser_entry_status",
+        "browser_preview_status",
+        "search_preview_status",
+    ):
+        assert registry.count(hidden_id) == 1
+
+
+def test_bm25_visible_segments_keep_all_search_terminal_oracles() -> None:
+    block = _powershell_function(_read(SCENARIO_MODULE), "Invoke-W4Bm25SearchScenario")
+    compact = _compact_powershell(block)
+    status_lookup = compact.index(
+        "Get-W4UiaElementById -Root $gui.Window -AutomationId "
+        "'search_result_status'"
+    )
+    hit = compact.index(
+        "$hitStatus = Wait-W4UiaTextContains -Element $status "
+        "-Text '找到 1 条结果'",
+        status_lookup,
+    )
+    no_hit = compact.index(
+        "$noHitStatus = Wait-W4UiaTextContains -Element $status "
+        "-Text '未找到匹配结果'",
+        hit,
+    )
+    invalid = compact.index(
+        "$invalidStatus = Wait-W4UiaTextContains -Element $status "
+        "-Text '查询无效'",
+        no_hit,
+    )
+    backend_fault = compact.index(
+        "$errorStatus = Invoke-W4WithFilePathBlockedByDirectory", invalid
+    )
+    backend_error = compact.index(
+        "$observed = Wait-W4UiaTextContains -Element $status "
+        "-Text '搜索失败'",
+        backend_fault,
+    )
+
+    assert status_lookup < hit < no_hit < invalid < backend_fault < backend_error
+    assert "$observed -match '未找到'" in compact
+    assert "hit = $hitStatus" in compact
+    assert "no_hits = $noHitStatus" in compact
+    assert "invalid = $invalidStatus" in compact
+    assert "backend_error = $errorStatus" in compact
+
+
+def test_uia_registry_is_the_exact_observed_runtime_segment_union() -> None:
+    segments = _uia_contract_segments(_read(SCENARIO_MODULE))
+    registry = json.loads(_read(SCENARIO_CONTRACT))["uia"][
+        "required_automation_ids"
+    ]
+    observed: set[str] = set()
+    for automation_ids in segments.values():
+        observed.update(automation_ids)
+
+    assert len(registry) == len(set(registry))
+    assert observed == set(registry)
+
+    conditional_segments = {
+        "browser_entry_status": "uia-contract-browser-entry-error.json",
+        "browser_preview_status": "uia-contract-browser-preview-degraded.json",
+        "search_preview_status": "uia-contract-search-preview-degraded.json",
+        "archive_progress_status": "uia-contract-archive-running.json",
+    }
+    expected_segment_ids = {
+        "uia-contract-browser-entry-error.json": {
+            "browser_view",
+            "browser_entry_status",
+        },
+        "uia-contract-browser-preview-degraded.json": {
+            "browser_view",
+            "browser_preview_status",
+        },
+        "uia-contract-search-preview-degraded.json": {
+            "search_view",
+            "search_preview_status",
+        },
+        "uia-contract-archive-running.json": {
+            "archive_view",
+            "archive_progress_status",
+        },
+    }
+    for automation_id, expected_evidence in conditional_segments.items():
+        containing_segments = [
+            evidence_name
+            for evidence_name, ids in segments.items()
+            if automation_id in ids
+        ]
+        assert containing_segments == [expected_evidence]
+        assert segments[expected_evidence] == expected_segment_ids[expected_evidence]
+
+
+def test_uia_success_terminals_emit_exact_zero_absence_proofs() -> None:
+    source = _read(SCENARIO_MODULE)
+    helper = _compact_powershell(
+        _powershell_function(source, "Assert-W4UiaAutomationIdsAbsent")
+    )
+    assert "HashSet[string]]::new( [System.StringComparer]::Ordinal )" in helper
+    assert "[string]::IsNullOrWhiteSpace($automationId)" in helper
+    assert "-not $seen.Add($automationId)" in helper
+    assert "AutomationElement]::AutomationIdProperty" in helper
+    assert (
+        "$Gui.Window.FindAll( [System.Windows.Automation.TreeScope]::Descendants, "
+        "$condition )" in helper
+    )
+    assert "$elements.Count -ne 0" in helper
+    assert "schema_version = 'pkv.w4.uia-absence-proof.v1'" in helper
+    assert "process_id = [int]$Gui.Process.Id" in helper
+    assert "automation_ids = @($AutomationIds)" in helper
+    assert "exact_zero = $true" in helper
+
+    proofs = _uia_absence_proofs(source)
+    assert proofs == {
+        "uia-absence-archive-terminal.json": {"archive_progress_status"},
+        "uia-absence-browser-success.json": {
+            "browser_entry_status",
+            "browser_preview_status",
+        },
+        "uia-absence-search-success.json": {"search_preview_status"},
+    }
+
+    archive = _compact_powershell(
+        _powershell_function(source, "Invoke-W4OfflineTextArchiveScenario")
+    )
+    archive_result = archive.index(
+        "Wait-W4UiaTextContains -Element $resultTitle -Text '归档成功（降级）'"
+    )
+    archive_absence = archive.index("'uia-absence-archive-terminal.json'", archive_result)
+    archive_contract = archive.index("'uia-contract-archive-result.json'", archive_absence)
+    assert archive_result < archive_absence < archive_contract
+
+    bm25 = _compact_powershell(
+        _powershell_function(source, "Invoke-W4Bm25SearchScenario")
+    )
+    browser_absence = bm25.index("'uia-absence-browser-success.json'")
+    browser_contract = bm25.index("'uia-contract-browser.json'", browser_absence)
+    search_absence = bm25.index(
+        "'uia-absence-search-success.json'", browser_contract
+    )
+    search_contract = bm25.index("'uia-contract-search.json'", search_absence)
+    assert browser_absence < browser_contract < search_absence < search_contract
+
+
+def test_bm25_conditional_uia_faults_restore_exact_synthetic_inputs() -> None:
+    block = _powershell_function(_read(SCENARIO_MODULE), "Invoke-W4Bm25SearchScenario")
+    compact = _compact_powershell(block)
+
+    assert "Assert-W4SafePathChain -Path $vaultRoot" in compact
+    assert (
+        "Get-ChildItem -LiteralPath $vaultRoot -File -Recurse -Force "
+        "-ErrorAction Stop" in compact
+    )
+    assert "Where-Object { [string]$_.Extension -ceq '.md' }" in compact
+    assert "$previewFiles.Count -ne 1" in compact
+    assert "Test-W4PathContainedBy -Candidate $previewFile -Root $vaultRoot" in compact
+    assert "Assert-W4SafePathChain -Path $previewFile" in compact
+    assert "Test-Path -LiteralPath $previewBackup" in compact
+
+    entry_search = compact.index("Select-W4NavigationItem -Gui $gui -Name '搜索'")
+    entry_fault = compact.index(
+        "$browserEntryError = Invoke-W4WithFilePathBlockedByDirectory",
+        entry_search,
+    )
+    assert (
+        "-FilePath $database -BackupPath $entryFailureBackup "
+        "-Label 'BM25 Browser entry-status fault' -Action {"
+        in compact[entry_fault:]
+    )
+    entry_browser = compact.index(
+        "Select-W4NavigationItem -Gui $gui -Name '浏览'", entry_fault
+    )
+    entry_error = compact.index(
+        "-Expected @('条目加载失败（错误代码：browser_entry_count_failed）')",
+        entry_browser,
+    )
+    entry_segment = compact.index("'uia-contract-browser-entry-error.json'", entry_error)
+    browser_fault = compact.index(
+        "$browserPreviewDegraded = Invoke-W4WithTemporarilyMissingFile",
+        entry_segment,
+    )
+    assert (
+        "-FilePath $previewFile -BackupPath $previewBackup "
+        "-Label 'BM25 Browser preview degradation' -Action {"
+        in compact[browser_fault:]
+    )
+    browser_error = compact.index(
+        "-Expected @('预览已降级：正在显示安全摘要（错误代码：resource_missing）')",
+        browser_fault,
+    )
+    browser_segment = compact.index(
+        "'uia-contract-browser-preview-degraded.json'", browser_error
+    )
+    browser_success = compact.index("'uia-contract-browser.json'", browser_segment)
+    browser_refresh = compact[browser_segment:browser_success]
+    assert "Select-W4NavigationItem -Gui $gui -Name '搜索'" in browser_refresh
+    assert "Select-W4NavigationItem -Gui $gui -Name '浏览'" in browser_refresh
+    assert "'uia-absence-browser-success.json'" in browser_refresh
+
+    search_fault = compact.index(
+        "$searchPreviewDegraded = Invoke-W4WithTemporarilyMissingFile",
+        browser_success,
+    )
+    search_error = compact.index(
+        "-Expected @('预览降级：Markdown 正文不可用，以下显示安全摘要"
+        "（问题代码：resource_missing）')",
+        search_fault,
+    )
+    search_segment = compact.index(
+        "'uia-contract-search-preview-degraded.json'", search_error
+    )
+    search_success = compact.index("'uia-contract-search.json'", search_segment)
+    assert "Invoke-W4UiaElement -Element $submit" in compact[
+        search_segment:search_success
+    ]
+    assert "'uia-absence-search-success.json'" in compact[
+        search_segment:search_success
+    ]
+
+    backend_fault = compact.index(
+        "$errorStatus = Invoke-W4WithFilePathBlockedByDirectory",
+        search_success,
+    )
+    backend_oracle = compact.index(
+        "$observed = Wait-W4UiaTextContains -Element $status -Text '搜索失败'",
+        backend_fault,
+    )
+    assert (
+        entry_search
+        < entry_fault
+        < entry_browser
+        < entry_error
+        < entry_segment
+        < browser_fault
+        < browser_error
+        < browser_segment
+        < browser_success
+        < search_fault
+        < search_error
+        < search_segment
+        < search_success
+        < backend_fault
+        < backend_oracle
+    )
+
+    assert "Start-Sleep" not in block
+    assert "Invoke-W4SqliteStatement" not in block
+    assert re.search(r"ReadAll(?:Text|Bytes)\([^)]*\$database", compact) is None
+    assert re.search(r"(?i)\b(?:sendkeys|keyboard|ocr|tesseract)\b", block) is None
+
+
+def test_bm25_browser_recovery_crosses_zero_selection_before_fresh_preview() -> None:
+    block = _powershell_function(_read(SCENARIO_MODULE), "Invoke-W4Bm25SearchScenario")
+    compact = _compact_powershell(block)
+    degraded = compact.index("'uia-contract-browser-preview-degraded.json'")
+    search_navigation = compact.index(
+        "Select-W4NavigationItem -Gui $gui -Name '搜索'", degraded
+    )
+    browser_navigation = compact.index(
+        "Select-W4NavigationItem -Gui $gui -Name '浏览'", search_navigation
+    )
+    zero_selection = compact.index(
+        "Wait-W4UiaSelectionCount -Root $gui.Window "
+        "-AutomationId 'browser_entry_table' -ExpectedCount 0 -TimeoutSeconds 30",
+        browser_navigation,
+    )
+    absence = compact.index("'uia-absence-browser-success.json'", zero_selection)
+    fresh_table = compact.index(
+        "$browserTable = Get-W4UiaElementById -Root $gui.Window "
+        "-AutomationId 'browser_entry_table'",
+        absence,
+    )
+    fresh_select = compact.index(
+        "Select-W4FirstDataItem -Root $browserTable", fresh_table
+    )
+    fresh_body = compact.index(
+        "Get-W4UiaElementById -Root $gui.Window "
+        "-AutomationId 'browser_preview_text'",
+        fresh_select,
+    )
+    body_oracle = compact.index(
+        "-Text 'artifact-e2e-orchid' -TimeoutSeconds 30", fresh_body
+    )
+    success = compact.index("'uia-contract-browser.json'", body_oracle)
+
+    assert (
+        degraded
+        < search_navigation
+        < browser_navigation
+        < zero_selection
+        < absence
+        < fresh_table
+        < fresh_select
+        < fresh_body
+        < body_oracle
+        < success
+    )
+    assert "Select-W4FirstDataItem" not in compact[degraded:zero_selection]
+    assert compact[zero_selection:success].count(
+        "Get-W4UiaElementById -Root $gui.Window "
+        "-AutomationId 'browser_entry_table'"
+    ) == 1
+
+
+def test_selection_count_wait_freshly_resolves_exact_selection_container() -> None:
+    helper = _compact_powershell(
+        _powershell_function(_read(SCENARIO_MODULE), "Wait-W4UiaSelectionCount")
+    )
+    loop_start = helper.index("do {")
+    fresh_find = helper.index(
+        "$elements = $Root.FindAll("
+        "[System.Windows.Automation.TreeScope]::Descendants, $condition)",
+        loop_start,
+    )
+    duplicate_guard = helper.index("$elements.Count -gt 1", fresh_find)
+    exact_one = helper.index("$elements.Count -eq 1", duplicate_guard)
+    selection_pattern = helper.index(
+        "[System.Windows.Automation.SelectionPattern]::Pattern", exact_one
+    )
+    current_selection = helper.index(".GetCurrentSelection()", selection_pattern)
+    expected = helper.index("$actualCount -eq $ExpectedCount", current_selection)
+    fresh_return = helper.index("return $elements.Item(0)", expected)
+    loop_end = helper.index("} while ([DateTime]::UtcNow -lt $deadline)", fresh_return)
+
+    assert "AutomationElement]::AutomationIdProperty" in helper
+    assert "[ValidateRange(0, 100)][int]$ExpectedCount" in helper
+    assert (
+        loop_start
+        < fresh_find
+        < duplicate_guard
+        < exact_one
+        < selection_pattern
+        < current_selection
+        < expected
+        < fresh_return
+        < loop_end
+    )
+    assert "does not expose SelectionPattern" in helper
+    assert "$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)" in helper
+    assert "Start-Sleep -Milliseconds 50" in helper
+    assert "selection count did not reach expected value" in helper
+
+
+def test_bm25_search_recovery_crosses_distinct_terminal_before_target_rerun() -> None:
+    block = _powershell_function(_read(SCENARIO_MODULE), "Invoke-W4Bm25SearchScenario")
+    compact = _compact_powershell(block)
+    degraded = compact.index("'uia-contract-search-preview-degraded.json'")
+    distinct_value = compact.index(
+        "Set-W4UiaValue -Element $input -Value 'w4-no-hit-5f37c22a'",
+        degraded,
+    )
+    distinct_invoke = compact.index(
+        "Invoke-W4UiaElement -Element $submit", distinct_value
+    )
+    distinct_terminal = compact.index(
+        "Wait-W4UiaTextContains -Element $status "
+        "-Text '未找到匹配结果' -TimeoutSeconds 30",
+        distinct_invoke,
+    )
+    zero_selection = compact.index(
+        "Wait-W4UiaSelectionCount -Root $gui.Window "
+        "-AutomationId 'search_result_table' -ExpectedCount 0 -TimeoutSeconds 10",
+        distinct_terminal,
+    )
+    target_value = compact.index(
+        "Set-W4UiaValue -Element $input -Value 'artifact-e2e-orchid'",
+        zero_selection,
+    )
+    target_invoke = compact.index(
+        "Invoke-W4UiaElement -Element $submit", target_value
+    )
+    found_terminal = compact.index(
+        "$hitStatus = Wait-W4UiaTextContains -Element $status "
+        "-Text '找到 1 条结果' -TimeoutSeconds 30",
+        target_invoke,
+    )
+    fresh_table = compact.index(
+        "$resultTable = Get-W4UiaElementById -Root $gui.Window "
+        "-AutomationId 'search_result_table'",
+        found_terminal,
+    )
+    fresh_select = compact.index(
+        "Select-W4FirstDataItem -Root $resultTable", fresh_table
+    )
+    fresh_body = compact.index(
+        "Get-W4UiaElementById -Root $gui.Window "
+        "-AutomationId 'search_preview_text'",
+        fresh_select,
+    )
+    body_oracle = compact.index(
+        "-Text 'artifact-e2e-orchid' -TimeoutSeconds 30", fresh_body
+    )
+    absence = compact.index("'uia-absence-search-success.json'", body_oracle)
+    success = compact.index("'uia-contract-search.json'", absence)
+
+    assert (
+        degraded
+        < distinct_value
+        < distinct_invoke
+        < distinct_terminal
+        < zero_selection
+        < target_value
+        < target_invoke
+        < found_terminal
+        < fresh_table
+        < fresh_select
+        < fresh_body
+        < body_oracle
+        < absence
+        < success
+    )
+    recovery = compact[degraded:success]
+    assert recovery.count("Invoke-W4UiaElement -Element $submit") == 2
+    assert recovery.count(
+        "Set-W4UiaValue -Element $input -Value 'w4-no-hit-5f37c22a'"
+    ) == 1
+    assert recovery.count(
+        "Set-W4UiaValue -Element $input -Value 'artifact-e2e-orchid'"
+    ) == 1
+    assert "$hitStatus = Wait-W4UiaTextContains" not in compact[degraded:zero_selection]
+
+
+def test_bm25_mutation_helpers_wrap_mutation_and_restore_in_finally() -> None:
+    source = _read(SCENARIO_MODULE)
+    missing = _compact_powershell(
+        _powershell_function(source, "Invoke-W4WithTemporarilyMissingFile")
+    )
+    blocked = _compact_powershell(
+        _powershell_function(source, "Invoke-W4WithFilePathBlockedByDirectory")
+    )
+
+    for helper in (missing, blocked):
+        assert "Assert-W4SafePathChain -Path $source" in helper
+        assert "Assert-W4SafePathChain -Path $backup" in helper
+        assert "Test-Path -LiteralPath $source -PathType Leaf" in helper
+        assert "Test-Path -LiteralPath $backup" in helper
+        assert "Test-Path -LiteralPath $unexpected" in helper
+        assert "$expectedSha256 = Get-W4FileSha256 -Path $source" in helper
+        mutation_try = helper.index("try {")
+        move = helper.index("[System.IO.File]::Move($source, $backup)")
+        action = helper.index("return (& $Action)", move)
+        finally_block = helper.index("} finally {", action)
+        restore = helper.index("[System.IO.File]::Move($backup, $source)", finally_block)
+        hash_check = helper.index(
+            "(Get-W4FileSha256 -Path $source) -cne $expectedSha256", restore
+        )
+        assert mutation_try < move < action < finally_block < restore < hash_check
+
+    missing_quarantine = missing.index(
+        "[System.IO.File]::Move($source, $unexpected)"
+    )
+    missing_restore = missing.index("[System.IO.File]::Move($backup, $source)")
+    missing_fail = missing.index(
+        "produced an unexpected replacement while the original was gated"
+    )
+    assert missing_quarantine < missing_restore < missing_fail
+
+    blocked_try = blocked.index("try {")
+    blocked_move = blocked.index(
+        "[System.IO.File]::Move($source, $backup)", blocked_try
+    )
+    blocked_create = blocked.index(
+        "[void][System.IO.Directory]::CreateDirectory($source)", blocked_move
+    )
+    blocked_action = blocked.index("return (& $Action)", blocked_create)
+    blocked_finally = blocked.index("} finally {", blocked_action)
+    empty_delete = blocked.index(
+        "[System.IO.Directory]::Delete($source, $false)", blocked_finally
+    )
+    content_quarantine = blocked.index(
+        "[System.IO.Directory]::Move($source, $unexpected)", blocked_finally
+    )
+    blocked_restore = blocked.index(
+        "[System.IO.File]::Move($backup, $source)", blocked_finally
+    )
+    blocked_fail = blocked.index(
+        "produced unexpected content inside the blocked database path",
+        blocked_restore,
+    )
+    assert (
+        blocked_try
+        < blocked_move
+        < blocked_create
+        < blocked_action
+        < blocked_finally
+        < empty_delete
+        < content_quarantine
+        < blocked_restore
+        < blocked_fail
+    )
+
+
+@pytest.mark.parametrize(
+    ("helper", "mode", "expected_error", "unexpected_is_directory"),
+    [
+        ("Invoke-W4WithTemporarilyMissingFile", "success", None, False),
+        (
+            "Invoke-W4WithTemporarilyMissingFile",
+            "action_throw",
+            "action-sentinel",
+            False,
+        ),
+        (
+            "Invoke-W4WithTemporarilyMissingFile",
+            "replacement",
+            "unexpected replacement",
+            False,
+        ),
+        ("Invoke-W4WithFilePathBlockedByDirectory", "success", None, False),
+        (
+            "Invoke-W4WithFilePathBlockedByDirectory",
+            "action_throw",
+            "action-sentinel",
+            False,
+        ),
+        (
+            "Invoke-W4WithFilePathBlockedByDirectory",
+            "replacement",
+            "unexpected content",
+            True,
+        ),
+    ],
+)
+def test_bm25_mutation_helpers_restore_after_success_throw_and_replacement(
+    tmp_path: Path,
+    helper: str,
+    mode: str,
+    expected_error: str | None,
+    unexpected_is_directory: bool,
+) -> None:
+    result = _run_w4_mutation_helper(tmp_path, helper=helper, mode=mode)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["source_text"] == "original-synthetic-bytes"
+    assert payload["backup_exists"] is False
+    if expected_error is None:
+        assert payload["action_result"] == "success"
+        assert payload["caught"] is None
+        assert payload["unexpected_exists"] is False
+    else:
+        assert expected_error in payload["caught"]
+        assert payload["unexpected_exists"] is (mode == "replacement")
+    assert payload["unexpected_is_directory"] is unexpected_is_directory
+
+
+def test_archive_tabs_use_exact_child_selection_not_container_selection() -> None:
+    source = _read(SCENARIO_MODULE)
+    segment_block = _powershell_function(source, "Assert-W4UiaContractSegment")
+    selection_match = re.search(
+        r"\$selectionIds = @\((.*?)\) \$expandCollapseIds",
+        _compact_powershell(segment_block),
+    )
+    assert selection_match is not None
+    assert _extract_single_quoted_values(selection_match.group(1)) == {
+        "nav_list",
+        "browser_entry_table",
+        "search_result_table",
+        "session_list",
+    }
+
+    offline_block = _powershell_function(source, "Invoke-W4OfflineTextArchiveScenario")
+    offline_compact = _compact_powershell(offline_block)
+    assert _uia_contract_segment_ids(
+        offline_block, "uia-contract-archive-url-default.json"
+    ) == {
+        "archive_view",
+        "archive_tabs",
+        "archive_url_input",
+        "archive_url_submit",
+    }
+    assert _uia_contract_segment_ids(
+        offline_block, "uia-contract-archive-text-active.json"
+    ) == {
+        "archive_view",
+        "archive_tabs",
+        "archive_text_title",
+        "archive_text_content",
+        "archive_text_submit",
+    }
+    assert _uia_contract_segment_ids(
+        offline_block, "uia-contract-archive-running.json"
+    ) == {
+        "archive_view",
+        "archive_progress_status",
+    }
+    assert _uia_contract_segment_ids(
+        offline_block, "uia-contract-archive-result.json"
+    ) == {
+        "archive_view",
+        "archive_tabs",
+        "archive_result_title",
+        "archive_result_id",
+        "archive_result_path",
+        "archive_result_warning",
+        "archive_go_browser",
+    }
+
+    registry = json.loads(_read(SCENARIO_CONTRACT))["uia"][
+        "required_automation_ids"
+    ]
+    for conditional_id in (
+        "archive_url_input",
+        "archive_url_submit",
+        "archive_progress_status",
+    ):
+        assert registry.count(conditional_id) == 1
+
+    navigation = offline_compact.index("Select-W4NavigationItem -Gui $gui -Name '归档'")
+    url_default = offline_compact.index("'uia-contract-archive-url-default.json'")
+    tabs_lookup = offline_compact.index(
+        "$tabs = Get-W4UiaElementById -Root $gui.Window "
+        "-AutomationId 'archive_tabs'",
+        url_default,
+    )
+    tab_selection = offline_compact.index(
+        "Select-W4UiaItemByName -Root $tabs -Name '文本归档'", tabs_lookup
+    )
+    text_active = offline_compact.index(
+        "'uia-contract-archive-text-active.json'", tab_selection
+    )
+    text_input = offline_compact.index(
+        "Set-W4UiaValue -Element (Get-W4UiaElementById -Root $gui.Window "
+        "-AutomationId 'archive_text_title')",
+        text_active,
+    )
+    text_submit_lookup = offline_compact.index(
+        "$textSubmit = Get-W4UiaElementById -Root $gui.Window "
+        "-AutomationId 'archive_text_submit'",
+        text_input,
+    )
+    accept_task = offline_compact.index(
+        "$providerAcceptTask = $providerGate.AcceptTcpClientAsync()",
+        text_submit_lookup,
+    )
+    archive_submit = offline_compact.index(
+        "Invoke-W4UiaElement -Element $textSubmit", accept_task
+    )
+    running_contract = offline_compact.index(
+        "'uia-contract-archive-running.json'", archive_submit
+    )
+    result_wait = offline_compact.index(
+        "Wait-W4UiaTextContains -Element $resultTitle", running_contract
+    )
+    result_contract = offline_compact.index(
+        "'uia-contract-archive-result.json'", result_wait
+    )
+    assert (
+        navigation
+        < url_default
+        < tabs_lookup
+        < tab_selection
+        < text_active
+        < text_input
+        < text_submit_lookup
+        < accept_task
+        < archive_submit
+        < running_contract
+        < result_wait
+        < result_contract
+    )
+    assert re.search(
+        r"(?i)\b(?:sendkeys|keyboard|ocr|tesseract)\b", offline_block
+    ) is None
+    assert (
+        "$tabs = Get-W4UiaElementById -Root $gui.Window "
+        "-AutomationId 'archive_tabs'" in offline_compact
+    )
+    assert (
+        "Select-W4UiaItemByName -Root $tabs -Name '文本归档'" in offline_compact
+    )
+
+    selection_action = _compact_powershell(
+        _powershell_function(_read(DRIVER_MODULE), "Select-W4UiaItemByName")
+    )
+    assert "AutomationElement]::NameProperty" in selection_action
+    assert "$matches.Count -ne 1" in selection_action
+    assert "SelectionItemPattern]::Pattern" in selection_action
+    assert "SelectionItemPattern]$pattern).Select()" in selection_action
+
+    assert "Wait-W4UiaTextContains -Element $resultTitle" in offline_compact
+    assert (
+        "$warning.IndexOf($workflowWarning, "
+        "[System.StringComparison]::Ordinal) -lt 0" in offline_compact
+    )
+    assert "$warning -notmatch 'provider'" not in offline_compact
+    assert "Test-W4PathContainedBy -Candidate $savedPath" in offline_compact
+    assert "saved_path_sha256 = Get-W4FileSha256 -Path $savedPath" in offline_compact
+    assert "restart_opened_saved_entry = $true" in offline_compact
+
+
+def test_native_tcp_owner_inspector_uses_bounded_ipv4_owner_table_contract() -> None:
+    initializer = _compact_powershell(
+        _powershell_function(
+            _read(DRIVER_MODULE), "Initialize-W4FileIdentityInspector"
+        )
+    )
+
+    assert "$tcpConnectionType = 'PkvW4.TcpConnectionInspector' -as [type]" in initializer
+    assert (
+        "$fileIdentityType -and $processTreeType -and $reparsePointType "
+        "-and $tcpConnectionType" in initializer
+    )
+    assert (
+        "$fileIdentityType -or $processTreeType -or $reparsePointType "
+        "-or $tcpConnectionType" in initializer
+    )
+    assert "partial or stale PkvW4 native-inspector type set" in initializer
+    assert "public static class TcpConnectionInspector" in initializer
+    assert "private const int AF_INET = 2;" in initializer
+    assert "private const int TCP_TABLE_OWNER_PID_CONNECTIONS = 4;" in initializer
+    assert "private const uint MIB_TCP_STATE_ESTAB = 5;" in initializer
+    assert "[StructLayout(LayoutKind.Sequential, Pack = 4)]" in initializer
+    assert initializer.count("result = GetExtendedTcpTable(") == 2
+    assert "IntPtr.Zero, ref size, true, AF_INET, " in initializer
+    assert "buffer, ref size, true, AF_INET, " in initializer
+    assert "TCP_TABLE_OWNER_PID_CONNECTIONS, 0" in initializer
+    assert "private static extern uint ntohl(uint networkLong);" in initializer
+    assert "private static extern ushort ntohs(ushort networkShort);" in initializer
+    assert "uint hostAddress = ntohl(networkAddress);" in initializer
+    assert "return (int)ntohs((ushort)(networkPort & 0xffff));" in initializer
+    assert "size < sizeof(uint)" in initializer
+    assert "long requiredSize = checked(4L + checked((long)count * rowSize));" in initializer
+    assert "count < 0 || requiredSize > size" in initializer
+    assert "row.State == MIB_TCP_STATE_ESTAB" in initializer
+    assert "Marshal.FreeHGlobal(buffer);" in initializer
+    assert "AddressFamily.InterNetwork" in initializer
+    assert "localPort < 1 || localPort > 65535" in initializer
+    assert "remotePort < 1 || remotePort > 65535" in initializer
+
+
+def test_tcp_owner_helper_binds_exact_tuple_and_fresh_root_identity() -> None:
+    helper = _compact_powershell(
+        _powershell_function(_read(DRIVER_MODULE), "Assert-W4TcpClientOwnedByProcess")
+    )
+    snapshot = helper.index("New-W4ProcessTreeIdentitySnapshot -Process $Process")
+    initialize = helper.index("Initialize-W4FileIdentityInspector", snapshot)
+    lookup = helper.index(
+        "[PkvW4.TcpConnectionInspector]::FindEstablishedOwners( "
+        "$peerEndpoint.Address.ToString(), $peerEndpoint.Port, "
+        "$serverEndpoint.Address.ToString(), $serverEndpoint.Port )",
+        initialize,
+    )
+    exact_row = helper.index("$ownerPids.Count -eq 1", lookup)
+    exact_pid = helper.index("$ownerPid -ne $Process.Id", exact_row)
+    live_root = helper.index(
+        "Get-W4LiveProcessForIdentity -Identity $rootIdentity[0]", exact_pid
+    )
+
+    assert "$serverEndpoint = $Client.Client.LocalEndPoint" in helper
+    assert "$peerEndpoint = $Client.Client.RemoteEndPoint" in helper
+    assert "$serverEndpoint.Address.Equals($ExpectedServerEndpoint.Address)" in helper
+    assert "$serverEndpoint.Port -ne $ExpectedServerEndpoint.Port" in helper
+    assert "AddressFamily]::InterNetwork" in helper
+    assert "$rootIdentity.Count -ne 1" in helper
+    assert "$rootIdentity[0].ProcessId -ne $Process.Id" in helper
+    assert (
+        "$rootIdentity[0].StartTimeUtcTicks -ne "
+        "[int64]$identitySnapshot.RootStartTimeUtcTicks" in helper
+    )
+    assert "$ownerPids.Count -gt 1" in helper
+    assert "$ownerPids.Count -ne 1" in helper
+    assert snapshot < initialize < lookup < exact_row < exact_pid < live_root
+    assert "OwnerVerified = $true" in helper
+    assert "OwnerProcessId = $ownerPid" in helper
+    assert "OwnerStartTimeUtcTicks = [int64]$rootIdentity[0].StartTimeUtcTicks" in helper
+
+    fixed_errors = set(re.findall(r"throw '([^']+)'", helper))
+    assert fixed_errors == {
+        "W4 TCP owner identity checks require Windows",
+        "TCP owner root process exited before identity verification",
+        "Accepted Provider connection endpoints do not match the exact IPv4 listener",
+        "TCP owner root process identity was not exact",
+        "Accepted Provider connection did not have one exact TCP owner row",
+        "Accepted Provider connection TCP owner was not observable",
+        "Accepted Provider connection owner was not the GUI process identity",
+        "Accepted Provider connection owner changed process identity",
+    }
+    assert all("$" not in message for message in fixed_errors)
+
+
+def test_tcp_owner_helper_accepts_self_client_and_rejects_different_live_root() -> None:
+    result = _run_tcp_owner_contract_probe()
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["owner_verified"] is True
+    assert payload["owner_pid"] == payload["self_pid"]
+    assert payload["owner_start_ticks"] > 0
+    assert payload["different_live_root_rejected"] is True
+    assert payload["different_live_root_error"] == (
+        "Accepted Provider connection owner was not the GUI process identity"
+    )
+    assert payload["zero_owner_rejected"] is True
+    assert payload["zero_owner_error"] == (
+        "Accepted Provider connection TCP owner was not observable"
+    )
+
+
+def test_archive_running_state_is_bound_to_a_loopback_provider_gate() -> None:
+    block = _powershell_function(
+        _read(SCENARIO_MODULE), "Invoke-W4OfflineTextArchiveScenario"
+    )
+    compact = _compact_powershell(block)
+    listener = compact.index(
+        "[System.Net.Sockets.TcpListener]::new( "
+        "[System.Net.IPAddress]::Parse('127.0.0.1'), 0 )"
+    )
+    listener_start = compact.index("$providerGate.Start(1)", listener)
+    local_config = compact.index(
+        'Write-W4ChatLocalConfig -ScenarioContext $ScenarioContext '
+        '-BaseUrl "http://127.0.0.1:$providerGatePort/v1"',
+        listener_start,
+    )
+    text_submit = compact.index(
+        "$textSubmit = Get-W4UiaElementById -Root $gui.Window "
+        "-AutomationId 'archive_text_submit'",
+        local_config,
+    )
+    accept_task = compact.index(
+        "$providerAcceptTask = $providerGate.AcceptTcpClientAsync()", text_submit
+    )
+    submit = compact.index("Invoke-W4UiaElement -Element $textSubmit", accept_task)
+    timeout_guard = compact.index(
+        "if (-not $providerAcceptTask.Wait(20000))", submit
+    )
+    accept = compact.index(
+        "$providerGateClient = $providerAcceptTask.GetAwaiter().GetResult()",
+        timeout_guard,
+    )
+    peer = compact.index("$providerGateClient.Client.RemoteEndPoint", accept)
+    loopback_check = compact.index(
+        "[System.Net.IPAddress]::IsLoopback($providerPeer.Address)", peer
+    )
+    owner_check = compact.index(
+        "Assert-W4TcpClientOwnedByProcess -Client $providerGateClient "
+        "-ExpectedServerEndpoint ([System.Net.IPEndPoint]$providerGate.LocalEndpoint) "
+        "-Process $gui.Process -TimeoutMilliseconds 2000",
+        loopback_check,
+    )
+    owner_exact = compact.index(
+        "[int]$providerOwner.OwnerProcessId -ne [int]$gui.Process.Id",
+        owner_check,
+    )
+    request_line = compact.index(
+        "Read-W4BoundedHttpRequestLine -Client $providerGateClient "
+        "-TimeoutMilliseconds 5000 -MaxBytes 2048",
+        owner_exact,
+    )
+    request_contract = compact.index(
+        "Assert-W4GatedProviderRequestLine -RequestLine $requestLine", request_line
+    )
+    progress_lookup = compact.index(
+        "$progressStatus = Get-W4UiaElementById -Root $gui.Window "
+        "-AutomationId 'archive_progress_status'",
+        request_contract,
+    )
+    progress_text = compact.index(
+        "$progressText = Get-W4UiaText -Element $progressStatus", progress_lookup
+    )
+    progress_pid = compact.index(
+        "[int]$progressStatus.Current.ProcessId -ne [int]$gui.Process.Id",
+        progress_text,
+    )
+    progress_visible = compact.index(
+        "[bool]$progressStatus.Current.IsOffscreen", progress_pid
+    )
+    progress_nonempty = compact.index(
+        "[string]::IsNullOrWhiteSpace($progressText)", progress_visible
+    )
+    text_disabled = compact.index(
+        "Wait-W4UiaElementEnabledState -Root $gui.Window "
+        "-AutomationId 'archive_text_submit' -Expected $false -TimeoutSeconds 10",
+        progress_nonempty,
+    )
+    url_disabled = compact.index(
+        "Wait-W4UiaElementEnabledState -Root $gui.Window "
+        "-AutomationId 'archive_url_submit' -Expected $false -TimeoutSeconds 10",
+        text_disabled,
+    )
+    text_still_disabled = compact.index(
+        "Wait-W4UiaElementEnabledState -Root $gui.Window "
+        "-AutomationId 'archive_text_submit' -Expected $false -TimeoutSeconds 10",
+        url_disabled,
+    )
+    running = compact.index("'uia-contract-archive-running.json'", text_still_disabled)
+    client_close = compact.index("$providerGateClient.Dispose()", running)
+    listener_stop = compact.index("$providerGate.Stop()", client_close)
+    result = compact.index(
+        "Wait-W4UiaTextContains -Element $resultTitle -Text '归档成功（降级）'",
+        listener_stop,
+    )
+    terminal_absence = compact.index(
+        "'uia-absence-archive-terminal.json'", result
+    )
+    text_enabled = compact.index(
+        "Wait-W4UiaElementEnabledState -Root $gui.Window "
+        "-AutomationId 'archive_text_submit' -Expected $true -TimeoutSeconds 10",
+        terminal_absence,
+    )
+    url_enabled = compact.index(
+        "Wait-W4UiaElementEnabledState -Root $gui.Window "
+        "-AutomationId 'archive_url_submit' -Expected $true -TimeoutSeconds 10",
+        text_enabled,
+    )
+    text_still_enabled = compact.index(
+        "Wait-W4UiaElementEnabledState -Root $gui.Window "
+        "-AutomationId 'archive_text_submit' -Expected $true -TimeoutSeconds 10",
+        url_enabled,
+    )
+    evidence = compact.index("'archive-provider-gate.json'", text_still_enabled)
+    release_action = compact.index("release_action = 'close_without_response'", evidence)
+    issue_evidence = compact.index(
+        "induced_workflow_issue_code = 'workflow_step_failed'", release_action
+    )
+    warning_read = compact.index("$warning = Get-W4UiaText", issue_evidence)
+    warning_marker = compact.index(
+        "$workflowWarning = "
+        "'部分可选工作流步骤未完成（问题代码: workflow_step_failed）。'",
+        warning_read,
+    )
+    warning_prefix = compact.index("$warning.StartsWith(", warning_marker)
+    warning_issue = compact.index(
+        "$warning.IndexOf($workflowWarning, "
+        "[System.StringComparison]::Ordinal) -lt 0",
+        warning_prefix,
+    )
+    warning_suffix = compact.index("$warning.EndsWith(", warning_issue)
+
+    assert (
+        listener
+        < listener_start
+        < local_config
+        < text_submit
+        < accept_task
+        < submit
+        < timeout_guard
+        < accept
+        < peer
+        < loopback_check
+        < owner_check
+        < owner_exact
+        < request_line
+        < request_contract
+        < progress_lookup
+        < progress_text
+        < progress_pid
+        < progress_visible
+        < progress_nonempty
+        < text_disabled
+        < url_disabled
+        < text_still_disabled
+        < running
+        < client_close
+        < listener_stop
+        < result
+        < terminal_absence
+        < text_enabled
+        < url_enabled
+        < text_still_enabled
+        < evidence
+        < release_action
+        < issue_evidence
+        < warning_read
+        < warning_marker
+        < warning_prefix
+        < warning_issue
+        < warning_suffix
+    )
+    assert "Start-Sleep" not in block
+    assert "schema_version = 'pkv.w4.archive-provider-gate.v1'" in compact
+    for exact_field in (
+        "host = '127.0.0.1'",
+        "accept_timeout_milliseconds = 20000",
+        "request_line_timeout_milliseconds = 5000",
+        "request_method = 'POST'",
+        "request_path = '/v1/chat/completions'",
+        "request_http_version = 'HTTP/1.1'",
+        "request_line_validated = $true",
+        "peer_loopback = $true",
+        "tcp_owner_verified = $true",
+        "tcp_owner_pid = [int]$providerOwner.OwnerProcessId",
+        "progress_visible = $true",
+        "progress_text_nonempty = $true",
+        "submits_disabled_while_running = $true",
+        "submits_enabled_after_terminal = $true",
+        "release_action = 'close_without_response'",
+        "induced_workflow_issue_code = 'workflow_step_failed'",
+    ):
+        assert exact_field in compact
+    assert "workflow_issue_code = 'workflow_step_failed'" in compact
+    assert "$warning -notmatch 'provider'" not in compact
+    evidence_end = compact.index("})", evidence)
+    gate_evidence = compact[evidence:evidence_end]
+    assert set(re.findall(r"\btcp_owner_[a-z_]+", gate_evidence)) == {
+        "tcp_owner_verified",
+        "tcp_owner_pid",
+    }
+    assert "OwnerStartTimeUtcTicks" not in gate_evidence
+    assert "$providerPeer" not in gate_evidence
+    request_validator = _compact_powershell(
+        _powershell_function(
+            _read(SCENARIO_MODULE), "Assert-W4GatedProviderRequestLine"
+        )
+    )
+    assert "$RequestLine -cne 'POST /v1/chat/completions HTTP/1.1'" in request_validator
+    assert (
+        "throw 'Offline archive Provider request-line contract mismatch'"
+        in request_validator
+    )
+    mismatch_throw = request_validator.split("throw ", maxsplit=1)[1]
+    assert "$RequestLine" not in mismatch_throw
+    assert "unexpected Provider request line" not in request_validator
+    assert (
+        "} finally { if ($null -ne $providerGateClient) { "
+        "$providerGateClient.Dispose() } $providerGate.Stop() }" in compact
+    )
+
+    enabled_wait = _compact_powershell(
+        _powershell_function(
+            _read(SCENARIO_MODULE), "Wait-W4UiaElementEnabledState"
+        )
+    )
+    assert "AutomationElement]::AutomationIdProperty" in enabled_wait
+    assert "$Root.FindAll([System.Windows.Automation.TreeScope]::Descendants" in enabled_wait
+    assert "$elements.Count -gt 1" in enabled_wait
+    assert "$elements.Count -eq 1" in enabled_wait
+    assert "$actual = [bool]$elements.Item(0).Current.IsEnabled" in enabled_wait
+    assert "$actual -eq $Expected" in enabled_wait
+    assert "return $elements.Item(0)" in enabled_wait
+    assert "$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)" in enabled_wait
+    assert "Start-Sleep -Milliseconds 50" in enabled_wait
+
+
+def test_gated_request_line_mismatch_is_fixed_and_does_not_leak_raw_input(
+    tmp_path: Path,
+) -> None:
+    valid = _run_gated_request_line_validator(
+        tmp_path, "POST /v1/chat/completions HTTP/1.1"
+    )
+    sensitive_line = "GET /v1/chat/completions?token=w4-sensitive-canary HTTP/1.1"
+    invalid = _run_gated_request_line_validator(tmp_path, sensitive_line)
+
+    assert valid.returncode == 0, valid.stderr
+    assert invalid.returncode != 0
+    assert "Offline archive Provider request-line contract mismatch" in invalid.stderr
+    assert sensitive_line not in invalid.stderr
+    assert "w4-sensitive-canary" not in invalid.stderr
+    assert sensitive_line not in invalid.stdout
+    assert "w4-sensitive-canary" not in invalid.stdout
+
+
+def test_archive_provider_gate_reads_one_bounded_strict_http_request_line() -> None:
+    block = _compact_powershell(
+        _powershell_function(
+            _read(SCENARIO_MODULE), "Read-W4BoundedHttpRequestLine"
+        )
+    )
+
+    assert "$stream = $Client.GetStream()" in block
+    deadline = block.index(
+        "$deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)"
+    )
+    loop = block.index(
+        "for ($index = 0; $index -lt $MaxBytes; $index += 1)", deadline
+    )
+    first_remaining = block.index(
+        "$remaining = [int][Math]::Ceiling("
+        "($deadline - [DateTime]::UtcNow).TotalMilliseconds)",
+        loop,
+    )
+    first_guard = block.index("if ($remaining -le 0)", first_remaining)
+    first_timeout = block.index(
+        "$stream.ReadTimeout = [Math]::Max(1, "
+        "[Math]::Min($remaining, $TimeoutMilliseconds))",
+        first_guard,
+    )
+    first_read = block.index("$value = $stream.ReadByte()", first_timeout)
+    carriage_return = block.index("if ($value -eq 13)", first_read)
+    crlf_remaining = block.index(
+        "$remaining = [int][Math]::Ceiling("
+        "($deadline - [DateTime]::UtcNow).TotalMilliseconds)",
+        carriage_return,
+    )
+    crlf_guard = block.index("if ($remaining -le 0)", crlf_remaining)
+    crlf_timeout = block.index(
+        "$stream.ReadTimeout = [Math]::Max(1, "
+        "[Math]::Min($remaining, $TimeoutMilliseconds))",
+        crlf_guard,
+    )
+    crlf_read = block.index("$lineFeed = $stream.ReadByte()", crlf_timeout)
+
+    assert (
+        deadline
+        < loop
+        < first_remaining
+        < first_guard
+        < first_timeout
+        < first_read
+        < carriage_return
+        < crlf_remaining
+        < crlf_guard
+        < crlf_timeout
+        < crlf_read
+    )
+    assert block.count("($deadline - [DateTime]::UtcNow).TotalMilliseconds") == 2
+    assert block.count("[Math]::Min($remaining, $TimeoutMilliseconds)") == 2
+    assert "$stream.ReadTimeout = $TimeoutMilliseconds" not in block
+    assert "request-line deadline expired" in block
+    assert "request-line deadline expired before CRLF" in block
+    assert "request-line read failed before the absolute deadline" in block
+    assert "request-line CRLF read failed before the absolute deadline" in block
+    assert "$value -lt 0" in block
+    assert "$value -eq 13" in block
+    assert "$lineFeed -ne 10" in block
+    assert "$value -eq 10 -or $value -lt 32 -or $value -gt 126" in block
+    assert "$bytes.Add([byte]$value)" in block
+    assert "$terminated = $true" in block
+    assert "if (-not $terminated)" in block
+    assert "request line exceeded $MaxBytes bytes" in block
+    assert "[System.Text.Encoding]::ASCII.GetString($bytes.ToArray())" in block
+
+
+def test_chat_restart_selection_proof_binds_container_item_and_runtime_id() -> None:
+    source = _read(SCENARIO_MODULE)
+    select_block = _compact_powershell(
+        _powershell_function(source, "Select-W4FirstListItem")
+    )
+    proof_block = _compact_powershell(
+        _powershell_function(source, "Get-W4UiaSelectionProof")
+    )
+
+    assert "SelectionItemPattern]$pattern).Select()" in select_block
+    assert "return $item" in select_block
+    assert "SelectionPattern]::Pattern" in proof_block
+    assert "SelectionItemPattern]::Pattern" in proof_block
+    assert "SelectionItemPattern]$itemPattern).Current.IsSelected" in proof_block
+    assert "SelectionPattern]$containerPattern).GetCurrentSelection()" in proof_block
+    assert "$currentSelection.Count -ne 1" in proof_block
+    assert len(re.findall(r"\.GetRuntimeId\(\)", proof_block)) >= 2
+    assert "$expectedRuntimeId.Count -ne $actualRuntimeId.Count" in proof_block
+    assert (
+        "[int]$expectedRuntimeId[$index] -ne [int]$actualRuntimeId[$index]"
+        in proof_block
+    )
+    assert "pkv.w4.uia-selection-proof.v1" in proof_block
+
+
+def test_chat_restart_waits_for_round_then_freshly_resolves_messages() -> None:
+    source = _read(SCENARIO_MODULE)
+    fresh_block = _compact_powershell(
+        _powershell_function(source, "Wait-W4FreshUiaTextByIdContains")
+    )
+    loop_start = fresh_block.index("do {")
+    resolve = fresh_block.index(
+        "$matches = $Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, "
+        "$condition)",
+        loop_start,
+    )
+    reject_duplicate = fresh_block.index("$matches.Count -gt 1", resolve)
+    exact_one = fresh_block.index("$matches.Count -eq 1", reject_duplicate)
+    read = fresh_block.index("Get-W4UiaText -Element $matches.Item(0)", exact_one)
+    loop_end = fresh_block.index("} while", read)
+
+    assert "AutomationElement]::AutomationIdProperty" in fresh_block
+    assert (
+        loop_start
+        < resolve
+        < reject_duplicate
+        < exact_one
+        < read
+        < loop_end
+    )
+    assert "ElementNotAvailableException" in fresh_block
+
+    chat_block = _compact_powershell(
+        _powershell_function(source, "Invoke-W4ChatLoopbackScenario")
+    )
+    restart = chat_block.index("$restart = Start-W4GuiApplication")
+    session_list = chat_block.index(
+        "$sessionList = Get-W4UiaElementById -Root $restart.Window "
+        "-AutomationId 'session_list'",
+        restart,
+    )
+    selected = chat_block.index(
+        "$selectedSession = Select-W4FirstListItem -Root $sessionList",
+        session_list,
+    )
+    proof = chat_block.index(
+        "Get-W4UiaSelectionProof -Root $sessionList -Item $selectedSession",
+        selected,
+    )
+    evidence = chat_block.index("'chat-session-selection.json'", proof)
+    round_count = chat_block.index(
+        "-AutomationId 'chat_round_count'", evidence
+    )
+    round_terminal = chat_block.index("-Expected @('轮数: 1 / 3')", round_count)
+    fresh_messages = chat_block.index(
+        "Wait-W4FreshUiaTextByIdContains -Root $restart.Window "
+        "-AutomationId 'chat_messages'",
+        round_terminal,
+    )
+    rejected = chat_block.index(
+        "Stopped/error Chat turn leaked into durable restart state", fresh_messages
+    )
+
+    assert (
+        restart
+        < session_list
+        < selected
+        < proof
+        < evidence
+        < round_count
+        < round_terminal
+        < fresh_messages
+        < rejected
+    )
+    assert "$restartMessages" not in chat_block
+    assert "$persisted.Contains($stopPrompt)" in chat_block
+    assert "$persisted.Contains('PKV_W4_STOP_PARTIAL_V1')" in chat_block
+    assert "$persisted.Contains($errorPrompt)" in chat_block

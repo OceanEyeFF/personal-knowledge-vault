@@ -406,17 +406,37 @@ def test_browser_projection_reset_clears_stale_selection(main_window) -> None:
     assert browser._preview_title.text() == "预览"
 
 
-def test_chat_session_selection_works_without_mouse_click(main_window) -> None:
+def test_chat_session_selection_only_syncs_current_and_loads_once(
+    main_window,
+    qtbot,
+) -> None:
     session_list = _widget_by_id(main_window, "session_list")
-    item = QListWidgetItem("Synthetic session")
-    item.setData(Qt.ItemDataRole.UserRole, "session-w4")
-    observed = []
-    main_window._chat_view.sidebar.session_selected.connect(observed.append)
+    source_item = QListWidgetItem("Selection source")
+    source_item.setData(Qt.ItemDataRole.UserRole, "session-w4-source")
+    target_item = QListWidgetItem("Selection target")
+    target_item.setData(Qt.ItemDataRole.UserRole, "session-w4-target")
 
-    session_list.addItem(item)
-    session_list.setCurrentItem(item)
+    # ``load_session`` is the public ViewModel operation that the existing
+    # currentItemChanged path invokes; no widget-private test seam is used.
+    with patch.object(
+        main_window._chat_view.viewmodel,
+        "load_session",
+        return_value=False,
+    ) as load_session:
+        session_list.addItem(source_item)
+        session_list.addItem(target_item)
+        session_list.setCurrentItem(source_item)
+        load_session.reset_mock()
+        session_list.clearSelection()
+        selection_model = session_list.selectionModel()
+        assert selection_model is not None
+        selection_model.select(
+            session_list.model().index(1, 0),
+            QItemSelectionModel.SelectionFlag.Select,
+        )
 
-    assert observed == ["session-w4"]
+        qtbot.waitUntil(lambda: session_list.currentRow() == 1)
+        load_session.assert_called_once_with("session-w4-target")
 
 
 def test_chat_terminal_for_origin_session_does_not_leak_after_switch(
