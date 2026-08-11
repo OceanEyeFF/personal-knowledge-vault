@@ -158,7 +158,7 @@ jobs:
       - name: Run ${{ matrix.suite }} tests
         run: |
           python -m pytest ${{ matrix.paths }} \
-            -m "not network and not manual" \
+            -m "not network and not manual and not artifact and not windows_release_env" \
             --basetemp="$TMP_DIR/pytest" \
             -o "cache_dir=$TMP_DIR/pytest-cache" \
             --junitxml="$PKV_REPORT_DIR/junit.xml"
@@ -223,7 +223,7 @@ jobs:
             tests/integration/test_mcp_*.py \
             tests/blackbox/test_mcp_*.py \
             tests/e2e/test_mcp_e2e_*.py \
-            -m "not network and not manual" \
+            -m "not network and not manual and not artifact and not windows_release_env" \
             --basetemp="$TMP_DIR/pytest" \
             -o "cache_dir=$TMP_DIR/pytest-cache" \
             --cov=src.mcp \

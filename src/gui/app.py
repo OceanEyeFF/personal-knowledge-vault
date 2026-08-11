@@ -11,9 +11,15 @@
 """
 
 import asyncio
+import json
 import logging
+import os
 import sys
 from pathlib import Path
+
+# qasync consults QT_API before it checks which Qt binding is already loaded.
+# Pin the published binding before importing PySide6 or MainWindow.
+os.environ["QT_API"] = "pyside6"
 
 # 确保项目根目录在 sys.path 中（支持直接运行该文件的情形）
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -22,11 +28,17 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
+from src import __version__  # noqa: E402
 from src.gui.main_window import MainWindow  # noqa: E402
-from src.runtime.bootstrap import bootstrap_runtime  # noqa: E402
+from src.runtime.bootstrap import (  # noqa: E402
+    bootstrap_runtime,
+    project_bootstrap_error,
+)
+from src.runtime.errors import PKVRuntimeError  # noqa: E402
 from src.utils.config import Config  # noqa: E402
 
 logger = logging.getLogger("pkv.gui.app")
+_last_bootstrap_failure: dict[str, object] | None = None
 
 _PUBLIC_EXCEPTION_TYPES = {
     ArithmeticError: "ArithmeticError",
@@ -45,14 +57,26 @@ def _public_exception_type(exc_type: type) -> str:
     return _PUBLIC_EXCEPTION_TYPES.get(exc_type, "Exception")
 
 
+def get_bootstrap_failure_projection() -> dict[str, object] | None:
+    """Return a copy of the last stable GUI startup failure, if any."""
+
+    if _last_bootstrap_failure is None:
+        return None
+    return dict(_last_bootstrap_failure)
+
+
 def ensure_database_initialized() -> bool:
     """通过唯一 runtime bootstrap 建立 fresh-install 数据库。
 
     Returns:
         True: 数据库已就绪，False: 初始化失败
     """
+    global _last_bootstrap_failure
+    _last_bootstrap_failure = None
+    stage = "runtime_configuration"
     try:
         config = Config()
+        stage = "runtime_bootstrap"
         context = bootstrap_runtime(config)
         logger.info(
             "数据库已就绪: %s (%s)",
@@ -61,10 +85,32 @@ def ensure_database_initialized() -> bool:
         )
         return True
 
-    except Exception as e:
+    except PKVRuntimeError as exc:
+        _last_bootstrap_failure = project_bootstrap_error(exc, adapter="gui")
         logger.error(
-            "数据库初始化检查失败: error_type=%s",
-            _public_exception_type(type(e)),
+            "GUI runtime bootstrap rejected: %s",
+            json.dumps(
+                _last_bootstrap_failure,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+        return False
+    except Exception as exc:
+        _last_bootstrap_failure = project_bootstrap_error(
+            exc,
+            adapter="gui",
+            stage=stage,
+        )
+        logger.error(
+            "GUI runtime startup failed: %s",
+            json.dumps(
+                _last_bootstrap_failure,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         )
         return False
 
@@ -110,7 +156,7 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("Personal Knowledge Vault")
-    app.setApplicationVersion("0.8.0-alpha")
+    app.setApplicationVersion(__version__)
     app.setOrganizationName("PKV")
     # Qt6 默认启用高 DPI 缩放，无需显式设置 AA_EnableHighDpiScaling
 
@@ -120,6 +166,12 @@ def main() -> int:
     logger.info("正在检查数据库状态...")
     if not ensure_database_initialized():
         logger.error("数据库初始化失败，应用无法启动")
+        failure = get_bootstrap_failure_projection()
+        error_code = (
+            failure["code"]
+            if failure is not None
+            else "gui_bootstrap_failed"
+        )
         QMessageBox.critical(
             None,
             "数据库初始化失败",
@@ -129,6 +181,7 @@ def main() -> int:
                 "1. 发布资源不完整\n"
                 "2. 数据库损坏、版本不受支持或需要升级\n"
                 "3. 用户数据目录权限/路径不安全或磁盘空间不足\n\n"
+                f"错误代码：{error_code}\n"
                 "请查看日志获取详细错误信息。"
             ),
         )
@@ -137,7 +190,7 @@ def main() -> int:
     window = MainWindow()
     window.show()
 
-    logger.info("PKV GUI 已启动 (v0.8.0-alpha)")
+    logger.info("PKV GUI 已启动 (v%s)", __version__)
 
     # 使用 qasync 集成 asyncio 事件循环，
     # 使 @asyncSlot 装饰的异步方法（send_message, archive_url_and_inject）能正常工作

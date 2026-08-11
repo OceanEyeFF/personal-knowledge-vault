@@ -1,0 +1,79 @@
+QT / PYSIDE6 LGPL USER NOTICE TEMPLATE
+======================================
+
+Status: PROJECT-AUTHORED TEMPLATE -- NOT AN UPSTREAM LICENSE TEXT
+Target component version: Qt / PySide6 6.11.1
+Selected license for this distribution: LGPL-3.0-only
+
+RELEASE GATE
+------------
+Do not ship this template with angle-bracket placeholders unresolved. Confirm
+the statements against the final installer and installed layout. This template
+is compliance support material, not legal advice.
+
+USER-FACING NOTICE
+------------------
+
+This product uses <UNMODIFIED_OR_DESCRIBE_MODIFICATIONS> Qt and PySide6
+version 6.11.1 libraries under the GNU Lesser General Public License,
+version 3 only (LGPL-3.0-only).
+
+The covered libraries are dynamically linked and are installed as separate,
+replaceable shared-library files at:
+
+    <INSTALLED_QT_AND_PYSIDE6_LIBRARY_PATHS>
+
+You may replace those covered libraries with compatible modified versions.
+Replacement and restoration instructions are available at:
+
+    <LOCAL_DOCUMENT_PATH_OR_STABLE_URL>
+
+The complete LGPL-3.0-only text and the GPL-3.0-only text incorporated by it
+are supplied with this product at:
+
+    <INSTALLED_LICENSE_DIRECTORY>
+
+The corresponding source code for the exact covered Qt / PySide6 6.11.1
+build, including any distributor modifications and required build or
+installation information, is available at:
+
+    <DURABLE_SOURCE_DOWNLOAD_URL_OR_WRITTEN_OFFER>
+
+No term of this product's end-user license agreement is intended to restrict
+reverse engineering of the application solely for the purpose of debugging
+your modifications to the LGPL-covered libraries. The covered libraries retain
+their own copyright notices and warranty disclaimers.
+
+RELEASE VERIFICATION CHECKLIST
+------------------------------
+
+[ ] The final application uses a suitable shared-library mechanism; the Qt /
+    PySide6 libraries are not statically linked into the application.
+[ ] A compatible modified library can actually be substituted using the
+    published instructions, and signature, updater, or integrity controls do
+    not make that substitution ineffective.
+[ ] The installed license directory contains the complete LGPL-3.0-only and
+    GPL-3.0-only texts and relevant copyright notices.
+[ ] The source location supplies the exact corresponding source for every
+    LGPL-covered binary shipped, plus distributor modifications if any.
+[ ] Installation information is supplied when required for a User Product.
+[ ] Product EULA and technical controls preserve the reverse-engineering
+    permission needed to debug modifications to the LGPL-covered portions.
+[ ] Each shipped Qt module and plugin was separately audited; this template
+    does not resolve GPL-only, commercial, third-party, codec, patent, or other
+    module-specific terms.
+
+IMMUTABLE NORMATIVE BASIS
+-------------------------
+
+LGPL-3.0-only, especially section 4:
+https://raw.githubusercontent.com/qt/qtbase/59c81a3c2247b821b9b84b4eb8d939b77e07e276/LICENSES/LGPL-3.0-only.txt
+SHA-256: da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768
+
+GPL-3.0-only, incorporated by LGPL-3.0-only:
+https://raw.githubusercontent.com/qt/qtbase/59c81a3c2247b821b9b84b4eb8d939b77e07e276/LICENSES/GPL-3.0-only.txt
+SHA-256: 8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903
+
+PySide6 6.11.1 license selection declaration:
+https://raw.githubusercontent.com/pyside/pyside-setup/73fb12a067c2e8f7a464a310aaee2860fa2b64d2/sources/pyside6/PySide6/licensecomment.txt
+SHA-256: dd6a83da77d0b6a113a574154c12cb009751c2b0dfe5c22e288cd86ebc2a1f13

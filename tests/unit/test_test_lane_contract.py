@@ -9,11 +9,12 @@ import yaml
 PROJECT_ROOT = Path(__file__).parents[2]
 REGISTRY = PROJECT_ROOT / "tests" / "contracts" / "m13_test_lanes.v1.yaml"
 PYTEST_INI = PROJECT_ROOT / "pytest.ini"
-SOURCE_SELECTOR = "not manual and not network and not artifact"
-ARTIFACT_SELECTOR = "artifact and not manual and not network"
-PACKAGING_SELECTOR = (
-    "packaging_contract and not manual and not network and not artifact"
+SOURCE_SELECTOR = (
+    "not manual and not network and not artifact and not windows_release_env"
 )
+ARTIFACT_SELECTOR = "artifact and not manual and not network"
+PACKAGING_SELECTOR = "packaging_contract and not manual and not network and not artifact and not windows_release_env"
+WINDOWS_RELEASE_SELECTOR = "packaging_contract and windows_release_env and not manual and not network and not artifact"
 ARTIFACT_TEST_ROOT = PROJECT_ROOT / "tests" / "artifact"
 
 
@@ -37,7 +38,7 @@ def test_default_pytest_lane_excludes_all_opt_in_test_classes() -> None:
     marker_lines = {
         line.strip().split(":", 1)[0] for line in config["markers"].splitlines()
     }
-    assert {"manual", "network", "artifact"} <= marker_lines
+    assert {"manual", "network", "artifact", "windows_release_env"} <= marker_lines
 
 
 def test_lane_registry_freezes_default_source_selection() -> None:
@@ -51,6 +52,7 @@ def test_lane_registry_freezes_default_source_selection() -> None:
     assert set(payload["lanes"]) == {
         "source",
         "packaging-contract",
+        "windows-release-env",
         "artifact-only",
     }
 
@@ -77,7 +79,9 @@ def test_lane_registry_freezes_default_source_selection() -> None:
     }
 
 
-def test_packaging_contract_lane_is_explicitly_owned_and_cannot_write_evidence() -> None:
+def test_packaging_contract_lane_is_explicitly_owned_and_cannot_write_evidence() -> (
+    None
+):
     packaging = _load_registry()["lanes"]["packaging-contract"]
 
     assert packaging == {
@@ -152,6 +156,38 @@ def test_artifact_lane_is_explicit_fail_closed_and_source_independent() -> None:
         "forbidden_outcomes": ["skip", "xfail", "xpass", "source_fallback"],
     }
     assert (PROJECT_ROOT / artifact["runner"]).is_file()
+
+
+def test_windows_release_environment_gate_is_explicit_and_fail_closed() -> None:
+    release_environment = _load_registry()["lanes"]["windows-release-env"]
+
+    assert release_environment == {
+        "owner": "w3_release_environment_gate",
+        "selection": "explicit_only",
+        "pytest_selector": WINDOWS_RELEASE_SELECTOR,
+        "pytest_marker": "windows_release_env",
+        "included_in_source_default": False,
+        "required_platform": "windows-x86_64",
+        "locked_toolchain_required": True,
+        "artifact_required": False,
+        "missing_toolchain": "fail",
+        "source_tree_import": "allowed",
+        "artifact_state_output": "forbidden",
+        "allowed_inputs": [
+            "clean_checkout",
+            "exact_release_environment_lock",
+            "versioned_packaging_config",
+        ],
+        "allowed_outputs": [
+            "release_environment_verified",
+            "installer_contract_result",
+        ],
+        "forbidden_outputs": ["source_verified", "artifact_verified"],
+        "forbidden_substitutes": [
+            "source_lane_result",
+            "installed_artifact_evidence",
+        ],
+    }
 
 
 def test_artifact_tests_are_present_explicitly_marked_and_fail_closed() -> None:

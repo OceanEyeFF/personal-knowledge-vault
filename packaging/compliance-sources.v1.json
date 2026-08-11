@@ -1,0 +1,221 @@
+{
+  "schema_version": "pkv.compliance-sources.v1",
+  "policy": {
+    "network_required_at_build_time": false,
+    "upstream_text_assets_are_byte_for_byte_upstream": true,
+    "release_validation": "fail_closed"
+  },
+  "artifacts": [
+    {
+      "id": "cpython-3.11.15-license",
+      "component": "CPython",
+      "version": "3.11.15",
+      "kind": "license_text",
+      "license_expression": "Python-2.0",
+      "path": "packaging/licenses/cpython-3.11.15-LICENSE.txt",
+      "size": 13936,
+      "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf",
+      "source_url": "https://raw.githubusercontent.com/python/cpython/2340a037f7450e70fccfe411e6531afb4d57a312/LICENSE",
+      "source_tag": "v3.11.15",
+      "source_tag_object": "2323bfc729b041c43b1e5e4c5f18c548fc345323",
+      "source_revision": "2340a037f7450e70fccfe411e6531afb4d57a312",
+      "source_size": 13936,
+      "source_sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf",
+      "vendored_normalization": "none"
+    },
+    {
+      "id": "pyinstaller-6.21.0-copying-and-bootloader-exception",
+      "component": "PyInstaller",
+      "version": "6.21.0",
+      "kind": "license_text_with_exception",
+      "license_expression": "GPL-2.0-or-later WITH Bootloader-exception",
+      "coverage": [
+        "PyInstaller licensing terms",
+        "Bootloader Exception",
+        "GNU GPL version 2 complete text",
+        "other file-specific terms stated by upstream"
+      ],
+      "path": "packaging/licenses/pyinstaller-6.21.0-COPYING.txt",
+      "size": 32138,
+      "sha256": "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245",
+      "source_url": "https://raw.githubusercontent.com/pyinstaller/pyinstaller/1cda34561015a90b6e1ae31dc89703799adaf13e/COPYING.txt",
+      "source_tag": "v6.21.0",
+      "source_tag_kind": "lightweight",
+      "source_revision": "1cda34561015a90b6e1ae31dc89703799adaf13e",
+      "source_size": 32138,
+      "source_sha256": "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245",
+      "vendored_normalization": "none"
+    },
+    {
+      "id": "pyside6-6.11.1-license-selection",
+      "component": "PySide6",
+      "version": "6.11.1",
+      "kind": "upstream_license_selection_declaration",
+      "license_expression": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "distribution_selection": "LGPL-3.0-only",
+      "path": "packaging/licenses/pyside6-6.11.1-license-selection.txt",
+      "size": 144,
+      "sha256": "dd6a83da77d0b6a113a574154c12cb009751c2b0dfe5c22e288cd86ebc2a1f13",
+      "source_url": "https://raw.githubusercontent.com/pyside/pyside-setup/73fb12a067c2e8f7a464a310aaee2860fa2b64d2/sources/pyside6/PySide6/licensecomment.txt",
+      "source_tag": "v6.11.1",
+      "source_tag_object": "5d3fd824e2a3ee6af299749f482096d1ef3a2ac7",
+      "source_revision": "73fb12a067c2e8f7a464a310aaee2860fa2b64d2",
+      "source_size": 144,
+      "source_sha256": "dd6a83da77d0b6a113a574154c12cb009751c2b0dfe5c22e288cd86ebc2a1f13",
+      "vendored_normalization": "none"
+    },
+    {
+      "id": "qt-pyside6-6.11.1-lgpl-3.0-only",
+      "component": "Qt/PySide6",
+      "version": "6.11.1",
+      "kind": "license_text",
+      "license_expression": "LGPL-3.0-only",
+      "path": "packaging/licenses/qt-pyside6-6.11.1-LGPL-3.0-only.txt",
+      "size": 7651,
+      "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+      "source_url": "https://raw.githubusercontent.com/qt/qtbase/59c81a3c2247b821b9b84b4eb8d939b77e07e276/LICENSES/LGPL-3.0-only.txt",
+      "source_tag": "v6.11.1",
+      "source_tag_object": "20cb2b725f7a7192c7491e395bfb54c22df46688",
+      "source_revision": "59c81a3c2247b821b9b84b4eb8d939b77e07e276",
+      "source_size": 7651,
+      "source_sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+      "vendored_normalization": "none",
+      "pyside_mirror_url": "https://raw.githubusercontent.com/pyside/pyside-setup/73fb12a067c2e8f7a464a310aaee2860fa2b64d2/LICENSES/LGPL-3.0-only.txt",
+      "pyside_mirror_sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768"
+    },
+    {
+      "id": "qt-pyside6-6.11.1-gpl-2.0-only",
+      "component": "Qt/PySide6",
+      "version": "6.11.1",
+      "kind": "license_text",
+      "license_expression": "GPL-2.0-only",
+      "path": "packaging/licenses/qt-pyside6-6.11.1-GPL-2.0-only.txt",
+      "size": 18092,
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+      "source_url": "https://raw.githubusercontent.com/qt/qtbase/59c81a3c2247b821b9b84b4eb8d939b77e07e276/LICENSES/GPL-2.0-only.txt",
+      "source_tag": "v6.11.1",
+      "source_tag_object": "20cb2b725f7a7192c7491e395bfb54c22df46688",
+      "source_revision": "59c81a3c2247b821b9b84b4eb8d939b77e07e276",
+      "source_size": 18092,
+      "source_sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+      "vendored_normalization": "none",
+      "pyside_mirror_url": "https://raw.githubusercontent.com/pyside/pyside-setup/73fb12a067c2e8f7a464a310aaee2860fa2b64d2/LICENSES/GPL-2.0-only.txt",
+      "pyside_mirror_sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+    },
+    {
+      "id": "qt-pyside6-6.11.1-gpl-3.0-only",
+      "component": "Qt/PySide6",
+      "version": "6.11.1",
+      "kind": "license_text",
+      "license_expression": "GPL-3.0-only",
+      "path": "packaging/licenses/qt-pyside6-6.11.1-GPL-3.0-only.txt",
+      "size": 35147,
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "source_url": "https://raw.githubusercontent.com/qt/qtbase/59c81a3c2247b821b9b84b4eb8d939b77e07e276/LICENSES/GPL-3.0-only.txt",
+      "source_tag": "v6.11.1",
+      "source_tag_object": "20cb2b725f7a7192c7491e395bfb54c22df46688",
+      "source_revision": "59c81a3c2247b821b9b84b4eb8d939b77e07e276",
+      "source_size": 35147,
+      "source_sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "vendored_normalization": "none",
+      "pyside_mirror_url": "https://raw.githubusercontent.com/pyside/pyside-setup/73fb12a067c2e8f7a464a310aaee2860fa2b64d2/LICENSES/GPL-3.0-only.txt",
+      "pyside_mirror_sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+    },
+    {
+      "id": "qt-pyside6-6.11.1-lgpl-user-notice-template",
+      "component": "Qt/PySide6",
+      "version": "6.11.1",
+      "kind": "project_authored_notice_template",
+      "license_expression": "LGPL-3.0-only",
+      "path": "packaging/licenses/qt-pyside6-6.11.1-LGPL-user-notice-template.txt",
+      "size": 3554,
+      "sha256": "9112fd72a849a189e42cd8f3c742a93dfe8ea452d124d452e1e9d5954babf03a",
+      "upstream_verbatim": false,
+      "normative_sources": [
+        {
+          "url": "https://raw.githubusercontent.com/qt/qtbase/59c81a3c2247b821b9b84b4eb8d939b77e07e276/LICENSES/LGPL-3.0-only.txt",
+          "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768"
+        },
+        {
+          "url": "https://raw.githubusercontent.com/qt/qtbase/59c81a3c2247b821b9b84b4eb8d939b77e07e276/LICENSES/GPL-3.0-only.txt",
+          "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+        },
+        {
+          "url": "https://raw.githubusercontent.com/pyside/pyside-setup/73fb12a067c2e8f7a464a310aaee2860fa2b64d2/sources/pyside6/PySide6/licensecomment.txt",
+          "sha256": "dd6a83da77d0b6a113a574154c12cb009751c2b0dfe5c22e288cd86ebc2a1f13"
+        }
+      ]
+    },
+    {
+      "id": "html2text-2020.1.16-sdist",
+      "component": "html2text",
+      "version": "2020.1.16",
+      "kind": "source_distribution",
+      "filename": "html2text-2020.1.16.tar.gz",
+      "path": "packaging/compliance-sources/html2text-2020.1.16.tar.gz",
+      "size": 49464,
+      "sha256": "e296318e16b059ddb97f7a8a1d6a5c1d7af4544049a01e261731d2d5cc277bbb",
+      "source_url": "https://files.pythonhosted.org/packages/6c/f9/033a17d8ea8181aee41f20c74c3b20f1ccbefbbc3f7cd24e3692de99fb25/html2text-2020.1.16.tar.gz",
+      "source_size": 49464,
+      "source_sha256": "e296318e16b059ddb97f7a8a1d6a5c1d7af4544049a01e261731d2d5cc277bbb",
+      "source_availability": "vendored_exact_pypi_sdist_for_offline_corresponding_source",
+      "upstream_declared_license": "GNU GPL 3",
+      "license_expression_assessment": "GPL-3.0-only",
+      "license_expression_status": "requires_legal_confirmation",
+      "license_evidence": {
+        "archive_member": "html2text-2020.1.16/COPYING",
+        "archive_member_size": 35147,
+        "archive_member_sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+        "pkg_info_license_field": "GNU GPL 3",
+        "pkg_info_sha256": "5a26637a3ec8fc1c554eebad692adcf28421d0c90fffc088d7c4aba43a553846"
+      }
+    }
+  ],
+  "fail_closed_release_blockers": [
+    {
+      "id": "conda-native-license-materials-and-spdx",
+      "condition": "The actual product payload includes a closure-selected subset of native components from the locked 21-package Conda registry and native payload owned by CPython, the PyInstaller bootloader, and runtime distributions. The registry currently binds only Conda package metadata license names and provenance, while complete embedded-native closure and materials have not been mapped for known cases including CPython/libmpdec, the PyInstaller bootloader/zlib, NumPy/bundled native subcomponents, cffi/libffi, cryptography/OpenSSL/Rust, hnswlib/pybind11, jiter, pydantic-core, rpds-py, lxml/libxml2/libxslt, and PyYAML/LibYAML. Complete distributable license materials, audited SPDX expressions or reviewed LicenseRefs, and file-level provenance are therefore not yet bound for every shipped native component.",
+      "resolution": "Audit every selector-matched native payload owner, including each included Conda package, CPython runtime component, PyInstaller bootloader, and native runtime distribution; bind the relevant upstream SBOM files and reachable subcomponent set by hash; freeze applicable license and notice materials with immutable provenance; and record a valid SPDX expression or an explicit reviewed LicenseRef for every actual payload component.",
+      "affected_component_selectors": [
+        "component:*[native-payload]",
+        "conda-package:*"
+      ]
+    },
+    {
+      "id": "html2text-gpl-compliance",
+      "condition": "The html2text component is embedded in the frozen application, but the complete GPL distribution decision is unresolved: its exact SPDX expression, combined-work licensing treatment, corresponding-source scope and durable location, and whole-work license and notice obligations have not all been approved and bound.",
+      "resolution": "Obtain legal and release-owner approval for every machine-listed requirement, bind the resulting decisions and durable source location to the final payload, and include the required whole-work license and notice materials.",
+      "resolution_requirements": [
+        "combined-work-licensing-decision",
+        "corresponding-source-scope-and-persistent-location",
+        "spdx-license-expression",
+        "whole-work-license-and-notices"
+      ]
+    },
+    {
+      "id": "native-msvc-license-and-provenance",
+      "condition": "The actual product payload includes Microsoft Visual C++ runtime DLLs vendored by PySide6/shiboken6 wheels, but exact Microsoft component version, license material, provenance, and redistribution evidence are not yet bound for every file.",
+      "resolution": "Identify every MSVC/UCRT payload file from the actual PyInstaller closure, bind its file version and Microsoft provenance, and include the applicable license and redistribution evidence."
+    },
+    {
+      "id": "qt-corresponding-source-location",
+      "condition": "The release does not publish a durable exact corresponding-source location and any required installation information for its Qt/PySide6 binaries.",
+      "resolution": "Freeze and publish the exact source archives and distributor modifications, then place that location in the installed notice."
+    },
+    {
+      "id": "qt-linkage-and-replacement-not-proven",
+      "condition": "The final packaged artifact has not demonstrated dynamic linkage and successful replacement with a compatible modified Qt/PySide6 library.",
+      "resolution": "Test the installed artifact, updater, signature checks, and repair flow against the published replacement procedure."
+    },
+    {
+      "id": "qt-module-license-audit",
+      "condition": "The exact set of shipped Qt modules, plugins, codecs, and third-party payloads has not been audited for module-specific terms.",
+      "resolution": "Inventory the final payload and confirm LGPL eligibility or other required licensing for every shipped file."
+    },
+    {
+      "id": "qt-notice-placeholders",
+      "condition": "Any angle-bracket placeholder remains in the installed Qt/PySide6 user notice.",
+      "resolution": "Populate paths, exact source location, modification status, and replacement instructions from the final artifact."
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+Personal Knowledge Vault 0.8.1 - Third-Party Notices
+====================================================
+
+This distribution contains third-party Python and native components.  The
+CycloneDX sbom.cdx.json and release-inventory.json bind the actual top-level
+payload files, embedded PyInstaller archive entries, and their attributed Python
+distribution, Conda package, and native-owner closure.  Native payload owners,
+including the CPython runtime, PyInstaller bootloader, Conda components, and
+runtime distributions with native extensions, do not yet have a complete
+authoritative subcomponent closure; their upstream SBOM reachability, materials,
+and provenance remain held by `conda-native-license-materials-and-spdx`.  The
+broader dependency-manifest.json records the exact locked build environment; a
+build role alone is not a claim that the package is bundled.  All three files
+are covered by the payload manifest and outer Artifact SHA-256.
+
+Material license families represented by the frozen runtime include:
+
+* Apache License 2.0
+* BSD 2-Clause and BSD 3-Clause licenses
+* MIT License
+* Mozilla Public License 2.0
+* Python Software Foundation License 2.0
+* GNU Lesser General Public License 3.0 (Qt for Python / PySide6 family)
+* GNU General Public License 2.0 and 3.0 family options
+
+PySide6, PySide6-Addons, PySide6-Essentials and shiboken6 are Qt for Python
+components.  They are dynamically loaded from the bundled onedir runtime and
+remain separate native/library files.  This candidate selects LGPL-3.0-only and
+includes the immutable upstream license-selection declaration plus the complete
+LGPL-3.0-only and incorporated GPL-3.0-only texts in licenses/.  The unresolved
+replacement test, module audit, notice placeholders, and exact corresponding-
+source location remain explicit compliance blockers; this candidate is not a
+release authorization.
+
+No third-party author endorses Personal Knowledge Vault.  This notice is an
+informational index and does not replace the license terms that apply to each
+component.  Consult the component purl and license field in sbom.cdx.json for
+the bound top-level runtime inventory and licenses/index.json for the current
+dependency-to-license-material mapping, subject to the explicit compliance hold
+above.

@@ -188,7 +188,7 @@ def test_cli_version_command(tmp_path: Path):
     cli_tester = CLIBlackboxTester(tmp_path)
     result = cli_tester.run_cli("--version")
     assert result.returncode == 0
-    assert "0.8.0-alpha" in result.stdout
+    assert "0.8.1" in result.stdout
 
 
 def test_search_command_with_results(cli_tester: CLIBlackboxTester):

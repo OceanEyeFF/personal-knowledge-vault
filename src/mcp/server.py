@@ -11,11 +11,12 @@ PKV MCP Server 主入口
     npx @modelcontextprotocol/inspector python -m src.mcp.server
 """
 
+import json
 import logging
 
 from mcp.server.fastmcp import FastMCP
 
-from src.runtime.bootstrap import bootstrap_runtime
+from src.runtime.bootstrap import bootstrap_runtime, project_bootstrap_error
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.utils.config import get_config
 from src.utils.logger import LoggerSetup
@@ -254,8 +255,33 @@ def main():
         parser.error(f"{exc.code.value}: {exc}")
 
     # 所有 adapter 共用同一个路径/数据库启动门禁。
-    config = get_config()
-    bootstrap_runtime(config)
+    stage = "runtime_configuration"
+    try:
+        config = get_config()
+        stage = "runtime_bootstrap"
+        bootstrap_runtime(config)
+    except PKVRuntimeError as exc:
+        sys.stderr.write(
+            json.dumps(
+                project_bootstrap_error(exc, adapter="mcp"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1) from None
+    except Exception as exc:
+        sys.stderr.write(
+            json.dumps(
+                project_bootstrap_error(exc, adapter="mcp", stage=stage),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        raise SystemExit(1) from None
     # ── 日志级别优先级: --log-level > LOG_LEVEL 环境变量 > config.yaml > INFO ──
     configured_level = args.log_level if args.log_level else config.log_level
     level_str, log_level = _canonical_log_level(configured_level)

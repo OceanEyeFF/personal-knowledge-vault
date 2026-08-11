@@ -1,0 +1,17 @@
+{
+  "schema_version": "pkv.license-overrides.v1",
+  "entries": [
+    {
+      "name": "jieba",
+      "version": "0.42.1",
+      "license_expression": "MIT",
+      "path": "packaging/licenses/jieba-0.42.1-MIT.txt",
+      "sha256": "522d429662141688e69562df3ef47acb29ed1a3d28147e1c643420740e4e94cc",
+      "source_url": "https://raw.githubusercontent.com/fxsjy/jieba/1e20c89b66f56c9301b0feed211733ffaa1bd72a/LICENSE",
+      "source_revision": "1e20c89b66f56c9301b0feed211733ffaa1bd72a",
+      "source_sha256": "18ba0984839f85853b29fadaf992f7dba8fd0ca0fbeae34de2b8735222dc7a37",
+      "vendored_normalization": "one trailing LF appended; all upstream content bytes otherwise unchanged",
+      "audit_reason": "The installed wheel declares MIT in METADATA but contains no LICENSE, LICENCE, COPYING, or NOTICE file."
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "description": "M13 bundled read-only resource allowlist; user data is never collected.",
   "include_globs": [
     "config/config.yaml",
@@ -11,8 +11,69 @@
     "src/gui/styles/*.qss"
   ],
   "build_collections": [
-    "PySide6 Qt plugins and native libraries selected by the frozen dependency graph"
+    "PySide6 Qt plugins and native libraries selected by the frozen dependency graph",
+    "mcp distribution metadata required by FastMCP version discovery",
+    "certifi CA bundle and jieba core dictionary"
   ],
+  "pyinstaller": {
+    "hiddenimports": [
+      "src.main",
+      "src.cli.commands",
+      "src.gui.app",
+      "src.mcp.server",
+      "src.mcp.tools",
+      "src.mcp.resources",
+      "src.mcp.prompts",
+      "PySide6.QtCore",
+      "PySide6.QtGui",
+      "PySide6.QtWidgets",
+      "qasync",
+      "anyio._backends._asyncio",
+      "bs4.builder._lxml",
+      "lxml.etree",
+      "lxml._elementpath",
+      "hnswlib",
+      "pygments.formatters.html",
+      "openai.resources.chat",
+      "openai.resources.chat.completions",
+      "openai.resources.embeddings"
+    ],
+    "collect_submodules": [
+      "pygments.lexers",
+      "pygments.styles"
+    ],
+    "copy_metadata": [
+      "mcp"
+    ],
+    "collect_data_files": [
+      {
+        "package": "certifi",
+        "includes": [
+          "cacert.pem"
+        ]
+      }
+    ],
+    "excludes": [
+      "PyQt5",
+      "PyQt6",
+      "PySide2",
+      "pytest",
+      "_pytest",
+      "coverage",
+      "jsonschema.benchmarks",
+      "jsonschema.tests",
+      "tests",
+      "mcp.cli",
+      "pydantic.mypy",
+      "pydantic.v1.mypy",
+      "mypy",
+      "mypy_extensions",
+      "setuptools",
+      "_distutils_hack",
+      "wheel",
+      "packaging"
+    ]
+  },
   "forbidden_globs": [
     "**/.env",
     "**/.env.*",

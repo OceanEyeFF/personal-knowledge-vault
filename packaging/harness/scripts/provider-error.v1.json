@@ -1,0 +1,26 @@
+{
+  "schema_version": "pkv.w3.loopback.script.v1",
+  "contract_id": "w3.openai_compatible_loopback.v1",
+  "script_id": "w3.chat.provider-error.v1",
+  "steps": [
+    {
+      "step_id": "provider-error-1",
+      "scenario": "provider_error",
+      "expect": {
+        "model": "pkv-loopback-chat-v1",
+        "message_roles": [
+          "user"
+        ],
+        "last_user_sha256": "2fbb59f18604faa399925b2f5fcbe0aee260fc2014b41716c415f12bdf5b9be8",
+        "max_tokens": 128,
+        "temperature": 0.2
+      },
+      "response": {
+        "status": 503,
+        "error_type": "server_error",
+        "error_code": "pkv_fixture_provider_error",
+        "message": "deterministic provider failure"
+      }
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "schema_version": "pkv.w3.loopback.contract.v1",
+  "contract_id": "w3.openai_compatible_loopback.v1",
+  "harness_version": "1.0.0",
+  "network_policy": {
+    "bind_host": "127.0.0.1",
+    "address_family": "AF_INET",
+    "outbound_connections": "forbidden",
+    "dns_resolution": "forbidden"
+  },
+  "endpoints": {
+    "health": "GET /health",
+    "contract": "GET /contract",
+    "telemetry": "GET /telemetry",
+    "chat_completions": "POST /v1/chat/completions"
+  },
+  "request_contract": {
+    "exact_json_fields": [
+      "max_tokens",
+      "messages",
+      "model",
+      "stream",
+      "stream_options",
+      "temperature"
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "authorization": "non_empty_bearer_required_but_never_recorded",
+    "scenario_selection": "ordered_external_script_only",
+    "forbidden_scenario_selectors": [
+      "authorization",
+      "headers",
+      "model",
+      "prompt",
+      "product_environment",
+      "query"
+    ],
+    "required_fixture_setting": {
+      "max_retries": 0
+    }
+  },
+  "stream_contract": {
+    "success_order": [
+      "role_chunk",
+      "one_or_more_content_chunks",
+      "single_stop_finish_chunk",
+      "single_choices_empty_usage_chunk",
+      "done_sentinel"
+    ],
+    "encoding": "utf-8-server-sent-events-over-http-1.1-chunked",
+    "finish_reasons": [
+      "stop"
+    ],
+    "created": 0,
+    "timestamps": "forbidden"
+  },
+  "scenario_contract": {
+    "success": "complete_finish_usage_and_done",
+    "slow_stop": "flush_first_token_then_require_client_disconnect_without_finish_usage_or_done",
+    "provider_error": "single_http_503_openai_error_envelope",
+    "unexpected_or_extra_request": "fail_closed_without_source_fallback"
+  },
+  "telemetry_policy": {
+    "format": "canonical_utf8_ndjson",
+    "wall_clock_time": "forbidden",
+    "authorization_value": "forbidden",
+    "raw_message_content": "forbidden",
+    "request_identity": "canonical_request_sha256_and_last_user_sha256",
+    "durability": "flush_and_fsync_each_record"
+  }
+}

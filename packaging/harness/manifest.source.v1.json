@@ -1,0 +1,44 @@
+{
+  "schema_version": "pkv.w3.loopback.manifest.v1",
+  "contract_id": "w3.openai_compatible_loopback.v1",
+  "harness_version": "1.0.0",
+  "distribution": "e2e-only",
+  "release_payload_membership": "forbidden",
+  "runtime": {
+    "kind": "source",
+    "path": "loopback_provider.py",
+    "size": 53170,
+    "sha256": "dce1abf2a3a064158ea64f5e01944ac460da2b403ab51aef8ad2ae4e3f810a5a"
+  },
+  "contract": {
+    "path": "contract.v1.json",
+    "sha256": "d4731a5fd44aa8059154bbd903cc07c4fabc5bcf45fc2a0303e85927d4750916"
+  },
+  "scripts": [
+    {
+      "script_id": "w3.chat.provider-error.v1",
+      "path": "scripts/provider-error.v1.json",
+      "sha256": "3a17473aefe25101f0dd4345e40cd1b4a8f7414b09f493b18f4dc3a3124e17b1"
+    },
+    {
+      "script_id": "w3.chat.stop.v1",
+      "path": "scripts/stop.v1.json",
+      "sha256": "4cba7eacabd050df0f7934c6802dc3f65b568a8cae9e579cbef0466fe1379c53"
+    },
+    {
+      "script_id": "w3.chat.success.v1",
+      "path": "scripts/success.v1.json",
+      "sha256": "712d132f644e7ae3f85a82ba3820ea56dcdd6fff7c9632a0c9c901d4c17a05fe"
+    },
+    {
+      "script_id": "w4.chat.lifecycle.v1",
+      "path": "scripts/w4-chat-lifecycle.v1.json",
+      "sha256": "6a35f29f4fd4a53088dfe5849634accc63ef349cf4e88e075218b7eaa9fcf2bc"
+    }
+  ],
+  "build": {
+    "source_revision": "9cd0f882c07ac2fde6dc68a82e708dbce83d2abb",
+    "build_fingerprint_sha256": "8a9cb1eddb47ba270eda371d004581345d0348fe1e9a716379691ecde33c344d",
+    "toolchain_lock_sha256": "7b5c5ee06deb675802ece6ec87ff04635a05ef0993913bfe9e7619c0948feaca"
+  }
+}

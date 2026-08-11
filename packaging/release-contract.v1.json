@@ -1,0 +1,65 @@
+{
+  "schema_version": "pkv.release-contract.v1",
+  "product_id": "personal-knowledge-vault",
+  "version": "0.8.1",
+  "target": "windows-x86_64",
+  "archive_root": "PersonalKnowledgeVault-0.8.1-windows-x86_64",
+  "pyinstaller_spec": "packaging/pkv.spec",
+  "pyinstaller_collect_dir": "pkv",
+  "entrypoints": [
+    {
+      "path": "app/pkv.exe",
+      "role": "cli",
+      "console": true
+    },
+    {
+      "path": "app/pkv-gui.exe",
+      "role": "gui",
+      "console": false
+    },
+    {
+      "path": "app/pkv-mcp.exe",
+      "role": "mcp_stdio",
+      "console": true
+    }
+  ],
+  "source_date_epoch": {
+    "authority": "git_commit_timestamp",
+    "zip_min_epoch": 315532800,
+    "dos_resolution_seconds": 2
+  },
+  "install": {
+    "scope": "per-user",
+    "program_root": "%LOCALAPPDATA%/Programs/PersonalKnowledgeVault",
+    "data_root": "%LOCALAPPDATA%/PersonalKnowledgeVault",
+    "upgrade_policy": "reject-cross-version",
+    "uninstall_data_policy": "retain-unless-explicit"
+  },
+  "reproducibility": {
+    "unsigned_runs": 2,
+    "unsigned_requirement": "byte-identical",
+    "zip_order": "utf8-byte-lexical",
+    "zip_compression": "deflate-9"
+  },
+  "artifact_routing": {
+    "eligibility_authority": "packaging/compliance-sources.v1.json",
+    "candidate_directory": "dist/candidate",
+    "candidate_artifact_kind": "test_candidate",
+    "release_directory": "dist/release",
+    "release_artifact_kind": "release"
+  },
+  "additional_fingerprint_inputs": [
+    "packaging/pkv_entrypoint.py",
+    "packaging/harness/build_manifest.py",
+    "packaging/harness/contract.v1.json",
+    "packaging/harness/loopback_provider.py",
+    "packaging/harness/pkv-loopback-provider.spec",
+    "packaging/harness/scripts/provider-error.v1.json",
+    "packaging/harness/scripts/stop.v1.json",
+    "packaging/harness/scripts/success.v1.json",
+    "packaging/harness/scripts/w4-chat-lifecycle.v1.json",
+    "packaging/hooks/hook-jieba.py",
+    "packaging/hooks/hook-jsonschema.py",
+    "docs/operations/release/USER-GUIDE.md"
+  ]
+}

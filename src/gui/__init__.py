@@ -7,7 +7,10 @@ Markdown 预览等核心功能。
     python -m src.gui.app        # 直接运行
     python src/gui/app.py        # 脚本方式
 
-版本: 0.8.0-alpha (Phase 2B M10)
+版本由 ``src.__version__`` 统一提供。
 """
 
-__version__ = "0.8.0-alpha"
+from src import __version__
+
+
+__all__ = ["__version__"]

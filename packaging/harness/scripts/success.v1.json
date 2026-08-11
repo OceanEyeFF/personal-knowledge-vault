@@ -1,0 +1,28 @@
+{
+  "schema_version": "pkv.w3.loopback.script.v1",
+  "contract_id": "w3.openai_compatible_loopback.v1",
+  "script_id": "w3.chat.success.v1",
+  "steps": [
+    {
+      "step_id": "success-1",
+      "scenario": "success",
+      "expect": {
+        "model": "pkv-loopback-chat-v1",
+        "message_roles": [
+          "user"
+        ],
+        "last_user_sha256": "2a7b061ee02a773781a0bb101dc45f60997dd77c2e8208e2c1ce369fcf0988ad",
+        "max_tokens": 128,
+        "temperature": 0.2
+      },
+      "response": {
+        "content_chunks": [
+          "PKV_W4_SUCCESS_",
+          "V1"
+        ],
+        "prompt_tokens": 7,
+        "completion_tokens": 4
+      }
+    }
+  ]
+}

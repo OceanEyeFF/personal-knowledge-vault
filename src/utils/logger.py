@@ -8,9 +8,7 @@ import logging
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Callable, Optional
-
-from src.runtime.layout import open_user_file_nofollow, verify_fd_matches_path
+from typing import Callable, Optional, TextIO
 
 
 class _ValidatedRotatingFileHandler(RotatingFileHandler):
@@ -38,6 +36,8 @@ class _ValidatedRotatingFileHandler(RotatingFileHandler):
         super().__init__(filename, **kwargs)
 
     def _pkv_verify_open(self) -> None:
+        from src.runtime.layout import verify_fd_matches_path
+
         stream = getattr(self, "stream", None)
         if stream is None:
             return
@@ -48,6 +48,8 @@ class _ValidatedRotatingFileHandler(RotatingFileHandler):
         )
 
     def _open(self):
+        from src.runtime.layout import open_user_file_nofollow
+
         if self._pkv_path_validator is not None:
             self._pkv_path_validator(
                 Path(self.baseFilename),
@@ -89,6 +91,7 @@ class LoggerSetup:
         date_format: Optional[str] = None,
         *,
         path_validator: Optional[Callable[..., Path]] = None,
+        console_stream: Optional[TextIO] = None,
     ):
         """
         设置全局日志配置
@@ -99,6 +102,7 @@ class LoggerSetup:
             log_format: 日志格式
             date_format: 时间格式
             path_validator: 可写叶子验证器（由 adapter 注入 layout 合同）
+            console_stream: 控制台日志目标；默认保持 stdout 兼容
         """
         if cls._initialized:
             return
@@ -123,7 +127,9 @@ class LoggerSetup:
         root_logger.handlers.clear()
 
         # 添加控制台 handler
-        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler = logging.StreamHandler(
+            sys.stdout if console_stream is None else console_stream
+        )
         console_handler.setLevel(log_level)
         console_handler.setFormatter(formatter)
         root_logger.addHandler(console_handler)

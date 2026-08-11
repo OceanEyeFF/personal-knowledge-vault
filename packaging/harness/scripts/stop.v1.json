@@ -1,0 +1,26 @@
+{
+  "schema_version": "pkv.w3.loopback.script.v1",
+  "contract_id": "w3.openai_compatible_loopback.v1",
+  "script_id": "w3.chat.stop.v1",
+  "steps": [
+    {
+      "step_id": "stop-1",
+      "scenario": "slow_stop",
+      "expect": {
+        "model": "pkv-loopback-chat-v1",
+        "message_roles": [
+          "user"
+        ],
+        "last_user_sha256": "30afa61759eb789e2e1a3bbda769bcf56ede6fbeb195f9f23f9d5e417ad6b46a",
+        "max_tokens": 128,
+        "temperature": 0.2
+      },
+      "response": {
+        "first_chunk": "PKV_W4_STOP_PARTIAL_V1",
+        "continuation_chunk": ".",
+        "interval_ms": 100,
+        "max_chunks": 300
+      }
+    }
+  ]
+}

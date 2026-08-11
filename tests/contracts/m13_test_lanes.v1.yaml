@@ -9,7 +9,7 @@ lanes:
   source:
     owner: w1_w2_source_contracts
     selection: default
-    pytest_selector: not manual and not network and not artifact
+    pytest_selector: not manual and not network and not artifact and not windows_release_env
     includes_markers: [packaging_contract]
     artifact_required: false
     missing_artifact: not_applicable
@@ -21,7 +21,7 @@ lanes:
   packaging-contract:
     owner: w3_packaging_contract
     selection: explicit_or_source_default
-    pytest_selector: packaging_contract and not manual and not network and not artifact
+    pytest_selector: packaging_contract and not manual and not network and not artifact and not windows_release_env
     pytest_marker: packaging_contract
     included_in_source_default: true
     artifact_required: false
@@ -32,6 +32,23 @@ lanes:
     allowed_outputs: [build_contract_result, payload_manifest, provenance_manifest, harness_contract_result]
     forbidden_outputs: [source_verified, artifact_verified]
     forbidden_substitutes: [w2_domain_semantics, installed_artifact_evidence]
+
+  windows-release-env:
+    owner: w3_release_environment_gate
+    selection: explicit_only
+    pytest_selector: packaging_contract and windows_release_env and not manual and not network and not artifact
+    pytest_marker: windows_release_env
+    included_in_source_default: false
+    required_platform: windows-x86_64
+    locked_toolchain_required: true
+    artifact_required: false
+    missing_toolchain: fail
+    source_tree_import: allowed
+    artifact_state_output: forbidden
+    allowed_inputs: [clean_checkout, exact_release_environment_lock, versioned_packaging_config]
+    allowed_outputs: [release_environment_verified, installer_contract_result]
+    forbidden_outputs: [source_verified, artifact_verified]
+    forbidden_substitutes: [source_lane_result, installed_artifact_evidence]
 
   artifact-only:
     owner: w4_artifact_e2e
