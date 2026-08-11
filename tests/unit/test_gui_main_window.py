@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QSettings
+from PySide6.QtCore import QCoreApplication, QItemSelectionModel, QSettings
 from PySide6.QtGui import QCloseEvent
 
 # 确保项目根目录在 sys.path 中
@@ -347,6 +347,28 @@ class TestNavigation:
 
         main_window._nav_list.setCurrentRow(0)
         assert main_window._stacked.currentIndex() == 0
+
+    def test_selection_only_navigation_syncs_current_row_and_view(
+        self,
+        main_window,
+        qtbot,
+    ):
+        """UIA selection-only navigation keeps current row, stack and status aligned."""
+        nav_list = main_window._nav_list
+        target_row = 2
+        nav_list.clearSelection()
+
+        # Exercise the production selection-model signal path used by Windows
+        # UI Automation rather than calling an application-owned test seam.
+        target_index = nav_list.model().index(target_row, 0)
+        nav_list.selectionModel().select(
+            target_index,
+            QItemSelectionModel.SelectionFlag.Select,
+        )
+
+        qtbot.waitUntil(lambda: nav_list.currentRow() == target_row)
+        assert main_window._stacked.currentIndex() == target_row
+        assert main_window._status_label.text() == "归档模式"
 
     def test_switch_to_search_focuses_input(self, main_window, qtbot):
         """切换到搜索视图时聚焦搜索框。"""

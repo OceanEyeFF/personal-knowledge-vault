@@ -17,7 +17,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, Optional
 
-from PySide6.QtCore import QModelIndex, Qt
+from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from src.gui.models.entry_model import EntryTableModel
 from src.gui.utils.search_response_contract import is_strict_search_response
+from src.gui.widgets.accessibility import set_automation_id
 
 if TYPE_CHECKING:
     from src.retrieval.result import RetrievalIssue, SearchResponse
@@ -79,6 +80,7 @@ class SearchView(QWidget):
             parent: Qt 父部件。
         """
         super().__init__(parent)
+        set_automation_id(self, "search_view")
         self._last_results: tuple = ()
         self._init_ui()
         self._connect_signals()
@@ -99,6 +101,7 @@ class SearchView(QWidget):
 
         # 结果 + 预览分割器
         splitter = QSplitter(Qt.Horizontal, self)  # type: ignore[attr-defined]
+        set_automation_id(splitter, "search_splitter")
 
         result_panel = self._build_result_panel()
         splitter.addWidget(result_panel)
@@ -119,17 +122,20 @@ class SearchView(QWidget):
             搜索区域 QWidget。
         """
         widget = QWidget()
+        set_automation_id(widget, "search_bar")
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
         # 关键词输入框
         self.search_input = QLineEdit(self)
+        set_automation_id(self.search_input, "search_input")
         self.search_input.setPlaceholderText("输入关键词搜索知识库...")
         layout.addWidget(self.search_input, stretch=1)
 
         # 策略选择下拉框
         self._strategy_combo = QComboBox(self)
+        set_automation_id(self._strategy_combo, "search_strategy")
         for display_name, _ in _STRATEGY_OPTIONS:
             self._strategy_combo.addItem(display_name)
         self._strategy_combo.setFixedWidth(90)
@@ -137,6 +143,7 @@ class SearchView(QWidget):
 
         # 搜索按钮
         self._search_btn = QPushButton("搜索", self)
+        set_automation_id(self._search_btn, "search_submit")
         self._search_btn.setFixedWidth(70)
         layout.addWidget(self._search_btn)
 
@@ -149,18 +156,21 @@ class SearchView(QWidget):
             包含结果数量标签和结果表格的 QWidget。
         """
         widget = QWidget()
+        set_automation_id(widget, "search_result_panel")
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
         # 结果数量标签
         self._result_count_label = QLabel("输入关键词开始搜索")
+        set_automation_id(self._result_count_label, "search_result_status")
         self._result_count_label.setProperty("class", "text-muted")
         layout.addWidget(self._result_count_label)
 
         # 结果表格
         self._result_model = EntryTableModel([], self)
         self._result_view = QTableView(self)
+        set_automation_id(self._result_view, "search_result_table")
         self._result_view.setModel(self._result_model)
         self._result_view.setSelectionBehavior(QAbstractItemView.SelectRows)  # type: ignore[attr-defined]
         self._result_view.setSelectionMode(QAbstractItemView.SingleSelection)  # type: ignore[attr-defined]
@@ -181,20 +191,24 @@ class SearchView(QWidget):
             包含预览标题和只读 QTextEdit 的 QWidget。
         """
         widget = QWidget()
+        set_automation_id(widget, "search_preview_panel")
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
         self._preview_title = QLabel("详情")
+        set_automation_id(self._preview_title, "search_preview_title")
         self._preview_title.setProperty("class", "panel-header")
         layout.addWidget(self._preview_title)
 
         self._preview_status_label = QLabel(self)
+        set_automation_id(self._preview_status_label, "search_preview_status")
         self._preview_status_label.setWordWrap(True)
         self._preview_status_label.hide()
         layout.addWidget(self._preview_status_label)
 
         self._preview_text = QTextEdit(self)
+        set_automation_id(self._preview_text, "search_preview_text")
         self._preview_text.setReadOnly(True)
         self._preview_text.setPlaceholderText("选择搜索结果以查看详情...")
         layout.addWidget(self._preview_text)
@@ -209,7 +223,15 @@ class SearchView(QWidget):
         """连接控件信号与槽。"""
         self._search_btn.clicked.connect(self.do_search)
         self.search_input.returnPressed.connect(self.do_search)
-        self._result_view.clicked.connect(self.on_result_selected)
+        selection_model = self._result_view.selectionModel()
+        if selection_model is None:
+            raise RuntimeError("Search result table has no selection model")
+        selection_model.currentRowChanged.connect(
+            self._on_result_current_row_changed
+        )
+        selection_model.selectionChanged.connect(
+            self._sync_selected_result_to_current_row
+        )
 
     # ------------------------------------------------------------------
     # 搜索执行
@@ -351,6 +373,51 @@ class SearchView(QWidget):
         entry = self._result_model.get_entry(index.row())
         if entry:
             self._load_preview(entry)
+
+    def _sync_selected_result_to_current_row(self, *_: object) -> None:
+        """Turn one UIA-selected result row into the current row.
+
+        This is intentionally an adapter only: ``currentRowChanged`` remains
+        the sole detail-loading path for mouse, keyboard, and UIA selection.
+        """
+        selection_model = self._result_view.selectionModel()
+        if selection_model is None:
+            return
+
+        selected_rows = {
+            index.row()
+            for index in selection_model.selectedIndexes()
+            if index.isValid()
+        }
+        if len(selected_rows) != 1:
+            return
+
+        selected_row = next(iter(selected_rows))
+        current = selection_model.currentIndex()
+        if (
+            current.isValid()
+            and current.model() == self._result_model
+            and current.row() == selected_row
+        ):
+            return
+
+        selected_index = self._result_model.index(selected_row, 0)
+        if selected_index.isValid():
+            selection_model.setCurrentIndex(
+                selected_index,
+                QItemSelectionModel.SelectionFlag.NoUpdate,
+            )
+
+    def _on_result_current_row_changed(
+        self,
+        current: QModelIndex,
+        previous: QModelIndex,
+    ) -> None:
+        """Load preview for keyboard and native SelectionItem navigation."""
+
+        del previous
+        if current.isValid():
+            self.on_result_selected(current)
 
     def _load_preview(self, entry: dict) -> None:
         """加载搜索结果条目的详情预览。

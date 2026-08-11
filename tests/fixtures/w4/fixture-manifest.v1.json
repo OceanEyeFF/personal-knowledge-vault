@@ -1,0 +1,25 @@
+{
+  "schema_version": "pkv.m13.w4-fixtures.v1",
+  "synthetic_only": true,
+  "contains_credentials": false,
+  "contains_real_vault_data": false,
+  "files": {
+    "offline_text": "offline-note.v1.txt",
+    "semantic_config": "semantic-provider-unavailable.local.yaml",
+    "chat_success_prompt": "chat-success-prompt.v1.txt",
+    "chat_stop_prompt": "chat-stop-prompt.v1.txt",
+    "chat_error_prompt": "chat-error-prompt.v1.txt"
+  },
+  "scenario_fixtures": {
+    "w4.url_archive_ssrf_rejection.v1": "numeric-loopback-canary-created-at-runtime",
+    "w4.offline_text_archive.v1": "offline-note.v1.txt",
+    "w4.bm25_search.v1": "offline-note.v1.txt",
+    "w4.semantic_provider_unavailable.v1": "semantic-provider-unavailable.local.yaml",
+    "w4.mcp_stdio_call.v1": "fresh-synthetic-user-root",
+    "w4.chat_loopback.v1": "three-chat-prompt-files",
+    "w4.application_lifecycle.v1": "fresh-synthetic-user-root",
+    "w4.upgrade_rejection.v1": "fresh-database-mutated-at-runtime",
+    "w4.uninstall_data_retention.v1": "synthetic-retention-sentinel",
+    "w4.release_audit.v1": "artifact-release-materials"
+  }
+}

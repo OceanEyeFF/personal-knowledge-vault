@@ -1,0 +1,195 @@
+{
+  "schema_version": "pkv.m13.w4-driver-scenarios.v1",
+  "runner_version": "pkv.m13.artifact-runner.v2",
+  "artifact_version": "0.8.1",
+  "ordered_scenarios": [
+    {
+      "scenario_id": "w4.release_audit.v1",
+      "matrix_rows": [
+        "payload_and_provenance",
+        "documentation_version_and_decision"
+      ],
+      "handler": "release_audit",
+      "timeout_seconds": 120,
+      "requires_harness": false
+    },
+    {
+      "scenario_id": "w4.application_lifecycle.v1",
+      "matrix_rows": ["installation_and_first_run"],
+      "handler": "application_lifecycle",
+      "timeout_seconds": 180,
+      "requires_harness": false
+    },
+    {
+      "scenario_id": "w4.url_archive_ssrf_rejection.v1",
+      "matrix_rows": ["url_security_rejection"],
+      "handler": "url_archive_ssrf_rejection",
+      "timeout_seconds": 120,
+      "requires_harness": false
+    },
+    {
+      "scenario_id": "w4.semantic_provider_unavailable.v1",
+      "matrix_rows": ["semantic_provider_unavailable"],
+      "handler": "semantic_provider_unavailable",
+      "timeout_seconds": 120,
+      "requires_harness": false
+    },
+    {
+      "scenario_id": "w4.mcp_stdio_call.v1",
+      "matrix_rows": ["mcp_stdio_lifecycle"],
+      "handler": "mcp_stdio_call",
+      "timeout_seconds": 180,
+      "requires_harness": false
+    },
+    {
+      "scenario_id": "w4.offline_text_archive.v1",
+      "matrix_rows": ["offline_text_archive"],
+      "handler": "offline_text_archive",
+      "timeout_seconds": 240,
+      "requires_harness": false
+    },
+    {
+      "scenario_id": "w4.bm25_search.v1",
+      "matrix_rows": ["gui_read_and_bm25"],
+      "handler": "bm25_search",
+      "timeout_seconds": 240,
+      "requires_harness": false
+    },
+    {
+      "scenario_id": "w4.chat_loopback.v1",
+      "matrix_rows": ["gui_chat_loopback"],
+      "handler": "chat_loopback",
+      "timeout_seconds": 360,
+      "requires_harness": true
+    },
+    {
+      "scenario_id": "w4.upgrade_rejection.v1",
+      "matrix_rows": ["upgrade_rejection"],
+      "handler": "upgrade_rejection",
+      "timeout_seconds": 240,
+      "requires_harness": false
+    },
+    {
+      "scenario_id": "w4.uninstall_data_retention.v1",
+      "matrix_rows": ["uninstall_and_data_boundary"],
+      "handler": "uninstall_data_retention",
+      "timeout_seconds": 240,
+      "requires_harness": false
+    }
+  ],
+  "required_matrix_rows": [
+    "payload_and_provenance",
+    "installation_and_first_run",
+    "gui_read_and_bm25",
+    "offline_text_archive",
+    "url_security_rejection",
+    "semantic_provider_unavailable",
+    "gui_chat_loopback",
+    "mcp_stdio_lifecycle",
+    "upgrade_rejection",
+    "uninstall_and_data_boundary",
+    "documentation_version_and_decision"
+  ],
+  "required_artifact_files": [
+    "app/pkv.exe",
+    "app/pkv-gui.exe",
+    "app/pkv-mcp.exe",
+    "Install.ps1",
+    "Uninstall.ps1",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.txt",
+    "USER-GUIDE.md",
+    "COMPLIANCE-HOLD.txt",
+    "licenses/index.json",
+    "build-info.json",
+    "dependency-manifest.json",
+    "release-inventory.json",
+    "sbom.cdx.json",
+    "payload-manifest.json"
+  ],
+  "mcp": {
+    "protocol_version": "2025-11-25",
+    "tools": [
+      "archive_text",
+      "archive_url",
+      "collect_evidence",
+      "contrast",
+      "explain_relation",
+      "find_bridges",
+      "get_entry",
+      "get_related",
+      "get_stats",
+      "list_entries",
+      "list_tags",
+      "query_subgraph",
+      "search_knowledge",
+      "timeline_of"
+    ],
+    "resources": ["pkv://stats", "pkv://tags"],
+    "resource_templates": [
+      "pkv://entries/{knowledge_id}",
+      "pkv://entries/{knowledge_id}/chunk-index/{chunk_index}",
+      "pkv://entries/{knowledge_id}/chunks/{chunk_id}",
+      "pkv://entries/{knowledge_id}/metadata",
+      "pkv://entries/{knowledge_id}/metadata/{field_name}",
+      "pkv://relations/by-edge/{source_knowledge_id}/{target_knowledge_id}/{relation_type}",
+      "pkv://relations/{relation_id}"
+    ],
+    "prompts": ["idea_sharpen", "knowledge_qa", "search_and_summarize"]
+  },
+  "uia": {
+    "navigation_names": ["浏览", "搜索", "归档", "对话", "统计", "设置"],
+    "required_automation_ids": [
+      "pkv_main_window",
+      "pkv_central",
+      "pkv_view_stack",
+      "nav_list",
+      "app_status",
+      "browser_view",
+      "browser_entry_count",
+      "browser_entry_status",
+      "browser_entry_table",
+      "browser_preview_title",
+      "browser_preview_status",
+      "browser_preview_text",
+      "search_view",
+      "search_input",
+      "search_strategy",
+      "search_submit",
+      "search_result_status",
+      "search_result_table",
+      "search_preview_title",
+      "search_preview_status",
+      "search_preview_text",
+      "archive_view",
+      "archive_tabs",
+      "archive_url_input",
+      "archive_url_submit",
+      "archive_text_title",
+      "archive_text_content",
+      "archive_text_submit",
+      "archive_progress_status",
+      "archive_result_title",
+      "archive_result_id",
+      "archive_result_path",
+      "archive_result_warning",
+      "archive_go_browser",
+      "chat_view",
+      "chat_new_session",
+      "session_list",
+      "chat_messages",
+      "chat_request_status",
+      "chat_input",
+      "chat_send",
+      "chat_stop",
+      "chat_round_count"
+    ],
+    "chat_terminal_text": {
+      "ready": "就绪",
+      "accepted": "请求中",
+      "completed": "已完成",
+      "stopped": "已停止且未保存",
+      "provider_failed": "失败（错误代码：chat_provider_failed）"
+    }
+  }
+}

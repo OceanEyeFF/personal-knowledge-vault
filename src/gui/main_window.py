@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src import __version__
 from src.gui.views.browser_view import BrowserView
 from src.gui.views.search_view import SearchView
 from src.gui.views.archive_view import ArchiveView
@@ -37,6 +38,7 @@ from src.gui.views.stats_view import StatsView
 from src.gui.views.settings_view import SettingsView
 from src.gui.views.chat_view import ChatView  # M12
 from src.gui.styles import theme_colors
+from src.gui.widgets.accessibility import set_automation_id
 from src.runtime.layout import open_user_file_nofollow
 from src.utils.config import get_config
 from src.utils.logger import LoggerSetup
@@ -92,6 +94,7 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.current_theme: str = "light"
 
+        set_automation_id(self, "pkv_main_window")
         self.setWindowTitle("Personal Knowledge Vault")
         self.setMinimumSize(900, 600)
         self.resize(1200, 750)
@@ -115,6 +118,7 @@ class MainWindow(QMainWindow):
         """构建主窗口中央布局（导航侧边栏 + 内容区域）。"""
         # 创建中央容器
         central = QWidget(self)
+        set_automation_id(central, "pkv_central")
         self.setCentralWidget(central)
 
         layout = QHBoxLayout(central)
@@ -127,6 +131,7 @@ class MainWindow(QMainWindow):
 
         # -- 中央内容区域（QStackedWidget） --
         self._stacked = QStackedWidget(self)
+        set_automation_id(self._stacked, "pkv_view_stack")
         self._browser_view = BrowserView(self)
         self._search_view = SearchView(self)
         self._stacked.addWidget(self._browser_view)   # 索引 0: 浏览
@@ -165,33 +170,44 @@ class MainWindow(QMainWindow):
         """
         panel = QWidget()
         panel.setFixedWidth(130)
-        panel.setObjectName("nav_panel")
+        set_automation_id(panel, "nav_panel")
 
         layout = QHBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         self._nav_list = QListWidget(panel)
-        self._nav_list.setObjectName("nav_list")
+        set_automation_id(self._nav_list, "nav_list")
         self._nav_list.setFrameShape(QListWidget.NoFrame)  # type: ignore[attr-defined]
         self._nav_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # type: ignore[attr-defined]
 
         # 导航项 (添加 Emoji 并左对齐)
         items = [
-            ("📂 浏览", _NAV_BROWSER),
-            ("🔍 搜索", _NAV_SEARCH),
-            ("📦 归档", _NAV_ARCHIVE),
-            ("💬 对话", _NAV_CHAT),
-            ("📊 统计", _NAV_STATS),
-            ("⚙️ 设置", _NAV_SETTINGS),
+            ("📂 浏览", "浏览", _NAV_BROWSER),
+            ("🔍 搜索", "搜索", _NAV_SEARCH),
+            ("📦 归档", "归档", _NAV_ARCHIVE),
+            ("💬 对话", "对话", _NAV_CHAT),
+            ("📊 统计", "统计", _NAV_STATS),
+            ("⚙️ 设置", "设置", _NAV_SETTINGS),
         ]
 
-        for text, _ in items:
+        for text, accessible_name, _ in items:
             item = QListWidgetItem(text)
+            item.setData(
+                Qt.ItemDataRole.AccessibleTextRole,
+                accessible_name,
+            )
             self._nav_list.addItem(item)
 
         self._nav_list.setCurrentRow(_NAV_BROWSER)
         self._nav_list.currentRowChanged.connect(self._on_nav_changed)
+        # Windows UI Automation can select an item through SelectionItemPattern
+        # without updating QListWidget's current index.  Reconcile that real
+        # selection signal back to the current row so the stack and status stay
+        # in lockstep with the accessible navigation control.
+        self._nav_list.itemSelectionChanged.connect(
+            self._sync_selected_nav_item_to_current_row
+        )
 
         layout.addWidget(self._nav_list)
 
@@ -275,8 +291,10 @@ class MainWindow(QMainWindow):
     def _create_status_bar(self) -> None:
         """创建状态栏。"""
         status_bar = QStatusBar(self)
+        set_automation_id(status_bar, "pkv_status_bar")
         self.setStatusBar(status_bar)
         self._status_label = QLabel("就绪")
+        set_automation_id(self._status_label, "app_status")
         status_bar.addWidget(self._status_label)
 
     # ------------------------------------------------------------------
@@ -305,6 +323,22 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # 导航切换
     # ------------------------------------------------------------------
+
+    def _sync_selected_nav_item_to_current_row(self) -> None:
+        """Make a single UIA-selected navigation item the current item.
+
+        ``QListWidget.currentRowChanged`` remains the single view-transition
+        path.  This adapter only covers selection-only clients such as Windows
+        UI Automation's ``SelectionItemPattern``; it deliberately ignores an
+        empty or ambiguous selection.
+        """
+        selected_items = self._nav_list.selectedItems()
+        if len(selected_items) != 1:
+            return
+
+        selected_row = self._nav_list.row(selected_items[0])
+        if selected_row >= 0 and selected_row != self._nav_list.currentRow():
+            self._nav_list.setCurrentRow(selected_row)
 
     def _on_nav_changed(self, row: int) -> None:
         """响应导航列表选中变化，切换中央视图。
@@ -539,7 +573,7 @@ class MainWindow(QMainWindow):
             "关于 Personal Knowledge Vault",
             (
                 "<b>Personal Knowledge Vault</b><br>"
-                "版本: v0.8.0-alpha (Phase 2B M10)<br><br>"
+                f"版本: v{__version__}<br><br>"
                 "AI-First 个人知识管理系统<br>"
                 "工作流驱动 · 本地优先 · MCP 开放集成"
             ),

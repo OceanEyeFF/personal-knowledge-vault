@@ -5,5 +5,6 @@
 """
 
 from src.gui.widgets.autocomplete_popup import AutocompletePopup
+from src.gui.widgets.accessibility import set_automation_id
 
-__all__ = ["AutocompletePopup"]
+__all__ = ["AutocompletePopup", "set_automation_id"]

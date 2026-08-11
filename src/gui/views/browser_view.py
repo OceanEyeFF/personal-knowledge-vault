@@ -15,7 +15,7 @@ import logging
 import math
 from typing import Optional
 
-from PySide6.QtCore import QModelIndex, Qt, Signal
+from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from src.gui.models.entry_model import EntryTableModel, validate_entry_rows
 from src.gui.models.tag_model import TagTreeModel
+from src.gui.widgets.accessibility import set_automation_id
 
 logger = logging.getLogger("pkv.gui.browser")
 
@@ -83,6 +84,7 @@ class BrowserView(QWidget):
             parent: Qt 父部件。
         """
         super().__init__(parent)
+        set_automation_id(self, "browser_view")
         self._current_tag: Optional[str] = None
         self._current_page: int = 0
         self._total_count: int = 0
@@ -108,6 +110,7 @@ class BrowserView(QWidget):
         layout.setSpacing(0)
 
         splitter = QSplitter(Qt.Horizontal, self)  # type: ignore[attr-defined]
+        set_automation_id(splitter, "browser_splitter")
 
         # -- 左栏：标签树 --
         left_panel = self._build_tag_panel()
@@ -136,16 +139,19 @@ class BrowserView(QWidget):
             包含标签标题和 QTreeView 的 QWidget。
         """
         widget = QWidget()
+        set_automation_id(widget, "browser_tag_panel")
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
         # 标题标签
         header = QLabel("标签")
+        set_automation_id(header, "browser_tag_header")
         header.setProperty("class", "panel-header")
         layout.addWidget(header)
 
         self._tag_status_label = QLabel("", self)
+        set_automation_id(self._tag_status_label, "browser_tag_status")
         self._tag_status_label.setProperty("status", "error")
         self._tag_status_label.setWordWrap(True)
         self._tag_status_label.hide()
@@ -154,6 +160,7 @@ class BrowserView(QWidget):
         # 标签树视图
         self._tag_model = TagTreeModel(self)
         self._tag_view = QTreeView(self)
+        set_automation_id(self._tag_view, "browser_tag_tree")
         self._tag_view.setModel(self._tag_model)
         self._tag_view.setHeaderHidden(True)
         self._tag_view.setRootIsDecorated(False)
@@ -169,16 +176,19 @@ class BrowserView(QWidget):
             包含条目表格和分页按钮的 QWidget。
         """
         widget = QWidget()
+        set_automation_id(widget, "browser_entry_panel")
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
         # 条目列表标题（含数量显示）
         self._entry_count_label = QLabel("条目")
+        set_automation_id(self._entry_count_label, "browser_entry_count")
         self._entry_count_label.setProperty("class", "panel-header")
         layout.addWidget(self._entry_count_label)
 
         self._entry_status_label = QLabel("", self)
+        set_automation_id(self._entry_status_label, "browser_entry_status")
         self._entry_status_label.setProperty("status", "error")
         self._entry_status_label.setWordWrap(True)
         self._entry_status_label.hide()
@@ -187,6 +197,7 @@ class BrowserView(QWidget):
         # 条目表格视图
         self._entry_model = EntryTableModel([], self)
         self._entry_view = QTableView(self)
+        set_automation_id(self._entry_view, "browser_entry_table")
         self._entry_view.setModel(self._entry_model)
         self._entry_view.setSelectionBehavior(QAbstractItemView.SelectRows)  # type: ignore[attr-defined]
         self._entry_view.setSelectionMode(QAbstractItemView.SingleSelection)  # type: ignore[attr-defined]
@@ -215,18 +226,22 @@ class BrowserView(QWidget):
             水平分页控件 QWidget。
         """
         widget = QWidget()
+        set_automation_id(widget, "browser_pagination")
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
         self._prev_btn = QPushButton("上一页")
+        set_automation_id(self._prev_btn, "browser_prev_page")
         self._prev_btn.setFixedWidth(70)
         self._prev_btn.setEnabled(False)
 
         self._page_label = QLabel("第 1 页 / 共 1 页")
+        set_automation_id(self._page_label, "browser_page_status")
         self._page_label.setAlignment(Qt.AlignCenter)  # type: ignore[attr-defined]
 
         self._next_btn = QPushButton("下一页")
+        set_automation_id(self._next_btn, "browser_next_page")
         self._next_btn.setFixedWidth(70)
         self._next_btn.setEnabled(False)
 
@@ -245,22 +260,26 @@ class BrowserView(QWidget):
             包含预览标题、只读 QTextEdit 和操作按钮的 QWidget。
         """
         widget = QWidget()
+        set_automation_id(widget, "browser_preview_panel")
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
         # 标题标签
         self._preview_title = QLabel("预览")
+        set_automation_id(self._preview_title, "browser_preview_title")
         self._preview_title.setProperty("class", "panel-header")
         layout.addWidget(self._preview_title)
 
         self._preview_status_label = QLabel("", self)
+        set_automation_id(self._preview_status_label, "browser_preview_status")
         self._preview_status_label.setWordWrap(True)
         self._preview_status_label.hide()
         layout.addWidget(self._preview_status_label)
 
         # 预览文本框
         self._preview_text = QTextEdit(self)
+        set_automation_id(self._preview_text, "browser_preview_text")
         self._preview_text.setReadOnly(True)
         self._preview_text.setPlaceholderText("选择条目以预览内容...")
         layout.addWidget(self._preview_text)
@@ -272,7 +291,7 @@ class BrowserView(QWidget):
         )
         self._send_to_chat_btn.setEnabled(False)  # 未选中条目时禁用
         self._send_to_chat_btn.setMinimumHeight(32)
-        self._send_to_chat_btn.setObjectName("btn_send_to_chat")
+        set_automation_id(self._send_to_chat_btn, "browser_send_to_chat")
         layout.addWidget(self._send_to_chat_btn)
 
         return widget
@@ -284,7 +303,18 @@ class BrowserView(QWidget):
     def _connect_signals(self) -> None:
         """连接各控件的信号与槽。"""
         self._tag_view.clicked.connect(self.on_tag_selected)
-        self._entry_view.clicked.connect(self.on_entry_selected)
+        selection_model = self._entry_view.selectionModel()
+        if selection_model is None:
+            raise RuntimeError("Browser entry table has no selection model")
+        selection_model.currentRowChanged.connect(
+            self._on_entry_current_row_changed
+        )
+        selection_model.selectionChanged.connect(
+            self._sync_selected_entry_to_current_row
+        )
+        self._entry_model.modelAboutToBeReset.connect(
+            self._clear_entry_selection
+        )
         self._prev_btn.clicked.connect(self._go_prev_page)
         self._next_btn.clicked.connect(self._go_next_page)
         # M12: 发送到对话
@@ -370,6 +400,7 @@ class BrowserView(QWidget):
 
             self._total_count = total_count
             self._current_page = resolved_page
+            self._clear_entry_selection()
             self._entry_model.update_entries(entries)
             self._entry_view.setEnabled(True)
             self._entry_status_label.clear()
@@ -410,6 +441,11 @@ class BrowserView(QWidget):
         self._page_label.setText("分页不可用")
         self._prev_btn.setEnabled(False)
         self._next_btn.setEnabled(False)
+        self._clear_entry_selection()
+
+    def _clear_entry_selection(self) -> None:
+        """Clear cached preview state when the entry projection changes."""
+
         self._selected_entry = None
         self._selected_content = ""
         self._send_to_chat_btn.setEnabled(False)
@@ -430,14 +466,7 @@ class BrowserView(QWidget):
         tag_name = self._tag_model.get_tag_name(index)
         # tag_name 为 None 时表示"全部"节点
         self.load_entries(tag=tag_name, page=0)
-        # 清空右侧预览
-        self._preview_text.clear()
-        self._preview_title.setText("预览")
-        self._clear_preview_status()
-        # M12: 清除选中缓存
-        self._selected_entry = None
-        self._selected_content = ""
-        self._send_to_chat_btn.setEnabled(False)
+        self._clear_entry_selection()
 
     def on_entry_selected(self, index: QModelIndex) -> None:
         """响应条目列表点击事件，在右侧加载 Markdown 预览。
@@ -450,6 +479,54 @@ class BrowserView(QWidget):
             self._selected_entry = entry
             preview_available = self._load_preview(entry)
             self._send_to_chat_btn.setEnabled(preview_available)
+
+    def _sync_selected_entry_to_current_row(self, *_: object) -> None:
+        """Turn one UIA-selected entry row into the current row.
+
+        Native SelectionItem clients can update ``selectionChanged`` without
+        changing the table's current index.  The existing ``currentRowChanged``
+        handler remains the only route that loads a preview.
+        """
+        selection_model = self._entry_view.selectionModel()
+        if selection_model is None:
+            return
+
+        selected_rows = {
+            index.row()
+            for index in selection_model.selectedIndexes()
+            if index.isValid()
+        }
+        if len(selected_rows) != 1:
+            return
+
+        selected_row = next(iter(selected_rows))
+        current = selection_model.currentIndex()
+        if (
+            current.isValid()
+            and current.model() == self._entry_model
+            and current.row() == selected_row
+        ):
+            return
+
+        selected_index = self._entry_model.index(selected_row, 0)
+        if selected_index.isValid():
+            selection_model.setCurrentIndex(
+                selected_index,
+                QItemSelectionModel.SelectionFlag.NoUpdate,
+            )
+
+    def _on_entry_current_row_changed(
+        self,
+        current: QModelIndex,
+        previous: QModelIndex,
+    ) -> None:
+        """Load preview for keyboard and native SelectionItem navigation."""
+
+        del previous
+        if current.isValid():
+            self.on_entry_selected(current)
+        else:
+            self._clear_entry_selection()
 
     def _go_prev_page(self) -> None:
         """切换到上一页。"""

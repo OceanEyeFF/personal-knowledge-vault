@@ -25,6 +25,7 @@ from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import QListWidget, QListWidgetItem, QWidget
 
 from src.gui.utils.search_response_contract import is_strict_search_response
+from src.gui.widgets.accessibility import set_automation_id
 
 if TYPE_CHECKING:
     from src.retrieval.result import RetrievalIssue
@@ -65,7 +66,7 @@ class AutocompletePopup(QListWidget):
             Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
         )
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setObjectName("autocomplete_popup")
+        set_automation_id(self, "autocomplete_popup")
 
         # 当前模式和过滤文本
         self._mode: str = MODE_KNOWLEDGE

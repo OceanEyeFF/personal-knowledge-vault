@@ -34,6 +34,7 @@ from src.gui.viewmodels.archive_viewmodel import (
     ArchiveViewModel,
     sanitize_archive_failure,
 )
+from src.gui.widgets.accessibility import set_automation_id
 
 logger = logging.getLogger("pkv.gui.archive")
 
@@ -67,6 +68,7 @@ class ArchiveView(QWidget):
             parent: Qt 父部件。
         """
         super().__init__(parent)
+        set_automation_id(self, "archive_view")
         self._vm = ArchiveViewModel(self)
 
         self._init_ui()
@@ -106,6 +108,7 @@ class ArchiveView(QWidget):
             包含两个归档标签页的 QTabWidget。
         """
         tab_widget = QTabWidget(self)
+        set_automation_id(tab_widget, "archive_tabs")
 
         # Tab 1: URL 归档
         url_tab = self._build_url_tab()
@@ -124,6 +127,7 @@ class ArchiveView(QWidget):
             包含 URL 输入框和归档按钮的 QWidget。
         """
         widget = QWidget()
+        set_automation_id(widget, "archive_url_tab")
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
@@ -133,10 +137,12 @@ class ArchiveView(QWidget):
         url_row.setSpacing(8)
 
         self._url_input = QLineEdit(self)
+        set_automation_id(self._url_input, "archive_url_input")
         self._url_input.setPlaceholderText("输入要归档的网页链接...")
         url_row.addWidget(self._url_input, stretch=1)
 
         self._archive_url_btn = QPushButton("归档", self)
+        set_automation_id(self._archive_url_btn, "archive_url_submit")
         self._archive_url_btn.setFixedWidth(80)
         url_row.addWidget(self._archive_url_btn)
 
@@ -152,23 +158,27 @@ class ArchiveView(QWidget):
             包含标题输入、文本输入和归档按钮的 QWidget。
         """
         widget = QWidget()
+        set_automation_id(widget, "archive_text_tab")
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
         # 标题输入
         self._title_input = QLineEdit(self)
+        set_automation_id(self._title_input, "archive_text_title")
         self._title_input.setPlaceholderText("标题（可选）")
         layout.addWidget(self._title_input)
 
         # 文本内容输入
         self._text_input = QPlainTextEdit(self)
+        set_automation_id(self._text_input, "archive_text_content")
         self._text_input.setPlaceholderText("输入要归档的文本内容...")
         self._text_input.setMinimumHeight(120)
         layout.addWidget(self._text_input)
 
         # 归档按钮
         self._archive_text_btn = QPushButton("归档", self)
+        set_automation_id(self._archive_text_btn, "archive_text_submit")
         self._archive_text_btn.setFixedWidth(80)
         layout.addWidget(self._archive_text_btn, alignment=Qt.AlignRight)  # type: ignore[arg-type]
 
@@ -181,18 +191,21 @@ class ArchiveView(QWidget):
             包含进度条和进度标签的 QWidget。
         """
         widget = QWidget()
+        set_automation_id(widget, "archive_progress_area")
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
         # 脉冲进度条（不确定模式）
         self._progress_bar = QProgressBar(self)
+        set_automation_id(self._progress_bar, "archive_progress_bar")
         self._progress_bar.setRange(0, 0)  # 不确定模式，脉冲动画
         self._progress_bar.setTextVisible(False)
         layout.addWidget(self._progress_bar)
 
         # 进度文本标签
         self._progress_label = QLabel("准备中...", self)
+        set_automation_id(self._progress_label, "archive_progress_status")
         self._progress_label.setProperty("class", "text-muted")
         layout.addWidget(self._progress_label)
 
@@ -205,7 +218,7 @@ class ArchiveView(QWidget):
             包含结果信息标签和"前往浏览"按钮的 QFrame。
         """
         frame = QFrame(self)
-        frame.setObjectName("archive_result_frame")
+        set_automation_id(frame, "archive_result_frame")
 
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -213,24 +226,30 @@ class ArchiveView(QWidget):
 
         # 结果标题
         self._result_title_label = QLabel("", self)
-        self._result_title_label.setObjectName("archive_result_title")
+        set_automation_id(self._result_title_label, "archive_result_title")
         self._result_title_label.setWordWrap(True)
         layout.addWidget(self._result_title_label)
 
         # knowledge_id
         self._result_kid_label = QLabel("", self)
+        set_automation_id(self._result_kid_label, "archive_result_id")
         self._result_kid_label.setProperty("class", "text-muted")
         self._result_kid_label.setWordWrap(True)
         layout.addWidget(self._result_kid_label)
 
         # 文件路径
         self._result_path_label = QLabel("", self)
+        set_automation_id(self._result_path_label, "archive_result_path")
         self._result_path_label.setProperty("class", "text-muted")
         self._result_path_label.setWordWrap(True)
         layout.addWidget(self._result_path_label)
 
         # 持久可见的降级/修复提示（不能只依赖瞬时对话框）
         self._result_warning_label = QLabel("", self)
+        set_automation_id(
+            self._result_warning_label,
+            "archive_result_warning",
+        )
         self._result_warning_label.setProperty("class", "text-warning")
         self._result_warning_label.setWordWrap(True)
         self._result_warning_label.setVisible(False)
@@ -238,6 +257,7 @@ class ArchiveView(QWidget):
 
         # "前往浏览"按钮
         self._navigate_btn = QPushButton("前往浏览", self)
+        set_automation_id(self._navigate_btn, "archive_go_browser")
         self._navigate_btn.setFixedWidth(100)
         layout.addWidget(self._navigate_btn, alignment=Qt.AlignRight)  # type: ignore[arg-type]
 

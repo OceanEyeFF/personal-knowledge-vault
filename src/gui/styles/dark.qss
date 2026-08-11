@@ -440,18 +440,18 @@ QLabel[formLabel="true"] {
 }
 
 /* Token 面板 */
-#token_panel {
+#chat_token_panel {
     background-color: #1e1e1e;
     border-top: 1px solid #3c3c3c;
     padding: 4px;
 }
-#token_panel_title {
+#chat_token_panel_title {
     font-weight: bold;
     font-size: 14px;
     color: #d4d4d4;
     padding-bottom: 2px;
 }
-#token_warning {
+#chat_token_warning {
     background-color: #3e2723;
     color: #ffb74d;
     border-radius: 4px;
@@ -460,7 +460,7 @@ QLabel[formLabel="true"] {
 }
 
 /* 消息显示区 */
-#message_display {
+#chat_messages {
     background-color: #1e1e1e;
     border: none;
 }
@@ -502,24 +502,26 @@ QLabel[formLabel="true"] {
 }
 
 /* 按钮变体 */
-#btn_send_to_chat {
+#browser_send_to_chat,
+#chat_send {
     background-color: #66bb6a;
     color: white;
     border-radius: 4px;
     padding: 6px 12px;
     font-weight: 600;
 }
-#btn_send_to_chat:hover {
+#browser_send_to_chat:hover,
+#chat_send:hover {
     background-color: #43a047;
 }
-#btn_stop {
+#chat_stop {
     background-color: #ef5350;
     color: white;
     border-radius: 4px;
     padding: 6px 12px;
     font-weight: 600;
 }
-#btn_stop:hover {
+#chat_stop:hover {
     background-color: #e53935;
 }
 

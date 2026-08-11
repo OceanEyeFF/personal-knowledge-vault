@@ -1,0 +1,54 @@
+{
+  "contains_credentials": false,
+  "contains_real_vault_data": false,
+  "embedding_contract": {
+    "base_url": "https://api.openai.com/v1",
+    "base_url_sha256": "d9617135d6fdd0a2cde722d637a1dfcc3da37515708b3ea5d66ae607c8ac785e",
+    "dim": 1536,
+    "fingerprint_schema_version": 2,
+    "model": "text-embedding-3-small"
+  },
+  "files": [
+    {
+      "path": "chunk_vectors.idx",
+      "sha256": "db93031487ca359e6fdcb06f3767c6f1f86d830c268df5dcb8d24e51c06c86c5"
+    },
+    {
+      "path": "chunk_vectors_metadata.json",
+      "sha256": "f4dcc2139fd91291f3b81e746a14a6bd57ba966c31ae2aa661b774f3e6e9d9ca"
+    },
+    {
+      "path": "doc_vectors.idx",
+      "sha256": "db93031487ca359e6fdcb06f3767c6f1f86d830c268df5dcb8d24e51c06c86c5"
+    },
+    {
+      "path": "doc_vectors_metadata.json",
+      "sha256": "f4dcc2139fd91291f3b81e746a14a6bd57ba966c31ae2aa661b774f3e6e9d9ca"
+    }
+  ],
+  "generation": {
+    "network_required": false,
+    "notes": "Empty indexes are regenerated with fixed hnswlib parameters; hnswlib serializes an empty index with loaded max_elements=0; the product load path resizes it to generation_max_elements. The artifact contract test requires byte-identical outputs.",
+    "script": "generate_fixture.py",
+    "source_data_required": false
+  },
+  "index_contract": {
+    "M": 16,
+    "dim": 1536,
+    "ef_construction": 200,
+    "element_count": 0,
+    "generation_max_elements": 10000,
+    "loaded_empty_max_elements": 0,
+    "pairs": [
+      "doc_vectors",
+      "chunk_vectors"
+    ],
+    "random_seed": 100,
+    "space": "cosine"
+  },
+  "schema_version": "pkv.m13.w4-semantic-index.v1",
+  "synthetic_only": true,
+  "toolchain": {
+    "hnswlib": "0.8.0"
+  }
+}

@@ -48,6 +48,7 @@ from src.gui.utils.preview_loader import (
     load_entry_preview_outcome,
 )
 from src.gui.utils.search_response_contract import is_strict_search_response
+from src.gui.widgets.accessibility import set_automation_id
 from src.processors.safe_fetch import describe_url_target
 from src.runtime.errors import ErrorCode
 
@@ -72,6 +73,14 @@ _REFERENCE_ENTRY_OPTIONAL_TEXT_FIELDS = (
     "file_path",
     "archived_at",
 )
+_PUBLIC_ERROR_CODES = frozenset(code.value for code in ErrorCode)
+_REQUEST_STATUS_TEXT = {
+    "idle": "就绪",
+    "running": "请求中",
+    "running_other": "请求中（其他会话）",
+    "completed": "已完成",
+    "stopped": "已停止且未保存",
+}
 
 
 @dataclass(frozen=True)
@@ -308,6 +317,16 @@ def _html_text(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+def _public_error_code(value: object) -> str:
+    """Return only an enum-backed machine code for persistent UI status."""
+
+    return (
+        value
+        if type(value) is str and value in _PUBLIC_ERROR_CODES
+        else ErrorCode.CHAT_PROVIDER_FAILED.value
+    )
+
+
 class SafeMessageBrowser(QTextBrowser):
     """QTextBrowser that never resolves document-supplied resources."""
 
@@ -359,31 +378,36 @@ class TokenPanel(QWidget):
             parent: Qt 父对象
         """
         super().__init__(parent)
+        set_automation_id(self, "chat_token_panel")
 
         layout = QVBoxLayout(self)
 
         # 标题
         title = QLabel("📊 Token 统计")
-        title.setObjectName("token_panel_title")
+        set_automation_id(title, "chat_token_panel_title")
         layout.addWidget(title)
 
         # 当前会话
         self.session_label = QLabel("当前: 0 / 64,000")
+        set_automation_id(self.session_label, "chat_token_total")
         layout.addWidget(self.session_label)
 
         # 轮数
         self.round_label = QLabel("轮数: 0 / 3")
+        set_automation_id(self.round_label, "chat_round_count")
         layout.addWidget(self.round_label)
 
         # 输入/输出
         self.input_label = QLabel("输入: 0")
         self.output_label = QLabel("输出: 0")
+        set_automation_id(self.input_label, "chat_token_input")
+        set_automation_id(self.output_label, "chat_token_output")
         layout.addWidget(self.input_label)
         layout.addWidget(self.output_label)
 
         # 警告区域
         self.warning_label = QLabel("")
-        self.warning_label.setObjectName("token_warning")
+        set_automation_id(self.warning_label, "chat_token_warning")
         self.warning_label.setVisible(False)
         self.warning_label.setWordWrap(True)
         layout.addWidget(self.warning_label)
@@ -440,19 +464,22 @@ class SessionSidebar(QWidget):
             parent: Qt 父对象
         """
         super().__init__(parent)
-        self.setObjectName("session_sidebar")
+        set_automation_id(self, "session_sidebar")
 
         layout = QVBoxLayout(self)
 
         # 新建按钮
         self.new_btn = QPushButton("📝 新建会话")
+        set_automation_id(self.new_btn, "chat_new_session")
         self.new_btn.setMinimumHeight(40)
         layout.addWidget(self.new_btn)
 
         # 会话列表
         self.session_list = QListWidget()
-        self.session_list.setObjectName("session_list")
-        self.session_list.itemClicked.connect(self._on_item_clicked)
+        set_automation_id(self.session_list, "session_list")
+        self.session_list.currentItemChanged.connect(
+            self._on_current_item_changed
+        )
         self.session_list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
         )
@@ -474,6 +501,17 @@ class SessionSidebar(QWidget):
         session_id = item.data(Qt.ItemDataRole.UserRole)
         if session_id:
             self.session_selected.emit(session_id)
+
+    def _on_current_item_changed(
+        self,
+        current: QListWidgetItem | None,
+        previous: QListWidgetItem | None,
+    ) -> None:
+        """Load sessions selected by mouse, keyboard, or native UIA."""
+
+        del previous
+        if current is not None:
+            self._on_item_clicked(current)
 
     def _on_context_menu(self, pos: QPoint) -> None:
         """会话列表右键菜单
@@ -822,12 +860,13 @@ class InputArea(QWidget):
             parent: Qt 父对象
         """
         super().__init__(parent)
+        set_automation_id(self, "chat_input_area")
 
         layout = QHBoxLayout(self)
 
         # 输入框
         self.input_box = InputBox()
-        self.input_box.setObjectName("chat_input")
+        set_automation_id(self.input_box, "chat_input")
         self.input_box.setPlaceholderText(
             "输入消息... (Ctrl+Enter 换行, @知识库/ 或 @搜索/ 引用知识)"
         )
@@ -836,13 +875,13 @@ class InputArea(QWidget):
 
         # 发送按钮
         self.send_btn = QPushButton("🚀 发送")
-        self.send_btn.setObjectName("btn_send_to_chat")
+        set_automation_id(self.send_btn, "chat_send")
         self.send_btn.setMinimumWidth(80)
         layout.addWidget(self.send_btn)
 
         # 停止按钮
         self.stop_btn = QPushButton("⏹ 停止")
-        self.stop_btn.setObjectName("btn_stop")
+        set_automation_id(self.stop_btn, "chat_stop")
         self.stop_btn.setMinimumWidth(80)
         self.stop_btn.setVisible(False)
         layout.addWidget(self.stop_btn)
@@ -870,14 +909,23 @@ class ChatArea(QWidget):
             parent: Qt 父对象
         """
         super().__init__(parent)
+        set_automation_id(self, "chat_area")
 
         layout = QVBoxLayout(self)
 
         # 消息显示区
         self.message_display = SafeMessageBrowser()
-        self.message_display.setObjectName("message_display")
+        set_automation_id(self.message_display, "chat_messages")
         self.message_display.setReadOnly(True)
         layout.addWidget(self.message_display)
+
+        # 请求终态必须持续可见，不能只存在于日志或消息 HTML 中。
+        self.request_status = QLabel("就绪")
+        set_automation_id(self.request_status, "chat_request_status")
+        self.request_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.request_status.setProperty("requestStatus", "idle")
+        self.request_status.setWordWrap(True)
+        layout.addWidget(self.request_status)
 
         # 输入区
         self.input_area = InputArea()
@@ -964,6 +1012,7 @@ class ChatView(QWidget):
             parent: Qt 父对象
         """
         super().__init__(parent)
+        set_automation_id(self, "chat_view")
 
         # ViewModel
         self.viewmodel = ChatViewModel()
@@ -973,6 +1022,7 @@ class ChatView(QWidget):
 
         # 主布局
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        set_automation_id(splitter, "chat_splitter")
 
         # 左侧：会话侧边栏
         self.sidebar = SessionSidebar()
@@ -1052,6 +1102,43 @@ class ChatView(QWidget):
         self.chat_area.input_area.send_btn.clicked.connect(self._on_send_clicked)
         self.chat_area.input_area.stop_btn.clicked.connect(self._on_stop_clicked)
 
+    def _set_request_status(
+        self,
+        state: str,
+        error_code: str = "",
+    ) -> None:
+        """Render one persistent, machine-readable Chat request status."""
+
+        if state == "error":
+            text = f"失败（错误代码：{_public_error_code(error_code)}）"
+        elif state == "rejected":
+            text = f"未发送（错误代码：{_public_error_code(error_code)}）"
+        else:
+            text = _REQUEST_STATUS_TEXT.get(state)
+            if text is None:
+                raise ValueError(f"Unknown Chat request status: {state!r}")
+
+        label = self.chat_area.request_status
+        label.setProperty("requestStatus", state)
+        label.setText(text)
+        label.show()
+        label.style().unpolish(label)
+        label.style().polish(label)
+
+    def _sync_request_status(self) -> None:
+        """Project global request ownership onto the currently shown session."""
+
+        if not self.viewmodel.is_busy:
+            self._set_request_status("idle")
+            return
+        state = (
+            "running"
+            if self.viewmodel.active_session_id
+            == self.viewmodel.current_session_id
+            else "running_other"
+        )
+        self._set_request_status(state)
+
     def _load_sessions(self) -> bool:
         """加载会话列表"""
         try:
@@ -1070,6 +1157,7 @@ class ChatView(QWidget):
             self.chat_area.discard_assistant_message()
             self.chat_area.message_display.clear()
             self.sidebar.token_panel.update_stats(0, 0, 0, 0)
+            self._sync_request_status()
             logger.info("✅ 新建会话成功")
         except Exception as e:
             logger.error("新建会话失败: error_type=%s", type(e).__name__)
@@ -1086,6 +1174,7 @@ class ChatView(QWidget):
                 self.chat_area.message_display.clear()
                 self.sidebar.token_panel.update_stats(0, 0, 0, 0)
             self._load_sessions()
+            self._sync_request_status()
             logger.info("会话已删除")
 
     def _on_save_to_kb(self, session_id: str) -> None:
@@ -1202,6 +1291,7 @@ class ChatView(QWidget):
             stats["total_tokens"],
             stats["round_count"],
         )
+        self._sync_request_status()
 
     def _on_send_clicked(self) -> None:
         """发送按钮点击事件
@@ -1248,6 +1338,7 @@ class ChatView(QWidget):
         self.chat_area.input_area.send_btn.setVisible(False)
         self.chat_area.input_area.stop_btn.setVisible(True)
         self.chat_area.input_area.stop_btn.setEnabled(True)
+        self._set_request_status("running")
 
         # URL 归档独立于本轮冻结的 Provider 请求，在接纳后再触发，避免
         # 被拒绝的 send 产生额外副作用。
@@ -1627,6 +1718,8 @@ class ChatView(QWidget):
             f"⚠️ {label}（status={public_status}, code={code}, "
             f"stage={stage}）</p>"
         )
+        if not degraded:
+            self._set_request_status("rejected", code)
 
     # ------------------------------------------------------------------
     # M12 Phase 3: URL 自动检测和归档
@@ -1786,6 +1879,8 @@ class ChatView(QWidget):
         ):
             return
         self._active_ui_request = (session_id, request_id)
+        if self.viewmodel.current_session_id == session_id:
+            self._set_request_status("running")
 
     def _on_chat_token_received(
         self,
@@ -1816,6 +1911,10 @@ class ChatView(QWidget):
         self._pending_user_messages.pop(request_key, None)
         self._active_ui_request = None
         self._restore_send_controls()
+        if self.viewmodel.current_session_id == session_id:
+            self._set_request_status("completed")
+        else:
+            self._sync_request_status()
         logger.info("流式输出完成")
 
     def _on_chat_request_stopped(
@@ -1835,6 +1934,10 @@ class ChatView(QWidget):
             if pending and not self.chat_area.input_area.input_box.toPlainText():
                 self.chat_area.input_area.input_box.setPlainText(pending)
         self._restore_send_controls()
+        if self.viewmodel.current_session_id == session_id:
+            self._set_request_status("stopped")
+        else:
+            self._sync_request_status()
         logger.info("流式输出已停止并回滚")
 
     def _on_chat_request_failed(
@@ -1869,6 +1972,10 @@ class ChatView(QWidget):
                 f"❌ 错误 [{safe_error_code}]: {safe_error_message}</p>"
             )
         self._restore_send_controls()
+        if not session_id or self.viewmodel.current_session_id == session_id:
+            self._set_request_status("error", error_code)
+        else:
+            self._sync_request_status()
 
     def _on_chat_request_rejected(
         self,
@@ -1891,6 +1998,7 @@ class ChatView(QWidget):
             input_box = self.chat_area.input_area.input_box
             input_box.setToolTip(f"[{error_code}] {error_msg}")
             input_box.setFocus()
+            self._sync_request_status()
             logger.warning("Chat send rejected while another request is active")
             return
         colors = theme_colors.get_current_colors()
@@ -1903,6 +2011,7 @@ class ChatView(QWidget):
             f"❌ [{safe_error_code}] "
             f"{safe_error_message}</p>"
         )
+        self._set_request_status("rejected", error_code)
 
     def _on_chat_token_usage_updated(
         self,
@@ -2026,6 +2135,7 @@ class ChatView(QWidget):
 
             # 7. 聚焦输入框
             self.chat_area.input_area.input_box.setFocus()
+            self._sync_request_status()
 
             logger.info(
                 "创建引用会话成功: tokens=%s truncated=%s",
