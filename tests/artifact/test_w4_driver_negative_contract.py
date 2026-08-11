@@ -718,6 +718,117 @@ def _run_bounded_capture_worker_timeout_probe() -> subprocess.CompletedProcess[s
     )
 
 
+def _run_loopback_exit_code_snapshot_probe(
+    tmp_path: Path, mode: str
+) -> subprocess.CompletedProcess[str]:
+    """Exercise cached loopback exit codes across intentionally unavailable handles."""
+    assert mode in {"record_then_unavailable", "unreadable_at_capture"}
+    state = tmp_path / f"loopback-exit-state-{uuid.uuid4().hex}"
+    evidence = tmp_path / f"loopback-exit-evidence-{uuid.uuid4().hex}"
+    encoded_exit = base64.b64encode("exit 0".encode("utf-16le")).decode("ascii")
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' -Force;"
+        f"$module=Import-Module '{_ps_single_quoted(SCENARIO_MODULE)}' "
+        "-Force -PassThru;"
+        f"$mode='{mode}';"
+        f"$state='{_ps_single_quoted(state)}';"
+        f"$evidence='{_ps_single_quoted(evidence)}';"
+        "$launcher=$null;$runtime=$null;$realProbe=$null;$unreadable=$null;"
+        "$caught=$null;$stopResult=$null;$processRecord=$null;"
+        "$realCapturedCode=$null;$realRawExitCodeAfter=$null;"
+        "$launcherRawExitCodeAfter=$null;$runtimeRawExitCodeAfter=$null;"
+        "try{"
+        "[void][IO.Directory]::CreateDirectory($state);"
+        "[void][IO.Directory]::CreateDirectory($evidence);"
+        "$startInfo=[Diagnostics.ProcessStartInfo]::new();"
+        f"$startInfo.FileName='{_ps_single_quoted(_windows_powershell())}';"
+        "$startInfo.Arguments='-NoLogo -NoProfile -NonInteractive "
+        f"-EncodedCommand {encoded_exit}';"
+        "$startInfo.UseShellExecute=$false;$startInfo.CreateNoWindow=$true;"
+        "$realProbe=[Diagnostics.Process]::Start($startInfo);"
+        "if($null -eq $realProbe){throw 'real exit-code capture probe did not start'};"
+        "if(-not $realProbe.WaitForExit(10000)){throw 'real exit-code capture probe did not exit'};"
+        "if($mode -ceq 'unreadable_at_capture'){"
+        "$unreadable=$realProbe;$realProbe=$null;$unreadable.Dispose();"
+        "try{& $module {param($target) "
+        "Get-W4ExitedProcessExitCode -Process $target -Label 'Harness unreadable'} "
+        "$unreadable}catch{$caught=$_.Exception.Message};"
+        "[ordered]@{mode=$mode;caught=$caught}|ConvertTo-Json -Compress;"
+        "return"
+        "};"
+        "$realCapturedCode=& $module {param($target) "
+        "Get-W4ExitedProcessExitCode -Process $target -Label 'Harness real capture'} "
+        "$realProbe;"
+        "$realRecord=[ordered]@{exit_code=[int]$realCapturedCode;"
+        "runtime_exit_code=[int]$realCapturedCode};"
+        "$realProbe.Dispose();"
+        "try{$realRawExitCodeAfter=$realProbe.ExitCode}catch{"
+        "$realRawExitCodeAfter='__throws__'};"
+        "$launcher=[Diagnostics.Process]::Start($startInfo);"
+        "$runtime=[Diagnostics.Process]::Start($startInfo);"
+        "if($null -eq $launcher -or $null -eq $runtime){"
+        "throw 'loopback stop snapshot probe did not start both processes'};"
+        "if(-not $launcher.WaitForExit(10000) -or -not $runtime.WaitForExit(10000)){"
+        "throw 'loopback stop snapshot probe processes did not exit'};"
+        "$harnessResult=[ordered]@{"
+        "schema_version='pkv.w3.loopback.result.v1';result='passed';"
+        "completed_steps=3;total_steps=3}|ConvertTo-Json -Compress;"
+        "[IO.File]::WriteAllText((Join-Path $state 'result.json'),"
+        "$harnessResult,[Text.UTF8Encoding]::new($false));"
+        "$harness=[pscustomobject]@{"
+        "Process=$launcher;RuntimeProcess=$runtime;"
+        "LauncherProcessTreeSnapshot=[pscustomobject]@{test='launcher'};"
+        "RuntimeProcessTreeSnapshot=[pscustomobject]@{test='runtime'};"
+        "LauncherPid=[int]$launcher.Id;RuntimePid=[int]$runtime.Id;"
+        "StdoutTask=[Threading.Tasks.Task[string]]::FromResult('');"
+        "StderrTask=[Threading.Tasks.Task[string]]::FromResult('');"
+        "StateDirectory=$state;Evidence=$evidence};"
+        "& $module {"
+        "function script:Stop-W4ProcessTree {"
+        "param([System.Diagnostics.Process]$Process,$IdentitySnapshot)"
+        "};"
+        "function script:Get-W4ExitedProcessExitCode {"
+        "param([System.Diagnostics.Process]$Process,[string]$Label);"
+        "$hasExited=$Process.HasExited;"
+        "if($hasExited -isnot [bool] -or $hasExited -ne $true){"
+        "throw \"$Label did not expose a confirmed exited process exit code\"};"
+        "$captured=[int]$Process.ExitCode;$Process.Dispose();return $captured"
+        "}"
+        "};"
+        "try{$stopResult=& $module {param($value) "
+        "Stop-W4LoopbackHarness -Harness $value} $harness}catch{"
+        "$caught=$_.Exception.Message};"
+        "if(Test-Path -LiteralPath (Join-Path $evidence 'process.json') -PathType Leaf){"
+        "$processRecord=[IO.File]::ReadAllText("
+        "(Join-Path $evidence 'process.json'))|ConvertFrom-Json};"
+        "try{$launcherRawExitCodeAfter=$launcher.ExitCode}catch{"
+        "$launcherRawExitCodeAfter='__throws__'};"
+        "try{$runtimeRawExitCodeAfter=$runtime.ExitCode}catch{"
+        "$runtimeRawExitCodeAfter='__throws__'};"
+        "[ordered]@{mode=$mode;caught=$caught;"
+        "real_captured_code=[int]$realCapturedCode;"
+        "real_raw_exit_code_after=$realRawExitCodeAfter;"
+        "real_record_normal=([int]$realRecord.exit_code -eq 0 -and "
+        "[int]$realRecord.runtime_exit_code -eq 0);"
+        "stop_result=if($null -eq $stopResult){$null}else{[string]$stopResult.result};"
+        "launcher_raw_exit_code_after=$launcherRawExitCodeAfter;"
+        "runtime_raw_exit_code_after=$runtimeRawExitCodeAfter;"
+        "process_record=$processRecord}|ConvertTo-Json -Depth 10 -Compress"
+        "}finally{"
+        "foreach($candidate in @($runtime,$launcher,$realProbe,$unreadable)){"
+        "if($null -eq $candidate){continue};"
+        "try{if(-not $candidate.HasExited){$candidate.Kill();"
+        "[void]$candidate.WaitForExit(1000)}}catch{};"
+        "try{$candidate.Dispose()}catch{}"
+        "}"
+        "}"
+    )
+    return _run_powershell(
+        ["-Command", command], cwd=REPOSITORY_ROOT, timeout=30
+    )
+
+
 def _write_hung_capture_worker_driver_module(tmp_path: Path) -> Path:
     source = _read(DRIVER_MODULE)
     worker_prelude = (
@@ -5150,6 +5261,121 @@ def test_selection_helpers_use_real_windows_uia_current_selection() -> None:
     assert payload["proof"]["selection_count"] == 1
     assert payload["proof"]["selection_item_is_selected"] is True
     assert payload["proof"]["selected_runtime_id"] == payload["selected_runtime_id"]
+
+
+def test_loopback_harness_snapshots_strict_exit_scalars_and_cached_pids() -> None:
+    source = _read(SCENARIO_MODULE)
+    capture = _compact_powershell(
+        _powershell_function(source, "Get-W4ExitedProcessExitCode")
+    )
+    stop = _compact_powershell(
+        _powershell_function(source, "Stop-W4LoopbackHarness")
+    )
+
+    assert (
+        "[Parameter(Mandatory = $true)]"
+        "[System.Diagnostics.Process]$Process" in capture
+    )
+    assert "[Parameter(Mandatory = $true)][string]$Label" in capture
+    assert (
+        "$captureFailure = \"$Label did not expose a confirmed exited process "
+        "exit code\""
+    ) in capture
+    assert "$hasExited = $Process.HasExited" in capture
+    assert "$hasExited -isnot [bool] -or $hasExited -ne $true" in capture
+    assert capture.count("$Process.ExitCode") == 1
+    assert "$null -eq $rawExitCode" in capture
+    assert "$rawExitCode -is [System.Collections.IEnumerable]" in capture
+    assert "[System.Convert]::ToInt32(" in capture
+    assert capture.count("throw $captureFailure") == 5
+
+    assert "$launcherPid = [int]$Harness.LauncherPid" in stop
+    assert "$runtimePid = [int]$Harness.RuntimePid" in stop
+    assert "$launcherPid -lt 1 -or $runtimePid -lt 1" in stop
+    assert "$runtimeIsLauncher = $runtimePid -eq $launcherPid" in stop
+    assert ".Id" not in stop
+    assert ".ExitCode" not in stop
+    assert "$processRecord = [ordered]@{" in stop
+    assert "launcher_pid = $launcherPid" in stop
+    assert "runtime_pid = $runtimePid" in stop
+    assert "exit_code = [int]$launcherExitCode" in stop
+    assert "runtime_exit_code = [int]$runtimeExitCode" in stop
+    assert "[int]$processRecord.exit_code -ne 0" in stop
+    assert "[int]$processRecord.runtime_exit_code -ne 0" in stop
+    assert "launcher=$($processRecord.exit_code)" in stop
+    assert "runtime=$($processRecord.runtime_exit_code)" in stop
+
+    runtime_wait = stop.index("$runtimeProcess.WaitForExit()")
+    runtime_reconcile = stop.index("if (-not $runtimeIsLauncher) {", runtime_wait)
+    runtime_stop = stop.index(
+        "Stop-W4ProcessTree -Process $runtimeProcess", runtime_reconcile
+    )
+    launcher_stop = stop.index("Stop-W4ProcessTree -Process $process", runtime_stop)
+    launcher_capture = stop.index(
+        "$launcherExitCode = Get-W4ExitedProcessExitCode", launcher_stop
+    )
+    runtime_capture = stop.index(
+        "$runtimeExitCode = Get-W4ExitedProcessExitCode", launcher_capture
+    )
+    process_record = stop.index("$processRecord = [ordered]@{", runtime_capture)
+    normality = stop.index("if ($forced -or", process_record)
+    assert (
+        runtime_wait
+        < runtime_reconcile
+        < runtime_stop
+        < launcher_stop
+        < launcher_capture
+        < runtime_capture
+        < process_record
+        < normality
+    )
+
+
+def test_loopback_harness_uses_cached_exit_record_after_handles_become_unavailable(
+    tmp_path: Path,
+) -> None:
+    result = _run_loopback_exit_code_snapshot_probe(
+        tmp_path, "record_then_unavailable"
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["caught"] is None
+    assert payload["real_captured_code"] == 0
+    assert payload["real_raw_exit_code_after"] is None
+    assert payload["real_record_normal"] is True
+    assert payload["stop_result"] == "passed"
+    assert payload["launcher_raw_exit_code_after"] is None
+    assert payload["runtime_raw_exit_code_after"] is None
+    assert payload["process_record"] == {
+        "launcher_pid": payload["process_record"]["launcher_pid"],
+        "runtime_pid": payload["process_record"]["runtime_pid"],
+        "exit_code": 0,
+        "runtime_exit_code": 0,
+        "forced_termination": False,
+        "timed_out": False,
+    }
+    assert payload["process_record"]["launcher_pid"] > 0
+    assert payload["process_record"]["runtime_pid"] > 0
+    assert (
+        payload["process_record"]["launcher_pid"]
+        != payload["process_record"]["runtime_pid"]
+    )
+
+
+def test_loopback_exit_code_capture_fails_closed_when_handle_is_unreadable(
+    tmp_path: Path,
+) -> None:
+    result = _run_loopback_exit_code_snapshot_probe(tmp_path, "unreadable_at_capture")
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload == {
+        "mode": "unreadable_at_capture",
+        "caught": (
+            "Harness unreadable did not expose a confirmed exited process exit code"
+        ),
+    }
 
 
 def test_screenshot_is_hwnd_pid_bound_bounded_and_nonuniform_before_publish() -> None:
