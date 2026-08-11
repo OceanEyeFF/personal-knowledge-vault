@@ -202,7 +202,7 @@ def test_harness_runtime_pid_must_be_launcher_or_real_descendant() -> None:
     assert "PROCESS_TREE_OK" in result.stdout
 
 
-def test_process_tree_stop_accepts_launcher_exit_race_only_after_child_is_gone(
+def test_process_tree_stop_accepts_exited_launcher_with_snapshot_when_start_time_is_unavailable(
     tmp_path: Path,
 ) -> None:
     child_pid_file = tmp_path / "child.pid"
@@ -224,10 +224,12 @@ def test_process_tree_stop_accepts_launcher_exit_race_only_after_child_is_gone(
     command = (
         "$ErrorActionPreference='Stop';"
         f"Import-Module '{_ps_quote(DRIVER_MODULE)}' -Force;"
+        "$launcher=$null;$exitedLauncher=$null;$childPid=$null;try{"
         "$hostPath=(Get-Process -Id $PID).Path;"
         "$launcher=Start-Process -FilePath $hostPath -ArgumentList @("
         "'-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',"
         f"'-File','{_ps_quote(launcher_script)}') -WindowStyle Hidden -PassThru;"
+        "$launcherPid=[int]$launcher.Id;"
         f"$pidFile='{_ps_quote(child_pid_file)}';"
         "$deadline=[DateTime]::UtcNow.AddSeconds(5);"
         "while(-not(Test-Path -LiteralPath $pidFile -PathType Leaf)){"
@@ -240,16 +242,130 @@ def test_process_tree_stop_accepts_launcher_exit_race_only_after_child_is_gone(
         f"[IO.File]::WriteAllText('{_ps_quote(exit_request)}','exit',"
         "[Text.UTF8Encoding]::new($false));"
         "if(-not $launcher.WaitForExit(10000)){throw 'launcher did not exit'};"
-        "Stop-W4ProcessTree -Process $launcher -IdentitySnapshot $snapshot;"
+        "$launcherGoneDeadline=[DateTime]::UtcNow.AddSeconds(5);"
+        "do{$launcherProbe=Get-Process -Id $launcherPid -ErrorAction SilentlyContinue;"
+        "if($null -eq $launcherProbe){break};$launcherProbe.Dispose();"
+        "[Threading.Thread]::Sleep(20)}while([DateTime]::UtcNow -lt $launcherGoneDeadline);"
+        "if($null -ne (Get-Process -Id $launcherPid -ErrorAction SilentlyContinue)){"
+        "throw 'exited launcher PID remained resolvable during detached-process regression'};"
+        "$flags=[System.Reflection.BindingFlags]'Instance,NonPublic';"
+        "$processType=[System.Diagnostics.Process];"
+        "$pidField=$processType.GetField('processId',$flags);"
+        "$hasPidField=$processType.GetField('haveProcessId',$flags);"
+        "$machineField=$processType.GetField('machineName',$flags);"
+        "$remoteField=$processType.GetField('isRemoteMachine',$flags);"
+        "$exitedField=$processType.GetField('exited',$flags);"
+        "if($null -eq $pidField -or $null -eq $hasPidField -or $null -eq $machineField -or "
+        "$null -eq $remoteField -or $null -eq $exitedField){"
+        "throw 'Process private identity fields are unavailable for regression setup'};"
+        "$exitedLauncher=[System.Diagnostics.Process]::new();"
+        "$pidField.SetValue($exitedLauncher,$launcherPid);"
+        "$hasPidField.SetValue($exitedLauncher,$true);"
+        "$machineField.SetValue($exitedLauncher,'w4-exited-launcher.invalid');"
+        "$remoteField.SetValue($exitedLauncher,$true);"
+        "$exitedField.SetValue($exitedLauncher,$true);"
+        "if($exitedLauncher.Id -ne $launcherPid){throw 'detached launcher PID was not retained'};"
+        "$startTimeUnavailable=$false;try{$detachedStartTime=$exitedLauncher.StartTime;"
+        "$startTimeUnavailable=($null -eq $detachedStartTime)}catch{$startTimeUnavailable=$true};"
+        "if(-not $startTimeUnavailable){throw 'detached exited launcher unexpectedly exposed StartTime'};"
+        "if(-not $exitedLauncher.HasExited){throw 'detached launcher did not report exited'};"
+        "Stop-W4ProcessTree -Process $exitedLauncher -IdentitySnapshot $snapshot;"
         "if($null -ne (Get-Process -Id $childPid -ErrorAction SilentlyContinue)){"
         "throw 'snapshotted child survived process-tree stop'};"
-        "$launcher.Dispose();'PROCESS_EXIT_RACE_OK'"
+        "'PROCESS_EXIT_RACE_OK'"
+        "} finally {"
+        "$orphan=Get-Process -Id $childPid -ErrorAction SilentlyContinue;"
+        "if($null -ne $orphan){try{$orphan.Kill();[void]$orphan.WaitForExit(5000)}finally{"
+        "$orphan.Dispose()}};"
+        "if($null -ne $exitedLauncher){$exitedLauncher.Dispose()};"
+        "if($null -ne $launcher){$launcher.Dispose()}"
+        "}"
     )
 
     result = _run_ps(command, timeout=30)
 
     assert result.returncode == 0, result.stderr
     assert "PROCESS_EXIT_RACE_OK" in result.stdout
+
+
+def test_process_tree_stop_rejects_injected_unrelated_identity_before_cleanup(
+    tmp_path: Path,
+) -> None:
+    child_pid_file = tmp_path / "snapshotted-child.pid"
+    exit_request = tmp_path / "snapshot-launcher-exit.request"
+    launcher_script = tmp_path / "snapshot-launcher.ps1"
+    launcher_script.write_text(
+        (
+            "$hostPath=(Get-Process -Id $PID).Path\n"
+            "$child=Start-Process -FilePath $hostPath -ArgumentList @("
+            "'-NoLogo','-NoProfile','-NonInteractive','-Command',"
+            "'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru\n"
+            f"[IO.File]::WriteAllText('{_ps_quote(child_pid_file)}',"
+            "$child.Id.ToString(),[Text.UTF8Encoding]::new($false))\n"
+            f"while(-not(Test-Path -LiteralPath '{_ps_quote(exit_request)}' "
+            "-PathType Leaf)){[Threading.Thread]::Sleep(20)}\n"
+        ),
+        encoding="utf-8",
+    )
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_quote(DRIVER_MODULE)}' -Force;"
+        "$launcher=$null;$unrelated=$null;$childPid=$null;try{"
+        "$hostPath=(Get-Process -Id $PID).Path;"
+        "$launcher=Start-Process -FilePath $hostPath -ArgumentList @("
+        "'-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',"
+        f"'-File','{_ps_quote(launcher_script)}') -WindowStyle Hidden -PassThru;"
+        f"$pidFile='{_ps_quote(child_pid_file)}';"
+        "$deadline=[DateTime]::UtcNow.AddSeconds(5);"
+        "while(-not(Test-Path -LiteralPath $pidFile -PathType Leaf)){"
+        "if([DateTime]::UtcNow -ge $deadline){throw 'child pid was not published'};"
+        "[Threading.Thread]::Sleep(20)};"
+        "$childPid=[int][IO.File]::ReadAllText($pidFile);"
+        "$snapshot=New-W4ProcessTreeIdentitySnapshot -Process $launcher;"
+        "$snapshottedChild=@($snapshot.Identities|Where-Object{"
+        "[int]$_.ProcessId -eq $childPid});"
+        "if($snapshottedChild.Count -ne 1){throw 'real launcher child was not snapshotted exactly'};"
+        "$unrelated=Start-Process -FilePath $hostPath -ArgumentList @("
+        "'-NoLogo','-NoProfile','-NonInteractive','-Command',"
+        "'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru;"
+        "$unrelatedIdentity=[pscustomobject]@{ProcessId=[int]$unrelated.Id;"
+        "StartTimeUtcTicks=[int64]$unrelated.StartTime.ToUniversalTime().Ticks;Depth=1};"
+        "if(@($snapshot.Identities|Where-Object{[int]$_.ProcessId -eq $unrelated.Id}).Count -ne 0){"
+        "throw 'unrelated sleeper was unexpectedly in the launcher snapshot'};"
+        f"[IO.File]::WriteAllText('{_ps_quote(exit_request)}','exit',"
+        "[Text.UTF8Encoding]::new($false));"
+        "if(-not $launcher.WaitForExit(10000)){throw 'launcher did not exit'};"
+        "$forgedValues=[ordered]@{};foreach($property in $snapshot.PSObject.Properties){"
+        "if($property.Name -ceq 'Identities'){"
+        "$forgedValues[$property.Name]=@($snapshot.Identities)+@($unrelatedIdentity)"
+        "}else{$forgedValues[$property.Name]=$property.Value}};"
+        "$forgedSnapshot=[pscustomobject]$forgedValues;"
+        "$rejected=$false;try{Stop-W4ProcessTree -Process $launcher "
+        "-IdentitySnapshot $forgedSnapshot}catch{$rejected=$true};"
+        "if(-not $rejected){throw 'injected unrelated identity snapshot was accepted'};"
+        "$childProbe=Get-Process -Id $childPid -ErrorAction SilentlyContinue;"
+        "if($null -eq $childProbe){throw 'forged snapshot killed real child before rejection'};"
+        "$childProbe.Dispose();"
+        "if($unrelated.HasExited){throw 'forged snapshot killed unrelated sleeper before rejection'};"
+        "Stop-W4ProcessTree -Process $launcher -IdentitySnapshot $snapshot;"
+        "if($null -ne (Get-Process -Id $childPid -ErrorAction SilentlyContinue)){"
+        "throw 'authentic same-object snapshot did not clean real child'};"
+        "if($unrelated.HasExited){throw 'authentic snapshot killed unrelated sleeper'};"
+        "'SNAPSHOT_INJECTION_REJECTED'"
+        "} finally {"
+        "$child=Get-Process -Id $childPid -ErrorAction SilentlyContinue;"
+        "if($null -ne $child){try{$child.Kill();[void]$child.WaitForExit(5000)}finally{"
+        "$child.Dispose()}};"
+        "if($null -ne $unrelated){try{if(-not $unrelated.HasExited){$unrelated.Kill();"
+        "[void]$unrelated.WaitForExit(5000)}}finally{$unrelated.Dispose()}};"
+        "if($null -ne $launcher){$launcher.Dispose()}"
+        "}"
+    )
+
+    result = _run_ps(command, timeout=30)
+
+    assert result.returncode == 0, result.stderr
+    assert "SNAPSHOT_INJECTION_REJECTED" in result.stdout
 
 
 def test_process_tree_stop_rejects_exited_root_without_prior_snapshot(
@@ -306,7 +422,10 @@ def test_process_tree_snapshot_rejects_wrong_root_start_tick_without_killing() -
         "RootStartTimeUtcTicks=([int64]$valid.RootStartTimeUtcTicks+1);"
         "Identities=$valid.Identities};$rejected=$false;"
         "try{Stop-W4ProcessTree -Process $root -IdentitySnapshot $forged}catch{"
-        "$rejected=$_.Exception.Message -like '*does not bind the supplied root*'};"
+        "$rejected=$_.Exception.Message -like '*does not bind the supplied root*' -or "
+        "$_.Exception.Message -like '*root identity was not exact*' -or "
+        "$_.Exception.Message -like '*not created by this driver module*' -or "
+        "$_.Exception.Message -like '*material did not match*'};"
         "if(-not $rejected){throw 'wrong root start tick was accepted'};"
         "if($root.HasExited){throw 'wrong root identity killed the live process'};"
         "Stop-W4ProcessTree -Process $root -IdentitySnapshot $valid;"

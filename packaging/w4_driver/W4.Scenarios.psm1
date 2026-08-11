@@ -4631,10 +4631,13 @@ function Invoke-W4Bm25SearchScenario {
         ) -EvidenceName 'uia-contract-browser.json'
 
         Select-W4NavigationItem -Gui $gui -Name '搜索'
-        $input = Get-W4UiaElementById -Root $gui.Window -AutomationId 'search_input'
+        # `$input` is PowerShell's automatic pipeline enumerator inside nested
+        # scriptblocks.  The backend-fault Action below executes in such a scope,
+        # so retain the UIA element under a non-automatic variable name.
+        $searchInput = Get-W4UiaElementById -Root $gui.Window -AutomationId 'search_input'
         $submit = Get-W4UiaElementById -Root $gui.Window -AutomationId 'search_submit'
         $status = Get-W4UiaElementById -Root $gui.Window -AutomationId 'search_result_status'
-        Set-W4UiaValue -Element $input -Value 'artifact-e2e-orchid'
+        Set-W4UiaValue -Element $searchInput -Value 'artifact-e2e-orchid'
         $searchPreviewDegraded = Invoke-W4WithTemporarilyMissingFile `
             -FilePath $previewFile -BackupPath $previewBackup `
             -Label 'BM25 Search preview degradation' -Action {
@@ -4657,13 +4660,13 @@ function Invoke-W4Bm25SearchScenario {
         # target query. UIA Invoke does not guarantee that the Qt handler has
         # completed before it returns, so the old degraded hit/status must not
         # satisfy the recovery oracle.
-        Set-W4UiaValue -Element $input -Value $noHitToken
+        Set-W4UiaValue -Element $searchInput -Value $noHitToken
         Invoke-W4UiaElement -Element $submit
         [void](Wait-W4UiaTextContains -Element $status `
             -Text '未找到匹配结果' -TimeoutSeconds 30)
         [void](Wait-W4UiaSelectionCount -Root $gui.Window `
             -AutomationId 'search_result_table' -ExpectedCount 0 -TimeoutSeconds 10)
-        Set-W4UiaValue -Element $input -Value 'artifact-e2e-orchid'
+        Set-W4UiaValue -Element $searchInput -Value 'artifact-e2e-orchid'
         Invoke-W4UiaElement -Element $submit
         $hitStatus = Wait-W4UiaTextContains -Element $status -Text '找到 1 条结果' -TimeoutSeconds 30
         $resultTable = Get-W4UiaElementById -Root $gui.Window -AutomationId 'search_result_table'
@@ -4680,11 +4683,11 @@ function Invoke-W4Bm25SearchScenario {
             'search_preview_text'
         ) -EvidenceName 'uia-contract-search.json'
 
-        Set-W4UiaValue -Element $input -Value $noHitToken
+        Set-W4UiaValue -Element $searchInput -Value $noHitToken
         Invoke-W4UiaElement -Element $submit
         $noHitStatus = Wait-W4UiaTextContains -Element $status -Text '未找到匹配结果' -TimeoutSeconds 30
 
-        Set-W4UiaValue -Element $input -Value ''
+        Set-W4UiaValue -Element $searchInput -Value ''
         Invoke-W4UiaElement -Element $submit
         $invalidStatus = Wait-W4UiaTextContains -Element $status -Text '查询无效' -TimeoutSeconds 30
 
@@ -4692,7 +4695,7 @@ function Invoke-W4Bm25SearchScenario {
         $errorStatus = Invoke-W4WithFilePathBlockedByDirectory `
             -FilePath $database -BackupPath $backup `
             -Label 'BM25 Search backend fault' -Action {
-            Set-W4UiaValue -Element $input -Value 'artifact-e2e-orchid'
+            Set-W4UiaValue -Element $searchInput -Value 'artifact-e2e-orchid'
             Invoke-W4UiaElement -Element $submit
             $observed = Wait-W4UiaTextContains -Element $status -Text '搜索失败' -TimeoutSeconds 30
             if ($observed -match '未找到') {

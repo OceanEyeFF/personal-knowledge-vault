@@ -1067,6 +1067,54 @@ def _compact_powershell(source: str) -> str:
     return re.sub(r"[`\s]+", " ", source).strip()
 
 
+def _run_bm25_search_input_scope_probe() -> subprocess.CompletedProcess[str]:
+    """Exercise PowerShell's nested ``$input`` scope and inspect the real Action AST."""
+    command = (
+        "$ErrorActionPreference='Stop';"
+        "$outerSentinel=[pscustomobject]@{kind='outer-search-input'};"
+        "$input=$outerSentinel;"
+        "$nested=& {[pscustomobject]@{"
+        "input_is_enumerator=[bool]($input -is [System.Collections.IEnumerator]);"
+        "input_is_outer=[bool][object]::ReferenceEquals($input,$outerSentinel);"
+        "input_type=if($null -eq $input){'null'}else{$input.GetType().FullName}"
+        "}};"
+        "$tokens=$null;$parseErrors=$null;"
+        "$ast=[System.Management.Automation.Language.Parser]::ParseFile("
+        f"'{_ps_single_quoted(SCENARIO_MODULE)}',[ref]$tokens,[ref]$parseErrors);"
+        "if($parseErrors.Count -ne 0){throw (($parseErrors|ForEach-Object Message)-join '; ')};"
+        "$scenario=@($ast.FindAll({param($node)"
+        "$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and "
+        "$node.Name -ceq 'Invoke-W4Bm25SearchScenario'},$true));"
+        "if($scenario.Count -ne 1){throw 'BM25 scenario AST was not unique'};"
+        "$backendFault=@($scenario[0].FindAll({param($node)"
+        "if($node -isnot [System.Management.Automation.Language.CommandAst]){return $false};"
+        "$elements=@($node.CommandElements);"
+        "return $elements.Count -gt 0 -and "
+        "$elements[0] -is [System.Management.Automation.Language.StringConstantExpressionAst] -and "
+        "$elements[0].Value -ceq 'Invoke-W4WithFilePathBlockedByDirectory' -and "
+        "$node.Extent.Text.Contains(\"-Label 'BM25 Search backend fault'\")"
+        "},$true));"
+        "if($backendFault.Count -ne 1){throw 'BM25 backend-fault Action AST was not unique'};"
+        "$action=@($backendFault[0].CommandElements|Where-Object {"
+        "$_ -is [System.Management.Automation.Language.ScriptBlockExpressionAst]});"
+        "if($action.Count -ne 1){throw 'BM25 backend-fault Action scriptblock was not unique'};"
+        "$actionVariables=@($action[0].ScriptBlock.FindAll({param($node)"
+        "$node -is [System.Management.Automation.Language.VariableExpressionAst]"
+        "},$true)|ForEach-Object {$_.VariablePath.UserPath.ToLowerInvariant()});"
+        "$scenarioVariables=@($scenario[0].Body.FindAll({param($node)"
+        "$node -is [System.Management.Automation.Language.VariableExpressionAst]"
+        "},$true)|ForEach-Object {$_.VariablePath.UserPath.ToLowerInvariant()});"
+        "[ordered]@{"
+        "input_is_enumerator=[bool]$nested.input_is_enumerator;"
+        "input_is_outer=[bool]$nested.input_is_outer;"
+        "input_type=[string]$nested.input_type;"
+        "action_variables=@($actionVariables);"
+        "scenario_variables=@($scenarioVariables)"
+        "}|ConvertTo-Json -Compress"
+    )
+    return _run_powershell(["-Command", command], cwd=REPOSITORY_ROOT)
+
+
 def _has_safe_capture_publication_contract(source: str) -> bool:
     compact = _compact_powershell(source)
     markers = [
@@ -3848,7 +3896,7 @@ def test_bm25_search_recovery_crosses_distinct_terminal_before_target_rerun() ->
     compact = _compact_powershell(block)
     degraded = compact.index("'uia-contract-search-preview-degraded.json'")
     distinct_value = compact.index(
-        "Set-W4UiaValue -Element $input -Value $noHitToken",
+        "Set-W4UiaValue -Element $searchInput -Value $noHitToken",
         degraded,
     )
     distinct_invoke = compact.index(
@@ -3865,7 +3913,7 @@ def test_bm25_search_recovery_crosses_distinct_terminal_before_target_rerun() ->
         distinct_terminal,
     )
     target_value = compact.index(
-        "Set-W4UiaValue -Element $input -Value 'artifact-e2e-orchid'",
+        "Set-W4UiaValue -Element $searchInput -Value 'artifact-e2e-orchid'",
         zero_selection,
     )
     target_invoke = compact.index(
@@ -3914,10 +3962,10 @@ def test_bm25_search_recovery_crosses_distinct_terminal_before_target_rerun() ->
     recovery = compact[degraded:success]
     assert recovery.count("Invoke-W4UiaElement -Element $submit") == 2
     assert recovery.count(
-        "Set-W4UiaValue -Element $input -Value $noHitToken"
+        "Set-W4UiaValue -Element $searchInput -Value $noHitToken"
     ) == 1
     assert recovery.count(
-        "Set-W4UiaValue -Element $input -Value 'artifact-e2e-orchid'"
+        "Set-W4UiaValue -Element $searchInput -Value 'artifact-e2e-orchid'"
     ) == 1
     assert "$hitStatus = Wait-W4UiaTextContains" not in compact[degraded:zero_selection]
 
@@ -3936,13 +3984,13 @@ def test_bm25_no_hit_oracle_uses_one_unsplit_term_twice_with_zero_barrier() -> N
     assert len(token) >= 24
     assert block.count(f"'{token}'") == 1
     assert compact.count(
-        "Set-W4UiaValue -Element $input -Value $noHitToken"
+        "Set-W4UiaValue -Element $searchInput -Value $noHitToken"
     ) == 2
     assert "$noHitToken -notmatch '^[a-z0-9]+$'" in compact
     assert "w4-no-hit-5f37c22a" not in block
 
     first_value = compact.index(
-        "Set-W4UiaValue -Element $input -Value $noHitToken"
+        "Set-W4UiaValue -Element $searchInput -Value $noHitToken"
     )
     first_invoke = compact.index(
         "Invoke-W4UiaElement -Element $submit", first_value
@@ -3958,11 +4006,11 @@ def test_bm25_no_hit_oracle_uses_one_unsplit_term_twice_with_zero_barrier() -> N
         first_terminal,
     )
     target_value = compact.index(
-        "Set-W4UiaValue -Element $input -Value 'artifact-e2e-orchid'",
+        "Set-W4UiaValue -Element $searchInput -Value 'artifact-e2e-orchid'",
         selection_zero,
     )
     second_value = compact.index(
-        "Set-W4UiaValue -Element $input -Value $noHitToken",
+        "Set-W4UiaValue -Element $searchInput -Value $noHitToken",
         target_value,
     )
     second_terminal = compact.index(
@@ -3979,6 +4027,37 @@ def test_bm25_no_hit_oracle_uses_one_unsplit_term_twice_with_zero_barrier() -> N
         < second_value
         < second_terminal
     )
+
+
+def test_bm25_scenario_forbids_powershell_automatic_input_variable() -> None:
+    block = _powershell_function(_read(SCENARIO_MODULE), "Invoke-W4Bm25SearchScenario")
+    compact = _compact_powershell(block)
+    result = _run_bm25_search_input_scope_probe()
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    probe = json.loads(result.stdout)
+    # AST semantic analysis ignores explanatory comments and literals. Every
+    # executable VariableExpressionAst in this scenario must avoid PowerShell's
+    # automatic pipeline enumerator.
+    assert "input" not in probe["scenario_variables"]
+    assert "searchinput" in probe["scenario_variables"]
+    assert (
+        "$searchInput = Get-W4UiaElementById -Root $gui.Window "
+        "-AutomationId 'search_input'"
+    ) in compact
+    assert compact.count("Set-W4UiaValue -Element $searchInput -Value") == 6
+
+
+def test_bm25_backend_fault_action_closes_over_search_input_not_automatic_input() -> None:
+    result = _run_bm25_search_input_scope_probe()
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    probe = json.loads(result.stdout)
+    assert probe["input_is_enumerator"] is True
+    assert probe["input_is_outer"] is False
+    assert "enumerator" in probe["input_type"].lower()
+    assert "searchinput" in probe["action_variables"]
+    assert "input" not in probe["action_variables"]
 
 
 def test_bm25_mutation_helpers_wrap_mutation_and_restore_in_finally() -> None:

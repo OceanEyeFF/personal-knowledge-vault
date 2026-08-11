@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 $script:Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $script:ProcessInputEncodingLock = [object]::new()
 $script:W4DriverModulePath = [System.IO.Path]::GetFullPath($PSCommandPath)
+$script:ProcessTreeSnapshotAuthorities = [System.Runtime.CompilerServices.ConditionalWeakTable[object, string]]::new()
 
 function ConvertTo-W4CommandLineArgument {
     [CmdletBinding()]
@@ -1066,6 +1067,71 @@ function Get-W4ProcessTreeIdentitySnapshot {
     ))
 }
 
+function Get-W4ProcessTreeSnapshotAuthorityMaterial {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$Snapshot)
+
+    # This is deliberately a strict, ordered representation of the complete
+    # identity payload.  The module-private ConditionalWeakTable associates the
+    # representation with the exact snapshot object created below; a copied,
+    # deserialized, truncated, reordered, or extended snapshot cannot acquire
+    # that authority.
+    $rootProcessId = [int]$Snapshot.RootProcessId
+    $rootStartTimeUtcTicks = [int64]$Snapshot.RootStartTimeUtcTicks
+    $identities = @($Snapshot.Identities)
+    if ($identities.Count -eq 0) {
+        throw 'Process-tree identity snapshot material was empty'
+    }
+
+    $parts = [System.Collections.Generic.List[string]]::new()
+    $parts.Add((
+        [string]::Format(
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            'root:{0}:{1};count:{2}',
+            [object[]]@($rootProcessId, $rootStartTimeUtcTicks, $identities.Count)
+        )
+    ))
+    foreach ($identity in $identities) {
+        if ($null -eq $identity) {
+            throw 'Process-tree identity snapshot material contains null identity'
+        }
+        $parts.Add((
+            [string]::Format(
+                [System.Globalization.CultureInfo]::InvariantCulture,
+                'identity:{0}:{1}:{2}',
+                [object[]]@(
+                    [int]$identity.ProcessId,
+                    [int64]$identity.StartTimeUtcTicks,
+                    [int]$identity.Depth
+                )
+            )
+        ))
+    }
+    return [string]::Join('|', @($parts))
+}
+
+function Assert-W4ProcessTreeSnapshotAuthority {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$Snapshot)
+
+    # Do not trust arbitrary caller-supplied objects merely because their root
+    # PID/start tuple happens to be genuine.  Termination authority exists only
+    # for the exact in-memory object this module captured while the root was
+    # live, and only while every row still matches its captured material.
+    $capturedMaterial = $null
+    if (-not $script:ProcessTreeSnapshotAuthorities.TryGetValue($Snapshot, [ref]$capturedMaterial)) {
+        throw 'Process-tree identity snapshot was not created by this driver module'
+    }
+    $currentMaterial = Get-W4ProcessTreeSnapshotAuthorityMaterial -Snapshot $Snapshot
+    if (-not [string]::Equals(
+            [string]$capturedMaterial,
+            [string]$currentMaterial,
+            [System.StringComparison]::Ordinal
+        )) {
+        throw 'Process-tree identity snapshot material did not match its immutable authority'
+    }
+}
+
 function Get-W4LiveProcessForIdentity {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)]$Identity)
@@ -1154,11 +1220,14 @@ function New-W4ProcessTreeIdentitySnapshot {
         [int64]$rootIdentity[0].StartTimeUtcTicks -ne $expectedRootStartTimeUtcTicks) {
         throw "Process-tree root identity was not exact for PID $($Process.Id)"
     }
-    return [pscustomobject]@{
+    $snapshot = [pscustomobject]@{
         RootProcessId = [int]$Process.Id
         RootStartTimeUtcTicks = $expectedRootStartTimeUtcTicks
         Identities = @($identities)
     }
+    $snapshotMaterial = Get-W4ProcessTreeSnapshotAuthorityMaterial -Snapshot $snapshot
+    $script:ProcessTreeSnapshotAuthorities.Add($snapshot, $snapshotMaterial)
+    return $snapshot
 }
 
 function Assert-W4TcpClientOwnedByProcess {
@@ -1248,9 +1317,14 @@ function Stop-W4ProcessTree {
     if ($null -eq $IdentitySnapshot) {
         $IdentitySnapshot = New-W4ProcessTreeIdentitySnapshot -Process $Process
     }
-    $expectedRootStartTimeUtcTicks = [int64]$Process.StartTime.ToUniversalTime().Ticks
-    if ([int]$IdentitySnapshot.RootProcessId -ne $Process.Id -or
-        [int64]$IdentitySnapshot.RootStartTimeUtcTicks -ne $expectedRootStartTimeUtcTicks) {
+    Assert-W4ProcessTreeSnapshotAuthority -Snapshot $IdentitySnapshot
+    # An explicitly supplied snapshot is the immutable authority after a
+    # launcher naturally exits.  Accessing Process.StartTime at that point is
+    # not reliable for onefile launchers, and is unnecessary: validate the
+    # snapshot's root row exactly, then independently revalidate it against a
+    # live root only when the held Process has not exited.
+    $expectedRootStartTimeUtcTicks = [int64]$IdentitySnapshot.RootStartTimeUtcTicks
+    if ([int]$IdentitySnapshot.RootProcessId -ne $Process.Id) {
         throw "Process-tree identity snapshot does not bind the supplied root PID $($Process.Id)"
     }
     $identities = @($IdentitySnapshot.Identities)
@@ -1259,6 +1333,22 @@ function Stop-W4ProcessTree {
         [int]$rootIdentity[0].ProcessId -ne $Process.Id -or
         [int64]$rootIdentity[0].StartTimeUtcTicks -ne $expectedRootStartTimeUtcTicks) {
         throw "Process-tree root identity was not exact for PID $($Process.Id)"
+    }
+    $heldRootIsLive = $false
+    try {
+        $heldRootIsLive = -not $Process.HasExited
+    } catch [System.InvalidOperationException] {
+        # A retained launcher object can no longer expose live-process state
+        # after natural onefile exit.  Its supplied immutable snapshot remains
+        # sufficient to reconcile only matching descendant identities.
+        $heldRootIsLive = $false
+    }
+    if ($heldRootIsLive) {
+        $liveRootIdentity = Get-W4LiveProcessForIdentity -Identity $rootIdentity[0]
+        if ($null -eq $liveRootIdentity) {
+            throw "Process-tree identity snapshot does not bind the supplied root PID $($Process.Id)"
+        }
+        $liveRootIdentity.Dispose()
     }
 
     $rootBeforeKill = Get-W4LiveProcessForIdentity -Identity $rootIdentity[0]
