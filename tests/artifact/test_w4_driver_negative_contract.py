@@ -207,8 +207,79 @@ def _run_build_environment_contract_validator(
     return _run_powershell(["-Command", command], cwd=REPOSITORY_ROOT)
 
 
+def _run_mcp_durable_seed_validator(
+    tmp_path: Path, payload: dict[str, object]
+) -> subprocess.CompletedProcess[str]:
+    payload_path = tmp_path / f"mcp-durable-seed-{uuid.uuid4().hex}.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' -Force;"
+        f"$module=Import-Module '{_ps_single_quoted(SCENARIO_MODULE)}' "
+        "-Force -PassThru;"
+        f"$payload=[IO.File]::ReadAllText('{_ps_single_quoted(payload_path)}')|"
+        "ConvertFrom-Json;"
+        "& $module {param($value) "
+        "Assert-W4McpDurableSeedPayload -Payload $value} $payload"
+    )
+    return _run_powershell(["-Command", command], cwd=REPOSITORY_ROOT)
+
+
+def _run_upgrade_rejection_result_validator(
+    tmp_path: Path,
+    *,
+    stdout: str,
+    stderr: str,
+    expected_code: str = "database_upgrade_required",
+) -> subprocess.CompletedProcess[str]:
+    result_path = tmp_path / f"upgrade-result-{uuid.uuid4().hex}.json"
+    result_path.write_text(
+        json.dumps({"StandardOutput": stdout, "StandardError": stderr}),
+        encoding="utf-8",
+    )
+    escaped_code = expected_code.replace("'", "''")
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' -Force;"
+        f"$module=Import-Module '{_ps_single_quoted(SCENARIO_MODULE)}' "
+        "-Force -PassThru;"
+        f"$result=[IO.File]::ReadAllText('{_ps_single_quoted(result_path)}')|"
+        "ConvertFrom-Json;"
+        "& $module {param($value,$code) "
+        "ConvertFrom-W4UpgradeRejectionResult -Result $value "
+        "-ExpectedCode $code -Label 'contract-test'} $result "
+        f"'{escaped_code}' | Out-Null"
+    )
+    return _run_powershell(["-Command", command], cwd=REPOSITORY_ROOT)
+
+
+def _upgrade_rejection_envelope(**updates: object) -> dict[str, object]:
+    envelope: dict[str, object] = {
+        "adapter": "cli",
+        "code": "database_upgrade_required",
+        "recoverable": False,
+        "stage": "runtime_bootstrap",
+        "status": "error",
+    }
+    envelope.update(updates)
+    return envelope
+
+
 def _extract_single_quoted_values(block: str) -> set[str]:
     return set(re.findall(r"'([^']+)'", block))
+
+
+def _powershell_function(source: str, name: str) -> str:
+    match = re.search(
+        rf"(?ms)^function\s+{re.escape(name)}\s*\{{.*?(?=^function\s+\S+\s*\{{|\Z)",
+        source,
+    )
+    assert match is not None, f"PowerShell function was not found: {name}"
+    return match.group(0)
+
+
+def _compact_powershell(source: str) -> str:
+    return re.sub(r"[`\s]+", " ", source).strip()
 
 
 def _full_matrix_command(bundle: dict[str, Path]) -> list[str]:
@@ -1665,3 +1736,386 @@ def test_mcp_surface_set_rejects_case_drift_and_case_collisions(
 
     assert result.returncode != 0
     assert expected_error in result.stderr
+
+
+def test_mcp_seed_calls_the_durable_archive_text_payload_validator() -> None:
+    source = _read(SCENARIO_MODULE)
+    seed_block = _powershell_function(source, "Invoke-W4McpSeedText")
+    block = _powershell_function(source, "Assert-W4McpDurableSeedPayload")
+    compact = _compact_powershell(block)
+    required_call = re.search(
+        r"Assert-W4JsonObjectFields\b.*?-Object \$Payload\b.*?-Label "
+        r"(?:'archive_text[^']*'|\"archive_text[^\"]*\")",
+        compact,
+    )
+
+    assert "Assert-W4McpDurableSeedPayload -Payload $payload" in _compact_powershell(
+        seed_block
+    )
+    assert required_call is not None
+    assert {
+        "success",
+        "terminal",
+        "storage_status",
+        "core_committed",
+        "knowledge_id",
+        "entry_locator",
+    }.issubset(_extract_single_quoted_values(required_call.group(0)))
+    assert (
+        "Assert-W4ExactBoolean -Value $Payload.success -Expected $true" in compact
+    )
+    assert (
+        "Assert-W4ExactBoolean -Value $Payload.core_committed -Expected $true"
+        in compact
+    )
+    assert "$payload.status" not in block.casefold()
+    assert "$payload.terminal" in block.casefold()
+    assert "@('success', 'degraded')" in compact
+    assert "$payload.storage_status" in block.casefold()
+    assert "@('ready', 'degraded')" in compact
+    assert re.search(
+        r"\$Payload\.knowledge_id\s+-isnot\s+\[int(?:32|64)?\]", compact
+    )
+    assert "$Payload.knowledge_id -isnot [long]" in compact
+    assert "[int64]$knowledgeId = $Payload.knowledge_id" in compact
+    assert "$knowledgeId -le 0" in compact
+    assert '$Payload.entry_locator -cne "pkv://entries/$knowledgeId"' in compact
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "success": True,
+            "terminal": "success",
+            "storage_status": "ready",
+            "core_committed": True,
+            "knowledge_id": 1,
+            "entry_locator": "pkv://entries/1",
+        },
+        {
+            "success": True,
+            "terminal": "degraded",
+            "storage_status": "ready",
+            "core_committed": True,
+            "knowledge_id": 6,
+            "entry_locator": "pkv://entries/6",
+        },
+        {
+            "success": True,
+            "terminal": "degraded",
+            "storage_status": "degraded",
+            "core_committed": True,
+            "knowledge_id": 7,
+            "entry_locator": "pkv://entries/7",
+        },
+    ],
+    ids=["success-ready", "degraded-ready", "degraded-degraded"],
+)
+def test_mcp_durable_seed_validator_accepts_coherent_success_envelopes(
+    tmp_path: Path, payload: dict[str, object]
+) -> None:
+    result = _run_mcp_durable_seed_validator(tmp_path, payload)
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            {
+                "success": True,
+                "storage_status": "degraded",
+                "core_committed": True,
+                "knowledge_id": 1,
+                "entry_locator": "pkv://entries/1",
+            },
+            id="missing-terminal",
+        ),
+        pytest.param(
+            {
+                "success": False,
+                "terminal": "degraded",
+                "storage_status": "degraded",
+                "core_committed": True,
+                "knowledge_id": 1,
+                "entry_locator": "pkv://entries/1",
+            },
+            id="success-false",
+        ),
+        pytest.param(
+            {
+                "success": "true",
+                "terminal": "degraded",
+                "storage_status": "degraded",
+                "core_committed": True,
+                "knowledge_id": 1,
+                "entry_locator": "pkv://entries/1",
+            },
+            id="success-string",
+        ),
+        pytest.param(
+            {
+                "success": True,
+                "terminal": "error",
+                "storage_status": "degraded",
+                "core_committed": True,
+                "knowledge_id": 1,
+                "entry_locator": "pkv://entries/1",
+            },
+            id="terminal-error",
+        ),
+        pytest.param(
+            {
+                "success": True,
+                "terminal": "success",
+                "storage_status": "degraded",
+                "core_committed": True,
+                "knowledge_id": 1,
+                "entry_locator": "pkv://entries/1",
+            },
+            id="storage-mismatch",
+        ),
+        pytest.param(
+            {
+                "success": True,
+                "terminal": "degraded",
+                "storage_status": "failed",
+                "core_committed": True,
+                "knowledge_id": 1,
+                "entry_locator": "pkv://entries/1",
+            },
+            id="invalid-degraded-storage",
+        ),
+        pytest.param(
+            {
+                "success": True,
+                "terminal": "degraded",
+                "storage_status": "degraded",
+                "core_committed": False,
+                "knowledge_id": 1,
+                "entry_locator": "pkv://entries/1",
+            },
+            id="core-not-committed",
+        ),
+        pytest.param(
+            {
+                "success": True,
+                "terminal": "degraded",
+                "storage_status": "degraded",
+                "core_committed": True,
+                "knowledge_id": 0,
+                "entry_locator": "pkv://entries/0",
+            },
+            id="zero-id",
+        ),
+        pytest.param(
+            {
+                "success": True,
+                "terminal": "degraded",
+                "storage_status": "degraded",
+                "core_committed": True,
+                "knowledge_id": 1.0,
+                "entry_locator": "pkv://entries/1",
+            },
+            id="floating-id",
+        ),
+        pytest.param(
+            {
+                "success": True,
+                "terminal": "degraded",
+                "storage_status": "degraded",
+                "core_committed": True,
+                "knowledge_id": 1,
+                "entry_locator": "pkv://entries/2",
+            },
+            id="locator-mismatch",
+        ),
+    ],
+)
+def test_mcp_durable_seed_validator_rejects_incoherent_envelopes(
+    tmp_path: Path, payload: dict[str, object]
+) -> None:
+    result = _run_mcp_durable_seed_validator(tmp_path, payload)
+
+    assert result.returncode != 0
+
+
+def test_mcp_relation_template_contract_includes_relation_source_type() -> None:
+    contract = json.loads(_read(SCENARIO_CONTRACT))
+    relation_templates = [
+        value
+        for value in contract["mcp"]["resource_templates"]
+        if value.startswith("pkv://relations/by-edge/")
+    ]
+
+    assert relation_templates == [
+        "pkv://relations/by-edge/{source_knowledge_id}/{target_knowledge_id}/"
+        "{relation_type}/{relation_source_type}"
+    ]
+
+
+def test_upgrade_rejection_uses_empty_stdout_and_a_strict_stderr_envelope() -> None:
+    source = _read(SCENARIO_MODULE)
+    scenario_block = _powershell_function(source, "Invoke-W4UpgradeRejectionScenario")
+    block = _powershell_function(
+        source, "ConvertFrom-W4UpgradeRejectionResult"
+    )
+    compact = _compact_powershell(block)
+    stdout_guard = compact.index("[string]$Result.StandardOutput -cne ''")
+    stderr_parse = compact.index(
+        "ConvertFrom-W4StrictJsonText -Text ([string]$Result.StandardError)"
+    )
+    fields_match = re.search(
+        r"Assert-W4ExactObjectFields -Object \$payload -Fields @\((.*?)\) "
+        r"-Label (?:\$Label|\([^)]*\)|'[^']*'|\"[^\"]*\")",
+        compact,
+    )
+
+    assert stdout_guard < stderr_parse
+    assert (
+        "ConvertFrom-W4UpgradeRejectionResult -Result $result"
+        in _compact_powershell(scenario_block)
+    )
+    assert "ConvertFrom-W4StrictJsonText -Text $Result.StandardOutput" not in compact
+    assert fields_match is not None
+    assert _extract_single_quoted_values(fields_match.group(1)) == {
+        "adapter",
+        "code",
+        "recoverable",
+        "stage",
+        "status",
+    }
+    assert (
+        "Assert-W4ExactBoolean -Value $payload.recoverable -Expected $false"
+        in compact
+    )
+    assert "[string]$payload.adapter -cne 'cli'" in compact
+    assert "[string]$payload.status -cne 'error'" in compact
+    assert "[string]$payload.stage -cne 'runtime_bootstrap'" in compact
+    assert "[string]$payload.code -cne $ExpectedCode" in compact
+
+
+def test_upgrade_rejection_result_validator_accepts_exact_stderr_envelope(
+    tmp_path: Path,
+) -> None:
+    result = _run_upgrade_rejection_result_validator(
+        tmp_path,
+        stdout="",
+        stderr=json.dumps(_upgrade_rejection_envelope()),
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "expected_code"),
+    [
+        pytest.param(
+            "unexpected",
+            json.dumps(_upgrade_rejection_envelope()),
+            "database_upgrade_required",
+            id="nonempty-stdout",
+        ),
+        pytest.param("", "", "database_upgrade_required", id="empty-stderr"),
+        pytest.param("", "not-json", "database_upgrade_required", id="non-json-stderr"),
+        pytest.param(
+            "",
+            json.dumps(_upgrade_rejection_envelope(extra="undeclared")),
+            "database_upgrade_required",
+            id="extra-field",
+        ),
+        pytest.param(
+            "",
+            json.dumps(_upgrade_rejection_envelope(recoverable="false")),
+            "database_upgrade_required",
+            id="wrong-boolean-type",
+        ),
+        pytest.param(
+            "",
+            json.dumps(_upgrade_rejection_envelope()),
+            "database_future_version",
+            id="wrong-code",
+        ),
+    ],
+)
+def test_upgrade_rejection_result_validator_rejects_wrong_channel_or_envelope(
+    tmp_path: Path, stdout: str, stderr: str, expected_code: str
+) -> None:
+    result = _run_upgrade_rejection_result_validator(
+        tmp_path,
+        stdout=stdout,
+        stderr=stderr,
+        expected_code=expected_code,
+    )
+
+    assert result.returncode != 0
+
+
+def test_offline_archive_treats_modal_as_optional_but_keeps_durable_oracles() -> None:
+    block = _powershell_function(
+        _read(SCENARIO_MODULE), "Invoke-W4OfflineTextArchiveScenario"
+    )
+    compact = _compact_powershell(block)
+    result_wait = compact.index(
+        "Wait-W4UiaTextContains -Element $resultTitle -Text '归档成功（降级）'"
+    )
+    optional_modal = compact.index("Dismiss-W4ProcessModal")
+    warning_read = compact.index("-AutomationId 'archive_result_warning'")
+    path_read = compact.index("-AutomationId 'archive_result_path'")
+
+    assert result_wait < optional_modal < warning_read < path_read
+    modal_call = compact[optional_modal : compact.index(")", optional_modal) + 1]
+    assert "-AllowAbsent" in modal_call
+    assert "$warning -notmatch 'provider'" in compact
+    assert "$idText -notmatch '^ID:\\s*\\d+$'" in compact
+    assert "$pathText -notmatch '^文件:\\s*(.+)$'" in compact
+    assert "Test-W4PathContainedBy -Candidate $savedPath" in compact
+    assert "Test-Path -LiteralPath $savedPath -PathType Leaf" in compact
+    assert "workflow_terminal = 'degraded'" in compact
+    assert "saved_path_sha256 = Get-W4FileSha256 -Path $savedPath" in compact
+    assert "degraded_warning = $warning" in compact
+    assert "restart_opened_saved_entry = $true" in compact
+
+
+def test_chat_stop_is_resolved_only_after_the_stop_request_is_running() -> None:
+    block = _powershell_function(_read(SCENARIO_MODULE), "Invoke-W4ChatLoopbackScenario")
+    compact = _compact_powershell(block)
+    initial_contract = re.search(
+        r"Assert-W4UiaContractSegment\b.*?"
+        r"-EvidenceName 'uia-contract-chat\.json'",
+        compact,
+    )
+
+    assert initial_contract is not None
+    assert "'chat_stop'" not in initial_contract.group(0)
+    stop_prompt = compact.index("Set-W4UiaValue -Element $input -Value $stopPrompt")
+    stop_send = compact.index("Invoke-W4UiaElement -Element $send", stop_prompt)
+    running = compact.index(
+        "Wait-W4UiaText -Element $status -Expected @('请求中')", stop_send
+    )
+    active_contract = compact.index(
+        "Assert-W4UiaContractSegment -Gui $gui -AutomationIds @('chat_stop')",
+        running,
+    )
+    active_evidence = compact.index(
+        "-EvidenceName 'uia-contract-chat-stop-active.json'", active_contract
+    )
+    stop_lookup = compact.index(
+        "Get-W4UiaElementById -Root $gui.Window -AutomationId 'chat_stop'",
+        active_evidence,
+    )
+    stop_invoke = compact.index("Invoke-W4UiaElement -Element $stop", stop_lookup)
+
+    assert (
+        stop_prompt
+        < stop_send
+        < running
+        < active_contract
+        < active_evidence
+        < stop_lookup
+        < stop_invoke
+    )
+    assert "Get-W4UiaElementById" in compact[stop_lookup:stop_invoke]
+    assert compact[:stop_prompt].count("-AutomationId 'chat_stop'") == 0

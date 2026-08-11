@@ -132,7 +132,7 @@
       "pkv://entries/{knowledge_id}/chunks/{chunk_id}",
       "pkv://entries/{knowledge_id}/metadata",
       "pkv://entries/{knowledge_id}/metadata/{field_name}",
-      "pkv://relations/by-edge/{source_knowledge_id}/{target_knowledge_id}/{relation_type}",
+      "pkv://relations/by-edge/{source_knowledge_id}/{target_knowledge_id}/{relation_type}/{relation_source_type}",
       "pkv://relations/{relation_id}"
     ],
     "prompts": ["idea_sharpen", "knowledge_qa", "search_and_summarize"]

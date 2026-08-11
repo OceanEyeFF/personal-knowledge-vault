@@ -1777,6 +1777,40 @@ function ConvertFrom-W4McpTextContent {
     return ConvertFrom-W4StrictJsonText -Text ([string]$content.text) -Label $Label
 }
 
+function Assert-W4McpDurableSeedPayload {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$Payload)
+
+    Assert-W4JsonObjectFields -Object $Payload -RequiredFields @(
+        'success', 'terminal', 'storage_status', 'core_committed',
+        'knowledge_id', 'entry_locator'
+    ) -Label 'archive_text durable seed'
+    Assert-W4ExactBoolean -Value $Payload.success -Expected $true `
+        -Label 'archive_text durable seed success'
+    Assert-W4ExactBoolean -Value $Payload.core_committed -Expected $true `
+        -Label 'archive_text durable seed core_committed'
+    if ($Payload.terminal -isnot [string] -or
+        [string]$Payload.terminal -cnotin @('success', 'degraded')) {
+        throw "archive_text durable seed has an invalid workflow terminal: $($Payload.terminal)"
+    }
+    if ($Payload.storage_status -isnot [string] -or
+        (([string]$Payload.terminal -ceq 'success' -and
+            [string]$Payload.storage_status -cne 'ready') -or
+         ([string]$Payload.terminal -ceq 'degraded' -and
+            [string]$Payload.storage_status -cnotin @('ready', 'degraded')))) {
+        throw "archive_text durable seed has an incoherent storage terminal: workflow=$($Payload.terminal) storage=$($Payload.storage_status)"
+    }
+    if (($Payload.knowledge_id -isnot [int]) -and
+        ($Payload.knowledge_id -isnot [long])) {
+        throw 'archive_text durable seed knowledge_id must be a JSON integer'
+    }
+    [int64]$knowledgeId = $Payload.knowledge_id
+    if ($knowledgeId -le 0 -or $Payload.entry_locator -isnot [string] -or
+        [string]$Payload.entry_locator -cne "pkv://entries/$knowledgeId") {
+        throw 'archive_text durable seed did not expose a matching positive knowledge identity'
+    }
+}
+
 function Invoke-W4McpSeedText {
     [CmdletBinding()]
     param(
@@ -1801,9 +1835,7 @@ function Invoke-W4McpSeedText {
                 arguments = [ordered]@{ text = $Text; title = $Title }
             }) -TranscriptPath $session.TranscriptPath -TimeoutSeconds 60
         $payload = ConvertFrom-W4McpTextContent -Result $result -Label 'archive_text'
-        if (@('success', 'degraded') -notcontains [string]$payload.status) {
-            throw "archive_text seed did not reach success/degraded: $($payload.status)"
-        }
+        Assert-W4McpDurableSeedPayload -Payload $payload
         Write-W4JsonFile -Path (Join-Path $evidence 'oracle.json') -Value $payload
     } finally {
         if ($null -ne $session.Process -and -not $session.Process.HasExited) {
@@ -3568,7 +3600,13 @@ function Invoke-W4OfflineTextArchiveScenario {
         Invoke-W4UiaElement -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_text_submit')
         $resultTitle = Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_title'
         [void](Wait-W4UiaTextContains -Element $resultTitle -Text '归档成功（降级）' -TimeoutSeconds 90)
-        [void](Dismiss-W4ProcessModal -ProcessId $gui.Process.Id -TimeoutSeconds 10)
+        $modalDismissed = [bool](Dismiss-W4ProcessModal -ProcessId $gui.Process.Id `
+            -TimeoutSeconds 2 -AllowAbsent)
+        Write-W4JsonFile -Path (Join-Path $gui.Evidence 'archive-modal-observation.json') `
+            -Value ([ordered]@{
+                schema_version = 'pkv.w4.optional-modal-observation.v1'
+                exact_ok_button_dismissed = $modalDismissed
+            })
         $warning = Get-W4UiaText -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_warning')
         if ([string]::IsNullOrWhiteSpace($warning) -or $warning -notmatch 'provider') {
             throw "Offline archive did not expose a truthful Provider degraded warning: $warning"
@@ -3629,6 +3667,7 @@ function Invoke-W4OfflineTextArchiveScenario {
         knowledge_id = $idText.Substring(3).Trim()
         saved_path_sha256 = Get-W4FileSha256 -Path $savedPath
         degraded_warning = $warning
+        optional_modal_dismissed = $modalDismissed
         restart_opened_saved_entry = $true
     }
     Write-W4JsonFile -Path (Join-Path $ScenarioContext.Evidence 'oracle.json') -Value $oracle
@@ -4151,13 +4190,11 @@ function Invoke-W4ChatLoopbackScenario {
             Select-W4NavigationItem -Gui $gui -Name '对话'
             Assert-W4UiaContractSegment -Gui $gui -AutomationIds @(
                 'chat_view', 'chat_new_session', 'session_list', 'chat_messages',
-                'chat_request_status', 'chat_input', 'chat_send', 'chat_stop',
-                'chat_round_count'
+                'chat_request_status', 'chat_input', 'chat_send', 'chat_round_count'
             ) -EvidenceName 'uia-contract-chat.json'
             Invoke-W4UiaElement -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'chat_new_session')
             $input = Get-W4UiaElementById -Root $gui.Window -AutomationId 'chat_input'
             $send = Get-W4UiaElementById -Root $gui.Window -AutomationId 'chat_send'
-            $stop = Get-W4UiaElementById -Root $gui.Window -AutomationId 'chat_stop'
             $status = Get-W4UiaElementById -Root $gui.Window -AutomationId 'chat_request_status'
             $messages = Get-W4UiaElementById -Root $gui.Window -AutomationId 'chat_messages'
             $rounds = Get-W4UiaElementById -Root $gui.Window -AutomationId 'chat_round_count'
@@ -4172,6 +4209,9 @@ function Invoke-W4ChatLoopbackScenario {
             Set-W4UiaValue -Element $input -Value $stopPrompt
             Invoke-W4UiaElement -Element $send
             [void](Wait-W4UiaText -Element $status -Expected @('请求中') -TimeoutSeconds 20)
+            Assert-W4UiaContractSegment -Gui $gui -AutomationIds @('chat_stop') `
+                -EvidenceName 'uia-contract-chat-stop-active.json'
+            $stop = Get-W4UiaElementById -Root $gui.Window -AutomationId 'chat_stop'
             [void](Wait-W4UiaTextContains -Element $messages -Text 'PKV_W4_STOP_PARTIAL_V1' -TimeoutSeconds 30)
             Invoke-W4UiaElement -Element $stop
             [void](Wait-W4UiaText -Element $status -Expected @('已停止且未保存') -TimeoutSeconds 30)
@@ -4269,6 +4309,34 @@ function Invoke-W4ChatLoopbackScenario {
     return $oracle
 }
 
+function ConvertFrom-W4UpgradeRejectionResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Result,
+        [Parameter(Mandatory = $true)][string]$ExpectedCode,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if ([string]$Result.StandardOutput -cne '') {
+        throw "$Label wrote unexpected stdout; startup errors must use stderr"
+    }
+    $payload = ConvertFrom-W4StrictJsonText -Text ([string]$Result.StandardError) `
+        -Label $Label
+    Assert-W4ExactObjectFields -Object $payload -Fields @(
+        'adapter', 'code', 'recoverable', 'stage', 'status'
+    ) -Label $Label
+    Assert-W4ExactBoolean -Value $payload.recoverable -Expected $false `
+        -Label ($Label + ' recoverable')
+    if ($payload.adapter -isnot [string] -or [string]$payload.adapter -cne 'cli' -or
+        $payload.status -isnot [string] -or [string]$payload.status -cne 'error' -or
+        $payload.code -isnot [string] -or [string]$payload.code -cne $ExpectedCode -or
+        $payload.stage -isnot [string] -or
+        [string]$payload.stage -cne 'runtime_bootstrap') {
+        throw "$Label did not expose the expected startup envelope/code"
+    }
+    return $payload
+}
+
 function Invoke-W4UpgradeRejectionScenario {
     [CmdletBinding()]
     param(
@@ -4308,12 +4376,8 @@ function Invoke-W4UpgradeRejectionScenario {
             -WorkingDirectory $ScenarioContext.WorkingDirectory -Environment $caseEnvironment `
             -EvidenceDirectory (Join-Path $ScenarioContext.Evidence ("upgrade-" + $case.name)) `
             -ExpectedExitCodes @(1) -TimeoutSeconds 60
-        $payload = ConvertFrom-W4StrictJsonText -Text $result.StandardOutput `
-            -Label ("upgrade rejection " + $case.name)
-        if ([string]$payload.status -ne 'error' -or [string]$payload.code -ne [string]$case.code -or
-            [string]$payload.stage -ne 'runtime_bootstrap') {
-            throw "Upgrade case $($case.name) did not expose the expected startup envelope/code"
-        }
+        $payload = ConvertFrom-W4UpgradeRejectionResult -Result $result `
+            -ExpectedCode ([string]$case.code) -Label ("upgrade rejection " + $case.name)
         $after = Get-W4TreeSha256 -Root $caseRoot -ExcludedRelativePrefixes @('logs', 'tmp')
         if ($before -ne $after) {
             throw "Upgrade rejection mutated synthetic user data: $($case.name)"
