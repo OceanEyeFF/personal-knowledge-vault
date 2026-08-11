@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 
 $script:Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $script:ProcessInputEncodingLock = [object]::new()
+$script:W4DriverModulePath = [System.IO.Path]::GetFullPath($PSCommandPath)
 
 function ConvertTo-W4CommandLineArgument {
     [CmdletBinding()]
@@ -194,10 +195,13 @@ function Initialize-W4FileIdentityInspector {
     $processTreeType = 'PkvW4.ProcessTreeInspector' -as [type]
     $reparsePointType = 'PkvW4.ReparsePointInspector' -as [type]
     $tcpConnectionType = 'PkvW4.TcpConnectionInspector' -as [type]
-    if ($fileIdentityType -and $processTreeType -and $reparsePointType -and $tcpConnectionType) {
+    $windowCaptureType = 'PkvW4.WindowCaptureInspector' -as [type]
+    if ($fileIdentityType -and $processTreeType -and $reparsePointType -and
+        $tcpConnectionType -and $windowCaptureType) {
         return
     }
-    if ($fileIdentityType -or $processTreeType -or $reparsePointType -or $tcpConnectionType) {
+    if ($fileIdentityType -or $processTreeType -or $reparsePointType -or
+        $tcpConnectionType -or $windowCaptureType) {
         throw 'A partial or stale PkvW4 native-inspector type set is already loaded; start a fresh PowerShell process'
     }
     Add-Type -TypeDefinition @'
@@ -411,6 +415,119 @@ namespace PkvW4 {
             } finally {
                 Marshal.FreeHGlobal(buffer);
             }
+        }
+    }
+
+    public static class WindowCaptureInspector {
+        private const uint PW_RENDERFULLCONTENT = 0x00000002;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsWindow(IntPtr window);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsWindowVisible(IntPtr window);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsIconic(IntPtr window);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint GetWindowThreadProcessId(
+            IntPtr window,
+            out uint processId
+        );
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetWindowRect(IntPtr window, out RECT rectangle);
+
+        [DllImport("user32.dll", SetLastError = true, EntryPoint = "PrintWindow")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool PrintWindowNative(
+            IntPtr window,
+            IntPtr destination,
+            uint flags
+        );
+
+        [DllImport("dwmapi.dll", EntryPoint = "DwmFlush")]
+        private static extern int DwmFlushNative();
+
+        private static IntPtr ValidateOwnedWindow(long nativeHandle, int processId) {
+            if (nativeHandle == 0 || processId <= 0) {
+                throw new ArgumentException("Window capture requires a non-zero HWND and positive process ID");
+            }
+            IntPtr window = new IntPtr(nativeHandle);
+            if (!IsWindow(window)) {
+                throw new InvalidOperationException("Window capture HWND is not live");
+            }
+            uint actualProcessId;
+            if (GetWindowThreadProcessId(window, out actualProcessId) == 0) {
+                throw new System.ComponentModel.Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "GetWindowThreadProcessId failed"
+                );
+            }
+            if (actualProcessId != checked((uint)processId)) {
+                throw new InvalidOperationException("Window capture HWND process identity mismatch");
+            }
+            if (!IsWindowVisible(window) || IsIconic(window)) {
+                throw new InvalidOperationException("Window capture HWND is hidden or minimized");
+            }
+            return window;
+        }
+
+        public static int[] GetOwnedWindowBounds(long nativeHandle, int processId) {
+            IntPtr window = ValidateOwnedWindow(nativeHandle, processId);
+            RECT rectangle;
+            if (!GetWindowRect(window, out rectangle)) {
+                throw new System.ComponentModel.Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "GetWindowRect failed"
+                );
+            }
+            int width = checked(rectangle.Right - rectangle.Left);
+            int height = checked(rectangle.Bottom - rectangle.Top);
+            if (width <= 1 || height <= 1) {
+                throw new InvalidDataException("Window capture HWND has no drawable area");
+            }
+            return new int[] {
+                rectangle.Left,
+                rectangle.Top,
+                rectangle.Right,
+                rectangle.Bottom
+            };
+        }
+
+        public static void FlushDesktopComposition() {
+            int result = DwmFlushNative();
+            if (result != 0) {
+                throw new System.ComponentModel.Win32Exception(
+                    result,
+                    "DwmFlush failed"
+                );
+            }
+        }
+
+        public static bool PrintOwnedWindow(
+            long nativeHandle,
+            int processId,
+            IntPtr destination
+        ) {
+            if (destination == IntPtr.Zero) {
+                throw new ArgumentException("Window capture destination HDC is null");
+            }
+            IntPtr window = ValidateOwnedWindow(nativeHandle, processId);
+            return PrintWindowNative(window, destination, PW_RENDERFULLCONTENT);
         }
     }
 
@@ -1818,86 +1935,596 @@ function Export-W4UiaTree {
     Write-W4JsonFile -Path $Path -Value @($items)
 }
 
+function Test-W4BitmapPixelDiversity {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$Bitmap)
+
+    if ($Bitmap.Width -le 1 -or $Bitmap.Height -le 1) {
+        return $false
+    }
+    $rectangle = [System.Drawing.Rectangle]::new(0, 0, $Bitmap.Width, $Bitmap.Height)
+    $bitmapData = $Bitmap.LockBits(
+        $rectangle,
+        [System.Drawing.Imaging.ImageLockMode]::ReadOnly,
+        [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+    )
+    try {
+        $byteCount = [Math]::Abs($bitmapData.Stride) * $Bitmap.Height
+        $pixels = [byte[]]::new($byteCount)
+        [System.Runtime.InteropServices.Marshal]::Copy(
+            $bitmapData.Scan0,
+            $pixels,
+            0,
+            $byteCount
+        )
+        for ($pixel = 4; $pixel -lt $pixels.Length; $pixel += 4) {
+            if ($pixels[$pixel] -ne $pixels[0] -or
+                $pixels[$pixel + 1] -ne $pixels[1] -or
+                $pixels[$pixel + 2] -ne $pixels[2]) {
+                return $true
+            }
+        }
+        return $false
+    } finally {
+        $Bitmap.UnlockBits($bitmapData)
+    }
+}
+
+function Invoke-W4PrintWindowCaptureAttempt {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$MetadataPath,
+        [Parameter(Mandatory = $true)][int64]$NativeWindowHandle,
+        [Parameter(Mandatory = $true)][ValidateRange(1, [int]::MaxValue)][int]$ProcessId
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if (Test-Path -LiteralPath $fullPath) {
+        throw 'Window capture attempt output already exists'
+    }
+    $fullMetadataPath = [System.IO.Path]::GetFullPath($MetadataPath)
+    if (Test-Path -LiteralPath $fullMetadataPath) {
+        throw 'Window capture attempt metadata already exists'
+    }
+    Assert-W4SafePathChain -Path $fullPath -Label 'window capture attempt output'
+    Assert-W4SafePathChain -Path $fullMetadataPath `
+        -Label 'window capture attempt metadata'
+    Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+    Initialize-W4FileIdentityInspector
+    $bounds = [PkvW4.WindowCaptureInspector]::GetOwnedWindowBounds(
+        $NativeWindowHandle,
+        $ProcessId
+    )
+    $width = [int]($bounds[2] - $bounds[0])
+    $height = [int]($bounds[3] - $bounds[1])
+    if ($width -le 1 -or $height -le 1 -or
+        $width -gt 8192 -or $height -gt 8192 -or
+        ([int64]$width * [int64]$height) -gt 16777216) {
+        throw 'Window capture attempt returned unsafe window bounds'
+    }
+
+    $bitmap = [System.Drawing.Bitmap]::new(
+        $width,
+        $height,
+        [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+    )
+    try {
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        try {
+            [PkvW4.WindowCaptureInspector]::FlushDesktopComposition()
+            $destination = $graphics.GetHdc()
+            try {
+                $printed = [PkvW4.WindowCaptureInspector]::PrintOwnedWindow(
+                    $NativeWindowHandle,
+                    $ProcessId,
+                    $destination
+                )
+            } finally {
+                $graphics.ReleaseHdc($destination)
+            }
+        } finally {
+            $graphics.Dispose()
+        }
+        if (-not $printed) {
+            throw 'PrintWindow did not render the bound application window'
+        }
+        if (-not (Test-W4BitmapPixelDiversity -Bitmap $bitmap)) {
+            throw 'PrintWindow returned a single-color application window image'
+        }
+        $bitmap.Save($fullPath, [System.Drawing.Imaging.ImageFormat]::Png)
+        $pngLength = [int64](Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop).Length
+        if ($pngLength -le 0 -or $pngLength -gt 134217728) {
+            throw 'Window capture worker PNG length exceeded the strict bound'
+        }
+        Write-W4JsonFile -Path $fullMetadataPath -Value ([ordered]@{
+            schema_version = 'pkv.w4.window-capture-worker.v1'
+            method = 'PrintWindow(PW_RENDERFULLCONTENT)'
+            width = $width
+            height = $height
+            png_length = $pngLength
+            pixel_diversity = $true
+        }) -Compress
+        return [pscustomobject]@{
+            Width = $width
+            Height = $height
+            PixelDiversity = $true
+        }
+    } finally {
+        $bitmap.Dispose()
+    }
+}
+
+function Remove-W4CaptureTemporaryFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$Label = 'window capture temporary file'
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    Assert-W4SafePathChain -Path $Path -Label $Label
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or
+        ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Window capture temporary output was not a normal file'
+    }
+    [System.IO.File]::Delete($item.FullName)
+}
+
+function Assert-W4CaptureDeadline {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc,
+        [Parameter(Mandatory = $true)][string]$Stage
+    )
+
+    if ([DateTime]::UtcNow -ge $DeadlineUtc) {
+        throw "bounded window capture deadline expired at stage: $Stage"
+    }
+}
+
+function Stop-W4BoundedCaptureWorker {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc
+    )
+
+    # A screenshot worker is an isolated, single-process PowerShell host.  Its
+    # held Process object is already a handle-bound identity, so do not hand its
+    # numeric PID to the general tree terminator: that routine is deliberately
+    # allowed to wait while reconciling descendants and could extend this capture
+    # past its one absolute deadline.  Signal this exact handle once, then wait
+    # only for the capture budget still remaining.  There is intentionally no
+    # taskkill fallback or retry after a timeout.
+    try {
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            return
+        }
+    } catch [System.InvalidOperationException] {
+        # The retained handle no longer names a live process, which is already
+        # the desired post-timeout state.
+        return
+    } catch [System.ComponentModel.Win32Exception] {
+        throw 'bounded PrintWindow capture worker termination could not verify its held process handle'
+    }
+
+    try {
+        $Process.Kill()
+    } catch [System.InvalidOperationException] {
+        # It exited in the narrow interval after Refresh; never retry by PID.
+        return
+    } catch [System.ComponentModel.Win32Exception] {
+        throw 'bounded PrintWindow capture worker termination failed'
+    }
+
+    $remainingMilliseconds = [int][Math]::Max(
+        0,
+        [Math]::Floor(($DeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds)
+    )
+    if ($remainingMilliseconds -le 0) {
+        return
+    }
+    try {
+        [void]$Process.WaitForExit($remainingMilliseconds)
+    } catch [System.InvalidOperationException] {
+        # A completed/invalidated held handle cannot authorize any further kill.
+    }
+}
+
 function Save-W4Screenshot {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][System.Windows.Automation.AutomationElement]$Element,
-        [Parameter(Mandatory = $true)][int]$ProcessId
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [System.Windows.Automation.AutomationElement]$TerminalElement,
+        [string[]]$ExpectedTerminalText = @(),
+        [ValidateRange(1, 3)][int]$MaximumAttempts = 3,
+        [ValidateRange(3, 30)][int]$TimeoutSeconds = 20
     )
 
     try {
-        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
-        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-        if ([string]$Element.Current.AutomationId -ne 'pkv_main_window') {
-            throw "screenshot target is not pkv_main_window: $($Element.Current.AutomationId)"
+        if (($null -eq $TerminalElement) -ne ($ExpectedTerminalText.Count -eq 0)) {
+            throw 'screenshot terminal element and expected text must be supplied together'
         }
-        if ([int]$Element.Current.ProcessId -ne $ProcessId) {
-            throw "screenshot target PID mismatch: expected=$ProcessId actual=$($Element.Current.ProcessId)"
-        }
-        if ([bool]$Element.Current.IsOffscreen) {
-            throw 'screenshot target pkv_main_window is offscreen'
-        }
-        $uiaBounds = $Element.Current.BoundingRectangle
-        if ([double]::IsNaN($uiaBounds.X) -or [double]::IsNaN($uiaBounds.Y) -or
-            [double]::IsInfinity($uiaBounds.X) -or [double]::IsInfinity($uiaBounds.Y)) {
-            throw 'screenshot target returned invalid UIA bounds'
-        }
-        $left = [int][Math]::Floor($uiaBounds.Left)
-        $top = [int][Math]::Floor($uiaBounds.Top)
-        $right = [int][Math]::Ceiling($uiaBounds.Right)
-        $bottom = [int][Math]::Ceiling($uiaBounds.Bottom)
-        $width = $right - $left
-        $height = $bottom - $top
-        if ($width -le 1 -or $height -le 1) {
-            throw "screenshot target has no drawable area: ${width}x${height}"
-        }
-        $virtualScreen = [System.Windows.Forms.SystemInformation]::VirtualScreen
-        if ($left -lt $virtualScreen.Left -or $top -lt $virtualScreen.Top -or
-            $right -gt $virtualScreen.Right -or $bottom -gt $virtualScreen.Bottom) {
-            throw 'screenshot target bounds extend outside the Windows virtual screen'
-        }
-        [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($Path))
-        $bitmap = [System.Drawing.Bitmap]::new(
-            $width,
-            $height,
-            [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
-        )
-        try {
-            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-            try {
-                $graphics.CopyFromScreen($left, $top, 0, 0, $bitmap.Size)
-            } finally {
-                $graphics.Dispose()
+        $terminalAutomationId = ''
+        if ($null -ne $TerminalElement) {
+            $terminalAutomationId = [string]$TerminalElement.Current.AutomationId
+            if ([string]::IsNullOrWhiteSpace($terminalAutomationId)) {
+                throw 'screenshot terminal UIA element has no AutomationId'
             }
-            $pixelRectangle = [System.Drawing.Rectangle]::new(0, 0, $width, $height)
-            $bitmapData = $bitmap.LockBits(
-                $pixelRectangle,
-                [System.Drawing.Imaging.ImageLockMode]::ReadOnly,
-                [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+        }
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+        $evidencePath = $fullPath + '.capture.json'
+        if ((Test-Path -LiteralPath $fullPath) -or (Test-Path -LiteralPath $evidencePath)) {
+            throw 'screenshot output or capture evidence already exists'
+        }
+        $parent = [System.IO.Path]::GetDirectoryName($fullPath)
+        [void][System.IO.Directory]::CreateDirectory($parent)
+        Assert-W4SafePathChain -Path $fullPath -Label 'application-window screenshot output'
+        Assert-W4SafePathChain -Path $script:W4DriverModulePath `
+            -Label 'W4 screenshot capture module'
+        if (-not (Test-Path -LiteralPath $script:W4DriverModulePath -PathType Leaf)) {
+            throw 'W4 screenshot capture module is missing'
+        }
+
+        $expectedProcessId = [int]$Process.Id
+        $expectedStartTimeUtcTicks = [int64]$Process.StartTime.ToUniversalTime().Ticks
+        if ($Process.HasExited) {
+            throw 'screenshot target process exited before capture'
+        }
+        $systemRoot = [Environment]::GetEnvironmentVariable('SystemRoot')
+        if ([string]::IsNullOrWhiteSpace($systemRoot)) {
+            throw 'SystemRoot is required for bounded window capture'
+        }
+        $powerShellPath = Join-Path $systemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        Assert-W4SafePathChain -Path $powerShellPath -Label 'window capture PowerShell host'
+        if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) {
+            throw 'System Windows PowerShell is missing for bounded window capture'
+        }
+        $workerTemp = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+        Assert-W4SafePathChain -Path $workerTemp -Label 'window capture worker TEMP'
+
+        $childScript = @'
+$ErrorActionPreference = 'Stop'
+try {
+    $module = Import-Module -Name $env:PKV_W4_CAPTURE_MODULE -Force -PassThru -ErrorAction Stop
+    [void](& $module {
+        param($outputPath, $metadataPath, $nativeWindowHandle, $processId)
+        Invoke-W4PrintWindowCaptureAttempt -Path $outputPath `
+            -MetadataPath $metadataPath `
+            -NativeWindowHandle ([int64]::Parse(
+                $nativeWindowHandle,
+                [System.Globalization.CultureInfo]::InvariantCulture
+            )) `
+            -ProcessId ([int]::Parse(
+                $processId,
+                [System.Globalization.CultureInfo]::InvariantCulture
+            ))
+    } $env:PKV_W4_CAPTURE_OUTPUT $env:PKV_W4_CAPTURE_METADATA `
+        $env:PKV_W4_CAPTURE_HWND $env:PKV_W4_CAPTURE_PID)
+    exit 0
+} catch {
+    [Console]::Error.WriteLine('window_capture_worker_failed')
+    exit 1
+}
+'@
+        $encodedCommand = [Convert]::ToBase64String(
+            [System.Text.Encoding]::Unicode.GetBytes($childScript)
+        )
+        $captureDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        $successfulAttempt = 0
+        $capturedWidth = 0
+        $capturedHeight = 0
+
+        for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt += 1) {
+            $remainingMilliseconds = [int][Math]::Floor(
+                ($captureDeadline - [DateTime]::UtcNow).TotalMilliseconds
             )
+            if ($remainingMilliseconds -le 0) {
+                break
+            }
+
+            $identity = [pscustomobject]@{
+                ProcessId = $expectedProcessId
+                StartTimeUtcTicks = $expectedStartTimeUtcTicks
+            }
+            $liveProcess = Get-W4LiveProcessForIdentity -Identity $identity
+            if ($null -eq $liveProcess) {
+                throw 'screenshot target process identity changed before capture'
+            }
+            $liveProcess.Dispose()
+
+            if (-not ([string]$Element.Current.AutomationId).Equals(
+                'pkv_main_window',
+                [System.StringComparison]::Ordinal
+            )) {
+                throw 'screenshot target is not the exact pkv_main_window UIA element'
+            }
+            if ([int]$Element.Current.ProcessId -ne $expectedProcessId) {
+                throw 'screenshot target UIA process identity mismatch'
+            }
+            if ([bool]$Element.Current.IsOffscreen) {
+                throw 'screenshot target pkv_main_window is offscreen'
+            }
+            if ($null -ne $TerminalElement) {
+                $terminalLookupSeconds = [Math]::Max(
+                    1,
+                    [Math]::Min(2, [int][Math]::Ceiling($remainingMilliseconds / 1000.0))
+                )
+                $freshTerminalElement = Get-W4UiaElementById -Root $Element `
+                    -AutomationId $terminalAutomationId `
+                    -TimeoutSeconds $terminalLookupSeconds
+                if ([int]$freshTerminalElement.Current.ProcessId -ne $expectedProcessId -or
+                    [bool]$freshTerminalElement.Current.IsOffscreen) {
+                    throw 'screenshot terminal UIA element is not visible in the bound process'
+                }
+                $terminalText = Get-W4UiaText -Element $freshTerminalElement
+                if (@($ExpectedTerminalText) -cnotcontains $terminalText) {
+                    throw 'screenshot terminal UIA state changed before capture'
+                }
+            }
+
+            $rawNativeWindowHandle = [int64][int]$Element.Current.NativeWindowHandle
+            if ($rawNativeWindowHandle -lt 0) {
+                $rawNativeWindowHandle += 4294967296
+            }
+            if ($rawNativeWindowHandle -eq 0) {
+                throw 'screenshot target UIA NativeWindowHandle is zero'
+            }
+            Initialize-W4FileIdentityInspector
+            $windowBounds = [PkvW4.WindowCaptureInspector]::GetOwnedWindowBounds(
+                $rawNativeWindowHandle,
+                $expectedProcessId
+            )
+            $boundWidth = [int]($windowBounds[2] - $windowBounds[0])
+            $boundHeight = [int]($windowBounds[3] - $windowBounds[1])
+            if ($boundWidth -le 1 -or $boundHeight -le 1 -or
+                $boundWidth -gt 8192 -or $boundHeight -gt 8192 -or
+                ([int64]$boundWidth * [int64]$boundHeight) -gt 16777216) {
+                throw 'screenshot target HWND returned unsafe bounds'
+            }
+
+            $temporaryPath = "$fullPath.capture-$([Guid]::NewGuid().ToString('N')).tmp.png"
+            $workerMetadataPath = $temporaryPath + '.validation.json'
+            Assert-W4SafePathChain -Path $temporaryPath -Label 'window capture temporary output'
+            Assert-W4SafePathChain -Path $workerMetadataPath `
+                -Label 'window capture worker metadata temporary output'
+            $environment = [ordered]@{
+                SystemRoot = $systemRoot
+                WINDIR = $systemRoot
+                COMSPEC = (Join-Path $systemRoot 'System32\cmd.exe')
+                PATH = @(
+                    (Join-Path $systemRoot 'System32'),
+                    (Join-Path $systemRoot 'System32\Wbem'),
+                    (Join-Path $systemRoot 'System32\WindowsPowerShell\v1.0')
+                ) -join [System.IO.Path]::PathSeparator
+                PATHEXT = '.COM;.EXE;.BAT;.CMD'
+                TEMP = $workerTemp
+                TMP = $workerTemp
+                PKV_W4_CAPTURE_MODULE = $script:W4DriverModulePath
+                PKV_W4_CAPTURE_OUTPUT = $temporaryPath
+                PKV_W4_CAPTURE_METADATA = $workerMetadataPath
+                PKV_W4_CAPTURE_HWND = $rawNativeWindowHandle.ToString(
+                    [System.Globalization.CultureInfo]::InvariantCulture
+                )
+                PKV_W4_CAPTURE_PID = $expectedProcessId.ToString(
+                    [System.Globalization.CultureInfo]::InvariantCulture
+                )
+            }
+            $processInfo = New-W4ProcessStartInfo -FileName $powerShellPath -Arguments @(
+                '-NoLogo', '-NoProfile', '-NonInteractive',
+                '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand
+            ) -WorkingDirectory $parent -Environment $environment
+            $remainingMilliseconds = [int][Math]::Floor(
+                ($captureDeadline - [DateTime]::UtcNow).TotalMilliseconds
+            )
+            if ($remainingMilliseconds -le 0) {
+                throw 'bounded window capture deadline expired before worker start'
+            }
+            $temporaryPublished = $false
             try {
-                $byteCount = [Math]::Abs($bitmapData.Stride) * $height
-                $pixels = [byte[]]::new($byteCount)
-                [System.Runtime.InteropServices.Marshal]::Copy($bitmapData.Scan0, $pixels, 0, $byteCount)
-                $varied = $false
-                for ($pixel = 4; $pixel -lt $pixels.Length; $pixel += 4) {
-                    if ($pixels[$pixel] -ne $pixels[0] -or
-                        $pixels[$pixel + 1] -ne $pixels[1] -or
-                        $pixels[$pixel + 2] -ne $pixels[2]) {
-                        $varied = $true
-                        break
+                $worker = [System.Diagnostics.Process]::new()
+                $worker.StartInfo = $processInfo
+                $workerStarted = $false
+                $workerExitCode = -1
+                try {
+                    $workerStarted = Start-W4RedirectedProcess -Process $worker
+                    if (-not $workerStarted) {
+                        throw 'bounded window capture worker did not start'
+                    }
+                    # Process startup and module initialization consume the same
+                    # absolute budget. Recompute after Start rather than trusting
+                    # the pre-start remainder.
+                    $attemptWaitMilliseconds = [Math]::Min(
+                        8000,
+                        [int][Math]::Floor(
+                            ($captureDeadline - [DateTime]::UtcNow).TotalMilliseconds
+                        )
+                    )
+                    $workerCompleted = $attemptWaitMilliseconds -gt 0 -and
+                        $worker.WaitForExit($attemptWaitMilliseconds)
+                    if (-not $workerCompleted) {
+                        Stop-W4BoundedCaptureWorker -Process $worker `
+                            -DeadlineUtc $captureDeadline
+                        throw 'bounded PrintWindow capture worker timed out'
+                    }
+                    [void]$worker.StandardOutput.ReadToEnd()
+                    [void]$worker.StandardError.ReadToEnd()
+                    $workerExitCode = $worker.ExitCode
+                } finally {
+                    $worker.Dispose()
+                }
+
+                if ($workerExitCode -ne 0) {
+                    if (Test-Path -LiteralPath $temporaryPath) {
+                        throw 'failed window capture worker persisted unexpected image data'
+                    }
+                    continue
+                }
+                Assert-W4CaptureDeadline -DeadlineUtc $captureDeadline `
+                    -Stage 'post-worker-exit'
+                if (-not (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
+                    throw 'successful window capture worker did not produce a PNG'
+                }
+                $postCaptureProcess = Get-W4LiveProcessForIdentity -Identity $identity
+                if ($null -eq $postCaptureProcess) {
+                    throw 'screenshot target process identity changed during capture'
+                }
+                $postCaptureProcess.Dispose()
+                Assert-W4CaptureDeadline -DeadlineUtc $captureDeadline `
+                    -Stage 'post-process-identity'
+                if (-not ([string]$Element.Current.AutomationId).Equals(
+                    'pkv_main_window',
+                    [System.StringComparison]::Ordinal
+                ) -or [int]$Element.Current.ProcessId -ne $expectedProcessId -or
+                    [bool]$Element.Current.IsOffscreen) {
+                    throw 'screenshot target UIA binding changed during capture'
+                }
+                $postRawNativeWindowHandle = [int64][int]$Element.Current.NativeWindowHandle
+                if ($postRawNativeWindowHandle -lt 0) {
+                    $postRawNativeWindowHandle += 4294967296
+                }
+                if ($postRawNativeWindowHandle -ne $rawNativeWindowHandle) {
+                    throw 'screenshot target HWND changed during capture'
+                }
+                Assert-W4CaptureDeadline -DeadlineUtc $captureDeadline `
+                    -Stage 'post-uia-window-binding'
+                if ($null -ne $TerminalElement) {
+                    $freshTerminalElement = Get-W4UiaElementById -Root $Element `
+                        -AutomationId $terminalAutomationId -TimeoutSeconds 1
+                    $terminalText = Get-W4UiaText -Element $freshTerminalElement
+                    if ([int]$freshTerminalElement.Current.ProcessId -ne $expectedProcessId -or
+                        [bool]$freshTerminalElement.Current.IsOffscreen -or
+                        @($ExpectedTerminalText) -cnotcontains $terminalText) {
+                        throw 'screenshot terminal UIA state changed during capture'
                     }
                 }
-                if (-not $varied) {
-                    throw 'screenshot target produced an empty single-color image'
+                Assert-W4CaptureDeadline -DeadlineUtc $captureDeadline `
+                    -Stage 'post-terminal-uia-binding'
+                Assert-W4SafePathChain -Path $temporaryPath -Label 'window capture completed output'
+                Assert-W4SafePathChain -Path $workerMetadataPath `
+                    -Label 'window capture completed worker metadata'
+                $pngItem = Get-Item -LiteralPath $temporaryPath -Force -ErrorAction Stop
+                $metadataItem = Get-Item -LiteralPath $workerMetadataPath -Force -ErrorAction Stop
+                if ($pngItem.PSIsContainer -or $metadataItem.PSIsContainer -or
+                    ($pngItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                    ($metadataItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                    [int64]$pngItem.Length -le 0 -or [int64]$pngItem.Length -gt 134217728 -or
+                    [int64]$metadataItem.Length -le 0 -or [int64]$metadataItem.Length -gt 4096) {
+                    throw 'window capture worker outputs failed normal-file or strict-size validation'
                 }
+                Initialize-W4FileIdentityInspector
+                if ([PkvW4.FileIdentity]::GetLinkCount($pngItem.FullName) -ne 1 -or
+                    [PkvW4.FileIdentity]::GetLinkCount($metadataItem.FullName) -ne 1) {
+                    throw 'window capture worker outputs were not single-link files'
+                }
+                $workerMetadata = Read-W4JsonFile -Path $workerMetadataPath
+                $expectedWorkerMetadataFields = @(
+                    'schema_version', 'method', 'width', 'height',
+                    'png_length', 'pixel_diversity'
+                )
+                $actualWorkerMetadataFields = @($workerMetadata.PSObject.Properties.Name)
+                if ($actualWorkerMetadataFields.Count -ne $expectedWorkerMetadataFields.Count) {
+                    throw 'window capture worker metadata field count was not exact'
+                }
+                for ($fieldIndex = 0; $fieldIndex -lt $expectedWorkerMetadataFields.Count; $fieldIndex += 1) {
+                    if ([string]$actualWorkerMetadataFields[$fieldIndex] -cne
+                        [string]$expectedWorkerMetadataFields[$fieldIndex]) {
+                        throw 'window capture worker metadata fields were not exact and ordered'
+                    }
+                }
+                if ([string]$workerMetadata.schema_version -cne
+                    'pkv.w4.window-capture-worker.v1' -or
+                    [string]$workerMetadata.method -cne 'PrintWindow(PW_RENDERFULLCONTENT)' -or
+                    ($workerMetadata.width -isnot [int] -and
+                        $workerMetadata.width -isnot [int64]) -or
+                    ($workerMetadata.height -isnot [int] -and
+                        $workerMetadata.height -isnot [int64]) -or
+                    ($workerMetadata.png_length -isnot [int] -and
+                        $workerMetadata.png_length -isnot [int64]) -or
+                    $workerMetadata.pixel_diversity -isnot [bool] -or
+                    -not [bool]$workerMetadata.pixel_diversity) {
+                    throw 'window capture worker metadata types or constants were invalid'
+                }
+                $metadataWidth = [int64]$workerMetadata.width
+                $metadataHeight = [int64]$workerMetadata.height
+                if ($metadataWidth -le 1 -or $metadataHeight -le 1 -or
+                    $metadataWidth -gt 8192 -or $metadataHeight -gt 8192 -or
+                    ($metadataWidth * $metadataHeight) -gt 16777216) {
+                    throw 'window capture worker metadata bounds were unsafe'
+                }
+                $capturedWidth = [int]$metadataWidth
+                $capturedHeight = [int]$metadataHeight
+                if ($metadataWidth -ne [int64]$boundWidth -or
+                    $metadataHeight -ne [int64]$boundHeight -or
+                    [int64]$workerMetadata.png_length -ne [int64]$pngItem.Length) {
+                    throw 'window capture worker metadata did not bind the strict PNG bounds'
+                }
+                Assert-W4CaptureDeadline -DeadlineUtc $captureDeadline `
+                    -Stage 'post-worker-metadata-validation'
+                Remove-W4CaptureTemporaryFile -Path $workerMetadataPath
+
+                # Publish privacy-safe metadata first through its own same-volume
+                # temporary file. The validated PNG move is the final commit marker;
+                # if that move fails, roll the sidecar back and never leave UI pixels
+                # at the final path for a failed capture.
+                $evidenceTemporaryPath = "$evidencePath.capture-$([Guid]::NewGuid().ToString('N')).tmp.json"
+                $evidencePublished = $false
+                try {
+                    Assert-W4SafePathChain -Path $evidenceTemporaryPath `
+                        -Label 'window capture evidence temporary output'
+                    Write-W4JsonFile -Path $evidenceTemporaryPath -Value ([ordered]@{
+                        schema_version = 'pkv.w4.window-capture.v1'
+                        method = 'PrintWindow(PW_RENDERFULLCONTENT)'
+                        attempt = $attempt
+                        result = 'nonuniform_png_published'
+                        window_binding = 'uia_hwnd_exact_process_identity'
+                        process_id = $expectedProcessId
+                        size = [ordered]@{
+                            width = $capturedWidth
+                            height = $capturedHeight
+                        }
+                        pixel_diversity = 'nonuniform'
+                    })
+                    Assert-W4SafePathChain -Path $evidenceTemporaryPath `
+                        -Label 'window capture completed evidence'
+                    Assert-W4CaptureDeadline -DeadlineUtc $captureDeadline `
+                        -Stage 'pre-sidecar-publish'
+                    [System.IO.File]::Move($evidenceTemporaryPath, $evidencePath)
+                    $evidencePublished = $true
+                    Assert-W4CaptureDeadline -DeadlineUtc $captureDeadline `
+                        -Stage 'pre-png-commit'
+                    [System.IO.File]::Move($temporaryPath, $fullPath)
+                    $temporaryPublished = $true
+                } catch {
+                    if ($evidencePublished) {
+                        Remove-W4CaptureTemporaryFile -Path $evidencePath `
+                            -Label 'window capture sidecar rollback'
+                    }
+                    throw
+                } finally {
+                    if (-not $temporaryPublished) {
+                        Remove-W4CaptureTemporaryFile -Path $evidenceTemporaryPath
+                    }
+                }
+                $successfulAttempt = $attempt
+                break
             } finally {
-                $bitmap.UnlockBits($bitmapData)
+                if (-not $temporaryPublished) {
+                    Remove-W4CaptureTemporaryFile -Path $temporaryPath
+                    Remove-W4CaptureTemporaryFile -Path $workerMetadataPath
+                }
             }
-            $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
-        } finally {
-            $bitmap.Dispose()
+        }
+
+        if ($successfulAttempt -eq 0) {
+            throw 'bounded PrintWindow retries did not produce a nonuniform application-window image'
         }
     } catch {
         throw "Application-window screenshot capture failed: $($_.Exception.Message)"

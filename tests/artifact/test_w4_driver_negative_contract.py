@@ -516,6 +516,357 @@ $window.Add_ContentRendered({{
     )
 
 
+def _run_window_capture_probe(
+    tmp_path: Path, mode: str
+) -> subprocess.CompletedProcess[str]:
+    assert mode in {"positive", "wrong_process", "uniform"}
+    title = f"W4WindowCaptureProbe-{mode}-{uuid.uuid4().hex}"
+    screenshot = tmp_path / f"window-capture-{mode}.png"
+    uniform_setup = """
+$window.WindowStyle = [System.Windows.WindowStyle]::None
+$window.ResizeMode = [System.Windows.ResizeMode]::NoResize
+$window.Background = [System.Windows.Media.Brushes]::Magenta
+"""
+    positive_setup = """
+$grid = [System.Windows.Controls.Grid]::new()
+$grid.Background = [System.Windows.Media.Brushes]::DarkBlue
+$left = [System.Windows.Controls.Border]::new()
+$left.Width = 120
+$left.Height = 120
+$left.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
+$left.VerticalAlignment = [System.Windows.VerticalAlignment]::Top
+$left.Background = [System.Windows.Media.Brushes]::OrangeRed
+$right = [System.Windows.Controls.Border]::new()
+$right.Width = 120
+$right.Height = 120
+$right.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Right
+$right.VerticalAlignment = [System.Windows.VerticalAlignment]::Bottom
+$right.Background = [System.Windows.Media.Brushes]::Gold
+$label = [System.Windows.Controls.TextBlock]::new()
+$label.Text = 'BOUND PRINTWINDOW PROBE'
+$label.Foreground = [System.Windows.Media.Brushes]::White
+$label.FontSize = 18
+$label.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Center
+$label.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+[void]$grid.Children.Add($left)
+[void]$grid.Children.Add($right)
+[void]$grid.Children.Add($label)
+$window.Content = $grid
+"""
+    child_script = f"""
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
+Add-Type -AssemblyName PresentationCore -ErrorAction Stop
+Add-Type -AssemblyName WindowsBase -ErrorAction Stop
+$window = [System.Windows.Window]::new()
+$window.Title = '{title}'
+$window.Width = 360
+$window.Height = 260
+$window.WindowStartupLocation = [System.Windows.WindowStartupLocation]::Manual
+$window.Left = 160
+$window.Top = 160
+$window.ShowInTaskbar = $false
+$window.Topmost = $true
+$window.ShowActivated = $true
+$window.SizeToContent = [System.Windows.SizeToContent]::Manual
+[System.Windows.Automation.AutomationProperties]::SetAutomationId(
+    $window,
+    'pkv_main_window'
+)
+{uniform_setup if mode == "uniform" else positive_setup}
+$window.Add_Loaded({{
+    [void]$window.Activate()
+}})
+[void]$window.ShowDialog()
+"""
+    encoded_child = base64.b64encode(child_script.encode("utf-16le")).decode("ascii")
+    command = (
+        "$ErrorActionPreference='Stop';"
+        "Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop;"
+        "Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop;"
+        f"$module=Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' "
+        "-Force -PassThru;"
+        f"$mode='{mode}';$output='{_ps_single_quoted(screenshot)}';"
+        "$process=$null;$other=$null;$caught=$null;$capture=$null;"
+        "$stopwatch=[Diagnostics.Stopwatch]::StartNew();"
+        "try {"
+        "$psi=[Diagnostics.ProcessStartInfo]::new();"
+        f"$psi.FileName='{_ps_single_quoted(_windows_powershell())}';"
+        f"$psi.Arguments='-NoLogo -NoProfile -NonInteractive -Sta -EncodedCommand "
+        f"{encoded_child}';"
+        "$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;"
+        "$process=[Diagnostics.Process]::Start($psi);"
+        "if($null -eq $process){throw 'window capture probe did not start'};"
+        "$desktop=[System.Windows.Automation.AutomationElement]::RootElement;"
+        "$pidCondition=[System.Windows.Automation.PropertyCondition]::new("
+        "[System.Windows.Automation.AutomationElement]::ProcessIdProperty,"
+        "[int]$process.Id);"
+        "$nameCondition=[System.Windows.Automation.PropertyCondition]::new("
+        "[System.Windows.Automation.AutomationElement]::NameProperty,"
+        f"'{title}');"
+        "$automationCondition=[System.Windows.Automation.PropertyCondition]::new("
+        "[System.Windows.Automation.AutomationElement]::AutomationIdProperty,"
+        "'pkv_main_window');"
+        "$windowCondition=[System.Windows.Automation.AndCondition]::new("
+        "[System.Windows.Automation.Condition[]]@($pidCondition,$nameCondition,"
+        "$automationCondition));"
+        "$deadline=[DateTime]::UtcNow.AddSeconds(15);$window=$null;"
+        "$observedAutomationId='';"
+        "do {"
+        "$window=$desktop.FindFirst("
+        "[System.Windows.Automation.TreeScope]::Children,$windowCondition);"
+        "if($null -ne $window){"
+        "try {if([string]$window.Current.AutomationId -ceq 'pkv_main_window' "
+        "-and -not [bool]$window.Current.IsOffscreen){"
+        "$observedAutomationId='pkv_main_window';break}}"
+        "catch [System.Windows.Automation.ElementNotAvailableException]{};"
+        "$window=$null};"
+        "$process.Refresh();"
+        "if($process.HasExited){throw 'window capture probe exited before discovery'};"
+        "Start-Sleep -Milliseconds 50"
+        "}while([DateTime]::UtcNow -lt $deadline);"
+        "if($null -eq $window){throw 'window capture probe was not found by UIA'};"
+        "if($observedAutomationId -cne 'pkv_main_window'){"
+        "throw 'probe window was not accepted by the exact AutomationId oracle'};"
+        "if($mode -ceq 'wrong_process'){"
+        "$otherInfo=[Diagnostics.ProcessStartInfo]::new();"
+        "$otherInfo.FileName=(Join-Path $PSHOME 'powershell.exe');"
+        "$otherInfo.Arguments='-NoLogo -NoProfile -NonInteractive "
+        "-Command Start-Sleep -Seconds 20';"
+        "$otherInfo.UseShellExecute=$false;$otherInfo.CreateNoWindow=$true;"
+        "$other=[Diagnostics.Process]::Start($otherInfo);"
+        "if($null -eq $other){throw 'wrong-process probe did not start'};"
+        "try {& $module {param($path,$element,$target) "
+        "Save-W4Screenshot -Path $path -Element $element -Process $target "
+        "-MaximumAttempts 2 -TimeoutSeconds 6} $output $window $other}"
+        "catch {$caught=$_.Exception.Message}"
+        "}else{"
+        "try {& $module {param($path,$element,$target) "
+        "Save-W4Screenshot -Path $path -Element $element -Process $target "
+        "-MaximumAttempts 2 -TimeoutSeconds 8} $output $window $process}"
+        "catch {$caught=$_.Exception.Message}"
+        "};"
+        "$stopwatch.Stop();"
+        "$evidencePath=$output+'.capture.json';"
+        "if(Test-Path -LiteralPath $evidencePath -PathType Leaf){"
+        "$capture=[IO.File]::ReadAllText($evidencePath)|ConvertFrom-Json};"
+        "[ordered]@{mode=$mode;caught=$caught;"
+        "elapsed_milliseconds=[int64]$stopwatch.ElapsedMilliseconds;"
+        "screenshot_exists=[bool](Test-Path -LiteralPath $output -PathType Leaf);"
+        "capture_evidence_exists="
+        "[bool](Test-Path -LiteralPath $evidencePath -PathType Leaf);"
+        "automation_id=$observedAutomationId;"
+        "window_process_id=[int]$window.Current.ProcessId;"
+        "target_process_id=[int]$process.Id;capture=$capture}"
+        "|ConvertTo-Json -Depth 10 -Compress"
+        "}finally{"
+        "foreach($candidate in @($other,$process)){"
+        "if($null -ne $candidate){try{$candidate.Refresh();"
+        "if(-not $candidate.HasExited){$candidate.Kill();"
+        "[void]$candidate.WaitForExit(5000)}}catch{};$candidate.Dispose()}}"
+        "}"
+    )
+    return _run_powershell(
+        ["-Command", command], cwd=REPOSITORY_ROOT, timeout=45
+    )
+
+
+def _run_bounded_capture_worker_timeout_probe() -> subprocess.CompletedProcess[str]:
+    sleep_command = base64.b64encode(
+        "Start-Sleep -Seconds 30".encode("utf-16le")
+    ).decode("ascii")
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"$module=Import-Module '{_ps_single_quoted(DRIVER_MODULE)}' "
+        "-Force -PassThru;"
+        "$worker=$null;$caught=$null;$workerWasRunning=$false;"
+        "$workerExited=$false;$stopwatch=$null;"
+        "try{"
+        "$workerInfo=[Diagnostics.ProcessStartInfo]::new();"
+        f"$workerInfo.FileName='{_ps_single_quoted(_windows_powershell())}';"
+        "$workerInfo.Arguments='-NoLogo -NoProfile -NonInteractive "
+        f"-EncodedCommand {sleep_command}';"
+        "$workerInfo.UseShellExecute=$false;$workerInfo.CreateNoWindow=$true;"
+        "$worker=[Diagnostics.Process]::Start($workerInfo);"
+        "if($null -eq $worker){throw 'hung capture worker probe did not start'};"
+        "Start-Sleep -Milliseconds 100;$worker.Refresh();"
+        "$workerWasRunning=-not $worker.HasExited;"
+        "if(-not $workerWasRunning){throw 'hung capture worker exited before timeout cleanup'};"
+        "$deadline=[DateTime]::UtcNow.AddMilliseconds(1000);"
+        "$deadlineRemainingBefore=[int][Math]::Floor("
+        "($deadline-[DateTime]::UtcNow).TotalMilliseconds);"
+        "if($deadlineRemainingBefore -le 0){"
+        "throw 'hung capture worker probe lost its positive deadline'};"
+        "$stopwatch=[Diagnostics.Stopwatch]::StartNew();"
+        "try{& $module {param($target,$deadline) "
+        "Stop-W4BoundedCaptureWorker -Process $target -DeadlineUtc $deadline} "
+        "$worker $deadline}catch{$caught=$_.Exception.Message};"
+        "$workerExited=$worker.WaitForExit(1500);$stopwatch.Stop();"
+        "[ordered]@{caught=$caught;"
+        "deadline_remaining_before_milliseconds=$deadlineRemainingBefore;"
+        "elapsed_milliseconds=[int64]$stopwatch.ElapsedMilliseconds;"
+        "worker_was_running=[bool]$workerWasRunning;"
+        "worker_exited=[bool]$workerExited}|ConvertTo-Json -Compress"
+        "}finally{"
+        "if($null -ne $worker){try{$worker.Refresh();"
+        "if(-not $worker.HasExited){$worker.Kill();"
+        "[void]$worker.WaitForExit(1000)}}catch{};$worker.Dispose()}"
+        "}"
+    )
+    return _run_powershell(
+        ["-Command", command], cwd=REPOSITORY_ROOT, timeout=15
+    )
+
+
+def _write_hung_capture_worker_driver_module(tmp_path: Path) -> Path:
+    source = _read(DRIVER_MODULE)
+    worker_prelude = (
+        "$ErrorActionPreference = 'Stop'\n"
+        "try {\n"
+        "    $module = Import-Module -Name $env:PKV_W4_CAPTURE_MODULE "
+        "-Force -PassThru -ErrorAction Stop"
+    )
+    hung_worker_prelude = (
+        "$ErrorActionPreference = 'Stop'\n"
+        "try {\n"
+        "    Start-Sleep -Seconds 30\n"
+        "    $module = Import-Module -Name $env:PKV_W4_CAPTURE_MODULE "
+        "-Force -PassThru -ErrorAction Stop"
+    )
+    assert source.count(worker_prelude) == 1
+    mutated = source.replace(worker_prelude, hung_worker_prelude, 1)
+    assert mutated != source
+    module_path = tmp_path / "W4.Driver.hung-worker-timeout.psm1"
+    module_path.write_text(mutated, encoding="utf-8-sig")
+    return module_path
+
+
+def _run_save_screenshot_hung_worker_probe(
+    tmp_path: Path,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    module_path = _write_hung_capture_worker_driver_module(tmp_path)
+    title = f"W4HungCaptureWorker-{uuid.uuid4().hex}"
+    screenshot = tmp_path / "window-capture-hung-worker.png"
+    child_script = f"""
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
+Add-Type -AssemblyName PresentationCore -ErrorAction Stop
+Add-Type -AssemblyName WindowsBase -ErrorAction Stop
+$window = [System.Windows.Window]::new()
+$window.Title = '{title}'
+$window.Width = 360
+$window.Height = 260
+$window.WindowStartupLocation = [System.Windows.WindowStartupLocation]::Manual
+$window.Left = 160
+$window.Top = 160
+$window.ShowInTaskbar = $false
+$window.Topmost = $true
+$window.ShowActivated = $true
+$window.SizeToContent = [System.Windows.SizeToContent]::Manual
+[System.Windows.Automation.AutomationProperties]::SetAutomationId(
+    $window,
+    'pkv_main_window'
+)
+$grid = [System.Windows.Controls.Grid]::new()
+$grid.Background = [System.Windows.Media.Brushes]::DarkBlue
+$left = [System.Windows.Controls.Border]::new()
+$left.Width = 120
+$left.Height = 120
+$left.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
+$left.VerticalAlignment = [System.Windows.VerticalAlignment]::Top
+$left.Background = [System.Windows.Media.Brushes]::OrangeRed
+$right = [System.Windows.Controls.Border]::new()
+$right.Width = 120
+$right.Height = 120
+$right.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Right
+$right.VerticalAlignment = [System.Windows.VerticalAlignment]::Bottom
+$right.Background = [System.Windows.Media.Brushes]::Gold
+$label = [System.Windows.Controls.TextBlock]::new()
+$label.Text = 'HUNG PRINTWINDOW WORKER PROBE'
+$label.Foreground = [System.Windows.Media.Brushes]::White
+$label.FontSize = 18
+$label.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Center
+$label.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+[void]$grid.Children.Add($left)
+[void]$grid.Children.Add($right)
+[void]$grid.Children.Add($label)
+$window.Content = $grid
+$window.Add_Loaded({{
+    [void]$window.Activate()
+}})
+[void]$window.ShowDialog()
+"""
+    encoded_child = base64.b64encode(child_script.encode("utf-16le")).decode("ascii")
+    command = (
+        "$ErrorActionPreference='Stop';"
+        "Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop;"
+        "Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop;"
+        f"$module=Import-Module '{_ps_single_quoted(module_path)}' -Force -PassThru;"
+        f"$output='{_ps_single_quoted(screenshot)}';"
+        "$process=$null;$window=$null;$caught=$null;$captureElapsedMilliseconds=-1;"
+        "try{"
+        "$psi=[Diagnostics.ProcessStartInfo]::new();"
+        f"$psi.FileName='{_ps_single_quoted(_windows_powershell())}';"
+        f"$psi.Arguments='-NoLogo -NoProfile -NonInteractive -Sta -EncodedCommand "
+        f"{encoded_child}';"
+        "$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;"
+        "$process=[Diagnostics.Process]::Start($psi);"
+        "if($null -eq $process){throw 'hung screenshot target did not start'};"
+        "$desktop=[System.Windows.Automation.AutomationElement]::RootElement;"
+        "$pidCondition=[System.Windows.Automation.PropertyCondition]::new("
+        "[System.Windows.Automation.AutomationElement]::ProcessIdProperty,"
+        "[int]$process.Id);"
+        "$nameCondition=[System.Windows.Automation.PropertyCondition]::new("
+        "[System.Windows.Automation.AutomationElement]::NameProperty,"
+        f"'{title}');"
+        "$automationCondition=[System.Windows.Automation.PropertyCondition]::new("
+        "[System.Windows.Automation.AutomationElement]::AutomationIdProperty,"
+        "'pkv_main_window');"
+        "$windowCondition=[System.Windows.Automation.AndCondition]::new("
+        "[System.Windows.Automation.Condition[]]@($pidCondition,$nameCondition,"
+        "$automationCondition));"
+        "$discoveryDeadline=[DateTime]::UtcNow.AddSeconds(15);$observedAutomationId='';"
+        "do{"
+        "$window=$desktop.FindFirst("
+        "[System.Windows.Automation.TreeScope]::Children,$windowCondition);"
+        "if($null -ne $window){"
+        "try{if([string]$window.Current.AutomationId -ceq 'pkv_main_window' "
+        "-and -not [bool]$window.Current.IsOffscreen){"
+        "$observedAutomationId='pkv_main_window';break}}"
+        "catch [System.Windows.Automation.ElementNotAvailableException]{};"
+        "$window=$null};"
+        "$process.Refresh();"
+        "if($process.HasExited){throw 'hung screenshot target exited before discovery'};"
+        "Start-Sleep -Milliseconds 50"
+        "}while([DateTime]::UtcNow -lt $discoveryDeadline);"
+        "if($null -eq $window){throw 'hung screenshot target was not found by UIA'};"
+        "$captureStopwatch=[Diagnostics.Stopwatch]::StartNew();"
+        "try{& $module {param($path,$element,$target) "
+        "Save-W4Screenshot -Path $path -Element $element -Process $target "
+        "-MaximumAttempts 3 -TimeoutSeconds 3} $output $window $process}"
+        "catch{$caught=$_.Exception.Message};"
+        "$captureStopwatch.Stop();"
+        "$captureElapsedMilliseconds=[int64]$captureStopwatch.ElapsedMilliseconds;"
+        "[ordered]@{caught=$caught;"
+        "capture_elapsed_milliseconds=$captureElapsedMilliseconds;"
+        "screenshot_exists=[bool](Test-Path -LiteralPath $output -PathType Leaf);"
+        "capture_evidence_exists="
+        "[bool](Test-Path -LiteralPath ($output+'.capture.json') -PathType Leaf);"
+        "automation_id=$observedAutomationId;"
+        "window_process_id=[int]$window.Current.ProcessId;"
+        "target_process_id=[int]$process.Id}|ConvertTo-Json -Compress"
+        "}finally{"
+        "if($null -ne $process){try{$process.Refresh();"
+        "if(-not $process.HasExited){$process.Kill();"
+        "[void]$process.WaitForExit(5000)}}catch{};$process.Dispose()}"
+        "}"
+    )
+    return (
+        _run_powershell(["-Command", command], cwd=REPOSITORY_ROOT, timeout=45),
+        screenshot,
+    )
+
+
 def _run_provider_gate_sequence_probe(
     mode: str, checkpoint_path: Path,
 ) -> subprocess.CompletedProcess[str]:
@@ -714,6 +1065,159 @@ def _powershell_function(source: str, name: str) -> str:
 
 def _compact_powershell(source: str) -> str:
     return re.sub(r"[`\s]+", " ", source).strip()
+
+
+def _has_safe_capture_publication_contract(source: str) -> bool:
+    compact = _compact_powershell(source)
+    markers = [
+        "$evidenceTemporaryPath =",
+        "Write-W4JsonFile -Path $evidenceTemporaryPath -Value",
+        "-Stage 'pre-sidecar-publish'",
+        "[System.IO.File]::Move($evidenceTemporaryPath, $evidencePath)",
+        "$evidencePublished = $true",
+        "-Stage 'pre-png-commit'",
+        "[System.IO.File]::Move($temporaryPath, $fullPath)",
+        "$temporaryPublished = $true",
+    ]
+    positions = [compact.find(marker) for marker in markers]
+    if any(position < 0 for position in positions):
+        return False
+    if positions != sorted(positions) or len(set(positions)) != len(positions):
+        return False
+    if compact.count("[System.IO.File]::Move(") != 2:
+        return False
+    if "Write-W4JsonFile -Path $evidencePath" in compact:
+        return False
+
+    rollback_start = compact.find("} catch {", positions[-1])
+    rollback_guard = compact.find("if ($evidencePublished)", rollback_start)
+    rollback = compact.find(
+        "Remove-W4CaptureTemporaryFile -Path $evidencePath "
+        "-Label 'window capture sidecar rollback'",
+        rollback_guard,
+    )
+    rethrow = compact.find("throw", rollback)
+    sidecar_temp_cleanup = compact.find(
+        "Remove-W4CaptureTemporaryFile -Path $evidenceTemporaryPath",
+        rethrow,
+    )
+    png_temp_cleanup = compact.find(
+        "Remove-W4CaptureTemporaryFile -Path $temporaryPath",
+        sidecar_temp_cleanup,
+    )
+    return (
+        rollback_start >= 0
+        and rollback_start < rollback_guard < rollback < rethrow < sidecar_temp_cleanup
+        and png_temp_cleanup > sidecar_temp_cleanup
+    )
+
+
+def _has_strict_worker_capture_validation_contract(source: str) -> bool:
+    try:
+        attempt = _compact_powershell(
+            _powershell_function(source, "Invoke-W4PrintWindowCaptureAttempt")
+        )
+        screenshot = _compact_powershell(
+            _powershell_function(source, "Save-W4Screenshot")
+        )
+    except AssertionError:
+        return False
+
+    if "[Parameter(Mandatory = $true)][string]$MetadataPath" not in attempt:
+        return False
+    if "$width -gt 8192 -or $height -gt 8192" not in attempt:
+        return False
+    if "([int64]$width * [int64]$height) -gt 16777216" not in attempt:
+        return False
+    worker_markers = [
+        "Test-W4BitmapPixelDiversity -Bitmap $bitmap",
+        "$bitmap.Save($fullPath, [System.Drawing.Imaging.ImageFormat]::Png)",
+        "$pngLength = [int64](Get-Item -LiteralPath $fullPath",
+        "$pngLength -le 0 -or $pngLength -gt 134217728",
+        "Write-W4JsonFile -Path $fullMetadataPath -Value",
+    ]
+    worker_positions = [attempt.find(marker) for marker in worker_markers]
+    if any(position < 0 for position in worker_positions):
+        return False
+    if worker_positions != sorted(worker_positions):
+        return False
+    worker_metadata_match = re.search(
+        r"Write-W4JsonFile -Path \$fullMetadataPath -Value "
+        r"\(\[ordered\]@\{(.*?)\}\) -Compress",
+        attempt,
+    )
+    if worker_metadata_match is None:
+        return False
+    worker_fields = re.findall(
+        r"\b([a-z][a-z0-9_]*)\s*=", worker_metadata_match.group(1)
+    )
+    if worker_fields != [
+        "schema_version",
+        "method",
+        "width",
+        "height",
+        "png_length",
+        "pixel_diversity",
+    ]:
+        return False
+
+    if "[System.Drawing.Bitmap]::new($temporaryPath)" in screenshot:
+        return False
+    if "Test-W4BitmapPixelDiversity" in screenshot:
+        return False
+    required_parent_markers = (
+        "$workerMetadataPath = $temporaryPath + '.validation.json'",
+        "PKV_W4_CAPTURE_METADATA = $workerMetadataPath",
+        "-MetadataPath $metadataPath",
+        "[int64]$pngItem.Length -gt 134217728",
+        "[int64]$metadataItem.Length -gt 4096",
+        "[PkvW4.FileIdentity]::GetLinkCount($pngItem.FullName) -ne 1",
+        "[PkvW4.FileIdentity]::GetLinkCount($metadataItem.FullName) -ne 1",
+        "$workerMetadata.width -isnot [int]",
+        "$workerMetadata.width -isnot [int64]",
+        "$workerMetadata.height -isnot [int]",
+        "$workerMetadata.height -isnot [int64]",
+        "$workerMetadata.pixel_diversity -isnot [bool]",
+        "$metadataWidth -gt 8192 -or $metadataHeight -gt 8192",
+        "($metadataWidth * $metadataHeight) -gt 16777216",
+        "$capturedWidth = [int]$metadataWidth",
+        "$capturedHeight = [int]$metadataHeight",
+        "[int64]$workerMetadata.png_length -ne [int64]$pngItem.Length",
+        "-Stage 'post-worker-metadata-validation'",
+        "Remove-W4CaptureTemporaryFile -Path $workerMetadataPath",
+    )
+    if any(marker not in screenshot for marker in required_parent_markers):
+        return False
+    cleanup = "Remove-W4CaptureTemporaryFile -Path $workerMetadataPath"
+    metadata_deadline = screenshot.find("-Stage 'post-worker-metadata-validation'")
+    first_cleanup = screenshot.find(cleanup, metadata_deadline)
+    evidence_temp = screenshot.find("$evidenceTemporaryPath =", first_cleanup)
+    second_cleanup = screenshot.find(cleanup, evidence_temp)
+    if (
+        screenshot.count(cleanup) != 2
+        or not (
+            metadata_deadline >= 0
+            and metadata_deadline < first_cleanup < evidence_temp < second_cleanup
+        )
+    ):
+        return False
+    if "$boundWidth -gt 8192 -or $boundHeight -gt 8192" not in screenshot:
+        return False
+    if "([int64]$boundWidth * [int64]$boundHeight) -gt 16777216" not in screenshot:
+        return False
+    expected_fields_match = re.search(
+        r"\$expectedWorkerMetadataFields = @\((.*?)\)", screenshot
+    )
+    if expected_fields_match is None:
+        return False
+    return re.findall(r"'([^']+)'", expected_fields_match.group(1)) == [
+        "schema_version",
+        "method",
+        "width",
+        "height",
+        "png_length",
+        "pixel_diversity",
+    ]
 
 
 def _uia_contract_segments(source: str) -> dict[str, set[str]]:
@@ -2656,23 +3160,28 @@ def test_offline_archive_requires_exact_modal_and_keeps_durable_oracles() -> Non
     assert "action_enabled = $true" in compact
     assert "exact_ok_button_dismissed = $modalDismissed" in compact
     assert "unrecognized_process_window_accepted = $false" in compact
-    assert (
-        "$workflowWarning = "
-        "'部分可选工作流步骤未完成（问题代码: workflow_step_failed）。'"
-        in compact
+    expected_warning_match = re.search(
+        r"\$expectedWarning\s*=\s*@\((.*?)\)\s*-join\s*''",
+        block,
+        flags=re.DOTALL,
     )
+    assert expected_warning_match is not None
+    assert re.findall(r"'([^']+)'", expected_warning_match.group(1)) == [
+        "核心归档已完成，但本次结果处于降级状态。",
+        "辅助索引需要修复（修复动作: rebuild_vectors_for_entry）。",
+        (
+            "部分可选工作流步骤未完成（问题代码: workflow_step_failed, "
+            "storage_vector_failed）。"
+        ),
+        "请勿盲目重试归档。",
+    ]
     assert (
-        "$warning.StartsWith( '核心归档已完成，但本次结果处于降级状态。', "
-        "[System.StringComparison]::Ordinal )" in compact
+        "-not $warning.Equals($expectedWarning, "
+        "[System.StringComparison]::Ordinal)" in compact
     )
-    assert (
-        "$warning.IndexOf($workflowWarning, "
-        "[System.StringComparison]::Ordinal) -lt 0" in compact
-    )
-    assert (
-        "$warning.EndsWith( '请勿盲目重试归档。', "
-        "[System.StringComparison]::Ordinal )" in compact
-    )
+    assert "$warning.StartsWith(" not in compact
+    assert "$warning.IndexOf(" not in compact
+    assert "$warning.EndsWith(" not in compact
     assert "$warning -notmatch 'provider'" not in compact
     assert "$idText -notmatch '^ID:\\s*\\d+$'" in compact
     assert "$pathText -notmatch '^文件:\\s*(.+)$'" in compact
@@ -2681,8 +3190,23 @@ def test_offline_archive_requires_exact_modal_and_keeps_durable_oracles() -> Non
     assert "workflow_terminal = 'degraded'" in compact
     assert "saved_path_sha256 = Get-W4FileSha256 -Path $savedPath" in compact
     assert "degraded_warning = $warning" in compact
-    assert "workflow_issue_code = 'workflow_step_failed'" in compact
-    assert "induced_workflow_issue_code = 'workflow_step_failed'" in compact
+    assert (
+        "workflow_issue_codes = @('workflow_step_failed', "
+        "'storage_vector_failed')" in compact
+    )
+    assert (
+        "storage_repair_actions = @('rebuild_vectors_for_entry')" in compact
+    )
+    assert (
+        "induced_workflow_issue_codes = "
+        "@( 'workflow_step_failed', 'storage_vector_failed' )" in compact
+    )
+    assert (
+        "expected_storage_repair_actions = "
+        "@( 'rebuild_vectors_for_entry' )" in compact
+    )
+    assert "workflow_issue_code =" not in compact
+    assert "induced_workflow_issue_code =" not in compact
     assert "restart_opened_saved_entry = $true" in compact
 
 
@@ -2856,36 +3380,51 @@ def test_required_process_modal_rejects_empty_expected_title() -> None:
     [
         (
             "核心归档已完成，但本次结果处于降级状态。"
-            "部分可选工作流步骤未完成。"
+            "辅助索引需要修复（修复动作: rebuild_vectors_for_entry）。"
+            "部分可选工作流步骤未完成（问题代码: workflow_step_failed）。"
             "请勿盲目重试归档。"
         ),
         (
             "核心归档已完成，但本次结果处于降级状态。"
-            "部分可选工作流步骤未完成（问题代码: provider_unavailable）。"
+            "辅助索引需要修复（修复动作: rebuild_vectors_for_entry）。"
+            "部分可选工作流步骤未完成（问题代码: storage_vector_failed, "
+            "workflow_step_failed）。"
+            "请勿盲目重试归档。"
+        ),
+        (
+            "核心归档已完成，但本次结果处于降级状态。"
+            "部分可选工作流步骤未完成（问题代码: workflow_step_failed, "
+            "storage_vector_failed）。"
             "请勿盲目重试归档。"
         ),
     ],
-    ids=["missing-issue-code", "wrong-issue-code"],
+    ids=["missing-second-code", "wrong-code-order", "missing-repair-action"],
 )
-def test_archive_warning_projection_rejects_missing_or_wrong_issue_code(
+def test_archive_warning_projection_rejects_missing_or_wrong_ordered_oracle(
     warning: str,
 ) -> None:
-    prefix = "核心归档已完成，但本次结果处于降级状态。"
-    marker = "部分可选工作流步骤未完成（问题代码: workflow_step_failed）。"
-    suffix = "请勿盲目重试归档。"
+    expected = (
+        "核心归档已完成，但本次结果处于降级状态。"
+        "辅助索引需要修复（修复动作: rebuild_vectors_for_entry）。"
+        "部分可选工作流步骤未完成（问题代码: workflow_step_failed, "
+        "storage_vector_failed）。"
+        "请勿盲目重试归档。"
+    )
     compact = _compact_powershell(
         _powershell_function(
             _read(SCENARIO_MODULE), "Invoke-W4OfflineTextArchiveScenario"
         )
     )
 
-    assert warning.startswith(prefix)
-    assert warning.endswith(suffix)
-    assert marker not in warning
-    assert "$warning.IndexOf($workflowWarning, " in compact
-    assert "[System.StringComparison]::Ordinal) -lt 0" in compact
-    assert "induced_workflow_issue_code = 'workflow_step_failed'" in compact
-    assert "workflow_issue_code = 'workflow_step_failed'" in compact
+    assert warning != expected
+    assert (
+        "-not $warning.Equals($expectedWarning, "
+        "[System.StringComparison]::Ordinal)" in compact
+    )
+    assert "induced_workflow_issue_codes" in compact
+    assert "expected_storage_repair_actions" in compact
+    assert "workflow_issue_codes" in compact
+    assert "storage_repair_actions" in compact
 
 
 def test_chat_stop_is_resolved_only_after_the_stop_request_is_running() -> None:
@@ -3309,7 +3848,7 @@ def test_bm25_search_recovery_crosses_distinct_terminal_before_target_rerun() ->
     compact = _compact_powershell(block)
     degraded = compact.index("'uia-contract-search-preview-degraded.json'")
     distinct_value = compact.index(
-        "Set-W4UiaValue -Element $input -Value 'w4-no-hit-5f37c22a'",
+        "Set-W4UiaValue -Element $input -Value $noHitToken",
         degraded,
     )
     distinct_invoke = compact.index(
@@ -3375,12 +3914,71 @@ def test_bm25_search_recovery_crosses_distinct_terminal_before_target_rerun() ->
     recovery = compact[degraded:success]
     assert recovery.count("Invoke-W4UiaElement -Element $submit") == 2
     assert recovery.count(
-        "Set-W4UiaValue -Element $input -Value 'w4-no-hit-5f37c22a'"
+        "Set-W4UiaValue -Element $input -Value $noHitToken"
     ) == 1
     assert recovery.count(
         "Set-W4UiaValue -Element $input -Value 'artifact-e2e-orchid'"
     ) == 1
     assert "$hitStatus = Wait-W4UiaTextContains" not in compact[degraded:zero_selection]
+
+
+def test_bm25_no_hit_oracle_uses_one_unsplit_term_twice_with_zero_barrier() -> None:
+    block = _powershell_function(_read(SCENARIO_MODULE), "Invoke-W4Bm25SearchScenario")
+    compact = _compact_powershell(block)
+    assignment = re.search(r"\$noHitToken\s*=\s*'([^']+)'", block)
+
+    assert assignment is not None
+    token = assignment.group(1)
+    assert re.fullmatch(r"[a-z0-9]+", token) is not None
+    assert "w4" not in token
+    assert "-" not in token
+    assert "_" not in token
+    assert len(token) >= 24
+    assert block.count(f"'{token}'") == 1
+    assert compact.count(
+        "Set-W4UiaValue -Element $input -Value $noHitToken"
+    ) == 2
+    assert "$noHitToken -notmatch '^[a-z0-9]+$'" in compact
+    assert "w4-no-hit-5f37c22a" not in block
+
+    first_value = compact.index(
+        "Set-W4UiaValue -Element $input -Value $noHitToken"
+    )
+    first_invoke = compact.index(
+        "Invoke-W4UiaElement -Element $submit", first_value
+    )
+    first_terminal = compact.index(
+        "Wait-W4UiaTextContains -Element $status "
+        "-Text '未找到匹配结果' -TimeoutSeconds 30",
+        first_invoke,
+    )
+    selection_zero = compact.index(
+        "Wait-W4UiaSelectionCount -Root $gui.Window "
+        "-AutomationId 'search_result_table' -ExpectedCount 0 -TimeoutSeconds 10",
+        first_terminal,
+    )
+    target_value = compact.index(
+        "Set-W4UiaValue -Element $input -Value 'artifact-e2e-orchid'",
+        selection_zero,
+    )
+    second_value = compact.index(
+        "Set-W4UiaValue -Element $input -Value $noHitToken",
+        target_value,
+    )
+    second_terminal = compact.index(
+        "$noHitStatus = Wait-W4UiaTextContains -Element $status "
+        "-Text '未找到匹配结果' -TimeoutSeconds 30",
+        second_value,
+    )
+    assert (
+        first_value
+        < first_invoke
+        < first_terminal
+        < selection_zero
+        < target_value
+        < second_value
+        < second_terminal
+    )
 
 
 def test_bm25_mutation_helpers_wrap_mutation_and_restore_in_finally() -> None:
@@ -3643,8 +4241,8 @@ def test_archive_tabs_use_exact_child_selection_not_container_selection() -> Non
 
     assert "Wait-W4UiaTextContains -Element $resultTitle" in offline_compact
     assert (
-        "$warning.IndexOf($workflowWarning, "
-        "[System.StringComparison]::Ordinal) -lt 0" in offline_compact
+        "-not $warning.Equals($expectedWarning, "
+        "[System.StringComparison]::Ordinal)" in offline_compact
     )
     assert "$warning -notmatch 'provider'" not in offline_compact
     assert "Test-W4PathContainedBy -Candidate $savedPath" in offline_compact
@@ -3922,21 +4520,21 @@ def test_archive_running_state_is_bound_to_a_loopback_provider_gate() -> None:
     evidence = compact.index("'archive-provider-gate.json'", text_still_enabled)
     release_action = compact.index("release_action = 'close_without_response'", evidence)
     issue_evidence = compact.index(
-        "induced_workflow_issue_code = 'workflow_step_failed'", release_action
+        "induced_workflow_issue_codes =", release_action
+    )
+    repair_evidence = compact.index(
+        "expected_storage_repair_actions =", issue_evidence
     )
     warning_read = compact.index("$warning = Get-W4UiaText", issue_evidence)
-    warning_marker = compact.index(
-        "$workflowWarning = "
-        "'部分可选工作流步骤未完成（问题代码: workflow_step_failed）。'",
+    expected_warning = compact.index(
+        "$expectedWarning = @(",
         warning_read,
     )
-    warning_prefix = compact.index("$warning.StartsWith(", warning_marker)
-    warning_issue = compact.index(
-        "$warning.IndexOf($workflowWarning, "
-        "[System.StringComparison]::Ordinal) -lt 0",
-        warning_prefix,
+    warning_oracle = compact.index(
+        "-not $warning.Equals($expectedWarning, "
+        "[System.StringComparison]::Ordinal)",
+        expected_warning,
     )
-    warning_suffix = compact.index("$warning.EndsWith(", warning_issue)
 
     assert (
         contract_guard
@@ -3985,11 +4583,10 @@ def test_archive_running_state_is_bound_to_a_loopback_provider_gate() -> None:
         < evidence
         < release_action
         < issue_evidence
+        < repair_evidence
         < warning_read
-        < warning_marker
-        < warning_prefix
-        < warning_issue
-        < warning_suffix
+        < expected_warning
+        < warning_oracle
     )
     assert "Start-Sleep" not in block
     assert compact.count("$providerGate.AcceptTcpClientAsync()") == 3
@@ -4139,7 +4736,8 @@ def test_archive_running_state_is_bound_to_a_loopback_provider_gate() -> None:
         "submits_disabled_while_running",
         "submits_enabled_after_terminal",
         "release_action",
-        "induced_workflow_issue_code",
+        "induced_workflow_issue_codes",
+        "expected_storage_repair_actions",
     ]
     assert "expected_provider_requests = $expectedProviderRequests" in gate_evidence
     assert (
@@ -4149,7 +4747,30 @@ def test_archive_running_state_is_bound_to_a_loopback_provider_gate() -> None:
     assert "listener_stopped_after_final_accept = $true" in gate_evidence
     assert "unexpected_provider_requests_processed = $false" in gate_evidence
     assert "result_fresh_reacquire_deadline_seconds = 90" in gate_evidence
-    assert "workflow_issue_code = 'workflow_step_failed'" in compact
+    issue_codes_match = re.search(
+        r"induced_workflow_issue_codes\s*=\s*@\((.*?)\)",
+        gate_evidence,
+        flags=re.DOTALL,
+    )
+    repair_actions_match = re.search(
+        r"expected_storage_repair_actions\s*=\s*@\((.*?)\)",
+        gate_evidence,
+        flags=re.DOTALL,
+    )
+    assert issue_codes_match is not None
+    assert repair_actions_match is not None
+    assert re.findall(r"'([^']+)'", issue_codes_match.group(1)) == [
+        "workflow_step_failed",
+        "storage_vector_failed",
+    ]
+    assert re.findall(r"'([^']+)'", repair_actions_match.group(1)) == [
+        "rebuild_vectors_for_entry"
+    ]
+    assert (
+        "workflow_issue_codes = @('workflow_step_failed', "
+        "'storage_vector_failed')" in compact
+    )
+    assert "storage_repair_actions = @('rebuild_vectors_for_entry')" in compact
     assert "$warning -notmatch 'provider'" not in compact
     for sensitive_marker in (
         "endpoint",
@@ -4450,6 +5071,520 @@ def test_selection_helpers_use_real_windows_uia_current_selection() -> None:
     assert payload["proof"]["selection_count"] == 1
     assert payload["proof"]["selection_item_is_selected"] is True
     assert payload["proof"]["selected_runtime_id"] == payload["selected_runtime_id"]
+
+
+def test_screenshot_is_hwnd_pid_bound_bounded_and_nonuniform_before_publish() -> None:
+    source = _read(DRIVER_MODULE)
+    initializer = _compact_powershell(
+        _powershell_function(source, "Initialize-W4FileIdentityInspector")
+    )
+    attempt = _compact_powershell(
+        _powershell_function(source, "Invoke-W4PrintWindowCaptureAttempt")
+    )
+    deadline = _compact_powershell(
+        _powershell_function(source, "Assert-W4CaptureDeadline")
+    )
+    termination_source = _powershell_function(
+        source, "Stop-W4BoundedCaptureWorker"
+    )
+    termination = _compact_powershell(termination_source)
+    termination_code = "\n".join(
+        line.split("#", 1)[0] for line in termination_source.splitlines()
+    )
+    screenshot = _compact_powershell(
+        _powershell_function(source, "Save-W4Screenshot")
+    )
+
+    assert "$windowCaptureType = 'PkvW4.WindowCaptureInspector' -as [type]" in initializer
+    assert "private const uint PW_RENDERFULLCONTENT = 0x00000002;" in initializer
+    assert "private static extern bool IsWindow(IntPtr window);" in initializer
+    assert "private static extern uint GetWindowThreadProcessId(" in initializer
+    assert "private static extern bool GetWindowRect(" in initializer
+    assert "EntryPoint = \"PrintWindow\"" in initializer
+    assert "EntryPoint = \"DwmFlush\"" in initializer
+    assert "private static extern int DwmFlushNative();" in initializer
+    assert "actualProcessId != checked((uint)processId)" in initializer
+    assert "PrintWindowNative(window, destination, PW_RENDERFULLCONTENT)" in initializer
+
+    assert "[PkvW4.WindowCaptureInspector]::FlushDesktopComposition()" in attempt
+    assert "[PkvW4.WindowCaptureInspector]::PrintOwnedWindow(" in attempt
+    assert "if (-not $printed)" in attempt
+    assert "Test-W4BitmapPixelDiversity -Bitmap $bitmap" in attempt
+    assert "$bitmap.Save($fullPath, [System.Drawing.Imaging.ImageFormat]::Png)" in attempt
+    assert "[Parameter(Mandatory = $true)][string]$MetadataPath" in attempt
+    assert "$width -gt 8192 -or $height -gt 8192" in attempt
+    assert "([int64]$width * [int64]$height) -gt 16777216" in attempt
+    worker_diversity = attempt.index("Test-W4BitmapPixelDiversity -Bitmap $bitmap")
+    worker_png = attempt.index(
+        "$bitmap.Save($fullPath, [System.Drawing.Imaging.ImageFormat]::Png)",
+        worker_diversity,
+    )
+    worker_length = attempt.index(
+        "$pngLength = [int64](Get-Item -LiteralPath $fullPath", worker_png
+    )
+    worker_length_bound = attempt.index(
+        "$pngLength -le 0 -or $pngLength -gt 134217728", worker_length
+    )
+    worker_metadata = attempt.index(
+        "Write-W4JsonFile -Path $fullMetadataPath -Value", worker_length_bound
+    )
+    assert (
+        worker_diversity
+        < worker_png
+        < worker_length
+        < worker_length_bound
+        < worker_metadata
+    )
+    assert "schema_version = 'pkv.w4.window-capture-worker.v1'" in attempt
+    assert "method = 'PrintWindow(PW_RENDERFULLCONTENT)'" in attempt
+    assert "png_length = $pngLength" in attempt
+    assert "pixel_diversity = $true" in attempt
+    assert "}) -Compress" in attempt[worker_metadata:]
+    assert "[Parameter(Mandatory = $true)][DateTime]$DeadlineUtc" in deadline
+    assert "[DateTime]::UtcNow -ge $DeadlineUtc" in deadline
+    assert "bounded window capture deadline expired at stage: $Stage" in deadline
+
+    assert (
+        "[Parameter(Mandatory = $true)]"
+        "[System.Diagnostics.Process]$Process" in termination
+    )
+    assert "[Parameter(Mandatory = $true)][DateTime]$DeadlineUtc" in termination
+    assert "$Process.Refresh()" in termination
+    assert termination.count("$Process.Kill()") == 1
+    assert "$Process.WaitForExit($remainingMilliseconds)" in termination
+    assert "Stop-W4ProcessTree" not in termination
+    assert re.search(r"(?i)\btaskkill(?:\.exe)?\b", termination_code) is None
+    assert ".Id" not in termination
+    refresh = termination.index("$Process.Refresh()")
+    kill = termination.index("$Process.Kill()", refresh)
+    remaining = termination.index(
+        "($DeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds", kill
+    )
+    deadline_guard = termination.index("if ($remainingMilliseconds -le 0)", remaining)
+    deadline_return = termination.index("return", deadline_guard)
+    deadline_wait = termination.index(
+        "$Process.WaitForExit($remainingMilliseconds)", deadline_return
+    )
+    assert refresh < kill < remaining < deadline_guard < deadline_return < deadline_wait
+
+    assert (
+        "[Parameter(Mandatory = $true)]"
+        "[System.Diagnostics.Process]$Process" in screenshot
+    )
+    assert "[ValidateRange(1, 3)][int]$MaximumAttempts = 3" in screenshot
+    assert "$captureDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)" in screenshot
+    assert (
+        "for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt += 1)"
+        in screenshot
+    )
+    assert "$Element.Current.NativeWindowHandle" in screenshot
+    assert "$Element.Current.ProcessId -ne $expectedProcessId" in screenshot
+    assert "Get-W4LiveProcessForIdentity -Identity $identity" in screenshot
+    assert "GetOwnedWindowBounds( $rawNativeWindowHandle, $expectedProcessId )" in screenshot
+    assert "$boundWidth -gt 8192 -or $boundHeight -gt 8192" in screenshot
+    assert (
+        "([int64]$boundWidth * [int64]$boundHeight) -gt 16777216"
+        in screenshot
+    )
+    assert (
+        "$powerShellPath = Join-Path $systemRoot "
+        "'System32\\WindowsPowerShell\\v1.0\\powershell.exe'" in screenshot
+    )
+    assert "New-W4ProcessStartInfo -FileName $powerShellPath" in screenshot
+    assert "Invoke-W4PrintWindowCaptureAttempt -Path $outputPath" in screenshot
+    assert "-MetadataPath $metadataPath" in screenshot
+    assert "$workerMetadataPath = $temporaryPath + '.validation.json'" in screenshot
+    assert "PKV_W4_CAPTURE_METADATA = $workerMetadataPath" in screenshot
+    assert "$worker.WaitForExit($attemptWaitMilliseconds)" in screenshot
+    worker_start = screenshot.index(
+        "$workerStarted = Start-W4RedirectedProcess -Process $worker"
+    )
+    recomputed_wait = screenshot.index(
+        "$attemptWaitMilliseconds = [Math]::Min( 8000, "
+        "[int][Math]::Floor( ($captureDeadline - "
+        "[DateTime]::UtcNow).TotalMilliseconds ) )",
+        worker_start,
+    )
+    worker_wait = screenshot.index(
+        "$worker.WaitForExit($attemptWaitMilliseconds)", recomputed_wait
+    )
+    assert worker_start < recomputed_wait < worker_wait
+    assert (
+        "$attemptWaitMilliseconds = [Math]::Min(8000, $remainingMilliseconds)"
+        not in screenshot
+    )
+    timeout_branch = screenshot.index("if (-not $workerCompleted)")
+    timeout_throw = screenshot.index(
+        "throw 'bounded PrintWindow capture worker timed out'", timeout_branch
+    )
+    helper_call = screenshot.index(
+        "Stop-W4BoundedCaptureWorker -Process $worker -DeadlineUtc $captureDeadline",
+        timeout_branch,
+    )
+    assert worker_wait < timeout_branch < helper_call < timeout_throw
+    assert "Stop-W4ProcessTree" not in screenshot[timeout_branch:timeout_throw]
+    assert "$worker.Kill()" not in screenshot[timeout_branch:timeout_throw]
+    assert "workerSnapshot" not in screenshot[timeout_branch:timeout_throw]
+    assert "continue" not in screenshot[timeout_branch:timeout_throw]
+    assert "if ($workerExitCode -ne 0)" in screenshot
+    assert "continue" in screenshot
+
+    post_worker = screenshot.index("-Stage 'post-worker-exit'", worker_wait)
+    post_identity = screenshot.index("-Stage 'post-process-identity'", post_worker)
+    post_window = screenshot.index("-Stage 'post-uia-window-binding'", post_identity)
+    post_terminal = screenshot.index(
+        "-Stage 'post-terminal-uia-binding'", post_window
+    )
+    normal_files = screenshot.index(
+        "$pngItem.PSIsContainer -or $metadataItem.PSIsContainer",
+        post_terminal,
+    )
+    strict_sizes = screenshot.index(
+        "[int64]$pngItem.Length -le 0 -or "
+        "[int64]$pngItem.Length -gt 134217728 -or",
+        normal_files,
+    )
+    strict_metadata_size = screenshot.index(
+        "[int64]$metadataItem.Length -le 0 -or "
+        "[int64]$metadataItem.Length -gt 4096",
+        strict_sizes,
+    )
+    link_count = screenshot.index(
+        "[PkvW4.FileIdentity]::GetLinkCount($pngItem.FullName) -ne 1",
+        strict_metadata_size,
+    )
+    metadata_read = screenshot.index(
+        "$workerMetadata = Read-W4JsonFile -Path $workerMetadataPath",
+        link_count,
+    )
+    exact_fields = screenshot.index(
+        "$expectedWorkerMetadataFields = @( 'schema_version', 'method', "
+        "'width', 'height', 'png_length', 'pixel_diversity' )",
+        metadata_read,
+    )
+    type_checks = screenshot.index(
+        "$workerMetadata.width -isnot [int]", exact_fields
+    )
+    int64_width = screenshot.index(
+        "$workerMetadata.width -isnot [int64]", type_checks
+    )
+    int64_height = screenshot.index(
+        "$workerMetadata.height -isnot [int64]", int64_width
+    )
+    metadata_bounds = screenshot.index(
+        "$metadataWidth -le 1 -or $metadataHeight -le 1 -or "
+        "$metadataWidth -gt 8192 -or $metadataHeight -gt 8192 -or "
+        "($metadataWidth * $metadataHeight) -gt 16777216",
+        int64_height,
+    )
+    checked_conversion = screenshot.index(
+        "$capturedWidth = [int]$metadataWidth", metadata_bounds
+    )
+    length_binding = screenshot.index(
+        "[int64]$workerMetadata.png_length -ne [int64]$pngItem.Length",
+        checked_conversion,
+    )
+    post_metadata_validation = screenshot.index(
+        "-Stage 'post-worker-metadata-validation'", length_binding
+    )
+    worker_metadata_removed = screenshot.index(
+        "Remove-W4CaptureTemporaryFile -Path $workerMetadataPath",
+        post_metadata_validation,
+    )
+    assert (
+        worker_wait
+        < post_worker
+        < post_identity
+        < post_window
+        < post_terminal
+        < normal_files
+        < strict_sizes
+        < strict_metadata_size
+        < link_count
+        < metadata_read
+        < exact_fields
+        < type_checks
+        < int64_width
+        < int64_height
+        < metadata_bounds
+        < checked_conversion
+        < length_binding
+        < post_metadata_validation
+        < worker_metadata_removed
+    )
+    assert "[System.Drawing.Bitmap]::new($temporaryPath)" not in screenshot
+    assert "Test-W4BitmapPixelDiversity" not in screenshot
+    assert "Add-Type -AssemblyName System.Drawing" not in screenshot
+
+    evidence_temp = screenshot.index(
+        "$evidenceTemporaryPath =", worker_metadata_removed
+    )
+    assert (
+        "$evidenceTemporaryPath = \"$evidencePath.capture-"
+        "$([Guid]::NewGuid().ToString('N')).tmp.json\"" in screenshot
+    )
+    sidecar_write = screenshot.index(
+        "Write-W4JsonFile -Path $evidenceTemporaryPath -Value", evidence_temp
+    )
+    pre_sidecar = screenshot.index("-Stage 'pre-sidecar-publish'", sidecar_write)
+    sidecar_publish = screenshot.index(
+        "[System.IO.File]::Move($evidenceTemporaryPath, $evidencePath)",
+        pre_sidecar,
+    )
+    sidecar_committed = screenshot.index(
+        "$evidencePublished = $true", sidecar_publish
+    )
+    pre_png_commit = screenshot.index(
+        "-Stage 'pre-png-commit'", sidecar_committed
+    )
+    atomic_publish = screenshot.index(
+        "[System.IO.File]::Move($temporaryPath, $fullPath)", pre_png_commit
+    )
+    png_committed = screenshot.index(
+        "$temporaryPublished = $true", atomic_publish
+    )
+    assert (
+        post_metadata_validation
+        < worker_metadata_removed
+        < evidence_temp
+        < sidecar_write
+        < pre_sidecar
+        < sidecar_publish
+        < sidecar_committed
+        < pre_png_commit
+        < atomic_publish
+        < png_committed
+    )
+    assert _has_safe_capture_publication_contract(
+        _powershell_function(source, "Save-W4Screenshot")
+    )
+    assert _has_strict_worker_capture_validation_contract(source)
+    assert screenshot.count("[System.IO.File]::Move($temporaryPath, $fullPath)") == 1
+    assert screenshot.count(
+        "Remove-W4CaptureTemporaryFile -Path $workerMetadataPath"
+    ) == 2
+    assert "CopyFromScreen" not in source
+    assert "SystemInformation]::VirtualScreen" not in source
+    assert re.search(r"(?i)\b(?:ocr|tesseract)\b", source) is None
+
+    evidence_source = _powershell_function(source, "Save-W4Screenshot")
+    evidence_match = re.search(
+        r"Write-W4JsonFile\s+-Path\s+\$evidenceTemporaryPath\s+-Value\s+"
+        r"\(\[ordered\]@\{(.*?)\n\s{20}\}\)",
+        evidence_source,
+        flags=re.DOTALL,
+    )
+    assert evidence_match is not None
+    evidence = evidence_match.group(1)
+    top_level_fields = re.findall(r"(?m)^\s{24}([a-z][a-z0-9_]*)\s*=", evidence)
+    assert top_level_fields == [
+        "schema_version",
+        "method",
+        "attempt",
+        "result",
+        "window_binding",
+        "process_id",
+        "size",
+        "pixel_diversity",
+    ]
+    assert "method = 'PrintWindow(PW_RENDERFULLCONTENT)'" in evidence
+    assert "result = 'nonuniform_png_published'" in evidence
+    assert "window_binding = 'uia_hwnd_exact_process_identity'" in evidence
+    assert "pixel_diversity = 'nonuniform'" in evidence
+    for forbidden in ("hwnd", "handle", "path", "title", "text", "raw", "pixel_data"):
+        assert re.search(rf"(?i)\b{re.escape(forbidden)}\b", evidence) is None
+
+
+def test_screenshot_hung_worker_timeout_cleanup_is_deadline_bounded() -> None:
+    result = _run_bounded_capture_worker_timeout_probe()
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["caught"] is None
+    assert payload["deadline_remaining_before_milliseconds"] > 0
+    assert payload["worker_was_running"] is True
+    assert payload["worker_exited"] is True
+    assert payload["elapsed_milliseconds"] < 3000
+
+
+def test_screenshot_hung_worker_timeout_path_is_bounded_and_removes_pixels(
+    tmp_path: Path,
+) -> None:
+    result, screenshot = _run_save_screenshot_hung_worker_probe(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["automation_id"] == "pkv_main_window"
+    assert payload["window_process_id"] == payload["target_process_id"]
+    assert payload["caught"] == (
+        "Application-window screenshot capture failed: "
+        "bounded PrintWindow capture worker timed out"
+    )
+    assert payload["capture_elapsed_milliseconds"] < 5000
+    assert payload["screenshot_exists"] is False
+    assert payload["capture_evidence_exists"] is False
+    assert list(tmp_path.glob(f"{screenshot.name}.capture-*")) == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "png_before_sidecar",
+        "direct_sidecar_write",
+        "missing_pre_png_deadline",
+        "missing_sidecar_rollback",
+    ],
+)
+def test_screenshot_publication_contract_rejects_partial_commit_mutations(
+    mutation: str,
+) -> None:
+    block = _powershell_function(_read(DRIVER_MODULE), "Save-W4Screenshot")
+    assert _has_safe_capture_publication_contract(block)
+
+    if mutation == "png_before_sidecar":
+        sidecar_move = "[System.IO.File]::Move($evidenceTemporaryPath, $evidencePath)"
+        png_move = "[System.IO.File]::Move($temporaryPath, $fullPath)"
+        sentinel = "__W4_CAPTURE_PUBLICATION_MOVE_SENTINEL__"
+        mutated = block.replace(sidecar_move, sentinel, 1)
+        mutated = mutated.replace(png_move, sidecar_move, 1)
+        mutated = mutated.replace(sentinel, png_move, 1)
+    elif mutation == "direct_sidecar_write":
+        mutated = block.replace(
+            "Write-W4JsonFile -Path $evidenceTemporaryPath -Value",
+            "Write-W4JsonFile -Path $evidencePath -Value",
+            1,
+        )
+    elif mutation == "missing_pre_png_deadline":
+        mutated = block.replace("-Stage 'pre-png-commit'", "-Stage 'removed'", 1)
+    else:
+        mutated = block.replace(
+            "Remove-W4CaptureTemporaryFile -Path $evidencePath `",
+            "Write-Verbose 'rollback removed' `",
+            1,
+        )
+
+    assert mutated != block
+    assert not _has_safe_capture_publication_contract(mutated)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "parent_bitmap_decode",
+        "relaxed_metadata_size",
+        "relaxed_pixel_count",
+        "reordered_metadata_fields",
+        "missing_worker_metadata_cleanup",
+    ],
+)
+def test_screenshot_worker_validation_contract_rejects_parent_decode_or_drift(
+    mutation: str,
+) -> None:
+    source = _read(DRIVER_MODULE)
+    assert _has_strict_worker_capture_validation_contract(source)
+
+    if mutation == "parent_bitmap_decode":
+        marker = "function Save-W4Screenshot {"
+        mutated = source.replace(
+            marker,
+            marker + "\n    [System.Drawing.Bitmap]::new($temporaryPath)",
+            1,
+        )
+    elif mutation == "relaxed_metadata_size":
+        mutated = source.replace(
+            "[int64]$metadataItem.Length -gt 4096",
+            "[int64]$metadataItem.Length -gt 8192",
+            1,
+        )
+    elif mutation == "relaxed_pixel_count":
+        mutated = source.replace("16777216", "16777217")
+    elif mutation == "reordered_metadata_fields":
+        mutated = source.replace(
+            "'schema_version', 'method', 'width', 'height',",
+            "'method', 'schema_version', 'width', 'height',",
+            1,
+        )
+    else:
+        mutated = source.replace(
+            "Remove-W4CaptureTemporaryFile -Path $workerMetadataPath",
+            "Write-Verbose 'worker metadata cleanup removed'",
+            1,
+        )
+
+    assert mutated != source
+    assert not _has_strict_worker_capture_validation_contract(mutated)
+
+
+def test_chat_capture_is_bound_to_the_exact_terminal_uia_text() -> None:
+    block = _compact_powershell(
+        _powershell_function(_read(SCENARIO_MODULE), "Invoke-W4ChatLoopbackScenario")
+    )
+    error_terminal = block.index(
+        "Wait-W4UiaText -Element $status "
+        "-Expected @('失败（错误代码：chat_provider_failed）') -TimeoutSeconds 60"
+    )
+    round_terminal = block.index(
+        "Wait-W4UiaText -Element $rounds "
+        "-Expected @('轮数: 1 / 3') -TimeoutSeconds 10",
+        error_terminal,
+    )
+    capture = block.index("Save-W4Screenshot", round_terminal)
+    terminal_element = block.index("-TerminalElement $status", capture)
+    terminal_text = block.index(
+        "-ExpectedTerminalText @('失败（错误代码：chat_provider_failed）')",
+        terminal_element,
+    )
+
+    assert error_terminal < round_terminal < capture < terminal_element < terminal_text
+    assert "-Element $gui.Window -Process $gui.Process" in block[capture:terminal_text]
+
+
+@pytest.mark.parametrize("mode", ["positive", "wrong_process", "uniform"])
+def test_screenshot_capture_uses_real_windows_uia_and_fails_closed(
+    tmp_path: Path, mode: str
+) -> None:
+    result = _run_window_capture_probe(tmp_path, mode)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["mode"] == mode
+    assert payload["automation_id"] == "pkv_main_window"
+    assert payload["window_process_id"] == payload["target_process_id"]
+    assert payload["elapsed_milliseconds"] < 20000
+    if mode == "positive":
+        assert payload["caught"] is None
+        assert payload["screenshot_exists"] is True
+        assert payload["capture_evidence_exists"] is True
+        capture = payload["capture"]
+        assert set(capture) == {
+            "schema_version",
+            "method",
+            "attempt",
+            "result",
+            "window_binding",
+            "process_id",
+            "size",
+            "pixel_diversity",
+        }
+        assert capture["schema_version"] == "pkv.w4.window-capture.v1"
+        assert capture["method"] == "PrintWindow(PW_RENDERFULLCONTENT)"
+        assert 1 <= capture["attempt"] <= 2
+        assert capture["result"] == "nonuniform_png_published"
+        assert capture["window_binding"] == "uia_hwnd_exact_process_identity"
+        assert capture["process_id"] == payload["target_process_id"]
+        assert capture["size"]["width"] > 1
+        assert capture["size"]["height"] > 1
+        assert capture["pixel_diversity"] == "nonuniform"
+    else:
+        assert payload["caught"] is not None
+        assert "Application-window screenshot capture failed" in payload["caught"]
+        if mode == "wrong_process":
+            assert "process identity mismatch" in payload["caught"]
+        else:
+            assert "nonuniform" in payload["caught"] or "single-color" in payload["caught"]
+        assert payload["screenshot_exists"] is False
+        assert payload["capture_evidence_exists"] is False
+        assert payload["capture"] is None
 
 
 def test_chat_restart_waits_for_round_then_freshly_resolves_messages() -> None:

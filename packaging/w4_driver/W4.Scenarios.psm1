@@ -4258,21 +4258,23 @@ function Invoke-W4OfflineTextArchiveScenario {
                     submits_disabled_while_running = $true
                     submits_enabled_after_terminal = $true
                     release_action = 'close_without_response'
-                    induced_workflow_issue_code = 'workflow_step_failed'
+                    induced_workflow_issue_codes = @(
+                        'workflow_step_failed',
+                        'storage_vector_failed'
+                    )
+                    expected_storage_repair_actions = @(
+                        'rebuild_vectors_for_entry'
+                    )
                 })
             $warning = Get-W4UiaText -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_warning')
-            $workflowWarning = '部分可选工作流步骤未完成（问题代码: workflow_step_failed）。'
-            if ([string]::IsNullOrWhiteSpace($warning) -or
-                -not $warning.StartsWith(
-                    '核心归档已完成，但本次结果处于降级状态。',
-                    [System.StringComparison]::Ordinal
-                ) -or
-                $warning.IndexOf($workflowWarning, [System.StringComparison]::Ordinal) -lt 0 -or
-                -not $warning.EndsWith(
-                    '请勿盲目重试归档。',
-                    [System.StringComparison]::Ordinal
-                )) {
-                throw "Offline archive did not expose the stable gated workflow issue code: $warning"
+            $expectedWarning = @(
+                '核心归档已完成，但本次结果处于降级状态。',
+                '辅助索引需要修复（修复动作: rebuild_vectors_for_entry）。',
+                '部分可选工作流步骤未完成（问题代码: workflow_step_failed, storage_vector_failed）。',
+                '请勿盲目重试归档。'
+            ) -join ''
+            if (-not $warning.Equals($expectedWarning, [System.StringComparison]::Ordinal)) {
+                throw "Offline archive did not expose the exact ordered degraded warning: $warning"
             }
             $idText = Get-W4UiaText -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_id')
             $pathText = Get-W4UiaText -Element (Get-W4UiaElementById -Root $gui.Window -AutomationId 'archive_result_path')
@@ -4293,7 +4295,7 @@ function Invoke-W4OfflineTextArchiveScenario {
                 'archive_go_browser'
             ) -EvidenceName 'uia-contract-archive-result.json'
             Save-W4Screenshot -Path (Join-Path $gui.Evidence 'archive-result.png') `
-                -Element $gui.Window -ProcessId $gui.Process.Id
+                -Element $gui.Window -Process $gui.Process
             [void](Stop-W4GuiApplication -Gui $gui)
             $closed = $true
         } finally {
@@ -4319,7 +4321,7 @@ function Invoke-W4OfflineTextArchiveScenario {
         $preview = Get-W4UiaElementById -Root $restart.Window -AutomationId 'browser_preview_text'
         [void](Wait-W4UiaTextContains -Element $preview -Text 'artifact-e2e-orchid' -TimeoutSeconds 30)
         Save-W4Screenshot -Path (Join-Path $restart.Evidence 'restart-preview.png') `
-            -Element $restart.Window -ProcessId $restart.Process.Id
+            -Element $restart.Window -Process $restart.Process
         [void](Stop-W4GuiApplication -Gui $restart)
         $restartClosed = $true
     } finally {
@@ -4335,7 +4337,8 @@ function Invoke-W4OfflineTextArchiveScenario {
         knowledge_id = $idText.Substring(3).Trim()
         saved_path_sha256 = Get-W4FileSha256 -Path $savedPath
         degraded_warning = $warning
-        workflow_issue_code = 'workflow_step_failed'
+        workflow_issue_codes = @('workflow_step_failed', 'storage_vector_failed')
+        storage_repair_actions = @('rebuild_vectors_for_entry')
         required_modal_dismissed = $modalDismissed
         progress_state_observed = $true
         restart_opened_saved_entry = $true
@@ -4535,6 +4538,12 @@ function Invoke-W4Bm25SearchScenario {
     )
 
     [void](Invoke-W4Install -RunContext $RunContext -ScenarioContext $ScenarioContext)
+    # One contiguous alphanumeric token avoids jieba splitting punctuation and
+    # relaxing onto a shared fragment such as "w4" in the synthetic database.
+    $noHitToken = 'pkvnohitqzvxfj314159265358979'
+    if ($noHitToken -notmatch '^[a-z0-9]+$') {
+        throw 'BM25 no-hit token must be one lowercase alphanumeric term'
+    }
     $note = [System.IO.File]::ReadAllText(
         (Join-Path $RunContext.FixtureRoot 'offline-note.v1.txt'),
         [System.Text.Encoding]::UTF8
@@ -4648,7 +4657,7 @@ function Invoke-W4Bm25SearchScenario {
         # target query. UIA Invoke does not guarantee that the Qt handler has
         # completed before it returns, so the old degraded hit/status must not
         # satisfy the recovery oracle.
-        Set-W4UiaValue -Element $input -Value 'w4-no-hit-5f37c22a'
+        Set-W4UiaValue -Element $input -Value $noHitToken
         Invoke-W4UiaElement -Element $submit
         [void](Wait-W4UiaTextContains -Element $status `
             -Text '未找到匹配结果' -TimeoutSeconds 30)
@@ -4671,7 +4680,7 @@ function Invoke-W4Bm25SearchScenario {
             'search_preview_text'
         ) -EvidenceName 'uia-contract-search.json'
 
-        Set-W4UiaValue -Element $input -Value 'w4-no-hit-5f37c22a'
+        Set-W4UiaValue -Element $input -Value $noHitToken
         Invoke-W4UiaElement -Element $submit
         $noHitStatus = Wait-W4UiaTextContains -Element $status -Text '未找到匹配结果' -TimeoutSeconds 30
 
@@ -4692,7 +4701,7 @@ function Invoke-W4Bm25SearchScenario {
             return $observed
         }
         Save-W4Screenshot -Path (Join-Path $gui.Evidence 'search-states.png') `
-            -Element $gui.Window -ProcessId $gui.Process.Id
+            -Element $gui.Window -Process $gui.Process
         [void](Stop-W4GuiApplication -Gui $gui)
         $closed = $true
     } finally {
@@ -5174,7 +5183,9 @@ function Invoke-W4ChatLoopbackScenario {
                 -Expected @('失败（错误代码：chat_provider_failed）') -TimeoutSeconds 60)
             [void](Wait-W4UiaText -Element $rounds -Expected @('轮数: 1 / 3') -TimeoutSeconds 10)
             Save-W4Screenshot -Path (Join-Path $gui.Evidence 'chat-terminals.png') `
-                -Element $gui.Window -ProcessId $gui.Process.Id
+                -Element $gui.Window -Process $gui.Process `
+                -TerminalElement $status `
+                -ExpectedTerminalText @('失败（错误代码：chat_provider_failed）')
             [void](Stop-W4GuiApplication -Gui $gui)
             $guiClosed = $true
         } finally {
