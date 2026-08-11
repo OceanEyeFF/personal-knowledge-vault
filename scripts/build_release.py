@@ -4568,7 +4568,8 @@ def _query_windows_native_architecture() -> tuple[str, bool] | None:
     Environment variables such as PROCESSOR_ARCHITECTURE are process-launch
     metadata, not an authority for a reproducible release gate.  Prefer
     IsWow64Process2 because it identifies both the process and native machine.
-    Older Windows falls back to IsWow64Process plus GetNativeSystemInfo.  An
+    IsWow64Process plus GetNativeSystemInfo is not a valid release fallback:
+    x64 emulation on ARM64 can report an x64 process/native pair there.  An
     unavailable or failed query is intentionally represented as ``None`` so
     callers fail closed.
     """
@@ -4586,67 +4587,32 @@ def _query_windows_native_architecture() -> tuple[str, bool] | None:
         current_process = get_current_process()
 
         is_wow64_process2 = getattr(kernel32, "IsWow64Process2", None)
-        if is_wow64_process2 is not None:
-            process_machine = wintypes.USHORT()
-            native_machine = wintypes.USHORT()
-            is_wow64_process2.argtypes = [
-                wintypes.HANDLE,
-                ctypes.POINTER(wintypes.USHORT),
-                ctypes.POINTER(wintypes.USHORT),
-            ]
-            is_wow64_process2.restype = wintypes.BOOL
-            if not is_wow64_process2(
-                current_process,
-                ctypes.byref(process_machine),
-                ctypes.byref(native_machine),
-            ):
-                return None
-
-            native_architecture = {
-                0x8664: "amd64",  # IMAGE_FILE_MACHINE_AMD64
-                0xAA64: "arm64",  # IMAGE_FILE_MACHINE_ARM64
-                0x014C: "x86",  # IMAGE_FILE_MACHINE_I386
-            }.get(native_machine.value, "unknown")
-            # IMAGE_FILE_MACHINE_UNKNOWN means the process is native.  Any
-            # non-zero process machine is WOW64 or another emulation layer.
-            return native_architecture, process_machine.value != 0
-
-        is_wow64_process = getattr(kernel32, "IsWow64Process", None)
-        get_native_system_info = getattr(kernel32, "GetNativeSystemInfo", None)
-        if is_wow64_process is None or get_native_system_info is None:
+        if is_wow64_process2 is None:
             return None
 
-        class _SystemInfo(ctypes.Structure):
-            _fields_ = [
-                ("wProcessorArchitecture", wintypes.WORD),
-                ("wReserved", wintypes.WORD),
-                ("dwPageSize", wintypes.DWORD),
-                ("lpMinimumApplicationAddress", wintypes.LPVOID),
-                ("lpMaximumApplicationAddress", wintypes.LPVOID),
-                ("dwActiveProcessorMask", ctypes.c_size_t),
-                ("dwNumberOfProcessors", wintypes.DWORD),
-                ("dwProcessorType", wintypes.DWORD),
-                ("dwAllocationGranularity", wintypes.DWORD),
-                ("wProcessorLevel", wintypes.WORD),
-                ("wProcessorRevision", wintypes.WORD),
-            ]
-
-        wow64 = wintypes.BOOL()
-        is_wow64_process.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
-        is_wow64_process.restype = wintypes.BOOL
-        if not is_wow64_process(current_process, ctypes.byref(wow64)):
+        process_machine = wintypes.USHORT()
+        native_machine = wintypes.USHORT()
+        is_wow64_process2.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.USHORT),
+            ctypes.POINTER(wintypes.USHORT),
+        ]
+        is_wow64_process2.restype = wintypes.BOOL
+        if not is_wow64_process2(
+            current_process,
+            ctypes.byref(process_machine),
+            ctypes.byref(native_machine),
+        ):
             return None
 
-        system_info = _SystemInfo()
-        get_native_system_info.argtypes = [ctypes.POINTER(_SystemInfo)]
-        get_native_system_info.restype = None
-        get_native_system_info(ctypes.byref(system_info))
         native_architecture = {
-            9: "amd64",  # PROCESSOR_ARCHITECTURE_AMD64
-            12: "arm64",  # PROCESSOR_ARCHITECTURE_ARM64
-            0: "x86",  # PROCESSOR_ARCHITECTURE_INTEL
-        }.get(system_info.wProcessorArchitecture, "unknown")
-        return native_architecture, bool(wow64.value)
+            0x8664: "amd64",  # IMAGE_FILE_MACHINE_AMD64
+            0xAA64: "arm64",  # IMAGE_FILE_MACHINE_ARM64
+            0x014C: "x86",  # IMAGE_FILE_MACHINE_I386
+        }.get(native_machine.value, "unknown")
+        # IMAGE_FILE_MACHINE_UNKNOWN means the process is native.  Any
+        # non-zero process machine is WOW64 or another emulation layer.
+        return native_architecture, process_machine.value != 0
     except (AttributeError, OSError):
         return None
 

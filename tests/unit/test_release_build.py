@@ -1872,6 +1872,32 @@ def test_windows_release_host_accepts_native_api_when_ambient_architecture_is_mi
     build_release._validate_windows_release_host()
 
 
+def test_windows_native_architecture_rejects_unavailable_iswow64process2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy APIs cannot prove native x64 instead of ARM64 emulation."""
+
+    class _Function:
+        def __init__(self, result: object) -> None:
+            self.result = result
+
+        def __call__(self, *_arguments: object) -> object:
+            return self.result
+
+    class _Kernel32WithoutIsWow64Process2:
+        GetCurrentProcess = _Function(1)
+
+    monkeypatch.setattr(build_release, "_is_windows_host", lambda: True)
+    monkeypatch.setattr(
+        build_release.ctypes,
+        "WinDLL",
+        lambda *_arguments, **_kwargs: _Kernel32WithoutIsWow64Process2(),
+        raising=False,
+    )
+
+    assert build_release._query_windows_native_architecture() is None
+
+
 @pytest.mark.parametrize(
     "host_architecture",
     [None, ("amd64", True), ("arm64", False), ("x86", False), ("unknown", False)],
