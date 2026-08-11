@@ -5089,6 +5089,8 @@ function Stop-W4LoopbackHarness {
     $shutdown = Join-Path $Harness.StateDirectory 'shutdown.request'
     [System.IO.File]::WriteAllText($shutdown, "shutdown`n", [System.Text.UTF8Encoding]::new($false))
     $forced = $false
+    $launcherExitCode = $null
+    $runtimeExitCode = $null
     try {
         if (-not $process.WaitForExit(30000)) {
             $forced = $true
@@ -5096,15 +5098,21 @@ function Stop-W4LoopbackHarness {
                 -IdentitySnapshot $launcherTreeSnapshot
         } else {
             $process.WaitForExit()
+            $launcherExitCode = Get-W4ExitedProcessExitCode -Process $process -Label 'Harness launcher'
         }
-        if (-not $runtimeIsLauncher -and -not $runtimeProcess.HasExited) {
+        if ($runtimeIsLauncher) {
+            $runtimeExitCode = $launcherExitCode
+        } elseif (-not $runtimeProcess.HasExited) {
             if (-not $runtimeProcess.WaitForExit(5000)) {
                 $forced = $true
                 Stop-W4ProcessTree -Process $runtimeProcess `
                     -IdentitySnapshot $runtimeTreeSnapshot
             } else {
                 $runtimeProcess.WaitForExit()
+                $runtimeExitCode = Get-W4ExitedProcessExitCode -Process $runtimeProcess -Label 'Harness runtime'
             }
+        } else {
+            $runtimeExitCode = Get-W4ExitedProcessExitCode -Process $runtimeProcess -Label 'Harness runtime'
         }
         if (-not $runtimeIsLauncher) {
             Stop-W4ProcessTree -Process $runtimeProcess `
@@ -5116,22 +5124,20 @@ function Stop-W4LoopbackHarness {
         $stderr = $Harness.StderrTask.GetAwaiter().GetResult()
         [System.IO.File]::WriteAllText((Join-Path $Harness.Evidence 'stdout.txt'), $stdout, [System.Text.UTF8Encoding]::new($false))
         [System.IO.File]::WriteAllText((Join-Path $Harness.Evidence 'stderr.txt'), $stderr, [System.Text.UTF8Encoding]::new($false))
-        $launcherExitCode = Get-W4ExitedProcessExitCode -Process $process -Label 'Harness launcher'
-        $runtimeExitCode = Get-W4ExitedProcessExitCode -Process $runtimeProcess -Label 'Harness runtime'
         $processRecord = [ordered]@{
             launcher_pid = $launcherPid
             runtime_pid = $runtimePid
-            exit_code = [int]$launcherExitCode
-            runtime_exit_code = [int]$runtimeExitCode
+            exit_code = $launcherExitCode
+            runtime_exit_code = $runtimeExitCode
             forced_termination = $forced
             timed_out = $forced
         }
         Write-W4JsonFile -Path (Join-Path $Harness.Evidence 'process.json') -Value $processRecord
-        if ($null -eq $processRecord.exit_code -or $null -eq $processRecord.runtime_exit_code) {
-            throw 'Harness exit-code capture was unexpectedly null'
-        }
-        if ($forced -or [int]$processRecord.exit_code -ne 0 -or [int]$processRecord.runtime_exit_code -ne 0) {
-            throw "Harness did not exit normally after exact shutdown request: launcher=$($processRecord.exit_code) runtime=$($processRecord.runtime_exit_code)"
+        if ($forced -or $null -eq $processRecord.exit_code -or $null -eq $processRecord.runtime_exit_code -or
+            [int]$processRecord.exit_code -ne 0 -or [int]$processRecord.runtime_exit_code -ne 0) {
+            $launcherExitDisplay = if ($null -eq $processRecord.exit_code) { '<unconfirmed>' } else { [string]$processRecord.exit_code }
+            $runtimeExitDisplay = if ($null -eq $processRecord.runtime_exit_code) { '<unconfirmed>' } else { [string]$processRecord.runtime_exit_code }
+            throw "Harness did not exit normally after exact shutdown request: launcher=$launcherExitDisplay runtime=$runtimeExitDisplay"
         }
         $resultPath = Join-Path $Harness.StateDirectory 'result.json'
         $result = Read-W4JsonFile -Path $resultPath

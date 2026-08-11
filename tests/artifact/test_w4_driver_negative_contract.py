@@ -408,6 +408,10 @@ $window.Height = 240
 $window.WindowStartupLocation = [System.Windows.WindowStartupLocation]::Manual
 $window.Left = 120
 $window.Top = 120
+[System.Windows.Automation.AutomationProperties]::SetAutomationId(
+    $window,
+    'w4_selection_probe_window'
+)
 $list = [System.Windows.Controls.ListBox]::new()
 $list.SelectionMode = [System.Windows.Controls.SelectionMode]::Single
 [System.Windows.Automation.AutomationProperties]::SetAutomationId(
@@ -448,13 +452,20 @@ $window.Add_ContentRendered({{
         "$nameCondition=[System.Windows.Automation.PropertyCondition]::new("
         "[System.Windows.Automation.AutomationElement]::NameProperty,"
         f"'{title}');"
+        "$windowAutomationCondition=[System.Windows.Automation.PropertyCondition]::new("
+        "[System.Windows.Automation.AutomationElement]::AutomationIdProperty,"
+        "'w4_selection_probe_window');"
         "$windowCondition=[System.Windows.Automation.AndCondition]::new("
-        "[System.Windows.Automation.Condition[]]@($pidCondition,$nameCondition));"
+        "[System.Windows.Automation.Condition[]]@($pidCondition,$nameCondition,"
+        "$windowAutomationCondition));"
         "$deadline=[DateTime]::UtcNow.AddSeconds(15);$window=$null;"
         "do {"
         "$window=$desktop.FindFirst("
         "[System.Windows.Automation.TreeScope]::Children,$windowCondition);"
-        "if($null -ne $window){break};"
+        "if($null -ne $window){"
+        "try {if(-not [bool]$window.Current.IsOffscreen){break}}"
+        "catch [System.Windows.Automation.ElementNotAvailableException]{};"
+        "$window=$null};"
         "$process.Refresh();"
         "if($process.HasExited){throw 'UIA selection probe exited before discovery'};"
         "Start-Sleep -Milliseconds 50"
@@ -464,10 +475,16 @@ $window.Add_ContentRendered({{
         "[System.Windows.Automation.AutomationElement]::AutomationIdProperty,"
         "'w4_selection_probe_list');"
         "$listDeadline=[DateTime]::UtcNow.AddSeconds(10);$list=$null;"
-        "do {$listMatches=$window.FindAll("
+        "do {$window=$desktop.FindFirst("
+        "[System.Windows.Automation.TreeScope]::Children,$windowCondition);"
+        "if($null -ne $window){try{"
+        "if(-not [bool]$window.Current.IsOffscreen){"
+        "$listMatches=$window.FindAll("
         "[System.Windows.Automation.TreeScope]::Descendants,$listCondition);"
         "if($listMatches.Count -eq 1){$list=$listMatches.Item(0);break};"
-        "if($listMatches.Count -gt 1){throw 'UIA selection probe list was duplicated'};"
+        "if($listMatches.Count -gt 1){throw 'UIA selection probe list was duplicated'}}}"
+        "catch [System.Windows.Automation.ElementNotAvailableException]{};"
+        "$window=$null};"
         "Start-Sleep -Milliseconds 50"
         "}while([DateTime]::UtcNow -lt $listDeadline);"
         "if($null -eq $list){throw 'UIA selection probe list was not found'};"
@@ -721,7 +738,7 @@ def _run_bounded_capture_worker_timeout_probe() -> subprocess.CompletedProcess[s
 def _run_loopback_exit_code_snapshot_probe(
     tmp_path: Path, mode: str
 ) -> subprocess.CompletedProcess[str]:
-    """Exercise cached loopback exit codes across intentionally unavailable handles."""
+    """Exercise pre-reconciliation loopback exit-code capture on real handles."""
     assert mode in {"record_then_unavailable", "unreadable_at_capture"}
     state = tmp_path / f"loopback-exit-state-{uuid.uuid4().hex}"
     evidence = tmp_path / f"loopback-exit-evidence-{uuid.uuid4().hex}"
@@ -734,10 +751,9 @@ def _run_loopback_exit_code_snapshot_probe(
         f"$mode='{mode}';"
         f"$state='{_ps_single_quoted(state)}';"
         f"$evidence='{_ps_single_quoted(evidence)}';"
-        "$launcher=$null;$runtime=$null;$realProbe=$null;$unreadable=$null;"
+        "$launcher=$null;$runtime=$null;$unreadable=$null;"
         "$caught=$null;$stopResult=$null;$processRecord=$null;"
-        "$realCapturedCode=$null;$realRawExitCodeAfter=$null;"
-        "$launcherRawExitCodeAfter=$null;$runtimeRawExitCodeAfter=$null;"
+        "$treeReconcileCount=0;"
         "try{"
         "[void][IO.Directory]::CreateDirectory($state);"
         "[void][IO.Directory]::CreateDirectory($evidence);"
@@ -746,25 +762,18 @@ def _run_loopback_exit_code_snapshot_probe(
         "$startInfo.Arguments='-NoLogo -NoProfile -NonInteractive "
         f"-EncodedCommand {encoded_exit}';"
         "$startInfo.UseShellExecute=$false;$startInfo.CreateNoWindow=$true;"
-        "$realProbe=[Diagnostics.Process]::Start($startInfo);"
-        "if($null -eq $realProbe){throw 'real exit-code capture probe did not start'};"
-        "if(-not $realProbe.WaitForExit(10000)){throw 'real exit-code capture probe did not exit'};"
+        "$unreadable=[Diagnostics.Process]::Start($startInfo);"
+        "if($null -eq $unreadable){throw 'real exit-code capture probe did not start'};"
+        "if(-not $unreadable.WaitForExit(10000)){throw 'real exit-code capture probe did not exit'};"
         "if($mode -ceq 'unreadable_at_capture'){"
-        "$unreadable=$realProbe;$realProbe=$null;$unreadable.Dispose();"
+        "$unreadable.Dispose();"
         "try{& $module {param($target) "
         "Get-W4ExitedProcessExitCode -Process $target -Label 'Harness unreadable'} "
         "$unreadable}catch{$caught=$_.Exception.Message};"
         "[ordered]@{mode=$mode;caught=$caught}|ConvertTo-Json -Compress;"
         "return"
         "};"
-        "$realCapturedCode=& $module {param($target) "
-        "Get-W4ExitedProcessExitCode -Process $target -Label 'Harness real capture'} "
-        "$realProbe;"
-        "$realRecord=[ordered]@{exit_code=[int]$realCapturedCode;"
-        "runtime_exit_code=[int]$realCapturedCode};"
-        "$realProbe.Dispose();"
-        "try{$realRawExitCodeAfter=$realProbe.ExitCode}catch{"
-        "$realRawExitCodeAfter='__throws__'};"
+        "$unreadable.Dispose();$unreadable=$null;"
         "$launcher=[Diagnostics.Process]::Start($startInfo);"
         "$runtime=[Diagnostics.Process]::Start($startInfo);"
         "if($null -eq $launcher -or $null -eq $runtime){"
@@ -786,37 +795,25 @@ def _run_loopback_exit_code_snapshot_probe(
         "StateDirectory=$state;Evidence=$evidence};"
         "& $module {"
         "function script:Stop-W4ProcessTree {"
-        "param([System.Diagnostics.Process]$Process,$IdentitySnapshot)"
-        "};"
-        "function script:Get-W4ExitedProcessExitCode {"
-        "param([System.Diagnostics.Process]$Process,[string]$Label);"
-        "$hasExited=$Process.HasExited;"
-        "if($hasExited -isnot [bool] -or $hasExited -ne $true){"
-        "throw \"$Label did not expose a confirmed exited process exit code\"};"
-        "$captured=[int]$Process.ExitCode;$Process.Dispose();return $captured"
+        "param([System.Diagnostics.Process]$Process,$IdentitySnapshot);"
+        "$script:W4LoopbackProbeTreeReconcileCount += 1;"
+        "$Process.Dispose()"
         "}"
         "};"
+        "& $module {$script:W4LoopbackProbeTreeReconcileCount=0};"
         "try{$stopResult=& $module {param($value) "
         "Stop-W4LoopbackHarness -Harness $value} $harness}catch{"
         "$caught=$_.Exception.Message};"
+        "$treeReconcileCount=& $module {$script:W4LoopbackProbeTreeReconcileCount};"
         "if(Test-Path -LiteralPath (Join-Path $evidence 'process.json') -PathType Leaf){"
         "$processRecord=[IO.File]::ReadAllText("
         "(Join-Path $evidence 'process.json'))|ConvertFrom-Json};"
-        "try{$launcherRawExitCodeAfter=$launcher.ExitCode}catch{"
-        "$launcherRawExitCodeAfter='__throws__'};"
-        "try{$runtimeRawExitCodeAfter=$runtime.ExitCode}catch{"
-        "$runtimeRawExitCodeAfter='__throws__'};"
         "[ordered]@{mode=$mode;caught=$caught;"
-        "real_captured_code=[int]$realCapturedCode;"
-        "real_raw_exit_code_after=$realRawExitCodeAfter;"
-        "real_record_normal=([int]$realRecord.exit_code -eq 0 -and "
-        "[int]$realRecord.runtime_exit_code -eq 0);"
         "stop_result=if($null -eq $stopResult){$null}else{[string]$stopResult.result};"
-        "launcher_raw_exit_code_after=$launcherRawExitCodeAfter;"
-        "runtime_raw_exit_code_after=$runtimeRawExitCodeAfter;"
+        "tree_reconcile_count=[int]$treeReconcileCount;"
         "process_record=$processRecord}|ConvertTo-Json -Depth 10 -Compress"
         "}finally{"
-        "foreach($candidate in @($runtime,$launcher,$realProbe,$unreadable)){"
+        "foreach($candidate in @($runtime,$launcher,$unreadable)){"
         "if($null -eq $candidate){continue};"
         "try{if(-not $candidate.HasExited){$candidate.Kill();"
         "[void]$candidate.WaitForExit(1000)}}catch{};"
@@ -5295,37 +5292,47 @@ def test_loopback_harness_snapshots_strict_exit_scalars_and_cached_pids() -> Non
     assert "$runtimeIsLauncher = $runtimePid -eq $launcherPid" in stop
     assert ".Id" not in stop
     assert ".ExitCode" not in stop
+    assert "$launcherExitCode = $null" in stop
+    assert "$runtimeExitCode = $null" in stop
     assert "$processRecord = [ordered]@{" in stop
     assert "launcher_pid = $launcherPid" in stop
     assert "runtime_pid = $runtimePid" in stop
-    assert "exit_code = [int]$launcherExitCode" in stop
-    assert "runtime_exit_code = [int]$runtimeExitCode" in stop
+    assert "exit_code = $launcherExitCode" in stop
+    assert "runtime_exit_code = $runtimeExitCode" in stop
+    assert "$forced -or $null -eq $processRecord.exit_code" in stop
+    assert "$null -eq $processRecord.runtime_exit_code" in stop
     assert "[int]$processRecord.exit_code -ne 0" in stop
     assert "[int]$processRecord.runtime_exit_code -ne 0" in stop
-    assert "launcher=$($processRecord.exit_code)" in stop
-    assert "runtime=$($processRecord.runtime_exit_code)" in stop
+    assert "launcher=$launcherExitDisplay runtime=$runtimeExitDisplay" in stop
+    assert "'<unconfirmed>'" in stop
 
-    runtime_wait = stop.index("$runtimeProcess.WaitForExit()")
-    runtime_reconcile = stop.index("if (-not $runtimeIsLauncher) {", runtime_wait)
+    launcher_wait = stop.index("$process.WaitForExit()")
+    launcher_capture = stop.index(
+        "$launcherExitCode = Get-W4ExitedProcessExitCode", launcher_wait
+    )
+    same_runtime = stop.index("if ($runtimeIsLauncher) {", launcher_capture)
+    same_runtime_reuse = stop.index("$runtimeExitCode = $launcherExitCode", same_runtime)
+    runtime_wait = stop.index("$runtimeProcess.WaitForExit()", same_runtime_reuse)
+    runtime_capture = stop.index(
+        "$runtimeExitCode = Get-W4ExitedProcessExitCode", runtime_wait
+    )
+    runtime_reconcile = stop.index("if (-not $runtimeIsLauncher) {", runtime_capture)
     runtime_stop = stop.index(
         "Stop-W4ProcessTree -Process $runtimeProcess", runtime_reconcile
     )
     launcher_stop = stop.index("Stop-W4ProcessTree -Process $process", runtime_stop)
-    launcher_capture = stop.index(
-        "$launcherExitCode = Get-W4ExitedProcessExitCode", launcher_stop
-    )
-    runtime_capture = stop.index(
-        "$runtimeExitCode = Get-W4ExitedProcessExitCode", launcher_capture
-    )
     process_record = stop.index("$processRecord = [ordered]@{", runtime_capture)
     normality = stop.index("if ($forced -or", process_record)
     assert (
-        runtime_wait
+        launcher_wait
+        < launcher_capture
+        < same_runtime
+        < same_runtime_reuse
+        < runtime_wait
+        < runtime_capture
         < runtime_reconcile
         < runtime_stop
         < launcher_stop
-        < launcher_capture
-        < runtime_capture
         < process_record
         < normality
     )
@@ -5341,12 +5348,8 @@ def test_loopback_harness_uses_cached_exit_record_after_handles_become_unavailab
     assert result.returncode == 0, result.stderr or result.stdout
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     assert payload["caught"] is None
-    assert payload["real_captured_code"] == 0
-    assert payload["real_raw_exit_code_after"] is None
-    assert payload["real_record_normal"] is True
     assert payload["stop_result"] == "passed"
-    assert payload["launcher_raw_exit_code_after"] is None
-    assert payload["runtime_raw_exit_code_after"] is None
+    assert payload["tree_reconcile_count"] >= 4
     assert payload["process_record"] == {
         "launcher_pid": payload["process_record"]["launcher_pid"],
         "runtime_pid": payload["process_record"]["runtime_pid"],
