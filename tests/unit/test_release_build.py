@@ -1854,6 +1854,90 @@ def test_build_release_powershell_wrapper_propagates_failures(
     assert completed.returncode == expected_exit_code, completed.stdout
 
 
+def test_windows_release_host_accepts_native_api_when_ambient_architecture_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FastCtx child environments need not provide Windows arch variables."""
+
+    monkeypatch.delenv("PROCESSOR_ARCHITECTURE", raising=False)
+    monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+    monkeypatch.setattr(build_release, "_is_windows_host", lambda: True)
+    monkeypatch.setattr(build_release, "_python_is_64_bit", lambda: True)
+    monkeypatch.setattr(
+        build_release,
+        "_query_windows_native_architecture",
+        lambda: ("amd64", False),
+    )
+
+    build_release._validate_windows_release_host()
+
+
+@pytest.mark.parametrize(
+    "host_architecture",
+    [None, ("amd64", True), ("arm64", False), ("x86", False), ("unknown", False)],
+)
+def test_windows_release_host_rejects_non_native_or_unverified_architecture(
+    monkeypatch: pytest.MonkeyPatch,
+    host_architecture: tuple[str, bool] | None,
+) -> None:
+    monkeypatch.setattr(build_release, "_is_windows_host", lambda: True)
+    monkeypatch.setattr(build_release, "_python_is_64_bit", lambda: True)
+    monkeypatch.setattr(
+        build_release,
+        "_query_windows_native_architecture",
+        lambda: host_architecture,
+    )
+
+    with pytest.raises(
+        build_release.ReleaseBuildError,
+        match="native Windows x86-64 Python",
+    ):
+        build_release._validate_windows_release_host()
+
+
+@pytest.mark.parametrize(
+    "windows_host,python_is_64_bit",
+    [(False, True), (True, False)],
+)
+def test_windows_release_host_rejects_non_windows_and_32_bit_before_native_query(
+    monkeypatch: pytest.MonkeyPatch,
+    windows_host: bool,
+    python_is_64_bit: bool,
+) -> None:
+    monkeypatch.setattr(build_release, "_is_windows_host", lambda: windows_host)
+    monkeypatch.setattr(
+        build_release,
+        "_python_is_64_bit",
+        lambda: python_is_64_bit,
+    )
+
+    def unexpected_native_query() -> tuple[str, bool]:
+        raise AssertionError("native architecture API must not run")
+
+    monkeypatch.setattr(
+        build_release,
+        "_query_windows_native_architecture",
+        unexpected_native_query,
+    )
+
+    with pytest.raises(
+        build_release.ReleaseBuildError,
+        match="native Windows x86-64 Python",
+    ):
+        build_release._validate_windows_release_host()
+
+
+@pytest.mark.windows_release_env
+@pytest.mark.skipif(os.name != "nt", reason="exact Windows release environment")
+def test_windows_release_host_ignores_missing_ambient_architecture_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PROCESSOR_ARCHITECTURE", raising=False)
+    monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+
+    build_release._validate_windows_release_host()
+
+
 @pytest.mark.windows_release_env
 @pytest.mark.skipif(os.name != "nt", reason="exact Windows release environment")
 def test_release_toolchain_lock_matches_current_builder() -> None:

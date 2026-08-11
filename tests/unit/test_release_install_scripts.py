@@ -88,9 +88,15 @@ def _invoke(
     *,
     local_app_data: Path,
     arguments: list[str] | None = None,
+    environment_overrides: dict[str, str | None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["LOCALAPPDATA"] = str(local_app_data)
+    for name, value in (environment_overrides or {}).items():
+        if value is None:
+            environment.pop(name, None)
+        else:
+            environment[name] = value
     return subprocess.run(
         [
             "powershell.exe",
@@ -237,6 +243,30 @@ def test_fresh_install_and_same_version_are_noninteractive_and_idempotent(
     assert json.loads(second.stdout)["status"] == "already_installed"
     assert (install_root / "app" / "pkv.exe").read_bytes() == b"synthetic-installed-cli"
     assert not data_root.exists()
+
+
+def test_install_and_uninstall_hash_without_psmodulepath(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    local_app_data = tmp_path / "profile" / "AppData" / "Local"
+    install_root = local_app_data / "Programs" / "PersonalKnowledgeVault"
+    restricted_environment = {"PSModulePath": None}
+
+    installed = _invoke(
+        package / "Install.ps1",
+        local_app_data=local_app_data,
+        environment_overrides=restricted_environment,
+    )
+    assert installed.returncode == 0, installed.stderr
+    assert json.loads(installed.stdout)["status"] == "installed"
+
+    removed = _invoke(
+        install_root / "Uninstall.ps1",
+        local_app_data=local_app_data,
+        environment_overrides=restricted_environment,
+    )
+    assert removed.returncode == 0, removed.stderr
+    assert json.loads(removed.stdout)["status"] == "uninstalled"
+    assert not install_root.exists()
 
 
 def test_compliance_hold_candidate_is_default_deny_and_requires_w4_token(

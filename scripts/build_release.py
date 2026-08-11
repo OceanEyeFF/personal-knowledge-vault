@@ -9,11 +9,11 @@ runtime.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import importlib.metadata
 import json
 import os
-import platform
 import re
 import shutil
 import stat
@@ -4546,15 +4546,119 @@ def _directory_hashes(root: Path) -> dict[str, str]:
     }
 
 
+def _is_windows_host() -> bool:
+    """Return whether this interpreter is running on Windows.
+
+    This narrow wrapper keeps the host gate independently testable without
+    mutating ``os.name`` (which would change pathlib behaviour process-wide).
+    """
+
+    return os.name == "nt"
+
+
+def _python_is_64_bit() -> bool:
+    """Return whether the running Python process has 64-bit pointers."""
+
+    return sys.maxsize > 2**32
+
+
+def _query_windows_native_architecture() -> tuple[str, bool] | None:
+    """Return ``(native_architecture, is_wow64_or_emulated)`` from Win32.
+
+    Environment variables such as PROCESSOR_ARCHITECTURE are process-launch
+    metadata, not an authority for a reproducible release gate.  Prefer
+    IsWow64Process2 because it identifies both the process and native machine.
+    Older Windows falls back to IsWow64Process plus GetNativeSystemInfo.  An
+    unavailable or failed query is intentionally represented as ``None`` so
+    callers fail closed.
+    """
+
+    if not _is_windows_host():
+        return None
+
+    try:
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_current_process = kernel32.GetCurrentProcess
+        get_current_process.argtypes = []
+        get_current_process.restype = wintypes.HANDLE
+        current_process = get_current_process()
+
+        is_wow64_process2 = getattr(kernel32, "IsWow64Process2", None)
+        if is_wow64_process2 is not None:
+            process_machine = wintypes.USHORT()
+            native_machine = wintypes.USHORT()
+            is_wow64_process2.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(wintypes.USHORT),
+                ctypes.POINTER(wintypes.USHORT),
+            ]
+            is_wow64_process2.restype = wintypes.BOOL
+            if not is_wow64_process2(
+                current_process,
+                ctypes.byref(process_machine),
+                ctypes.byref(native_machine),
+            ):
+                return None
+
+            native_architecture = {
+                0x8664: "amd64",  # IMAGE_FILE_MACHINE_AMD64
+                0xAA64: "arm64",  # IMAGE_FILE_MACHINE_ARM64
+                0x014C: "x86",  # IMAGE_FILE_MACHINE_I386
+            }.get(native_machine.value, "unknown")
+            # IMAGE_FILE_MACHINE_UNKNOWN means the process is native.  Any
+            # non-zero process machine is WOW64 or another emulation layer.
+            return native_architecture, process_machine.value != 0
+
+        is_wow64_process = getattr(kernel32, "IsWow64Process", None)
+        get_native_system_info = getattr(kernel32, "GetNativeSystemInfo", None)
+        if is_wow64_process is None or get_native_system_info is None:
+            return None
+
+        class _SystemInfo(ctypes.Structure):
+            _fields_ = [
+                ("wProcessorArchitecture", wintypes.WORD),
+                ("wReserved", wintypes.WORD),
+                ("dwPageSize", wintypes.DWORD),
+                ("lpMinimumApplicationAddress", wintypes.LPVOID),
+                ("lpMaximumApplicationAddress", wintypes.LPVOID),
+                ("dwActiveProcessorMask", ctypes.c_size_t),
+                ("dwNumberOfProcessors", wintypes.DWORD),
+                ("dwProcessorType", wintypes.DWORD),
+                ("dwAllocationGranularity", wintypes.DWORD),
+                ("wProcessorLevel", wintypes.WORD),
+                ("wProcessorRevision", wintypes.WORD),
+            ]
+
+        wow64 = wintypes.BOOL()
+        is_wow64_process.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+        is_wow64_process.restype = wintypes.BOOL
+        if not is_wow64_process(current_process, ctypes.byref(wow64)):
+            return None
+
+        system_info = _SystemInfo()
+        get_native_system_info.argtypes = [ctypes.POINTER(_SystemInfo)]
+        get_native_system_info.restype = None
+        get_native_system_info(ctypes.byref(system_info))
+        native_architecture = {
+            9: "amd64",  # PROCESSOR_ARCHITECTURE_AMD64
+            12: "arm64",  # PROCESSOR_ARCHITECTURE_ARM64
+            0: "x86",  # PROCESSOR_ARCHITECTURE_INTEL
+        }.get(system_info.wProcessorArchitecture, "unknown")
+        return native_architecture, bool(wow64.value)
+    except (AttributeError, OSError):
+        return None
+
+
 def _validate_windows_release_host() -> None:
-    machine = platform.machine().casefold()
-    process_architecture = os.environ.get("PROCESSOR_ARCHITECTURE", "").casefold()
-    if (
-        os.name != "nt"
-        or sys.maxsize <= 2**32
-        or machine not in {"amd64", "x86_64"}
-        or process_architecture not in {"amd64", "x86_64"}
-    ):
+    if not _is_windows_host() or not _python_is_64_bit():
+        raise ReleaseBuildError(
+            "release Artifact must be built by native Windows x86-64 Python"
+        )
+
+    host_architecture = _query_windows_native_architecture()
+    if host_architecture != ("amd64", False):
         raise ReleaseBuildError(
             "release Artifact must be built by native Windows x86-64 Python"
         )
