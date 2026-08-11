@@ -1323,30 +1323,50 @@ function Stop-W4ProcessTree {
     # not reliable for onefile launchers, and is unnecessary: validate the
     # snapshot's root row exactly, then independently revalidate it against a
     # live root only when the held Process has not exited.
+    $expectedRootProcessId = [int]$IdentitySnapshot.RootProcessId
     $expectedRootStartTimeUtcTicks = [int64]$IdentitySnapshot.RootStartTimeUtcTicks
-    if ([int]$IdentitySnapshot.RootProcessId -ne $Process.Id) {
-        throw "Process-tree identity snapshot does not bind the supplied root PID $($Process.Id)"
-    }
     $identities = @($IdentitySnapshot.Identities)
     $rootIdentity = @($identities | Where-Object { [int]$_.Depth -eq 0 })
     if ($rootIdentity.Count -ne 1 -or
-        [int]$rootIdentity[0].ProcessId -ne $Process.Id -or
+        [int]$rootIdentity[0].ProcessId -ne $expectedRootProcessId -or
         [int64]$rootIdentity[0].StartTimeUtcTicks -ne $expectedRootStartTimeUtcTicks) {
-        throw "Process-tree root identity was not exact for PID $($Process.Id)"
+        throw "Process-tree root identity was not exact for PID $expectedRootProcessId"
     }
+
+    # Once the full snapshot authority is authenticated, its root tuple is the
+    # only canonical termination identity.  A launcher may have naturally
+    # exited (or already have been disposed by an inner finally) before an outer
+    # reconciliation call.  Such a held Process object is not itself authority
+    # and need not expose Id/StartTime; it may only add a live cross-check when
+    # both properties remain safely available.
     $heldRootIsLive = $false
     try {
-        $heldRootIsLive = -not $Process.HasExited
+        $heldRootHasExited = $Process.HasExited
+        # A disposed Process can yield `$null` instead of a Boolean here.  Do
+        # not let PowerShell coerce that unknown state into "not exited" and
+        # then read a synthetic/zero Id; only an explicit Boolean false grants
+        # a live-handle comparison.
+        if ($heldRootHasExited -is [bool] -and $heldRootHasExited -eq $false) {
+            $heldRootProcessId = [int]$Process.Id
+            if ($heldRootProcessId -lt 1) {
+                throw 'Process-tree held root did not expose a positive PID while live'
+            }
+            if ($heldRootProcessId -ne $expectedRootProcessId) {
+                throw "Process-tree identity snapshot does not bind the supplied live root PID $heldRootProcessId"
+            }
+            $heldRootIsLive = $true
+        }
     } catch [System.InvalidOperationException] {
         # A retained launcher object can no longer expose live-process state
-        # after natural onefile exit.  Its supplied immutable snapshot remains
-        # sufficient to reconcile only matching descendant identities.
+        # after natural onefile exit or an earlier cleanup dispose.  Its
+        # authenticated immutable snapshot remains sufficient to reconcile only
+        # matching captured identities.
         $heldRootIsLive = $false
     }
     if ($heldRootIsLive) {
         $liveRootIdentity = Get-W4LiveProcessForIdentity -Identity $rootIdentity[0]
         if ($null -eq $liveRootIdentity) {
-            throw "Process-tree identity snapshot does not bind the supplied root PID $($Process.Id)"
+            throw "Process-tree identity snapshot does not bind the supplied live root PID $expectedRootProcessId"
         }
         $liveRootIdentity.Dispose()
     }
@@ -1381,7 +1401,7 @@ function Stop-W4ProcessTree {
                 # Keep the verified process object alive so Windows cannot recycle
                 # its numeric PID between the StartTime check and taskkill /T.
                 $safeRootHandle.DangerousAddRef([ref]$rootHandlePinned)
-                $taskKillResult = Invoke-W4TaskKillTree -ProcessId $Process.Id
+                $taskKillResult = Invoke-W4TaskKillTree -ProcessId $expectedRootProcessId
             } finally {
                 if ($rootHandlePinned) {
                     $safeRootHandle.DangerousRelease()

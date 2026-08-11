@@ -368,6 +368,226 @@ def test_process_tree_stop_rejects_injected_unrelated_identity_before_cleanup(
     assert "SNAPSHOT_INJECTION_REJECTED" in result.stdout
 
 
+def test_process_tree_stop_rejects_in_place_snapshot_identity_append_before_cleanup(
+    tmp_path: Path,
+) -> None:
+    child_pid_file = tmp_path / "mutated-snapshot-child.pid"
+    exit_request = tmp_path / "mutated-snapshot-launcher-exit.request"
+    launcher_script = tmp_path / "mutated-snapshot-launcher.ps1"
+    launcher_script.write_text(
+        (
+            "$hostPath=(Get-Process -Id $PID).Path\n"
+            "$child=Start-Process -FilePath $hostPath -ArgumentList @("
+            "'-NoLogo','-NoProfile','-NonInteractive','-Command',"
+            "'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru\n"
+            f"[IO.File]::WriteAllText('{_ps_quote(child_pid_file)}',"
+            "$child.Id.ToString(),[Text.UTF8Encoding]::new($false))\n"
+            f"while(-not(Test-Path -LiteralPath '{_ps_quote(exit_request)}' "
+            "-PathType Leaf)){[Threading.Thread]::Sleep(20)}\n"
+        ),
+        encoding="utf-8",
+    )
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_quote(DRIVER_MODULE)}' -Force;"
+        "$launcher=$null;$unrelated=$null;$childPid=$null;try{"
+        "$hostPath=(Get-Process -Id $PID).Path;"
+        "$launcher=Start-Process -FilePath $hostPath -ArgumentList @("
+        "'-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',"
+        f"'-File','{_ps_quote(launcher_script)}') -WindowStyle Hidden -PassThru;"
+        f"$pidFile='{_ps_quote(child_pid_file)}';"
+        "$deadline=[DateTime]::UtcNow.AddSeconds(5);"
+        "while(-not(Test-Path -LiteralPath $pidFile -PathType Leaf)){"
+        "if([DateTime]::UtcNow -ge $deadline){throw 'child pid was not published'};"
+        "[Threading.Thread]::Sleep(20)};"
+        "$childPid=[int][IO.File]::ReadAllText($pidFile);"
+        "$mutatedSnapshot=New-W4ProcessTreeIdentitySnapshot -Process $launcher;"
+        "$authenticSnapshot=New-W4ProcessTreeIdentitySnapshot -Process $launcher;"
+        "if([object]::ReferenceEquals($mutatedSnapshot,$authenticSnapshot)){"
+        "throw 'independent authentic snapshot was not created'};"
+        "if(@($mutatedSnapshot.Identities|Where-Object{[int]$_.ProcessId -eq $childPid}).Count -ne 1){"
+        "throw 'mutated snapshot child was not captured exactly'};"
+        "$unrelated=Start-Process -FilePath $hostPath -ArgumentList @("
+        "'-NoLogo','-NoProfile','-NonInteractive','-Command',"
+        "'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru;"
+        "$unrelatedIdentity=[pscustomobject]@{ProcessId=[int]$unrelated.Id;"
+        "StartTimeUtcTicks=[int64]$unrelated.StartTime.ToUniversalTime().Ticks;Depth=1};"
+        "if(@($mutatedSnapshot.Identities|Where-Object{[int]$_.ProcessId -eq $unrelated.Id}).Count -ne 0){"
+        "throw 'unrelated sleeper was unexpectedly in authentic snapshot'};"
+        f"[IO.File]::WriteAllText('{_ps_quote(exit_request)}','exit',"
+        "[Text.UTF8Encoding]::new($false));"
+        "if(-not $launcher.WaitForExit(10000)){throw 'launcher did not exit'};"
+        "$mutatedSnapshot.Identities=@($mutatedSnapshot.Identities)+@($unrelatedIdentity);"
+        "if(@($mutatedSnapshot.Identities|Where-Object{[int]$_.ProcessId -eq $unrelated.Id}).Count -ne 1){"
+        "throw 'same snapshot object was not mutated with unrelated identity'};"
+        "$rejected=$false;try{Stop-W4ProcessTree -Process $launcher "
+        "-IdentitySnapshot $mutatedSnapshot}catch{$rejected=$true};"
+        "if(-not $rejected){throw 'in-place mutated snapshot was accepted'};"
+        "$childProbe=Get-Process -Id $childPid -ErrorAction SilentlyContinue;"
+        "if($null -eq $childProbe){throw 'in-place mutation killed real child before rejection'};"
+        "$childProbe.Dispose();"
+        "if($unrelated.HasExited){throw 'in-place mutation killed unrelated sleeper before rejection'};"
+        "Stop-W4ProcessTree -Process $launcher -IdentitySnapshot $authenticSnapshot;"
+        "if($null -ne (Get-Process -Id $childPid -ErrorAction SilentlyContinue)){"
+        "throw 'untouched authentic snapshot did not clean real child'};"
+        "if($unrelated.HasExited){throw 'untouched authentic snapshot killed unrelated sleeper'};"
+        "'IN_PLACE_SNAPSHOT_MUTATION_REJECTED'"
+        "} finally {"
+        "if($null -ne $childPid){$child=Get-Process -Id $childPid -ErrorAction SilentlyContinue;"
+        "if($null -ne $child){try{$child.Kill();[void]$child.WaitForExit(5000)}finally{"
+        "$child.Dispose()}}};"
+        "if($null -ne $unrelated){try{if(-not $unrelated.HasExited){$unrelated.Kill();"
+        "[void]$unrelated.WaitForExit(5000)}}finally{$unrelated.Dispose()}};"
+        "if($null -ne $launcher){$launcher.Dispose()}"
+        "}"
+    )
+
+    result = _run_ps(command, timeout=30)
+
+    assert result.returncode == 0, result.stderr
+    assert "IN_PLACE_SNAPSHOT_MUTATION_REJECTED" in result.stdout
+
+
+def test_process_tree_stop_uses_authentic_snapshot_after_held_launcher_is_disposed(
+    tmp_path: Path,
+) -> None:
+    child_pid_file = tmp_path / "disposed-launcher-child.pid"
+    exit_request = tmp_path / "disposed-launcher-exit.request"
+    launcher_script = tmp_path / "disposed-launcher.ps1"
+    launcher_script.write_text(
+        (
+            "$hostPath=(Get-Process -Id $PID).Path\n"
+            "$child=Start-Process -FilePath $hostPath -ArgumentList @("
+            "'-NoLogo','-NoProfile','-NonInteractive','-Command',"
+            "'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru\n"
+            f"[IO.File]::WriteAllText('{_ps_quote(child_pid_file)}',"
+            "$child.Id.ToString(),[Text.UTF8Encoding]::new($false))\n"
+            f"while(-not(Test-Path -LiteralPath '{_ps_quote(exit_request)}' "
+            "-PathType Leaf)){[Threading.Thread]::Sleep(20)}\n"
+        ),
+        encoding="utf-8",
+    )
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_quote(DRIVER_MODULE)}' -Force;"
+        "$launcher=$null;$unrelated=$null;$childPid=$null;try{"
+        "$hostPath=(Get-Process -Id $PID).Path;"
+        "$launcher=Start-Process -FilePath $hostPath -ArgumentList @("
+        "'-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',"
+        f"'-File','{_ps_quote(launcher_script)}') -WindowStyle Hidden -PassThru;"
+        f"$pidFile='{_ps_quote(child_pid_file)}';"
+        "$deadline=[DateTime]::UtcNow.AddSeconds(5);"
+        "while(-not(Test-Path -LiteralPath $pidFile -PathType Leaf)){"
+        "if([DateTime]::UtcNow -ge $deadline){throw 'child pid was not published'};"
+        "[Threading.Thread]::Sleep(20)};"
+        "$childPid=[int][IO.File]::ReadAllText($pidFile);"
+        "$snapshot=New-W4ProcessTreeIdentitySnapshot -Process $launcher;"
+        "if(@($snapshot.Identities|Where-Object{[int]$_.ProcessId -eq $childPid}).Count -ne 1){"
+        "throw 'disposed-launcher child was not snapshotted exactly'};"
+        "$unrelated=Start-Process -FilePath $hostPath -ArgumentList @("
+        "'-NoLogo','-NoProfile','-NonInteractive','-Command',"
+        "'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru;"
+        "if(@($snapshot.Identities|Where-Object{[int]$_.ProcessId -eq $unrelated.Id}).Count -ne 0){"
+        "throw 'unrelated sleeper was unexpectedly in disposed-launcher snapshot'};"
+        f"[IO.File]::WriteAllText('{_ps_quote(exit_request)}','exit',"
+        "[Text.UTF8Encoding]::new($false));"
+        "if(-not $launcher.WaitForExit(10000)){throw 'launcher did not exit'};"
+        "$launcher.Dispose();$heldUnreadable=$false;try{$heldPid=$launcher.Id;"
+        "$heldUnreadable=($null -eq $heldPid -or [int]$heldPid -le 0)}catch{$heldUnreadable=$true};"
+        "if(-not $heldUnreadable){throw 'disposed launcher unexpectedly retained a readable PID'};"
+        "Stop-W4ProcessTree -Process $launcher -IdentitySnapshot $snapshot;"
+        "if($null -ne (Get-Process -Id $childPid -ErrorAction SilentlyContinue)){"
+        "throw 'disposed launcher cleanup did not terminate snapshotted child'};"
+        "if($unrelated.HasExited){throw 'disposed launcher cleanup killed unrelated sleeper'};"
+        "Stop-W4ProcessTree -Process $launcher -IdentitySnapshot $snapshot;"
+        "if($null -ne (Get-Process -Id $childPid -ErrorAction SilentlyContinue)){"
+        "throw 'second disposed launcher cleanup resurrected or retained child'};"
+        "if($unrelated.HasExited){throw 'idempotent disposed cleanup killed unrelated sleeper'};"
+        "'DISPOSED_SNAPSHOT_IDEMPOTENT_OK'"
+        "} finally {"
+        "if($null -ne $childPid){$child=Get-Process -Id $childPid -ErrorAction SilentlyContinue;"
+        "if($null -ne $child){try{$child.Kill();[void]$child.WaitForExit(5000)}finally{"
+        "$child.Dispose()}}};"
+        "if($null -ne $unrelated){try{if(-not $unrelated.HasExited){$unrelated.Kill();"
+        "[void]$unrelated.WaitForExit(5000)}}finally{$unrelated.Dispose()}};"
+        "if($null -ne $launcher){$launcher.Dispose()}"
+        "}"
+    )
+
+    result = _run_ps(command, timeout=30)
+
+    assert result.returncode == 0, result.stderr
+    assert "DISPOSED_SNAPSHOT_IDEMPOTENT_OK" in result.stdout
+
+
+def test_process_tree_stop_rejects_mismatched_live_held_process_before_cleanup(
+    tmp_path: Path,
+) -> None:
+    child_pid_file = tmp_path / "live-launcher-child.pid"
+    launcher_script = tmp_path / "live-launcher.ps1"
+    launcher_script.write_text(
+        (
+            "$hostPath=(Get-Process -Id $PID).Path\n"
+            "$child=Start-Process -FilePath $hostPath -ArgumentList @("
+            "'-NoLogo','-NoProfile','-NonInteractive','-Command',"
+            "'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru\n"
+            f"[IO.File]::WriteAllText('{_ps_quote(child_pid_file)}',"
+            "$child.Id.ToString(),[Text.UTF8Encoding]::new($false))\n"
+            "Start-Sleep -Seconds 30\n"
+        ),
+        encoding="utf-8",
+    )
+    command = (
+        "$ErrorActionPreference='Stop';"
+        f"Import-Module '{_ps_quote(DRIVER_MODULE)}' -Force;"
+        "$launcher=$null;$mismatched=$null;$childPid=$null;try{"
+        "$hostPath=(Get-Process -Id $PID).Path;"
+        "$launcher=Start-Process -FilePath $hostPath -ArgumentList @("
+        "'-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',"
+        f"'-File','{_ps_quote(launcher_script)}') -WindowStyle Hidden -PassThru;"
+        f"$pidFile='{_ps_quote(child_pid_file)}';"
+        "$deadline=[DateTime]::UtcNow.AddSeconds(5);"
+        "while(-not(Test-Path -LiteralPath $pidFile -PathType Leaf)){"
+        "if([DateTime]::UtcNow -ge $deadline){throw 'child pid was not published'};"
+        "[Threading.Thread]::Sleep(20)};"
+        "$childPid=[int][IO.File]::ReadAllText($pidFile);"
+        "$snapshot=New-W4ProcessTreeIdentitySnapshot -Process $launcher;"
+        "if(@($snapshot.Identities|Where-Object{[int]$_.ProcessId -eq $childPid}).Count -ne 1){"
+        "throw 'live launcher child was not snapshotted exactly'};"
+        "$mismatched=Start-Process -FilePath $hostPath -ArgumentList @("
+        "'-NoLogo','-NoProfile','-NonInteractive','-Command',"
+        "'Start-Sleep -Seconds 30') -WindowStyle Hidden -PassThru;"
+        "$rejected=$false;try{Stop-W4ProcessTree -Process $mismatched "
+        "-IdentitySnapshot $snapshot}catch{$rejected=$true};"
+        "if(-not $rejected){throw 'mismatched live held process was accepted'};"
+        "if($launcher.HasExited){throw 'mismatched held process rejection killed launcher'};"
+        "$childProbe=Get-Process -Id $childPid -ErrorAction SilentlyContinue;"
+        "if($null -eq $childProbe){throw 'mismatched held process rejection killed child'};"
+        "$childProbe.Dispose();"
+        "if($mismatched.HasExited){throw 'mismatched held process rejection killed mismatched process'};"
+        "Stop-W4ProcessTree -Process $launcher -IdentitySnapshot $snapshot;"
+        "if(-not $launcher.WaitForExit(5000)){throw 'authentic live snapshot did not terminate launcher'};"
+        "if($null -ne (Get-Process -Id $childPid -ErrorAction SilentlyContinue)){"
+        "throw 'authentic live snapshot did not terminate child'};"
+        "if($mismatched.HasExited){throw 'authentic live snapshot killed mismatched process'};"
+        "'MISMATCHED_LIVE_PROCESS_REJECTED'"
+        "} finally {"
+        "if($null -ne $childPid){$child=Get-Process -Id $childPid -ErrorAction SilentlyContinue;"
+        "if($null -ne $child){try{$child.Kill();[void]$child.WaitForExit(5000)}finally{"
+        "$child.Dispose()}}};"
+        "if($null -ne $mismatched){try{if(-not $mismatched.HasExited){$mismatched.Kill();"
+        "[void]$mismatched.WaitForExit(5000)}}finally{$mismatched.Dispose()}};"
+        "if($null -ne $launcher){try{if(-not $launcher.HasExited){$launcher.Kill();"
+        "[void]$launcher.WaitForExit(5000)}}finally{$launcher.Dispose()}}"
+        "}"
+    )
+
+    result = _run_ps(command, timeout=30)
+
+    assert result.returncode == 0, result.stderr
+    assert "MISMATCHED_LIVE_PROCESS_REJECTED" in result.stdout
+
+
 def test_process_tree_stop_rejects_exited_root_without_prior_snapshot(
     tmp_path: Path,
 ) -> None:
