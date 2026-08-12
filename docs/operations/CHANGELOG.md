@@ -13,6 +13,13 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### M13 W3：可复现打包链与 W4 Artifact E2E（2026-08-11）
+
+- W3 生成可追溯的 Windows `test_candidate`，交付 release payload 外的 deterministic loopback Provider harness；`chat.loopback_harness.v1` 仅登记为 `packaging_contract_verified`，仍是 deferred、无产品 surface 的 E2E 输入。
+- 外部 artifact-only 运行 `w4-53a45ed` 从安装后的入口完成 10 个 scenario / 11 行 lifecycle matrix，结果为 10 verified / 0 failed / 0 pending、`functional_verified=true`；W4 evidence registry 绑定实际 Artifact、fingerprint、外部 registry/summary/manifest/launcher 哈希。
+- 该结果不是正式发布：候选保持 `artifact_kind=test_candidate`、`artifact_status=test-candidate-on-compliance-hold`、`release_eligible=false`、`decision=hold`。7 项未关闭 blocker 为 conda/native 许可与 SPDX、html2text GPL、MSVC provenance、Qt 对应源码、Qt 链接/替换性、Qt module license audit 和 Qt notices。
+- 默认验证仍只使用合成数据与隔离根，未读取真实 API key、Provider 或 Vault。
+
 ### M13 W3-T0：短期 Test 治理门禁（2026-08-10）
 
 - 冻结 `source`、`packaging-contract`、`artifact-only` 三条测试 lane 的唯一 owner、

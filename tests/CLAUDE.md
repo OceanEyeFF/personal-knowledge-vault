@@ -48,18 +48,18 @@
 
 ### M13 W2 source verification
 
-- `tests/contracts/m13_w2.v1.yaml` 是详细路线的机器可检查投影：受支持、`partial-v1` 与明确 unsupported 的源代码能力当前为 `source_verified`。
-- `mcp.http.v1` 与由 W3 主责的 `chat.loopback_harness.v1` 仍为 `defined`；`m13_w4_handoffs.v1.yaml` 中全部场景必须保持 `artifact_pending`，源码树测试不得升级为 Artifact 证据。
+- `tests/contracts/m13_w2.v1.yaml` 是详细路线的机器可检查投影：受支持、`partial-v1` 与明确 unsupported 的源代码能力为 `source_verified`；W3 外置 `chat.loopback_harness.v1` 为 `packaging_contract_verified`，仍是 deferred、无产品 surface 的 payload 外 E2E 输入。
+- `mcp.http.v1` 仍为 `defined`；`m13_w4_handoffs.v1.yaml` 中全部场景必须保持 `artifact_pending` 作为声明，源码树或 packaging-contract 测试不得升级为 Artifact 证据。
 - Workflow、Retrieval、MCP、GUI Chat 分别由唯一 owner、版本化 fixture、故障注入与稳定 oracle 覆盖；adapter 必须保留下游 `invalid/error/degraded`，不得改写为空结果或成功。
 - Chat 的 W4 测试响应只能来自 W3 交付、release payload 外的 deterministic loopback harness，并经正常 Provider 配置接入；源码和 Artifact 不得包含隐藏 fake/test mode。
 - 2026-08-07 fresh 默认离线全量为 `3475 passed, 20 skipped, 9 deselected`；skip 均为当前 Windows 主机缺少 symlink 权限或 POSIX-only 合同，deselect 为离线入口排除 live 用例。
 - 同一收口工作树的 MCP coverage gate 为 `755 passed, 5 deselected`，`src.mcp` 为 1671 statements / 78 miss / `95.33%`，达到 `95%` 门槛。
 - 2026-08-07 Phase C fresh run 为 16/16 tasks、151/151 checks（119 项声明式 + 32 项自动公开 envelope）、`overall=1.0`、全部维度 `1.0`、0 failed、`targets_met=true`。
-- W2 四条冻结工作流的独立复审未发现确定性 P0/P1；W3/W4 尚未完成，当前没有 `artifact_verified` 结论。
+- W2 四条冻结工作流的独立复审未发现确定性 P0/P1；W3 打包链与 W4 artifact-only 功能验证已完成，但候选仍为合规 hold。
 - 2026-08-10 W3-T0 已冻结 `source` / `packaging-contract` / `artifact-only` 三条 lane；默认 source lane 排除 Artifact，显式 Artifact lane 缺任一输入、路径链接状态不可判定或超时时必须失败，禁止 skip/xfail 与源码回退。
-- W2 handoff 与 W4 evidence 已拆分为独立 registry；10 个 scenario 覆盖详细路线的 11 行 lifecycle matrix，当前仍全部 `artifact_pending`。状态 validator 拒绝 source/packaging-contract 伪造 `artifact_verified`、缺 identity/hash/evidence 及 Chat 缺 harness。
+- W2 handoff 与 W4 evidence 已拆分为独立 registry；10 个 scenario 覆盖详细路线的 11 行 lifecycle matrix。handoff 全部保持 `artifact_pending`，而外部 artifact-only `w4-53a45ed` 的 10 条 evidence record 已为 `artifact_verified`；状态 validator 拒绝 source/packaging-contract 伪造、缺 identity/hash/evidence 及 Chat 缺 harness。
 - W3-T0 根运行证据：定向 contract `19 passed`；QSettings/Qt 全局状态 `45 passed, 1 skipped`；合成显式 Artifact lane `12 passed`；最终默认离线全量 `3492 passed, 20 skipped, 21 deselected`。
-- 同一冻结实现的 MCP coverage 为 `758 passed, 2759 deselected`、`src.mcp=95.33%`（门槛 `95%`）；Phase C 为 16/16 tasks、151/151 checks、全部维度 `1.0`、0 failed、`targets_met=true`。独立 CodeReview 为 P0=0、P1=0；W3/W4 仍未完成且没有 `artifact_verified`。
+- 同一冻结实现的 MCP coverage 为 `758 passed, 2759 deselected`、`src.mcp=95.33%`（门槛 `95%`）；Phase C 为 16/16 tasks、151/151 checks、全部维度 `1.0`、0 failed、`targets_met=true`。独立 CodeReview 为 P0=0、P1=0；W4 最终外部运行结果为 10/11/10/0/0、`functional_verified=true`，但 `release_eligible=false`、`decision=hold`。
 
 ---
 
@@ -401,6 +401,13 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-08-11 (M13 W3 打包链与 W4 held-candidate Artifact E2E)
+
+- W3 交付可复现 Windows test candidate 与 release payload 外 deterministic loopback harness；W2 registry 中仅 `chat.loopback_harness.v1` 升为 `packaging_contract_verified`，仍为 deferred、无产品 surface。
+- 外部 artifact-only 运行 `w4-53a45ed` 完成 10 个 scenario / 11 行 matrix，结果为 10 `artifact_verified` / 0 failed / 0 pending、`functional_verified=true`；完整 record 和 final-run binder 位于 `tests/contracts/m13_w4_evidence.v1.yaml`。
+- 运行仍是 `test_candidate`：`release_eligible=false`、`decision=hold`。未关闭 blocker 为 conda/native、html2text GPL、MSVC provenance、Qt 对应源码/链接替换性/模块审计及 notices；不得把本结果表述为正式发布。
+- 全部验证保持离线、合成数据和隔离路径；未读取真实 Provider、API key 或 Vault。
 
 ### 2026-08-10 (M13 W3-T0 短期 Test 治理收口)
 

@@ -13,7 +13,8 @@
 > 命名说明：当前路线里提到的“当前开发 Phase 1”实际对应 `Phase A：Relation Foundation`；历史文档中的旧 `Phase 1` 已归档完成，两者不是同一时间轴。
 > 2026-07-31 离线收口：Phase C 固定评测为 16 tasks / 119 checks，`overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`；三个探索 Tool 按 `partial-v1` 口径交付，公开合同仍诚实声明 `implementation_level=partial`。
 > 2026-08-07 M13 W1 安全复审：统一 runtime layout/bootstrap、Vault containment、跨存储补偿/repair 终态及 fail-closed migration 已完成；SQLite 事务提交凭据、Markdown identity + SHA-256 和 Vector 持久 pair marker 已补齐。W1 冻结时离线验收为 unit `1583 passed, 19 skipped`、integration/blackbox/e2e `277 passed, 9 deselected`。
-> 2026-08-07 M13 W2 收口：Workflow、Retrieval、MCP、GUI Chat 四条源代码合同均已 `source_verified`，独立复审无确定性 P0/P1；Phase C fresh run 为 16 tasks / 151 checks（119 项声明式 + 32 项自动公开 envelope）、全部维度 `1.0`、0 failed、`targets_met=true`。下一步开始 W3；W3/W4 与最终 Artifact 发布仍未完成。
+> 2026-08-07 M13 W2 收口：Workflow、Retrieval、MCP、GUI Chat 四条源代码合同均已 `source_verified`，独立复审无确定性 P0/P1；Phase C fresh run 为 16 tasks / 151 checks（119 项声明式 + 32 项自动公开 envelope）、全部维度 `1.0`、0 failed、`targets_met=true`。
+> 2026-08-11 M13 W3/W4：可复现打包链、payload 外 deterministic loopback harness 与 installed-Artifact 全矩阵已完成。外部 artifact-only 运行 `w4-53a45ed` 得到 10 个 scenario / 11 行 matrix / 10 verified / 0 failed / 0 pending，`functional_verified=true`；该 Artifact 仍是 `test_candidate`，因 7 项合规 blocker 保持 `release_eligible=false`、`decision=hold`，不得作为正式发布。
 
 ## ✨ 核心特点
 
@@ -25,7 +26,7 @@
 - 💰 **成本可控**: BM25 路径不构造 Provider，语义能力按需启用
 - 🛡️ **AI 安全**: 内置安全规范，测试环境完全隔离，数据备份自动化
 
-> **M13 Developer Preview 支持边界**：发布面只包含 Windows-first、fresh-install、GUI、CLI 与 MCP stdio。GUI 搜索只保证 BM25；向量/混合检索属于 CLI/MCP 的显式策略能力并依赖正常 Provider 配置。MCP HTTP transport 与 Bearer 合同不在本次发布面。默认自动化全程离线，只使用合成数据和可控 doubles，不读取真实 API key、真实 Provider 或真实 Vault；W3/W4 的 Chat Artifact 路径将使用 release payload 外的 deterministic loopback harness。
+> **M13 Developer Preview 支持边界**：发布面只包含 Windows-first、fresh-install、GUI、CLI 与 MCP stdio。GUI 搜索只保证 BM25；向量/混合检索属于 CLI/MCP 的显式策略能力并依赖正常 Provider 配置。MCP HTTP transport 与 Bearer 合同不在本次发布面。默认自动化全程离线，只使用合成数据和可控 doubles，不读取真实 API key、真实 Provider 或真实 Vault；W4 已通过正常 Provider 配置使用 release payload 外的 deterministic loopback harness 完成 Chat Artifact 路径验证。
 
 ## 🎯 核心功能
 
@@ -441,13 +442,13 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 
 ### 🎉 当前仓库基线: v0.8.0-alpha
 
-**发布状态**: 🧪 M13 W1/W2 已完成，当前仍为 alpha 开发基线；W3 可开始，W3/W4、Artifact 发布与真实数据验收尚未完成
+**发布状态**: 🧪 M13 W1/W2/W3 与 W4 installed-Artifact 功能验证已完成；当前 Artifact 是合规 hold 的 test candidate，尚未具备正式发布资格，真实数据验收也未执行。
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
 | **项目版本** | v0.8.0-alpha | 当前仓库基线 |
 | **稳定能力基线** | v0.7.0 | MCP 服务 (8 Tool + 4 Resource + 3 Prompt) |
-| **开发进度** | M13 W2 | W1 安全底座与 W2 源代码功能合同完成；W3/W4 待完成 |
+| **开发进度** | M13 W4（hold） | W3 打包链与 W4 10/11 Artifact matrix 已完成；7 项合规 blocker 使候选保持 hold |
 | **源代码文件** | 40+ 个 | Python 模块 |
 | **测试文件** | 96 个 | 2026-03-06 仓库快照（tracked files） |
 | **测试覆盖率** | 待重新统计 | README 不再保留未经重新验证的旧覆盖率数字 |
@@ -471,6 +472,8 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 | **M9** | ✅ | MCP 写入 + Prompts + 安全加固 (v0.7.0) | 2026-02-19 |
 | **M13 W1** | ✅ | Runtime layout、Vault containment、跨存储终态与 fail-closed migration | 2026-08-02 |
 | **M13 W2** | ✅ | Workflow、Retrieval、MCP、GUI Chat 源代码功能合同与独立复审 | 2026-08-07 |
+| **M13 W3** | ✅ | 可复现 Windows test-candidate 打包链与 payload 外 loopback harness | 2026-08-11 |
+| **M13 W4** | 🟡 | installed-Artifact 10 scenario / 11 行 matrix 通过；合规审查结论为 hold | 2026-08-11 |
 
 ### 🚀 核心能力矩阵
 
@@ -483,15 +486,15 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 | **工作流引擎** | 🧪 已实现（alpha） | YAML 配置，可编排/可观测 |
 | **数据迁移** | 🧪 W1 安全合同通过 | fresh/off-path 初始化与升级拒绝已验证；历史原地升级仍不在 M13 默认范围 |
 | **AI 安全** | 🧪 CAT-0 已验证 | 离线入口与测试隔离；不等同于 OS sandbox |
-| **MCP 服务** | 🧪 W2 源代码合同通过 | 固定评测 16/16、151/151；stdio-only，Artifact/真实快照未验收 |
+| **MCP 服务** | 🧪 Artifact 路径已验证（hold） | 固定评测 16/16、151/151；stdio-only，W4 candidate 已验，真实快照未验收 |
 
 ### 📈 技术债务与改进方向
 
 **当前优先级**:
 
-1. **M13 W3 可复现打包链**：干净 checkout、锁定资源/依赖、构建指纹与 release payload 外的 deterministic Chat loopback harness
-2. **M13 W4 Artifact 验收**：在安装产物上复验 GUI/CLI/MCP stdio、离线归档、Chat、升级拒绝与卸载，并给出 release/hold
-3. **后置增强**：按真实需求逐 Tool 扩展 full 语义；性能、多模态和重交互体验不阻塞当前 Developer Preview
+1. **合规 blocker 收口**：补齐许可证、Qt 对应源码/链接替换性、native provenance 与 notices，才可重新评估 test candidate。
+2. **后置增强**：按真实需求逐 Tool 扩展 full 语义；POSIX/CI、性能、多模态和重交互体验不阻塞当前 Developer Preview。
+3. **真实数据验收**：仍需用户授权与 U1/G8、FT5 等独立前置，未被 W4 替代。
 
 ## 🧪 测试体系
 
@@ -562,7 +565,7 @@ live/secret/proxy 环境并安装 Python 级网络与子进程 guard，但它不
 开发 vault 重建入口 `scripts/rebuild-dev-vault.py` 已完成合成演练：
 `rebuilt -> up_to_date -> checked`，目标 schema `1.2.4`、9 个迁移、3 条 seed。
 这只证明离线合成开发基线可重建；真实快照仍受 U1/G8 与迁移 FT5 阻塞，
-本轮未读取或执行真实数据。M13 W1/W2 已在该离线基线上完成，当前开始 W3；这仍不等于 Artifact 或真实数据验收。
+本轮未读取或执行真实数据。M13 W1/W2/W3 与 W4 installed-Artifact 功能验证均在该离线基线上完成；W4 候选仍受合规 hold，且这不等于真实数据验收。
 
 详细说明：[tests/CLAUDE.md](tests/CLAUDE.md)
 

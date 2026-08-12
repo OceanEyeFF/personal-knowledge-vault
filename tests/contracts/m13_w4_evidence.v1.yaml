@@ -1,242 +1,513 @@
 # W4 execution evidence is deliberately independent from scenario declarations.
-# Initial pending records contain no Artifact identity, result, timestamp or
-# evidence locator; source-tree success must never populate these fields.
-schema_version: pkv.m13.w4.evidence.v1
-truth_source: docs/overview/阶段开发路线与依赖-2026-03.md#86-w4artifact-e2e用户文档与发布审查
-handoff_registry: tests/contracts/m13_w4_handoffs.v1.yaml
+# The completed records below are a verbatim mirror of the external artifact-only registry.
+# final_run binds the held test candidate; it is not a release approval.
+schema_version: "pkv.m13.w4.evidence.v1"
+truth_source: "docs/overview/阶段开发路线与依赖-2026-03.md#86-w4artifact-e2e用户文档与发布审查"
+handoff_registry: "tests/contracts/m13_w4_handoffs.v1.yaml"
 artifact_only: true
-allowed_states: [artifact_pending, artifact_verified, artifact_failed]
+allowed_states:
+  - "artifact_pending"
+  - "artifact_verified"
+  - "artifact_failed"
 state_contract:
   artifact_pending:
     producer_lane: null
     oracle_result: null
-    evidence_paths: empty
+    evidence_paths: "empty"
   artifact_verified:
-    producer_lane: artifact-only
-    oracle_result: passed
+    producer_lane: "artifact-only"
+    oracle_result: "passed"
     required_identity_fields:
-      - artifact_id
-      - artifact_sha256
-      - normalized_manifest_sha256
-      - build_fingerprint
-      - source_revision
-      - runner_version
-      - execution_id
-      - executed_at
-      - environment_fingerprint
-      - fixture_sha256
-      - evidence_manifest_sha256
-      - source_isolation_proof_sha256
+      - "artifact_id"
+      - "artifact_sha256"
+      - "normalized_manifest_sha256"
+      - "build_fingerprint"
+      - "source_revision"
+      - "runner_version"
+      - "execution_id"
+      - "executed_at"
+      - "environment_fingerprint"
+      - "fixture_sha256"
+      - "evidence_manifest_sha256"
+      - "source_isolation_proof_sha256"
     conditional_identity_fields:
-      - harness_sha256_when_external_harness_is_declared
-    evidence_paths: non_empty
+      - "harness_sha256_when_external_harness_is_declared"
+    evidence_paths: "non_empty"
   artifact_failed:
-    producer_lane: artifact-only
-    oracle_result: failed
+    producer_lane: "artifact-only"
+    oracle_result: "failed"
     required_identity_fields:
-      - artifact_id
-      - artifact_sha256
-      - normalized_manifest_sha256
-      - build_fingerprint
-      - source_revision
-      - runner_version
-      - execution_id
-      - executed_at
-      - environment_fingerprint
-      - fixture_sha256
-      - evidence_manifest_sha256
-      - source_isolation_proof_sha256
+      - "artifact_id"
+      - "artifact_sha256"
+      - "normalized_manifest_sha256"
+      - "build_fingerprint"
+      - "source_revision"
+      - "runner_version"
+      - "execution_id"
+      - "executed_at"
+      - "environment_fingerprint"
+      - "fixture_sha256"
+      - "evidence_manifest_sha256"
+      - "source_isolation_proof_sha256"
     conditional_identity_fields:
-      - harness_sha256_when_external_harness_is_declared
-    evidence_paths: non_empty
-
+      - "harness_sha256_when_external_harness_is_declared"
+    evidence_paths: "non_empty"
+final_run:
+  evidence_root: "E:/pkv-w4-evidence-53a45ed"
+  execution_id: "w4-53a45ed"
+  runner_version: "pkv.m13.artifact-runner.v2"
+  source_revision: "53a45ed7535db8ead94370eb15b2f7874f5f330a"
+  artifact_id: "PersonalKnowledgeVault-0.8.1-windows-x86_64"
+  artifact_sha256: "5de0ad975892ba0686c7116b17639ab97a785a098402faa0994b7eeb2e050b4c"
+  normalized_manifest_sha256: "b82ee1eb113d456212d21dbb064e9281bacbce9f167793770b7b1b576132cf5f"
+  build_fingerprint: "f1b666375a973aaef207075f1434301b55da84683ae70da17c2d67afe135d64c"
+  artifact_kind: "test_candidate"
+  artifact_status: "test-candidate-on-compliance-hold"
+  compliance_manifest_sha256: "d1d9d8e0417360e35d11af15f5a088cf32ab4f5bb43a20d96c3a45d87d5e433f"
+  release_inventory_artifact_closure_sha256: "b5d177c55b2b68ef6e582e23e938a0b319fac1d681ad765a27415dfc92eda9a8"
+  release_inventory_closure_sha256: "80164d1fe474225e402c9bc4b1dcaa5f94605e5d8d7d287bea1a7bedc29377ce"
+  release_inventory_sha256: "8ed02ad3c0bf4e55949675ba77a46727018a38ad3888fa02221cd55b8244a4a5"
+  controller_sha256: "36f340e225acc87137db5d0a6a6f10ed6c45645f2e8e25ef33740054b59bd24f"
+  fixture_sha256: "8502bf6654b1b2b66fc90965b32b04f35a090dfb02dca8630b3aadd74e7e8835"
+  release_eligible: false
+  release_blockers:
+    - "conda-native-license-materials-and-spdx"
+    - "html2text-gpl-compliance"
+    - "native-msvc-license-and-provenance"
+    - "qt-corresponding-source-location"
+    - "qt-linkage-and-replacement-not-proven"
+    - "qt-module-license-audit"
+    - "qt-notice-placeholders"
+  scenarios_total: 10
+  matrix_rows_total: 11
+  artifact_verified: 10
+  artifact_failed: 0
+  artifact_pending: 0
+  functional_verified: true
+  decision: "hold"
+  summary:
+    locator: "E:/pkv-w4-evidence-53a45ed/runs/w4-53a45ed/w4-run-summary.json"
+    sha256: "fb34b212fca2397bf801870048db7bf401b6ab15df0d3dd14fbc2aaecd6d0b05"
+  registry:
+    locator: "E:/pkv-w4-evidence-53a45ed/runs/w4-53a45ed/w4-evidence-registry.json"
+    sha256: "1403ccde90b522cee6904a7f4edd059c92678cc85f12ddf95ea9c885999ec34e"
+  run_evidence_manifest:
+    locator: "E:/pkv-w4-evidence-53a45ed/runs/w4-53a45ed/run-evidence-manifest.json"
+    sha256: "e1057d787eb098070c5dbdc8004eabc200395eb1a27cbe5935fe765c9288cf41"
+    tree_sha256: "97c3162a8bbb5eed03d0efa2ba9c22abf0ab0f9125669061cbda807ac7329079"
+    entries_total: 243
+  launcher:
+    locator: "E:/pkv-w4-evidence-53a45ed/launcher/w4-53a45ed/launcher-result.json"
+    sha256: "a6804df0a0fab1b11276df61acf65144d3f39249d7511de00a968ac13b1201b1"
+    controller_exit_code: 0
+    timed_out: false
+    forced_termination: false
+    postcondition_verified: true
 records:
-  - scenario_id: w4.url_archive_ssrf_rejection.v1
-    state: artifact_pending
-    producer_lane: null
-    artifact_id: null
-    artifact_sha256: null
-    normalized_manifest_sha256: null
-    build_fingerprint: null
-    source_revision: null
-    runner_version: null
-    execution_id: null
-    executed_at: null
-    environment_fingerprint: null
-    fixture_sha256: null
+  - scenario_id: "w4.release_audit.v1"
+    state: "artifact_verified"
+    producer_lane: "artifact-only"
+    artifact_id: "PersonalKnowledgeVault-0.8.1-windows-x86_64"
+    artifact_sha256: "5de0ad975892ba0686c7116b17639ab97a785a098402faa0994b7eeb2e050b4c"
+    normalized_manifest_sha256: "b82ee1eb113d456212d21dbb064e9281bacbce9f167793770b7b1b576132cf5f"
+    build_fingerprint: "f1b666375a973aaef207075f1434301b55da84683ae70da17c2d67afe135d64c"
+    source_revision: "53a45ed7535db8ead94370eb15b2f7874f5f330a"
+    runner_version: "pkv.m13.artifact-runner.v2"
+    execution_id: "w4-53a45ed"
+    executed_at: "2026-08-11T23:23:12.7019228Z"
+    environment_fingerprint: "ca759a0aaa2a8d31f21b009094ecf859a765495c320ac13f7323e30caae8b8af"
+    fixture_sha256: "8502bf6654b1b2b66fc90965b32b04f35a090dfb02dca8630b3aadd74e7e8835"
     harness_sha256: null
-    evidence_manifest_sha256: null
-    source_isolation_proof_sha256: null
-    oracle_result: null
-    evidence_paths: []
-
-  - scenario_id: w4.offline_text_archive.v1
-    state: artifact_pending
-    producer_lane: null
-    artifact_id: null
-    artifact_sha256: null
-    normalized_manifest_sha256: null
-    build_fingerprint: null
-    source_revision: null
-    runner_version: null
-    execution_id: null
-    executed_at: null
-    environment_fingerprint: null
-    fixture_sha256: null
+    evidence_manifest_sha256: "4aa52f6ffd04552afe3d009d9e0c71ce82369e56546e58b77025d1a0580487f1"
+    source_isolation_proof_sha256: "7f09e35e4e9e576584d61e4359cd3f2e7daa26e3f2d40c799b29f90af00f44ad"
+    oracle_result: "passed"
+    evidence_paths:
+      - "scenarios/w4.release_audit.v1/cli-version/invocation.json"
+      - "scenarios/w4.release_audit.v1/cli-version/process.json"
+      - "scenarios/w4.release_audit.v1/cli-version/stderr.txt"
+      - "scenarios/w4.release_audit.v1/cli-version/stdout.txt"
+      - "scenarios/w4.release_audit.v1/evidence-manifest.json"
+      - "scenarios/w4.release_audit.v1/install-cleanup.json"
+      - "scenarios/w4.release_audit.v1/oracle.json"
+      - "scenarios/w4.release_audit.v1/windows-cache-cleanup.json"
+  - scenario_id: "w4.application_lifecycle.v1"
+    state: "artifact_verified"
+    producer_lane: "artifact-only"
+    artifact_id: "PersonalKnowledgeVault-0.8.1-windows-x86_64"
+    artifact_sha256: "5de0ad975892ba0686c7116b17639ab97a785a098402faa0994b7eeb2e050b4c"
+    normalized_manifest_sha256: "b82ee1eb113d456212d21dbb064e9281bacbce9f167793770b7b1b576132cf5f"
+    build_fingerprint: "f1b666375a973aaef207075f1434301b55da84683ae70da17c2d67afe135d64c"
+    source_revision: "53a45ed7535db8ead94370eb15b2f7874f5f330a"
+    runner_version: "pkv.m13.artifact-runner.v2"
+    execution_id: "w4-53a45ed"
+    executed_at: "2026-08-11T23:23:36.2779041Z"
+    environment_fingerprint: "ca759a0aaa2a8d31f21b009094ecf859a765495c320ac13f7323e30caae8b8af"
+    fixture_sha256: "8502bf6654b1b2b66fc90965b32b04f35a090dfb02dca8630b3aadd74e7e8835"
     harness_sha256: null
-    evidence_manifest_sha256: null
-    source_isolation_proof_sha256: null
-    oracle_result: null
-    evidence_paths: []
-
-  - scenario_id: w4.bm25_search.v1
-    state: artifact_pending
-    producer_lane: null
-    artifact_id: null
-    artifact_sha256: null
-    normalized_manifest_sha256: null
-    build_fingerprint: null
-    source_revision: null
-    runner_version: null
-    execution_id: null
-    executed_at: null
-    environment_fingerprint: null
-    fixture_sha256: null
+    evidence_manifest_sha256: "b1c4fcb4c2885539f6c36d5fea277e5d12e75239ec3478c0feb0a31f156542a1"
+    source_isolation_proof_sha256: "7f09e35e4e9e576584d61e4359cd3f2e7daa26e3f2d40c799b29f90af00f44ad"
+    oracle_result: "passed"
+    evidence_paths:
+      - "scenarios/w4.application_lifecycle.v1/absence-conda/invocation.json"
+      - "scenarios/w4.application_lifecycle.v1/absence-conda/process.json"
+      - "scenarios/w4.application_lifecycle.v1/absence-conda/stderr.txt"
+      - "scenarios/w4.application_lifecycle.v1/absence-conda/stdout.txt"
+      - "scenarios/w4.application_lifecycle.v1/absence-python/invocation.json"
+      - "scenarios/w4.application_lifecycle.v1/absence-python/process.json"
+      - "scenarios/w4.application_lifecycle.v1/absence-python/stderr.txt"
+      - "scenarios/w4.application_lifecycle.v1/absence-python/stdout.txt"
+      - "scenarios/w4.application_lifecycle.v1/evidence-manifest.json"
+      - "scenarios/w4.application_lifecycle.v1/first-run/invocation.json"
+      - "scenarios/w4.application_lifecycle.v1/first-run/process.json"
+      - "scenarios/w4.application_lifecycle.v1/first-run/stderr.txt"
+      - "scenarios/w4.application_lifecycle.v1/first-run/stdout.txt"
+      - "scenarios/w4.application_lifecycle.v1/install/invocation.json"
+      - "scenarios/w4.application_lifecycle.v1/install/process.json"
+      - "scenarios/w4.application_lifecycle.v1/install/stderr.txt"
+      - "scenarios/w4.application_lifecycle.v1/install/stdout.txt"
+      - "scenarios/w4.application_lifecycle.v1/install-cleanup.json"
+      - "scenarios/w4.application_lifecycle.v1/oracle.json"
+      - "scenarios/w4.application_lifecycle.v1/restart/invocation.json"
+      - "scenarios/w4.application_lifecycle.v1/restart/process.json"
+      - "scenarios/w4.application_lifecycle.v1/restart/stderr.txt"
+      - "scenarios/w4.application_lifecycle.v1/restart/stdout.txt"
+      - "scenarios/w4.application_lifecycle.v1/windows-cache-cleanup.json"
+  - scenario_id: "w4.url_archive_ssrf_rejection.v1"
+    state: "artifact_verified"
+    producer_lane: "artifact-only"
+    artifact_id: "PersonalKnowledgeVault-0.8.1-windows-x86_64"
+    artifact_sha256: "5de0ad975892ba0686c7116b17639ab97a785a098402faa0994b7eeb2e050b4c"
+    normalized_manifest_sha256: "b82ee1eb113d456212d21dbb064e9281bacbce9f167793770b7b1b576132cf5f"
+    build_fingerprint: "f1b666375a973aaef207075f1434301b55da84683ae70da17c2d67afe135d64c"
+    source_revision: "53a45ed7535db8ead94370eb15b2f7874f5f330a"
+    runner_version: "pkv.m13.artifact-runner.v2"
+    execution_id: "w4-53a45ed"
+    executed_at: "2026-08-11T23:23:56.8144733Z"
+    environment_fingerprint: "ca759a0aaa2a8d31f21b009094ecf859a765495c320ac13f7323e30caae8b8af"
+    fixture_sha256: "8502bf6654b1b2b66fc90965b32b04f35a090dfb02dca8630b3aadd74e7e8835"
     harness_sha256: null
-    evidence_manifest_sha256: null
-    source_isolation_proof_sha256: null
-    oracle_result: null
-    evidence_paths: []
-
-  - scenario_id: w4.semantic_provider_unavailable.v1
-    state: artifact_pending
-    producer_lane: null
-    artifact_id: null
-    artifact_sha256: null
-    normalized_manifest_sha256: null
-    build_fingerprint: null
-    source_revision: null
-    runner_version: null
-    execution_id: null
-    executed_at: null
-    environment_fingerprint: null
-    fixture_sha256: null
+    evidence_manifest_sha256: "55e982869786f8584e6c04fd5d58f6fa6c27685f69778aa7b8d600b7d3b46f04"
+    source_isolation_proof_sha256: "7f09e35e4e9e576584d61e4359cd3f2e7daa26e3f2d40c799b29f90af00f44ad"
+    oracle_result: "passed"
+    evidence_paths:
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/archive-url/invocation.json"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/archive-url/process.json"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/archive-url/stderr.txt"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/archive-url/stdout.txt"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/evidence-manifest.json"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/initialize-data-root/invocation.json"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/initialize-data-root/process.json"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/initialize-data-root/stderr.txt"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/initialize-data-root/stdout.txt"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/install/invocation.json"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/install/process.json"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/install/stderr.txt"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/install/stdout.txt"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/install-cleanup.json"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/oracle.json"
+      - "scenarios/w4.url_archive_ssrf_rejection.v1/windows-cache-cleanup.json"
+  - scenario_id: "w4.semantic_provider_unavailable.v1"
+    state: "artifact_verified"
+    producer_lane: "artifact-only"
+    artifact_id: "PersonalKnowledgeVault-0.8.1-windows-x86_64"
+    artifact_sha256: "5de0ad975892ba0686c7116b17639ab97a785a098402faa0994b7eeb2e050b4c"
+    normalized_manifest_sha256: "b82ee1eb113d456212d21dbb064e9281bacbce9f167793770b7b1b576132cf5f"
+    build_fingerprint: "f1b666375a973aaef207075f1434301b55da84683ae70da17c2d67afe135d64c"
+    source_revision: "53a45ed7535db8ead94370eb15b2f7874f5f330a"
+    runner_version: "pkv.m13.artifact-runner.v2"
+    execution_id: "w4-53a45ed"
+    executed_at: "2026-08-11T23:24:19.9046563Z"
+    environment_fingerprint: "ca759a0aaa2a8d31f21b009094ecf859a765495c320ac13f7323e30caae8b8af"
+    fixture_sha256: "8502bf6654b1b2b66fc90965b32b04f35a090dfb02dca8630b3aadd74e7e8835"
     harness_sha256: null
-    evidence_manifest_sha256: null
-    source_isolation_proof_sha256: null
-    oracle_result: null
-    evidence_paths: []
-
-  - scenario_id: w4.mcp_stdio_call.v1
-    state: artifact_pending
-    producer_lane: null
-    artifact_id: null
-    artifact_sha256: null
-    normalized_manifest_sha256: null
-    build_fingerprint: null
-    source_revision: null
-    runner_version: null
-    execution_id: null
-    executed_at: null
-    environment_fingerprint: null
-    fixture_sha256: null
+    evidence_manifest_sha256: "2fae196d244fd31ba7fefb8b7a2b637c35a5194d57719beed388197846da83a1"
+    source_isolation_proof_sha256: "7f09e35e4e9e576584d61e4359cd3f2e7daa26e3f2d40c799b29f90af00f44ad"
+    oracle_result: "passed"
+    evidence_paths:
+      - "scenarios/w4.semantic_provider_unavailable.v1/evidence-manifest.json"
+      - "scenarios/w4.semantic_provider_unavailable.v1/hybrid/invocation.json"
+      - "scenarios/w4.semantic_provider_unavailable.v1/hybrid/process.json"
+      - "scenarios/w4.semantic_provider_unavailable.v1/hybrid/stderr.txt"
+      - "scenarios/w4.semantic_provider_unavailable.v1/hybrid/stdout.txt"
+      - "scenarios/w4.semantic_provider_unavailable.v1/initialize-data-root/invocation.json"
+      - "scenarios/w4.semantic_provider_unavailable.v1/initialize-data-root/process.json"
+      - "scenarios/w4.semantic_provider_unavailable.v1/initialize-data-root/stderr.txt"
+      - "scenarios/w4.semantic_provider_unavailable.v1/initialize-data-root/stdout.txt"
+      - "scenarios/w4.semantic_provider_unavailable.v1/install/invocation.json"
+      - "scenarios/w4.semantic_provider_unavailable.v1/install/process.json"
+      - "scenarios/w4.semantic_provider_unavailable.v1/install/stderr.txt"
+      - "scenarios/w4.semantic_provider_unavailable.v1/install/stdout.txt"
+      - "scenarios/w4.semantic_provider_unavailable.v1/install-cleanup.json"
+      - "scenarios/w4.semantic_provider_unavailable.v1/oracle.json"
+      - "scenarios/w4.semantic_provider_unavailable.v1/vector/invocation.json"
+      - "scenarios/w4.semantic_provider_unavailable.v1/vector/process.json"
+      - "scenarios/w4.semantic_provider_unavailable.v1/vector/stderr.txt"
+      - "scenarios/w4.semantic_provider_unavailable.v1/vector/stdout.txt"
+      - "scenarios/w4.semantic_provider_unavailable.v1/windows-cache-cleanup.json"
+  - scenario_id: "w4.mcp_stdio_call.v1"
+    state: "artifact_verified"
+    producer_lane: "artifact-only"
+    artifact_id: "PersonalKnowledgeVault-0.8.1-windows-x86_64"
+    artifact_sha256: "5de0ad975892ba0686c7116b17639ab97a785a098402faa0994b7eeb2e050b4c"
+    normalized_manifest_sha256: "b82ee1eb113d456212d21dbb064e9281bacbce9f167793770b7b1b576132cf5f"
+    build_fingerprint: "f1b666375a973aaef207075f1434301b55da84683ae70da17c2d67afe135d64c"
+    source_revision: "53a45ed7535db8ead94370eb15b2f7874f5f330a"
+    runner_version: "pkv.m13.artifact-runner.v2"
+    execution_id: "w4-53a45ed"
+    executed_at: "2026-08-11T23:24:38.6677293Z"
+    environment_fingerprint: "ca759a0aaa2a8d31f21b009094ecf859a765495c320ac13f7323e30caae8b8af"
+    fixture_sha256: "8502bf6654b1b2b66fc90965b32b04f35a090dfb02dca8630b3aadd74e7e8835"
     harness_sha256: null
-    evidence_manifest_sha256: null
-    source_isolation_proof_sha256: null
-    oracle_result: null
-    evidence_paths: []
-
-  - scenario_id: w4.chat_loopback.v1
-    state: artifact_pending
-    producer_lane: null
-    artifact_id: null
-    artifact_sha256: null
-    normalized_manifest_sha256: null
-    build_fingerprint: null
-    source_revision: null
-    runner_version: null
-    execution_id: null
-    executed_at: null
-    environment_fingerprint: null
-    fixture_sha256: null
+    evidence_manifest_sha256: "92738b5f1d30bc064ed8279200bc5a09f316d30de99d65244e5017c797324132"
+    source_isolation_proof_sha256: "7f09e35e4e9e576584d61e4359cd3f2e7daa26e3f2d40c799b29f90af00f44ad"
+    oracle_result: "passed"
+    evidence_paths:
+      - "scenarios/w4.mcp_stdio_call.v1/evidence-manifest.json"
+      - "scenarios/w4.mcp_stdio_call.v1/install/invocation.json"
+      - "scenarios/w4.mcp_stdio_call.v1/install/process.json"
+      - "scenarios/w4.mcp_stdio_call.v1/install/stderr.txt"
+      - "scenarios/w4.mcp_stdio_call.v1/install/stdout.txt"
+      - "scenarios/w4.mcp_stdio_call.v1/install-cleanup.json"
+      - "scenarios/w4.mcp_stdio_call.v1/mcp/mcp-process.json"
+      - "scenarios/w4.mcp_stdio_call.v1/mcp/mcp-stderr.txt"
+      - "scenarios/w4.mcp_stdio_call.v1/mcp/mcp-stdout-tail.txt"
+      - "scenarios/w4.mcp_stdio_call.v1/mcp/transcript.jsonl"
+      - "scenarios/w4.mcp_stdio_call.v1/oracle.json"
+      - "scenarios/w4.mcp_stdio_call.v1/windows-cache-cleanup.json"
+  - scenario_id: "w4.offline_text_archive.v1"
+    state: "artifact_verified"
+    producer_lane: "artifact-only"
+    artifact_id: "PersonalKnowledgeVault-0.8.1-windows-x86_64"
+    artifact_sha256: "5de0ad975892ba0686c7116b17639ab97a785a098402faa0994b7eeb2e050b4c"
+    normalized_manifest_sha256: "b82ee1eb113d456212d21dbb064e9281bacbce9f167793770b7b1b576132cf5f"
+    build_fingerprint: "f1b666375a973aaef207075f1434301b55da84683ae70da17c2d67afe135d64c"
+    source_revision: "53a45ed7535db8ead94370eb15b2f7874f5f330a"
+    runner_version: "pkv.m13.artifact-runner.v2"
+    execution_id: "w4-53a45ed"
+    executed_at: "2026-08-11T23:25:07.7450903Z"
+    environment_fingerprint: "ca759a0aaa2a8d31f21b009094ecf859a765495c320ac13f7323e30caae8b8af"
+    fixture_sha256: "8502bf6654b1b2b66fc90965b32b04f35a090dfb02dca8630b3aadd74e7e8835"
     harness_sha256: null
-    evidence_manifest_sha256: null
-    source_isolation_proof_sha256: null
-    oracle_result: null
-    evidence_paths: []
-
-  - scenario_id: w4.application_lifecycle.v1
-    state: artifact_pending
-    producer_lane: null
-    artifact_id: null
-    artifact_sha256: null
-    normalized_manifest_sha256: null
-    build_fingerprint: null
-    source_revision: null
-    runner_version: null
-    execution_id: null
-    executed_at: null
-    environment_fingerprint: null
-    fixture_sha256: null
+    evidence_manifest_sha256: "48e35cb0ad0225d1142c16dbee7ab9143212301dac0be09668c6aca507bd486e"
+    source_isolation_proof_sha256: "7f09e35e4e9e576584d61e4359cd3f2e7daa26e3f2d40c799b29f90af00f44ad"
+    oracle_result: "passed"
+    evidence_paths:
+      - "scenarios/w4.offline_text_archive.v1/evidence-manifest.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/archive-modal-observation.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/archive-provider-gate.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/archive-provider-gate-checkpoint.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/archive-result.png"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/archive-result.png.capture.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/invocation.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/process.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/stderr.txt"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/stdout.txt"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/uia-absence-archive-terminal.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/uia-contract-archive-result.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/uia-contract-archive-running.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/uia-contract-archive-text-active.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/uia-contract-archive-url-default.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/uia-contract-common.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/uia-navigation-contract.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-archive/uia-tree-start.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-restart/invocation.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-restart/process.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-restart/restart-preview.png"
+      - "scenarios/w4.offline_text_archive.v1/gui-restart/restart-preview.png.capture.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-restart/stderr.txt"
+      - "scenarios/w4.offline_text_archive.v1/gui-restart/stdout.txt"
+      - "scenarios/w4.offline_text_archive.v1/gui-restart/uia-contract-common.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-restart/uia-navigation-contract.json"
+      - "scenarios/w4.offline_text_archive.v1/gui-restart/uia-tree-start.json"
+      - "scenarios/w4.offline_text_archive.v1/install/invocation.json"
+      - "scenarios/w4.offline_text_archive.v1/install/process.json"
+      - "scenarios/w4.offline_text_archive.v1/install/stderr.txt"
+      - "scenarios/w4.offline_text_archive.v1/install/stdout.txt"
+      - "scenarios/w4.offline_text_archive.v1/install-cleanup.json"
+      - "scenarios/w4.offline_text_archive.v1/oracle.json"
+      - "scenarios/w4.offline_text_archive.v1/windows-cache-cleanup.json"
+  - scenario_id: "w4.bm25_search.v1"
+    state: "artifact_verified"
+    producer_lane: "artifact-only"
+    artifact_id: "PersonalKnowledgeVault-0.8.1-windows-x86_64"
+    artifact_sha256: "5de0ad975892ba0686c7116b17639ab97a785a098402faa0994b7eeb2e050b4c"
+    normalized_manifest_sha256: "b82ee1eb113d456212d21dbb064e9281bacbce9f167793770b7b1b576132cf5f"
+    build_fingerprint: "f1b666375a973aaef207075f1434301b55da84683ae70da17c2d67afe135d64c"
+    source_revision: "53a45ed7535db8ead94370eb15b2f7874f5f330a"
+    runner_version: "pkv.m13.artifact-runner.v2"
+    execution_id: "w4-53a45ed"
+    executed_at: "2026-08-11T23:25:33.7616534Z"
+    environment_fingerprint: "ca759a0aaa2a8d31f21b009094ecf859a765495c320ac13f7323e30caae8b8af"
+    fixture_sha256: "8502bf6654b1b2b66fc90965b32b04f35a090dfb02dca8630b3aadd74e7e8835"
     harness_sha256: null
-    evidence_manifest_sha256: null
-    source_isolation_proof_sha256: null
-    oracle_result: null
-    evidence_paths: []
-
-  - scenario_id: w4.upgrade_rejection.v1
-    state: artifact_pending
-    producer_lane: null
-    artifact_id: null
-    artifact_sha256: null
-    normalized_manifest_sha256: null
-    build_fingerprint: null
-    source_revision: null
-    runner_version: null
-    execution_id: null
-    executed_at: null
-    environment_fingerprint: null
-    fixture_sha256: null
+    evidence_manifest_sha256: "e6635157de25f4649974eb77727ae31986c5f4efe595748a59c03f7067f1cbfc"
+    source_isolation_proof_sha256: "7f09e35e4e9e576584d61e4359cd3f2e7daa26e3f2d40c799b29f90af00f44ad"
+    oracle_result: "passed"
+    evidence_paths:
+      - "scenarios/w4.bm25_search.v1/evidence-manifest.json"
+      - "scenarios/w4.bm25_search.v1/gui-search/invocation.json"
+      - "scenarios/w4.bm25_search.v1/gui-search/process.json"
+      - "scenarios/w4.bm25_search.v1/gui-search/search-states.png"
+      - "scenarios/w4.bm25_search.v1/gui-search/search-states.png.capture.json"
+      - "scenarios/w4.bm25_search.v1/gui-search/stderr.txt"
+      - "scenarios/w4.bm25_search.v1/gui-search/stdout.txt"
+      - "scenarios/w4.bm25_search.v1/gui-search/uia-absence-browser-success.json"
+      - "scenarios/w4.bm25_search.v1/gui-search/uia-absence-search-success.json"
+      - "scenarios/w4.bm25_search.v1/gui-search/uia-contract-browser.json"
+      - "scenarios/w4.bm25_search.v1/gui-search/uia-contract-browser-entry-error.json"
+      - "scenarios/w4.bm25_search.v1/gui-search/uia-contract-browser-preview-degraded.json"
+      - "scenarios/w4.bm25_search.v1/gui-search/uia-contract-common.json"
+      - "scenarios/w4.bm25_search.v1/gui-search/uia-contract-search.json"
+      - "scenarios/w4.bm25_search.v1/gui-search/uia-contract-search-preview-degraded.json"
+      - "scenarios/w4.bm25_search.v1/gui-search/uia-navigation-contract.json"
+      - "scenarios/w4.bm25_search.v1/gui-search/uia-tree-start.json"
+      - "scenarios/w4.bm25_search.v1/install/invocation.json"
+      - "scenarios/w4.bm25_search.v1/install/process.json"
+      - "scenarios/w4.bm25_search.v1/install/stderr.txt"
+      - "scenarios/w4.bm25_search.v1/install/stdout.txt"
+      - "scenarios/w4.bm25_search.v1/install-cleanup.json"
+      - "scenarios/w4.bm25_search.v1/mcp-seed/mcp-process.json"
+      - "scenarios/w4.bm25_search.v1/mcp-seed/mcp-stderr.txt"
+      - "scenarios/w4.bm25_search.v1/mcp-seed/mcp-stdout-tail.txt"
+      - "scenarios/w4.bm25_search.v1/mcp-seed/oracle.json"
+      - "scenarios/w4.bm25_search.v1/mcp-seed/transcript.jsonl"
+      - "scenarios/w4.bm25_search.v1/oracle.json"
+      - "scenarios/w4.bm25_search.v1/windows-cache-cleanup.json"
+  - scenario_id: "w4.chat_loopback.v1"
+    state: "artifact_verified"
+    producer_lane: "artifact-only"
+    artifact_id: "PersonalKnowledgeVault-0.8.1-windows-x86_64"
+    artifact_sha256: "5de0ad975892ba0686c7116b17639ab97a785a098402faa0994b7eeb2e050b4c"
+    normalized_manifest_sha256: "b82ee1eb113d456212d21dbb064e9281bacbce9f167793770b7b1b576132cf5f"
+    build_fingerprint: "f1b666375a973aaef207075f1434301b55da84683ae70da17c2d67afe135d64c"
+    source_revision: "53a45ed7535db8ead94370eb15b2f7874f5f330a"
+    runner_version: "pkv.m13.artifact-runner.v2"
+    execution_id: "w4-53a45ed"
+    executed_at: "2026-08-11T23:26:03.1043579Z"
+    environment_fingerprint: "ca759a0aaa2a8d31f21b009094ecf859a765495c320ac13f7323e30caae8b8af"
+    fixture_sha256: "8502bf6654b1b2b66fc90965b32b04f35a090dfb02dca8630b3aadd74e7e8835"
+    harness_sha256: "98221fbfec3f680147b6744675672f6c6e61a7b24ece3e846e9fbdf7be7d2843"
+    evidence_manifest_sha256: "1d07ef53bce98aeced44e3d9fc4efff1508b43ad2fe44ec0054dc59dd6835714"
+    source_isolation_proof_sha256: "7f09e35e4e9e576584d61e4359cd3f2e7daa26e3f2d40c799b29f90af00f44ad"
+    oracle_result: "passed"
+    evidence_paths:
+      - "scenarios/w4.chat_loopback.v1/evidence-manifest.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat/chat-terminals.png"
+      - "scenarios/w4.chat_loopback.v1/gui-chat/chat-terminals.png.capture.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat/invocation.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat/process.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat/stderr.txt"
+      - "scenarios/w4.chat_loopback.v1/gui-chat/stdout.txt"
+      - "scenarios/w4.chat_loopback.v1/gui-chat/uia-contract-chat.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat/uia-contract-chat-stop-active.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat/uia-contract-common.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat/uia-navigation-contract.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat/uia-tree-start.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat-restart/chat-session-selection.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat-restart/invocation.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat-restart/process.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat-restart/stderr.txt"
+      - "scenarios/w4.chat_loopback.v1/gui-chat-restart/stdout.txt"
+      - "scenarios/w4.chat_loopback.v1/gui-chat-restart/uia-contract-common.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat-restart/uia-navigation-contract.json"
+      - "scenarios/w4.chat_loopback.v1/gui-chat-restart/uia-tree-start.json"
+      - "scenarios/w4.chat_loopback.v1/harness/contract-response.json"
+      - "scenarios/w4.chat_loopback.v1/harness/invocation.json"
+      - "scenarios/w4.chat_loopback.v1/harness/process.json"
+      - "scenarios/w4.chat_loopback.v1/harness/process-identity.json"
+      - "scenarios/w4.chat_loopback.v1/harness/ready.json"
+      - "scenarios/w4.chat_loopback.v1/harness/result.json"
+      - "scenarios/w4.chat_loopback.v1/harness/stderr.txt"
+      - "scenarios/w4.chat_loopback.v1/harness/stdout.txt"
+      - "scenarios/w4.chat_loopback.v1/harness/telemetry.json"
+      - "scenarios/w4.chat_loopback.v1/install/invocation.json"
+      - "scenarios/w4.chat_loopback.v1/install/process.json"
+      - "scenarios/w4.chat_loopback.v1/install/stderr.txt"
+      - "scenarios/w4.chat_loopback.v1/install/stdout.txt"
+      - "scenarios/w4.chat_loopback.v1/install-cleanup.json"
+      - "scenarios/w4.chat_loopback.v1/oracle.json"
+      - "scenarios/w4.chat_loopback.v1/windows-cache-cleanup.json"
+  - scenario_id: "w4.upgrade_rejection.v1"
+    state: "artifact_verified"
+    producer_lane: "artifact-only"
+    artifact_id: "PersonalKnowledgeVault-0.8.1-windows-x86_64"
+    artifact_sha256: "5de0ad975892ba0686c7116b17639ab97a785a098402faa0994b7eeb2e050b4c"
+    normalized_manifest_sha256: "b82ee1eb113d456212d21dbb064e9281bacbce9f167793770b7b1b576132cf5f"
+    build_fingerprint: "f1b666375a973aaef207075f1434301b55da84683ae70da17c2d67afe135d64c"
+    source_revision: "53a45ed7535db8ead94370eb15b2f7874f5f330a"
+    runner_version: "pkv.m13.artifact-runner.v2"
+    execution_id: "w4-53a45ed"
+    executed_at: "2026-08-11T23:26:26.9599296Z"
+    environment_fingerprint: "ca759a0aaa2a8d31f21b009094ecf859a765495c320ac13f7323e30caae8b8af"
+    fixture_sha256: "8502bf6654b1b2b66fc90965b32b04f35a090dfb02dca8630b3aadd74e7e8835"
     harness_sha256: null
-    evidence_manifest_sha256: null
-    source_isolation_proof_sha256: null
-    oracle_result: null
-    evidence_paths: []
-
-  - scenario_id: w4.uninstall_data_retention.v1
-    state: artifact_pending
-    producer_lane: null
-    artifact_id: null
-    artifact_sha256: null
-    normalized_manifest_sha256: null
-    build_fingerprint: null
-    source_revision: null
-    runner_version: null
-    execution_id: null
-    executed_at: null
-    environment_fingerprint: null
-    fixture_sha256: null
+    evidence_manifest_sha256: "96887477181532f45418deb1722dddf7bc29316de0fdf0c6a6e9937f1e1b7b1e"
+    source_isolation_proof_sha256: "7f09e35e4e9e576584d61e4359cd3f2e7daa26e3f2d40c799b29f90af00f44ad"
+    oracle_result: "passed"
+    evidence_paths:
+      - "scenarios/w4.upgrade_rejection.v1/evidence-manifest.json"
+      - "scenarios/w4.upgrade_rejection.v1/initialize-data-root/invocation.json"
+      - "scenarios/w4.upgrade_rejection.v1/initialize-data-root/process.json"
+      - "scenarios/w4.upgrade_rejection.v1/initialize-data-root/stderr.txt"
+      - "scenarios/w4.upgrade_rejection.v1/initialize-data-root/stdout.txt"
+      - "scenarios/w4.upgrade_rejection.v1/install/invocation.json"
+      - "scenarios/w4.upgrade_rejection.v1/install/process.json"
+      - "scenarios/w4.upgrade_rejection.v1/install/stderr.txt"
+      - "scenarios/w4.upgrade_rejection.v1/install/stdout.txt"
+      - "scenarios/w4.upgrade_rejection.v1/install-cleanup.json"
+      - "scenarios/w4.upgrade_rejection.v1/oracle.json"
+      - "scenarios/w4.upgrade_rejection.v1/upgrade-corrupt/invocation.json"
+      - "scenarios/w4.upgrade_rejection.v1/upgrade-corrupt/process.json"
+      - "scenarios/w4.upgrade_rejection.v1/upgrade-corrupt/stderr.txt"
+      - "scenarios/w4.upgrade_rejection.v1/upgrade-corrupt/stdout.txt"
+      - "scenarios/w4.upgrade_rejection.v1/upgrade-future/invocation.json"
+      - "scenarios/w4.upgrade_rejection.v1/upgrade-future/process.json"
+      - "scenarios/w4.upgrade_rejection.v1/upgrade-future/stderr.txt"
+      - "scenarios/w4.upgrade_rejection.v1/upgrade-future/stdout.txt"
+      - "scenarios/w4.upgrade_rejection.v1/upgrade-old/invocation.json"
+      - "scenarios/w4.upgrade_rejection.v1/upgrade-old/process.json"
+      - "scenarios/w4.upgrade_rejection.v1/upgrade-old/stderr.txt"
+      - "scenarios/w4.upgrade_rejection.v1/upgrade-old/stdout.txt"
+      - "scenarios/w4.upgrade_rejection.v1/windows-cache-cleanup.json"
+  - scenario_id: "w4.uninstall_data_retention.v1"
+    state: "artifact_verified"
+    producer_lane: "artifact-only"
+    artifact_id: "PersonalKnowledgeVault-0.8.1-windows-x86_64"
+    artifact_sha256: "5de0ad975892ba0686c7116b17639ab97a785a098402faa0994b7eeb2e050b4c"
+    normalized_manifest_sha256: "b82ee1eb113d456212d21dbb064e9281bacbce9f167793770b7b1b576132cf5f"
+    build_fingerprint: "f1b666375a973aaef207075f1434301b55da84683ae70da17c2d67afe135d64c"
+    source_revision: "53a45ed7535db8ead94370eb15b2f7874f5f330a"
+    runner_version: "pkv.m13.artifact-runner.v2"
+    execution_id: "w4-53a45ed"
+    executed_at: "2026-08-11T23:27:17.5702274Z"
+    environment_fingerprint: "ca759a0aaa2a8d31f21b009094ecf859a765495c320ac13f7323e30caae8b8af"
+    fixture_sha256: "8502bf6654b1b2b66fc90965b32b04f35a090dfb02dca8630b3aadd74e7e8835"
     harness_sha256: null
-    evidence_manifest_sha256: null
-    source_isolation_proof_sha256: null
-    oracle_result: null
-    evidence_paths: []
-
-  - scenario_id: w4.release_audit.v1
-    state: artifact_pending
-    producer_lane: null
-    artifact_id: null
-    artifact_sha256: null
-    normalized_manifest_sha256: null
-    build_fingerprint: null
-    source_revision: null
-    runner_version: null
-    execution_id: null
-    executed_at: null
-    environment_fingerprint: null
-    fixture_sha256: null
-    harness_sha256: null
-    evidence_manifest_sha256: null
-    source_isolation_proof_sha256: null
-    oracle_result: null
-    evidence_paths: []
+    evidence_manifest_sha256: "f800b9c3259f54cb95f0f119d1fef1786eac81668eadf8a8450ee39de6f3daa3"
+    source_isolation_proof_sha256: "7f09e35e4e9e576584d61e4359cd3f2e7daa26e3f2d40c799b29f90af00f44ad"
+    oracle_result: "passed"
+    evidence_paths:
+      - "scenarios/w4.uninstall_data_retention.v1/evidence-manifest.json"
+      - "scenarios/w4.uninstall_data_retention.v1/initialize-data-root/invocation.json"
+      - "scenarios/w4.uninstall_data_retention.v1/initialize-data-root/process.json"
+      - "scenarios/w4.uninstall_data_retention.v1/initialize-data-root/stderr.txt"
+      - "scenarios/w4.uninstall_data_retention.v1/initialize-data-root/stdout.txt"
+      - "scenarios/w4.uninstall_data_retention.v1/install/invocation.json"
+      - "scenarios/w4.uninstall_data_retention.v1/install/process.json"
+      - "scenarios/w4.uninstall_data_retention.v1/install/stderr.txt"
+      - "scenarios/w4.uninstall_data_retention.v1/install/stdout.txt"
+      - "scenarios/w4.uninstall_data_retention.v1/install-cleanup.json"
+      - "scenarios/w4.uninstall_data_retention.v1/oracle.json"
+      - "scenarios/w4.uninstall_data_retention.v1/reinstall/invocation.json"
+      - "scenarios/w4.uninstall_data_retention.v1/reinstall/process.json"
+      - "scenarios/w4.uninstall_data_retention.v1/reinstall/stderr.txt"
+      - "scenarios/w4.uninstall_data_retention.v1/reinstall/stdout.txt"
+      - "scenarios/w4.uninstall_data_retention.v1/uninstall-delete-explicit/invocation.json"
+      - "scenarios/w4.uninstall_data_retention.v1/uninstall-delete-explicit/process.json"
+      - "scenarios/w4.uninstall_data_retention.v1/uninstall-delete-explicit/stderr.txt"
+      - "scenarios/w4.uninstall_data_retention.v1/uninstall-delete-explicit/stdout.txt"
+      - "scenarios/w4.uninstall_data_retention.v1/uninstall-preserve/invocation.json"
+      - "scenarios/w4.uninstall_data_retention.v1/uninstall-preserve/process.json"
+      - "scenarios/w4.uninstall_data_retention.v1/uninstall-preserve/stderr.txt"
+      - "scenarios/w4.uninstall_data_retention.v1/uninstall-preserve/stdout.txt"
+      - "scenarios/w4.uninstall_data_retention.v1/windows-cache-cleanup.json"

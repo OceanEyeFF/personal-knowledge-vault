@@ -113,8 +113,8 @@ capabilities:
     support_level: deferred
     surfaces: []
     semantic_owner: w3_external_harness
-    fixture: tests/contracts/m13_w2.v1.yaml
+    fixture: packaging/harness/contract.v1.json
     fault_injections: [success_stream, stopped_stream, provider_error]
     oracle: external_harness_not_in_release_payload
     w4_scenario: w4.chat_loopback.v1
-    state: defined
+    state: packaging_contract_verified

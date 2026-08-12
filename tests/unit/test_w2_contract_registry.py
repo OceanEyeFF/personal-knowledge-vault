@@ -13,6 +13,7 @@ ALLOWED_STATES = {
     "semantic_green",
     "adapter_green",
     "source_verified",
+    "packaging_contract_verified",
 }
 REQUIRED_FIELDS = {
     "contract_id",
@@ -78,6 +79,30 @@ def test_w2_contracts_declare_handoffs_without_carrying_artifact_evidence() -> N
         else:
             assert contract["surfaces"] == []
         assert not contract["state"].startswith("artifact_")
+
+
+def test_w3_loopback_harness_is_the_only_packaging_contract_handoff() -> None:
+    contracts = _load_registry()["capabilities"]
+    packaging_contracts = [
+        contract
+        for contract in contracts
+        if contract["state"] == "packaging_contract_verified"
+    ]
+
+    assert [contract["contract_id"] for contract in packaging_contracts] == [
+        "chat.loopback_harness.v1"
+    ]
+    assert packaging_contracts[0] == {
+        "contract_id": "chat.loopback_harness.v1",
+        "support_level": "deferred",
+        "surfaces": [],
+        "semantic_owner": "w3_external_harness",
+        "fixture": "packaging/harness/contract.v1.json",
+        "fault_injections": ["success_stream", "stopped_stream", "provider_error"],
+        "oracle": "external_harness_not_in_release_payload",
+        "w4_scenario": "w4.chat_loopback.v1",
+        "state": "packaging_contract_verified",
+    }
 
 
 def test_w2_status_vocabulary_matches_frozen_route() -> None:
