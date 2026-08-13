@@ -40,3 +40,17 @@ def test_prepare_fts5_data_keeps_english_terms_when_input_is_list() -> None:
     assert "Executive" in data["keywords"]
     assert "Augmentation" in data["tags"]
     assert "Context" in data["tags"]
+
+
+def test_sanitize_filename_normalizes_cross_platform_separators_and_controls() -> None:
+    safe_stem = TextProcessor.sanitize_filename("..\\other/x\n标题\x00")
+
+    assert safe_stem == "..-other-x标题"
+    assert "/" not in safe_stem
+    assert "\\" not in safe_stem
+    assert all(ord(character) >= 32 for character in safe_stem)
+
+
+def test_sanitize_filename_replaces_dot_only_titles_with_safe_fallback() -> None:
+    assert TextProcessor.sanitize_filename(".") == "untitled"
+    assert TextProcessor.sanitize_filename("..") == "untitled"

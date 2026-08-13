@@ -194,6 +194,7 @@ class VectorStore:
         layout: Any = None,
         path_validator: Optional[Callable[..., Any]] = None,
         allow_index_creation: bool = True,
+        read_only: bool = False,
     ):
         """
         初始化向量索引
@@ -206,17 +207,27 @@ class VectorStore:
             path_validator: 显式注入的叶子验证器（测试 seam）
             allow_index_creation: 是否允许为缺失 pair 创建新索引。只读检索入口
                 必须传入 False，避免把丢失或损坏的 pair 解释为空索引。
+            read_only: 严格只读打开。不会创建目录/锁文件、恢复中断事务、迁移
+                metadata 或清理 legacy 键；不完整、事务中或需要迁移的索引会
+                fail closed。调用方优先使用 :meth:`open_readonly`。
         """
         if not isinstance(allow_index_creation, bool):
             raise TypeError("allow_index_creation 必须是 bool")
+        if not isinstance(read_only, bool):
+            raise TypeError("read_only 必须是 bool")
+        if read_only and allow_index_creation:
+            raise ValueError("严格只读打开必须禁用索引创建")
         self.index_dir = Path(index_dir)
         self._allow_index_creation = allow_index_creation
+        self._read_only = read_only
         self._contract = self._resolve_path_contract(
             self.index_dir,
             layout=layout,
             path_validator=path_validator,
         )
-        if self._contract.layout is not None:
+        if self._read_only:
+            self._validate_read_only_directory()
+        elif self._contract.layout is not None:
             # 产品目录由 bootstrap 创建；这里幂等重建并拒绝链接/越界。
             self._contract.layout.ensure_user_directories()
             self._contract.layout.validate_user_directory(
@@ -232,26 +243,287 @@ class VectorStore:
         self._validated_chunk_pair_key: tuple[int, int, int, int, int, str] | None = (
             None
         )
-        # 必须先恢复跨 index/metadata 两次发布的中断事务；否则后续维度解析或
-        # metadata 迁移会把可恢复的半提交状态误判为永久损坏。
-        self._recover_incomplete_pair_transactions()
-        if not self._allow_index_creation:
-            self._require_complete_index_pairs()
-        self._migrate_legacy_embedding_fingerprints()
-        self.dim = self._resolve_index_dim(dim)
-        self.embedding_fingerprint = self._resolve_embedding_fingerprint(self.dim)
-        self._remove_legacy_fingerprints_for_credential_endpoint()
 
         # HNSW 参数
         self.M = 16  # 每个节点的连接数
         self.ef_construction = 200  # 构建时搜索深度
         self.ef_search = 50  # 查询时搜索深度
 
-        # 初始化文档级和分块级索引
-        self.doc_index = self._init_index("doc_vectors")
-        self.chunk_index = self._init_index("chunk_vectors")
+        if self._read_only:
+            # 严格只读路径不能通过恢复、迁移或 sidecar lock 把一次查询变成
+            # 存储写入。任一未完成/旧格式状态都交由显式维护流程处理。
+            self._require_complete_index_pairs_read_only()
+            self.dim = self._resolve_read_only_index_dim(dim)
+            self.embedding_fingerprint = self._resolve_embedding_fingerprint(self.dim)
+            self.doc_index = self._load_read_only_index("doc_vectors")
+            self.chunk_index = self._load_read_only_index("chunk_vectors")
+        else:
+            # 必须先恢复跨 index/metadata 两次发布的中断事务；否则后续维度解析或
+            # metadata 迁移会把可恢复的半提交状态误判为永久损坏。
+            self._recover_incomplete_pair_transactions()
+            if not self._allow_index_creation:
+                self._require_complete_index_pairs()
+            self._migrate_legacy_embedding_fingerprints()
+            self.dim = self._resolve_index_dim(dim)
+            self.embedding_fingerprint = self._resolve_embedding_fingerprint(self.dim)
+            self._remove_legacy_fingerprints_for_credential_endpoint()
+
+            # 初始化文档级和分块级索引
+            self.doc_index = self._init_index("doc_vectors")
+            self.chunk_index = self._init_index("chunk_vectors")
 
         logger.info("向量存储初始化完成")
+
+    @classmethod
+    def open_readonly(
+        cls,
+        index_dir: Path,
+        dim: Optional[int] = None,
+        *,
+        layout: Any = None,
+        path_validator: Optional[Callable[..., Any]] = None,
+    ) -> "VectorStore":
+        """严格只读地打开一组已发布的向量索引。
+
+        与 ``allow_index_creation=False`` 不同，该入口完全不参与崩溃恢复、
+        metadata 迁移或 writer 锁协作。因此它适用于 CLI/MCP 等只读调用通路：
+        不完整、事务中、缺少现代 Embedding 契约的索引一律拒绝，而不是就地修复。
+        """
+
+        return cls(
+            index_dir,
+            dim=dim,
+            layout=layout,
+            path_validator=path_validator,
+            allow_index_creation=False,
+            read_only=True,
+        )
+
+    def _validate_read_only_directory(self) -> None:
+        """验证现有索引目录，绝不隐式创建目录或 bootstrap 目录树。"""
+
+        try:
+            if self._contract.layout is not None:
+                self._contract.layout.validate_user_directory(
+                    self.index_dir,
+                    label="向量索引目录",
+                    allow_missing=False,
+                )
+                return
+            if not os.path.lexists(self.index_dir):
+                raise PKVRuntimeError(
+                    ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                    "向量索引目录不存在，无法严格只读加载",
+                    stage="vector_index_directory",
+                    recoverable=True,
+                )
+            validate_directory_components(self.index_dir, label="向量索引目录")
+        except PKVRuntimeError:
+            raise
+        except Exception as exc:
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                "向量索引目录不可用，无法严格只读加载",
+                stage="vector_index_directory",
+                recoverable=True,
+            ) from exc
+
+    def _read_only_unavailable(self, name: str, *, stage: str, message: str) -> None:
+        """Raise a value-free, recoverable strict-read-only availability error."""
+
+        raise PKVRuntimeError(
+            ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+            f"{name} {message}",
+            stage=stage,
+            recoverable=True,
+        )
+
+    def _require_complete_index_pairs_read_only(self) -> None:
+        """只读路径只接受完全发布且无持久事务标记的 pair。"""
+
+        for name in self.PAIR_NAMES:
+            self._require_complete_index_pair_read_only(name)
+
+    def _require_complete_index_pair_read_only(self, name: str) -> None:
+        """检查单个已发布 pair，不恢复事务也不创建 writer sidecar。"""
+
+        paths = self._pair_paths(name)
+        transaction_path = self._pair_transaction_path(name)
+        if os.path.lexists(transaction_path):
+            self._validate_leaf(
+                transaction_path,
+                label="向量索引事务标记",
+                allow_missing=False,
+            )
+            self._read_only_unavailable(
+                name,
+                stage="vector_index_transaction",
+                message="存在未完成事务，拒绝严格只读加载",
+            )
+
+        index_path = paths["index"]
+        metadata_path = paths["metadata"]
+        index_exists = os.path.lexists(index_path)
+        metadata_exists = os.path.lexists(metadata_path)
+        if not index_exists or not metadata_exists:
+            self._read_only_unavailable(
+                name,
+                stage="vector_index_pair_load",
+                message="index/metadata pair 不完整，拒绝严格只读加载",
+            )
+        self._validate_leaf(index_path, label="向量索引文件", allow_missing=False)
+        self._validate_leaf(metadata_path, label="向量元数据文件", allow_missing=False)
+
+    def _read_only_metadata_snapshot(
+        self,
+        name: str,
+    ) -> tuple[dict[str, Any], bytes]:
+        """读取并严格校验现代 metadata，绝不执行兼容迁移或回写。"""
+
+        metadata_path = self.index_dir / f"{name}_metadata.json"
+        try:
+            metadata, metadata_bytes = self._read_json_snapshot(
+                metadata_path,
+                contract=self._contract,
+            )
+            schema_version = metadata.get("schema_version")
+            if type(schema_version) is not int or schema_version != self.METADATA_SCHEMA_VERSION:
+                raise _UnsupportedMetadataFormatError(
+                    "metadata 不是当前严格只读 schema"
+                )
+            fingerprint = metadata.get(self.EMBEDDING_FINGERPRINT_V2_KEY)
+            fingerprint_schema = (
+                fingerprint.get("schema_version") if isinstance(fingerprint, dict) else None
+            )
+            if (
+                not isinstance(fingerprint, dict)
+                or type(fingerprint_schema) is not int
+                or fingerprint_schema != self.EMBEDDING_FINGERPRINT_SCHEMA_VERSION
+            ):
+                raise _UnsupportedMetadataFormatError(
+                    "metadata 缺少当前 Embedding v2 契约"
+                )
+            return metadata, metadata_bytes
+        except PKVRuntimeError:
+            raise
+        except Exception as exc:
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                f"{name} metadata 不是可严格只读加载的当前格式",
+                stage="vector_index_metadata",
+                recoverable=True,
+            ) from exc
+
+    def _resolve_read_only_index_dim(self, requested_dim: Optional[int]) -> int:
+        """从两份已发布的现代 metadata 解析维度，不使用 writer lock。"""
+
+        metadata_dims: dict[str, int] = {}
+        for name in self.PAIR_NAMES:
+            metadata, _ = self._read_only_metadata_snapshot(name)
+            stored_dim = metadata.get("dim")
+            if type(stored_dim) is not int or stored_dim <= 0:
+                raise PKVRuntimeError(
+                    ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                    f"{name} metadata 缺少有效 dim",
+                    stage="vector_index_metadata",
+                    recoverable=True,
+                )
+            metadata_dims[name] = stored_dim
+
+        unique_dims = set(metadata_dims.values())
+        if len(unique_dims) != 1:
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                "向量索引 pair 的维度定义不一致",
+                stage="vector_index_metadata",
+                recoverable=True,
+            )
+
+        existing_dim = next(iter(unique_dims))
+        if requested_dim is not None and int(requested_dim) != existing_dim:
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                "向量索引维度与当前请求不匹配",
+                stage="vector_index_metadata",
+                recoverable=True,
+            )
+        return existing_dim
+
+    def _validate_read_only_embedding_fingerprint(
+        self,
+        name: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        """只比较当前 Embedding 契约；严格读取不得升级或清理 metadata。"""
+
+        existing = metadata.get(self.EMBEDDING_FINGERPRINT_V2_KEY)
+        if not isinstance(existing, dict):
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                f"{name} metadata 缺少 Embedding v2 契约",
+                stage="vector_index_metadata",
+                recoverable=True,
+            )
+        expected = self._normalize_stored_embedding_fingerprint(
+            self.embedding_fingerprint
+        )
+        actual = self._normalize_stored_embedding_fingerprint(existing)
+        if actual != expected:
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                f"{name} Embedding 索引契约不匹配",
+                stage="vector_index_metadata",
+                recoverable=True,
+            )
+
+    def _load_read_only_index(self, name: str) -> hnswlib.Index:
+        """安全载入一份已发布索引，并绑定 index/metadata 的稳定快照。"""
+
+        self._require_complete_index_pair_read_only(name)
+        index_path = self.index_dir / f"{name}.idx"
+        metadata, metadata_bytes = self._read_only_metadata_snapshot(name)
+        stored_dim = metadata.get("dim")
+        if type(stored_dim) is not int or stored_dim != self.dim:
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                f"{name} metadata 维度不一致",
+                stage="vector_index_metadata",
+                recoverable=True,
+            )
+        self._validate_read_only_embedding_fingerprint(name, metadata)
+
+        before_state = self._index_file_state(index_path)
+        index = hnswlib.Index(space="cosine", dim=self.dim)
+        try:
+            index.load_index(str(index_path), allow_replace_deleted=True)
+        except Exception as exc:
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                f"{name} 索引无法严格只读加载",
+                stage="vector_index_load",
+                recoverable=True,
+            ) from exc
+        after_state = self._index_file_state(index_path)
+        if before_state != after_state:
+            raise PKVRuntimeError(
+                ErrorCode.PATH_STATE_UNDETERMINED,
+                f"{name} 索引在只读加载期间发生变化",
+                stage="vector_index_load",
+                recoverable=True,
+            )
+
+        _, final_metadata_bytes = self._read_only_metadata_snapshot(name)
+        if final_metadata_bytes != metadata_bytes:
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                f"{name} metadata 在只读加载期间发生变化",
+                stage="vector_index_metadata",
+                recoverable=True,
+            )
+        # 末次检查可捕获读取期间出现的未完成事务或缺失 pair；不尝试恢复它们。
+        self._require_complete_index_pair_read_only(name)
+        index.set_ef(self.ef_search)
+        return index
 
     def _require_complete_index_pairs(self) -> None:
         """只读打开前要求 doc/chunk 两个 pair 均完整存在。
@@ -909,6 +1181,13 @@ class VectorStore:
     @contextmanager
     def _index_pair_lock(self, name: str):
         """串行化同一 index/metadata 配对的检查、变更与保存。"""
+        if getattr(self, "_read_only", False):
+            raise PKVRuntimeError(
+                ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                "严格只读向量存储不允许获取 writer lock",
+                stage="vector_index_read_only",
+                recoverable=True,
+            )
         index_path = self.index_dir / f"{name}.idx"
         with self._metadata_write_lock(index_path, contract=self._contract):
             yield
@@ -2399,7 +2678,8 @@ class VectorStore:
         """
         根据 knowledge_id 取回已存储的文档级向量
 
-        在 doc pair lock 内重载最新磁盘索引，再用 hnswlib get_items() 读取。
+        普通模式在 doc pair lock 内重载最新磁盘索引；严格只读模式则验证稳定
+        快照后无锁重载，再用 hnswlib get_items() 读取。
         用于 get_related 关联推荐：取出条目的 embedding 后做相似搜索。
 
         Args:
@@ -2408,6 +2688,23 @@ class VectorStore:
         Returns:
             float32 向量 (dim 维)，不存在时返回 None
         """
+        if self._read_only:
+            index = self._load_read_only_index("doc_vectors")
+            self.doc_index = index
+            try:
+                vectors = index.get_items([knowledge_id])
+            except RuntimeError as error:
+                if "Label not found" not in str(error):
+                    raise
+                logger.debug(
+                    "文档向量不存在: knowledge_id=%s",
+                    knowledge_id,
+                )
+                return None
+            if vectors is not None:
+                return self._preflight_document_vector_read(vectors)
+            return None
+
         with self._index_pair_lock("doc_vectors"):
             index = self._reload_index_for_update_locked("doc_vectors")
             try:
@@ -2497,6 +2794,18 @@ class VectorStore:
         """获取条目当前已记录的 chunk_index 列表。"""
         if knowledge_id <= 0:
             raise ValueError("knowledge_id 必须为正整数")
+
+        if self._read_only:
+            index = self._load_read_only_index("chunk_vectors")
+            self.chunk_index = index
+            metadata, _ = self._read_only_metadata_snapshot("chunk_vectors")
+            active_mapping = self._parse_chunk_id_mapping(metadata)
+            return sorted(
+                chunk_index
+                for hnswlib_id, (mapped_knowledge_id, chunk_index) in active_mapping.items()
+                if mapped_knowledge_id == knowledge_id
+                and self._chunk_vector_exists(index, hnswlib_id)
+            )
 
         with self._index_pair_lock("chunk_vectors"):
             index = self._reload_index_for_update_locked("chunk_vectors")
@@ -2631,9 +2940,14 @@ class VectorStore:
         """
         query_vector = self._preflight_vector_query(query_vector)
 
-        with self._index_pair_lock("doc_vectors"):
-            index = self._reload_index_for_update_locked("doc_vectors")
+        if self._read_only:
+            index = self._load_read_only_index("doc_vectors")
+            self.doc_index = index
             neighbors = self._knn_query_active(index, query_vector, k)
+        else:
+            with self._index_pair_lock("doc_vectors"):
+                index = self._reload_index_for_update_locked("doc_vectors")
+                neighbors = self._knn_query_active(index, query_vector, k)
         if neighbors is None:
             return []
 
@@ -2999,12 +3313,20 @@ class VectorStore:
         Returns:
             统计信息字典
         """
-        with self._index_pair_lock("doc_vectors"):
-            doc_index = self._reload_index_for_update_locked("doc_vectors")
+        if self._read_only:
+            doc_index = self._load_read_only_index("doc_vectors")
+            chunk_index = self._load_read_only_index("chunk_vectors")
+            self.doc_index = doc_index
+            self.chunk_index = chunk_index
             doc_count = doc_index.get_current_count()
-        with self._index_pair_lock("chunk_vectors"):
-            chunk_index = self._reload_index_for_update_locked("chunk_vectors")
             chunk_count = chunk_index.get_current_count()
+        else:
+            with self._index_pair_lock("doc_vectors"):
+                doc_index = self._reload_index_for_update_locked("doc_vectors")
+                doc_count = doc_index.get_current_count()
+            with self._index_pair_lock("chunk_vectors"):
+                chunk_index = self._reload_index_for_update_locked("chunk_vectors")
+                chunk_count = chunk_index.get_current_count()
         return {
             "doc_count": doc_count,
             "chunk_count": chunk_count,

@@ -1,13 +1,15 @@
 """
 CLI commands for Personal Knowledge Vault (PKV).
 
-实现核心命令：archive / search / show / list / config / stats
+实现核心命令：archive / archive-text / search / show / list / tags /
+related / config / stats
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import stat
@@ -20,6 +22,7 @@ import yaml
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from src.utils.config import (
     Config,
@@ -43,7 +46,10 @@ from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.runtime.layout import validate_path_components
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.markdown_store import Entry, MarkdownStore
+from src.storage.vector_store import VectorStore
 from src.ai.provider_factory import create_embedder
+from src.processors.text_fallback_processor import TextFallbackProcessor
+from src.mcp.utils import validate_text_length
 from src.utils.logger import get_logger
 
 
@@ -52,8 +58,10 @@ logger = get_logger(__name__)
 
 _PUBLIC_DIAGNOSTIC_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 _PUBLIC_OPERATION_ID = re.compile(r"^[0-9a-f]{32}$")
+_TERMINAL_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 _WINDOWS_ABSOLUTE_DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
+_MAX_TAG_LIST_LIMIT = 200
 _ARCHIVE_PUBLIC_STAGES = frozenset(
     {
         "archive_text",
@@ -107,9 +115,12 @@ _RETRIEVAL_PUBLIC_STAGES = frozenset(
         "provider_connect",
         "query_router_tokenize",
         "query_validation",
+        "related_entry_lookup",
         "retrieval",
         "strategy_validation",
+        "document_vector",
         "vector_hit_mapping",
+        "vector_index",
         "vector_index_load",
         "vector_index_pair_load",
         "vector_index_probe",
@@ -117,6 +128,7 @@ _RETRIEVAL_PUBLIC_STAGES = frozenset(
         "vector_metadata_mapping",
         "vector_metadata_read",
         "vector_result_mapping",
+        "vector_related",
     }
 )
 _RETRIEVAL_PUBLIC_MESSAGES = {
@@ -422,13 +434,299 @@ def _get_top_tags(store: SQLiteStore, limit: int = 10) -> List[Tuple[str, int]]:
         raise _BackendReadContractError
     rows: List[Tuple[str, int]] = []
     for row in value:
-        if type(row) is not dict or not {"name", "count"}.issubset(row):
+        if type(row) is not dict or set(row) != {"name", "count"}:
             raise _BackendReadContractError
         name = row["name"]
         if type(name) is not str or not name:
             raise _BackendReadContractError
         rows.append((name, _require_nonnegative_count(row["count"])))
+    if len(rows) > limit or len({name for name, _ in rows}) != len(rows):
+        raise _BackendReadContractError
     return rows
+
+
+_RELATED_ENTRY_REQUIRED_FIELDS = frozenset(
+    {"summary_one_sentence", "tags"}
+)
+
+
+def _get_related_entry_by_id(
+    store: SQLiteStore,
+    knowledge_id: int,
+) -> Optional[Dict[str, Any]]:
+    """Read the exact SQLite projection consumed by ``related``."""
+
+    entry = _get_entry_by_id(store, knowledge_id)
+    if entry is None:
+        return None
+    if not _RELATED_ENTRY_REQUIRED_FIELDS.issubset(entry):
+        raise _BackendReadContractError
+    if entry["summary_one_sentence"] is not None and type(
+        entry["summary_one_sentence"]
+    ) is not str:
+        raise _BackendReadContractError
+    if entry["tags"] is not None and type(entry["tags"]) is not str:
+        raise _BackendReadContractError
+    return entry
+
+
+def _stored_tags(value: Any) -> List[str]:
+    """Project the SQLite comma-separated tag field without accepting drift."""
+
+    if value is None or value == "":
+        return []
+    if type(value) is not str:
+        raise _BackendReadContractError
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _safe_terminal_text(value: Any, *, limit: int = 240) -> Text:
+    """Render untrusted table/panel fields without Rich markup or control bytes.
+
+    JSON output deliberately preserves its data contract. Human-facing output
+    instead receives a bounded :class:`~rich.text.Text` instance, so a title,
+    tag, or abstract cannot inject Rich markup or terminal control characters.
+    """
+
+    rendered = value if type(value) is str else str(value)
+    rendered = _TERMINAL_CONTROL_CHARACTERS.sub(" ", rendered)
+    if len(rendered) > limit:
+        rendered = rendered[:limit] + "..."
+    return Text(rendered)
+
+
+def _normalise_archive_text_title(title: str) -> str:
+    """Accept a human title, never a path-shaped or control-bearing value."""
+
+    normalized = title.strip()
+    if not normalized:
+        return ""
+    if (
+        normalized in {".", ".."}
+        or "/" in normalized
+        or "\\" in normalized
+        or _TERMINAL_CONTROL_CHARACTERS.search(normalized) is not None
+    ):
+        raise ValueError("archive-text title is not a safe display value")
+    return normalized
+
+
+def _related_issue(
+    code: ErrorCode,
+    *,
+    stage: str,
+    recoverable: bool,
+) -> Dict[str, Any]:
+    return _public_retrieval_issue(
+        RetrievalIssue(
+            code=code,
+            message=_RETRIEVAL_PUBLIC_MESSAGES.get(code.value, "检索服务暂不可用"),
+            stage=stage,
+            recoverable=recoverable,
+        )
+    )
+
+
+def _related_failure_payload(
+    exc: BaseException,
+    *,
+    stage: str,
+    message: str,
+) -> Dict[str, Any]:
+    """Return a sanitized fail-closed related-query payload."""
+
+    logger.error(
+        "related CLI 读取失败: stage=%s, error_type=%s",
+        stage,
+        type(exc).__name__,
+    )
+    issue = RetrievalIssue.from_exception(
+        exc,
+        fallback_code=ErrorCode.RETRIEVAL_BACKEND_FAILED,
+        public_message=message,
+        stage=stage,
+        recoverable=False,
+    )
+    return {
+        "status": "error",
+        "strategy": "vector_related",
+        "total": 0,
+        "results": [],
+        "issues": [_public_retrieval_issue(issue)],
+        "message": "向量关联查询不可用",
+    }
+
+
+def _related_payload(knowledge_id: str, limit: int) -> Dict[str, Any]:
+    """Run the read-only vector-neighbour lookup used by ``related``.
+
+    This adapter intentionally consumes only existing index artifacts.  It never
+    creates an index or a Provider, so an offline user-data root can report an
+    explicit ``degraded`` state instead of turning a missing auxiliary index into
+    a write or a false empty result.
+    """
+
+    try:
+        if type(knowledge_id) is not str:
+            raise ValueError
+        related_id = int(knowledge_id)
+        if related_id <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        message = "无效的 knowledge_id，需要正整数"
+        return {
+            "status": "invalid",
+            "strategy": "vector_related",
+            "total": 0,
+            "results": [],
+            "issues": [
+                _related_issue(
+                    ErrorCode.RETRIEVAL_INVALID_QUERY,
+                    stage="related_entry_lookup",
+                    recoverable=True,
+                )
+            ],
+            "message": message,
+        }
+
+    if type(limit) is not int or isinstance(limit, bool) or limit <= 0:
+        message = "limit 必须是正整数"
+        return {
+            "status": "invalid",
+            "strategy": "vector_related",
+            "total": 0,
+            "results": [],
+            "issues": [
+                _related_issue(
+                    ErrorCode.RETRIEVAL_INVALID_QUERY,
+                    stage="limit_validation",
+                    recoverable=True,
+                )
+            ],
+            "message": message,
+        }
+
+    safe_limit = min(limit, 20)
+    try:
+        config = _load_config()
+        store = SQLiteStore(config.db_path)
+        seed_entry = _get_related_entry_by_id(store, related_id)
+    except Exception as exc:
+        return _related_failure_payload(
+            exc,
+            stage="related_entry_lookup",
+            message="条目读取失败",
+        )
+
+    if seed_entry is None:
+        return {
+            "status": "no_hits",
+            "strategy": "vector_related",
+            "total": 0,
+            "results": [],
+            "issues": [],
+            "message": "未找到条目",
+        }
+
+    try:
+        has_artifacts = VectorStore.has_index_artifacts(config.vector_index_dir)
+        if type(has_artifacts) is not bool:
+            raise _BackendReadContractError
+        if not has_artifacts:
+            return {
+                "status": "degraded",
+                "strategy": "vector_related",
+                "total": 0,
+                "results": [],
+                "issues": [
+                    _related_issue(
+                        ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                        stage="vector_index",
+                        recoverable=True,
+                    )
+                ],
+                "message": "向量索引不可用，无法获取关联知识",
+            }
+
+        vector_store = VectorStore.open_readonly(
+            index_dir=config.vector_index_dir,
+            dim=None,
+        )
+        document_vector = vector_store.get_doc_vector(related_id)
+        if document_vector is None:
+            return {
+                "status": "degraded",
+                "strategy": "vector_related",
+                "total": 0,
+                "results": [],
+                "issues": [
+                    _related_issue(
+                        ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                        stage="document_vector",
+                        recoverable=True,
+                    )
+                ],
+                "message": "该条目暂无向量，无法获取关联知识",
+            }
+
+        raw_results = vector_store.search_doc(document_vector, k=safe_limit + 1)
+        if (
+            type(raw_results) is not list
+            or len(raw_results) > safe_limit + 1
+            or not all(
+                type(item) is tuple
+                and len(item) == 2
+                and type(item[0]) is int
+                and item[0] > 0
+                and type(item[1]) in {int, float}
+                and math.isfinite(item[1])
+                for item in raw_results
+            )
+            or len({item[0] for item in raw_results}) != len(raw_results)
+        ):
+            raise _BackendReadContractError
+
+        results: List[Dict[str, Any]] = []
+        for neighbour_id, distance in raw_results:
+            if neighbour_id == related_id:
+                continue
+            if len(results) >= safe_limit:
+                break
+            neighbour = _get_related_entry_by_id(store, neighbour_id)
+            if neighbour is None:
+                raise PKVRuntimeError(
+                    ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                    "related vector metadata is inconsistent",
+                    stage="vector_metadata_read",
+                    recoverable=False,
+                )
+            results.append(
+                {
+                    "knowledge_id": neighbour_id,
+                    "title": neighbour["title"],
+                    "abstract": neighbour["summary_one_sentence"] or "",
+                    "tags": _stored_tags(neighbour["tags"]),
+                    "source_type": neighbour["source_type"],
+                    "score": round(min(1.0, max(0.0, 1.0 - distance)), 4),
+                }
+            )
+    except Exception as exc:
+        return _related_failure_payload(
+            exc,
+            stage="vector_related",
+            message="向量关联查询不可用",
+        )
+
+    payload: Dict[str, Any] = {
+        "status": "success" if results else "no_hits",
+        "strategy": "vector_related",
+        "total": len(results),
+        "results": results,
+        "issues": [],
+    }
+    if not results:
+        payload["message"] = "未找到关联条目"
+    return payload
 
 
 def _extract_result_id(result: Any) -> Optional[int]:
@@ -1268,6 +1566,75 @@ def _print_public_config_error(exc: _PublicConfigError) -> None:
     )
 
 
+def _archive_text_result_payload(
+    result: Any,
+    *,
+    terminal: str,
+    data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Create the machine-readable, sanitized archive-text response."""
+
+    entry = data["entry"]
+    return {
+        "terminal": terminal,
+        "status": data["status"],
+        "knowledge_id": data["knowledge_id"],
+        "title": entry.title,
+        "tags": list(entry.tags),
+        "file_path": _safe_archive_file_path(data.get("file_path")),
+        "issues": _workflow_public_notices(result, error=False),
+    }
+
+
+def _archive_text_error_payload(
+    result: Any | None,
+    *,
+    contract_invalid: bool = False,
+    input_invalid: bool = False,
+) -> Dict[str, Any]:
+    """Create one stable archive-text error envelope without raw diagnostics."""
+
+    if input_invalid:
+        issues = [
+            _normalise_archive_issue(
+                {
+                    "code": ErrorCode.WORKFLOW_CONFIG_INVALID,
+                    "severity": "error",
+                    "stage": "archive_text",
+                    "recoverable": True,
+                },
+                default_severity="error",
+            )
+        ]
+    elif result is None:
+        issues = [
+            _normalise_archive_issue(
+                {
+                    "code": ErrorCode.WORKFLOW_STEP_FAILED,
+                    "severity": "error",
+                    "stage": "archive_text",
+                    "recoverable": False,
+                },
+                default_severity="error",
+            )
+        ]
+    else:
+        issues = _workflow_public_notices(
+            result,
+            error=True,
+            contract_invalid=contract_invalid,
+        )
+    return {
+        "terminal": "error",
+        "status": "error",
+        "knowledge_id": None,
+        "title": "",
+        "tags": [],
+        "file_path": "",
+        "issues": issues,
+    }
+
+
 @click.group()
 def cli() -> None:
     """个人知识库 CLI 工具。"""
@@ -1407,6 +1774,127 @@ def archive(url_or_path: str, skip_sharpen: bool, tags: Optional[str], quiet: bo
         )
         console.print("[red]错误: 归档发生内部异常，详情已记录日志[/red]")
         console.print("[yellow]提示: 使用 --debug 查看详细日志[/yellow]")
+        sys.exit(1)
+
+
+@cli.command("archive-text")
+@click.argument("text")
+@click.option("--title", default="", help="可选标题；未提供时从文本提取")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json"], case_sensitive=False),
+    default="table",
+    show_default=True,
+    help="输出格式",
+)
+def archive_text(text: str, title: str, output_format: str) -> None:
+    """归档纯文本；输入始终作为字面文本处理。"""
+
+    valid_text, _ = validate_text_length(text)
+    try:
+        normalized_title = _normalise_archive_text_title(title)
+    except ValueError:
+        normalized_title = ""
+        valid_text = False
+        invalid_input_message = "标题无效"
+    else:
+        invalid_input_message = "文本内容无效"
+    if not valid_text:
+        payload = _archive_text_error_payload(None, input_invalid=True)
+        if output_format == "json":
+            click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        else:
+            console.print(f"[red]错误: {invalid_input_message}[/red]")
+            for issue in payload["issues"]:
+                console.print(
+                    f"[red]- {issue['message']} "
+                    f"(code={issue['code']}, stage={issue['stage']})[/red]"
+                )
+        sys.exit(1)
+
+    result: Any | None = None
+    try:
+        _ = _load_config()
+        processor = TextFallbackProcessor()
+        entry = asyncio.run(processor.process_text(text))
+        if normalized_title:
+            entry.title = normalized_title
+
+        engine = WorkflowEngine()
+        result = asyncio.run(
+            engine.execute_async(
+                "archive-text",
+                {
+                    "text": text,
+                    "title": entry.title,
+                    "entry": entry,
+                    "content": entry.content,
+                    "skip_review": True,
+                    "skip_sharpen": True,
+                },
+            )
+        )
+        terminal, terminal_valid = _resolve_workflow_terminal(result)
+        raw_result_data = getattr(result, "data", None)
+        if terminal != "error" and not _valid_archive_result_data(
+            raw_result_data,
+            terminal=terminal,
+        ):
+            terminal = "error"
+            terminal_valid = False
+
+        if terminal == "error":
+            payload = _archive_text_error_payload(
+                result,
+                contract_invalid=not terminal_valid,
+            )
+            if output_format == "json":
+                click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            else:
+                console.print("[red]错误: 文本归档失败[/red]")
+                _print_workflow_notices(
+                    result,
+                    error=True,
+                    contract_invalid=not terminal_valid,
+                )
+                failure_data = raw_result_data if type(raw_result_data) is dict else {}
+                _print_storage_outcome(failure_data, error=True)
+            sys.exit(1)
+
+        data = raw_result_data
+        payload = _archive_text_result_payload(result, terminal=terminal, data=data)
+        if output_format == "json":
+            click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return
+
+        if terminal == "degraded":
+            console.print("[yellow]警告: 文本归档以 degraded 终态完成[/yellow]")
+        _print_workflow_notices(result)
+        _print_storage_outcome(data)
+        details = Text()
+        for label, value in (
+            ("标题", payload["title"]),
+            ("标签", ", ".join(payload["tags"])),
+            ("文件", payload["file_path"]),
+            ("ID", payload["knowledge_id"]),
+        ):
+            details.append(f"{label}: ", style="bold")
+            details.append_text(_safe_terminal_text(value))
+            details.append("\n")
+        console.print(Panel(details, title="文本归档结果"))
+    except SystemExit:
+        raise
+    except Exception as exc:
+        logger.error(
+            "archive-text CLI 未知异常: type=%s",
+            type(exc).__name__,
+        )
+        payload = _archive_text_error_payload(result)
+        if output_format == "json":
+            click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        else:
+            console.print("[red]错误: 文本归档发生内部异常，详情已记录日志[/red]")
         sys.exit(1)
 
 
@@ -1590,6 +2078,141 @@ def list_entries(tag: Optional[str], sort_by: str, desc: bool, limit: int) -> No
             public_message="列表查询失败",
             hint="请检查本地数据库状态后重试",
         )
+        sys.exit(1)
+
+
+@cli.command("tags")
+@click.option(
+    "--limit",
+    type=int,
+    default=50,
+    show_default=True,
+    help=f"返回数量，最多 {_MAX_TAG_LIST_LIMIT}",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json"], case_sensitive=False),
+    default="table",
+    show_default=True,
+    help="输出格式",
+)
+def tags(limit: int, output_format: str) -> None:
+    """列出已归档标签及其使用次数。"""
+
+    if (
+        type(limit) is not int
+        or isinstance(limit, bool)
+        or limit <= 0
+        or limit > _MAX_TAG_LIST_LIMIT
+    ):
+        payload = {
+            "status": "invalid",
+            "total": 0,
+            "tags": [],
+            "message": f"limit 必须是 1 到 {_MAX_TAG_LIST_LIMIT} 的整数",
+        }
+        if output_format == "json":
+            click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        else:
+            console.print(
+                f"[red]错误: limit 必须是 1 到 {_MAX_TAG_LIST_LIMIT} 的整数[/red]"
+            )
+        sys.exit(1)
+
+    try:
+        config = _load_config()
+        store = SQLiteStore(config.db_path)
+        rows = _get_top_tags(store, limit=limit)
+        payload = {
+            "status": "success" if rows else "no_hits",
+            "total": len(rows),
+            "tags": [
+                {"name": name, "count": count}
+                for name, count in rows
+            ],
+        }
+        if output_format == "json":
+            click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return
+        if not rows:
+            console.print("[yellow]暂无标签[/yellow]")
+            return
+        table = Table(title="标签")
+        table.add_column("标签", style="bold")
+        table.add_column("条目数", justify="right", style="cyan")
+        for name, count in rows:
+            table.add_row(_safe_terminal_text(name), str(count))
+        console.print(table)
+    except Exception as exc:
+        logger.error("tags CLI 读取失败: error_type=%s", type(exc).__name__)
+        if output_format == "json":
+            payload = {
+                "status": "error",
+                "total": 0,
+                "tags": [],
+                "message": "标签读取失败",
+            }
+            click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        else:
+            _print_cli_failure(
+                exc,
+                code="cli_tags_failed",
+                public_message="标签读取失败",
+                hint="请检查本地数据库状态后重试",
+            )
+        sys.exit(1)
+
+
+@cli.command("related")
+@click.argument("knowledge_id")
+@click.option("--limit", type=int, default=5, show_default=True, help="返回数量，最多 20")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json"], case_sensitive=False),
+    default="table",
+    show_default=True,
+    help="输出格式",
+)
+def related(knowledge_id: str, limit: int, output_format: str) -> None:
+    """按已有向量索引列出与条目相近的知识。"""
+
+    payload = _related_payload(knowledge_id, limit)
+    status = payload["status"]
+    if output_format == "json":
+        click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        if status in {"invalid", "error"}:
+            sys.exit(1)
+        return
+
+    console.print(f"关联查询状态: {status}")
+    for issue in payload["issues"]:
+        console.print(f"[yellow]- {_issue_text(issue)}[/yellow]")
+    message = payload.get("message")
+    if type(message) is str and message:
+        style = "red" if status in {"invalid", "error"} else "yellow"
+        console.print(f"[{style}]{message}[/{style}]")
+
+    results = payload["results"]
+    if results:
+        table = Table(title="关联知识（向量相似度）")
+        table.add_column("ID", justify="right", style="cyan")
+        table.add_column("标题", style="bold")
+        table.add_column("得分", justify="right", style="green")
+        table.add_column("摘要")
+        for item in results:
+            table.add_row(
+                str(item["knowledge_id"]),
+                _safe_terminal_text(item["title"], limit=160),
+                f"{item['score']:.4f}",
+                _safe_terminal_text(item["abstract"], limit=240),
+            )
+        console.print(table)
+    elif status == "no_hits":
+        console.print("[yellow]未找到关联条目[/yellow]")
+
+    if status in {"invalid", "error"}:
         sys.exit(1)
 
 

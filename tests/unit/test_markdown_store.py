@@ -42,6 +42,20 @@ def test_markdown_store_round_trips_metadata_and_unicode(tmp_path: Path) -> None
     assert loaded.content == entry.content.rstrip("\n")
 
 
+def test_markdown_store_title_cannot_cross_source_type_directory_on_windows_or_posix(
+    tmp_path: Path,
+) -> None:
+    store = MarkdownStore(tmp_path / "vault")
+
+    saved_path = store.save(
+        Entry(title=r"..\other\x", source_type="text", content="content")
+    )
+
+    assert saved_path.parent == store.vault_dir / "text"
+    assert saved_path.name == "..-other-x.md"
+    assert not (store.vault_dir / "other").exists()
+
+
 def test_list_all_filters_by_subdirectory(tmp_path: Path) -> None:
     store = MarkdownStore(tmp_path / "vault")
     wechat_path = store.save(

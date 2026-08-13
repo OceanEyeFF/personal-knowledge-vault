@@ -4,13 +4,15 @@
 
 ## 模块职责
 
-`src/cli/` 提供基于 Click 与 Rich 的命令行适配层。运行入口是 `src.main`；`LazyCLIGroup` 按需加载 `archive`、`search`、`show`、`list`、`config` 与 `stats`，避免 `--version` 导入重依赖。
+`src/cli/` 提供基于 Click 与 Rich 的命令行适配层。运行入口是 `src.main`；`LazyCLIGroup` 按需加载 `archive`、`archive-text`、`search`、`show`、`list`、`tags`、`related`、`config` 与 `stats`，避免 `--version` 导入重依赖。
 
 当前实现的关键调用关系：
 
 - `archive` 通过 `WorkflowEngine.execute_async("archive-url", input_data)` 执行归档工作流。
+- `archive-text` 始终按字面纯文本处理，先经 `TextFallbackProcessor.process_text()` 构造条目，再调用 `execute_async("archive-text", ...)`；路径形状文本不会触发本地文件读取。
 - `search --strategy auto` 通过 `QueryRouter.search()` 路由；显式策略直接构造 BM25、Vector 或 Hybrid retriever。所有路径消费五态 `SearchResponse`，BM25/auto 的短查询路径不会提前创建 Provider。
-- `show`、`list`、`stats` 读取 SQLite/Markdown 等已配置存储。
+- `show`、`list`、`tags`、`stats` 读取 SQLite/Markdown 等已配置存储。
+- `related` 只读取已有文档向量索引，并返回向量近邻；索引或条目向量缺失时明确返回 `degraded`，不会创建索引或构造 Provider。
 - `config show/get` 读取配置并遮罩敏感值；`config set` 会写 `config/local.yaml`。
 
 ## 安全运行边界
@@ -23,6 +25,9 @@
 .\scripts\run-test.ps1 --verbose stats
 .\scripts\run-test.ps1 search "synthetic query" --strategy bm25 --format json
 .\scripts\run-test.ps1 list --limit 10
+.\scripts\run-test.ps1 archive-text "synthetic offline note" --title "Synthetic note" --format json
+.\scripts\run-test.ps1 tags --format json
+.\scripts\run-test.ps1 related 1 --format json
 .\scripts\run-test.ps1 config show
 .\scripts\run-test.ps1 config get storage.vault_dir
 ```
@@ -36,9 +41,12 @@
 | 命令 | 主要参数/选项 | 当前接线与稳定边界 |
 |---|---|---|
 | `archive URL_OR_PATH` | `--skip-sharpen`、`--tags`、`--quiet`、`--type auto\|webpage\|chat\|news` | 调用 `execute_async("archive-url", ...)`；真实网络/Provider 仅后续显式 live 流程 |
+| `archive-text TEXT` | `--title`、`--format table\|json` | 字面纯文本 → `TextFallbackProcessor.process_text()` → `execute_async("archive-text", ...)`；完成时 JSON 输出严格的存储终态与条目定位 |
 | `search QUERY` | `--strategy auto\|bm25\|vector\|hybrid`、`--limit`、`--format table\|json\|markdown` | 输出公开实际执行策略及 `success/no_hits/invalid/error/degraded`；JSON 含 `query/status/strategy/total/issues/results` |
 | `show [ID_OR_URL]` | `--url`、`--raw` | ID 或 URL 至少提供一个；`--raw` 经 `MarkdownStore.load()` 做 Vault containment 校验，不直接读取 DB 中的任意路径 |
 | `list` | `--tag`、`--sort time\|title\|id`、`--desc`、`--limit` | 从 SQLite 查询并以 Rich 表格输出；排序/tie 与非法 limit 仍需目标合同 |
+| `tags` | `--limit 1..200`、`--format table\|json` | 有上界的只读 SQLite 标签计数；当前不提供跨 Markdown/SQLite 的标签写入 |
+| `related KNOWLEDGE_ID` | `--limit 1..20`、`--format table\|json` | 已有文档向量索引的近邻查询；通过严格只读索引入口，不构造 Provider，索引/向量缺失显式 `degraded` |
 | `config show/get` | `get KEY` | 读取并遮罩敏感配置；默认自动化只允许只读子命令 |
 | `config set KEY VALUE` | YAML 点号键 | 写 local config；不属于自动化/AI 运行边界 |
 | `stats` | 无 | 汇总条目、来源、标签与存储大小 |
@@ -50,9 +58,9 @@
 ### `commands.py`
 
 - `cli()`：直接模块入口；常规启动由 `src.main.LazyCLIGroup` 负责。
-- `archive()`：组装工作流输入、运行异步归档并渲染结果。
+- `archive()` / `archive_text()`：组装工作流输入、运行异步归档并渲染结果。
 - `search()`：选择 retriever、执行搜索、输出 table/JSON/Markdown。
-- `show()` / `list_entries()` / `stats()`：读取存储并渲染可观察结果。
+- `show()` / `list_entries()` / `tags()` / `related()` / `stats()`：读取存储并渲染可观察结果。
 - `config_show()` / `config_get()` / `config_set()`：配置读写与敏感值遮罩。
 - `_render_search_table()`、`_render_list_table()`、`_render_entry_panel()`：命令内 Rich 渲染辅助函数。
 
@@ -108,6 +116,7 @@
 - `search` 的 `strategy` 字段表示实际执行策略；适配器必须逐一保留五态和稳定 issue，只有 `invalid` / `error` 使用非零退出码，`degraded` 必须显式展示警告。
 - `show --raw` 的 TestCase 应继续用外部 sentinel 锁定 `MarkdownStore.load()` 的 canonical containment，防止后续回归成任意路径读取。
 - `archive` 的真实网页、真实 Provider 和费用不进入默认回归；离线 integration 只能计为 adapter seam，不能冒充真实工作流 E2E。
+- `archive-text`、`tags` 和 `related` 必须有真实离线子进程覆盖：至少验证 `archive-text → tags` 串联、无向量索引的明确降级、固定本地向量的自排除近邻结果，以及 `related` 前后向量树零改写。
 - `config set`、生产数据查询和开发 Vault 重建不作为 pytest fixture 或完成定义。
 - CLI help/stats/search 在 unit/integration/blackbox 有重复，后续按“行为 owner + 高层协议 sentinel”收敛。
 

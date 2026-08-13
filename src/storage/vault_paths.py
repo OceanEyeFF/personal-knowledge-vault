@@ -7,6 +7,7 @@ import hashlib
 import os
 import stat
 import tempfile
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -509,6 +510,7 @@ class VaultPathGateway:
         return cursor
 
     def unique_markdown_path(self, relative_dir: PathLike, stem: str) -> Path:
+        self._validate_markdown_stem(stem)
         directory = self.ensure_directory(relative_dir)
         candidate = directory / f"{stem}.md"
         counter = 1
@@ -517,6 +519,29 @@ class VaultPathGateway:
             candidate = directory / f"{stem}-{counter}.md"
             counter += 1
         return self.resolve(candidate)
+
+    @staticmethod
+    def _validate_markdown_stem(stem: str) -> None:
+        """Reject raw filename stems that could have path or host-specific meaning.
+
+        MarkdownStore normally uses :meth:`TextProcessor.sanitize_filename`,
+        but this gateway is the final boundary and must stay safe when a caller
+        bypasses that helper.  Check both Windows and POSIX separators on every
+        platform so a Vault remains portable.
+        """
+
+        if not isinstance(stem, str) or stem in {"", ".", ".."}:
+            raise PKVRuntimeError(
+                ErrorCode.PATH_OUTSIDE_VAULT,
+                "Vault Markdown 文件名 stem 非法",
+            )
+        if any(character in '<>:"/\\|?*' for character in stem) or any(
+            unicodedata.category(character) == "Cc" for character in stem
+        ):
+            raise PKVRuntimeError(
+                ErrorCode.PATH_OUTSIDE_VAULT,
+                "Vault Markdown 文件名 stem 非法",
+            )
 
     def write_text_atomic(self, candidate: PathLike, text: str) -> Path:
         """Publish a complete new file without replacing an existing entry."""

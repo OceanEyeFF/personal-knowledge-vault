@@ -5,6 +5,7 @@
 """
 
 import re
+import unicodedata
 import jieba
 from typing import List, Optional, Sequence
 from pathlib import Path
@@ -98,7 +99,7 @@ class TextProcessor:
     @staticmethod
     def sanitize_filename(title: str, max_length: int = 100) -> str:
         """
-        清理文件名，移除非法字符
+        清理文件名，生成可安全传给 Vault 路径网关的 stem。
 
         Args:
             title: 原始标题
@@ -111,9 +112,21 @@ class TextProcessor:
             >>> TextProcessor.sanitize_filename("AI驱动的知识管理?")
             "AI驱动的知识管理？"
         """
+        # Both separators are normalized regardless of the host platform: a
+        # title may be created on one platform and later archived on another.
+        # Cc characters are never valid in a Vault filename (and include NUL,
+        # tabs and newlines), so remove them before applying display-friendly
+        # punctuation replacements.
+        title = "".join(
+            character
+            for character in title
+            if unicodedata.category(character) != "Cc"
+        )
+
         # 替换规则
         replacements = {
             "/": "-",
+            "\\": "-",
             "?": "？",
             ":": "：",
             "*": "×",
@@ -129,8 +142,12 @@ class TextProcessor:
         # 移除非法字符
         title = re.sub(r'[<>|]', '', title)
 
-        # 限制长度
-        return title[:max_length]
+        # 限制长度。单独的 ``.``/``..`` 不是文件名 stem；归一为稳定的
+        # 回退名，保证 MarkdownStore 不会把它交给路径层。
+        title = title[:max_length]
+        if title in {"", ".", ".."}:
+            return "untitled"[:max_length]
+        return title
 
     @staticmethod
     def calculate_word_count(text: str) -> int:

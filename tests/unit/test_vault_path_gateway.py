@@ -32,6 +32,22 @@ def test_atomic_write_never_replaces_an_existing_vault_file(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize(
+    "stem",
+    ["", ".", "..", "nested/name", r"nested\\name", "bad\nname", "bad\x00name"],
+)
+def test_unique_markdown_path_rejects_unsafe_raw_stem_before_creating_directory(
+    tmp_path: Path, stem: str
+) -> None:
+    gateway = VaultPathGateway(tmp_path / "vault")
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        gateway.unique_markdown_path("text", stem)
+
+    assert exc_info.value.code is ErrorCode.PATH_OUTSIDE_VAULT
+    assert not (gateway.vault_dir / "text").exists()
+
+
+@pytest.mark.parametrize(
     "candidate",
     ["../outside.md", "nested/../../outside.md"],
 )

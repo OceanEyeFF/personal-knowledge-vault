@@ -9,11 +9,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 
@@ -21,6 +23,29 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from tests.offline_runtime import prepare_offline_child_env
+
+
+def _snapshot_vector_artifacts(vector_dir: Path) -> dict[str, tuple[str, int]]:
+    """Return a complete content-and-mtime snapshot of a published vector tree."""
+
+    snapshot: dict[str, tuple[str, int]] = {}
+    for artifact in sorted(vector_dir.rglob("*")):
+        if artifact.is_dir():
+            continue
+        assert artifact.is_file(), f"unexpected vector artifact type: {artifact}"
+        stat_result = artifact.stat()
+        snapshot[artifact.relative_to(vector_dir).as_posix()] = (
+            hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            stat_result.st_mtime_ns,
+        )
+    return snapshot
+
+
+def _remove_vector_writer_lock_sidecars(vector_dir: Path) -> None:
+    """Normalize a freshly written fixture before checking a read-only CLI call."""
+
+    for sidecar in vector_dir.rglob(".*.lock"):
+        sidecar.unlink()
 
 
 
@@ -180,7 +205,10 @@ def test_cli_help_command(cli_tester: CLIBlackboxTester):
     assert result.returncode == 0
     assert "Personal Knowledge Vault" in result.stdout
     assert "archive" in result.stdout
+    assert "archive-text" in result.stdout
     assert "search" in result.stdout
+    assert "tags" in result.stdout
+    assert "related" in result.stdout
 
 
 def test_cli_version_command(tmp_path: Path):
@@ -327,6 +355,121 @@ def test_stats_command(cli_tester: CLIBlackboxTester):
     assert "总条目数: 3" in result.stdout
     assert "- text: 3" in result.stdout
     assert "Python (1)" in result.stdout
+
+
+def test_archive_text_then_tags_json_via_offline_cli(
+    cli_tester: CLIBlackboxTester,
+):
+    """真实离线 CLI 应能归档文本，并在同一数据根读取标签统计。"""
+    title = "CLI 文本归档链路"
+    archive_result = cli_tester.run_cli(
+        "archive-text",
+        "离线 CLI 文本归档用于验证 archive-text 到 tags 的完整调用通路。",
+        "--title",
+        title,
+        "--format",
+        "json",
+    )
+
+    assert archive_result.returncode == 0
+    archive_payload = json.loads(archive_result.stdout)
+    assert archive_payload["terminal"] in {"success", "degraded"}
+    assert archive_payload["status"] in {"success", "degraded"}
+    assert isinstance(archive_payload["knowledge_id"], int)
+    assert archive_payload["knowledge_id"] > 0
+    assert archive_payload["title"] == title
+    assert isinstance(archive_payload["tags"], list)
+    assert archive_payload["tags"]
+    assert isinstance(archive_payload["file_path"], str)
+    assert archive_payload["file_path"]
+    assert isinstance(archive_payload["issues"], list)
+
+    show_result = cli_tester.run_cli("show", str(archive_payload["knowledge_id"]))
+    assert show_result.returncode == 0
+    assert title in show_result.stdout
+
+    tags_result = cli_tester.run_cli("tags", "--format", "json")
+    assert tags_result.returncode == 0
+    tags_payload = json.loads(tags_result.stdout)
+    assert tags_payload["status"] == "success"
+    assert tags_payload["total"] == len(tags_payload["tags"])
+    assert tags_payload["total"] > 0
+    tag_names = {item["name"] for item in tags_payload["tags"]}
+    assert tag_names.intersection(archive_payload["tags"])
+
+
+def test_related_command_degrades_without_vector_index(
+    cli_tester: CLIBlackboxTester,
+):
+    """真实离线 CLI 在存在条目但没有向量索引时应可观察地退化。"""
+    knowledge_id = cli_tester.entry_ids["Python 装饰器详解"]
+
+    result = cli_tester.run_cli(
+        "related",
+        str(knowledge_id),
+        "--format",
+        "json",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "degraded"
+    assert payload["strategy"] == "vector_related"
+    assert payload["total"] == 0
+    assert payload["results"] == []
+    assert payload["issues"]
+
+
+def test_related_command_returns_fixed_offline_vector_neighbor_without_mutation(
+    cli_tester: CLIBlackboxTester,
+):
+    """真实离线 related 应读取固定向量且不改写任何索引 artifact。"""
+    from src.storage.vector_store import VectorStore
+
+    seed_id = cli_tester.entry_ids["Python 装饰器详解"]
+    nearest_id = cli_tester.entry_ids["Docker 容器化实践"]
+    distant_id = cli_tester.entry_ids["React Hooks 使用指南"]
+    vector_store = VectorStore(cli_tester.vector_dir, dim=3)
+    vector_store.add_doc_vector(seed_id, np.array([1.0, 0.0, 0.0], dtype=np.float32))
+    vector_store.add_doc_vector(
+        nearest_id,
+        np.array([0.99, 0.01, 0.0], dtype=np.float32),
+    )
+    vector_store.add_doc_vector(
+        distant_id,
+        np.array([0.0, 1.0, 0.0], dtype=np.float32),
+    )
+    del vector_store
+    _remove_vector_writer_lock_sidecars(cli_tester.vector_dir)
+    before_snapshot = _snapshot_vector_artifacts(cli_tester.vector_dir)
+    assert before_snapshot
+    assert not any(
+        name.endswith(".lock") or name.endswith(".pair-transaction.json")
+        for name in before_snapshot
+    )
+
+    result = cli_tester.run_cli(
+        "related",
+        str(seed_id),
+        "--limit",
+        "1",
+        "--format",
+        "json",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "success"
+    assert payload["strategy"] == "vector_related"
+    assert payload["total"] == 1
+    assert payload["issues"] == []
+    assert len(payload["results"]) == 1
+    neighbor = payload["results"][0]
+    assert neighbor["knowledge_id"] == nearest_id
+    assert neighbor["knowledge_id"] != seed_id
+    assert neighbor["title"] == "Docker 容器化实践"
+    assert 0.0 <= neighbor["score"] <= 1.0
+    assert _snapshot_vector_artifacts(cli_tester.vector_dir) == before_snapshot
 
 
 def test_invalid_command(cli_tester: CLIBlackboxTester):

@@ -1057,6 +1057,133 @@ def _vector_artifact_snapshot(vector_dir: Path) -> dict[str, bytes]:
     }
 
 
+def _strict_read_only_snapshot(vector_dir: Path) -> tuple[tuple[int, int], dict[str, tuple[bytes, int]]]:
+    """Capture exactly the directory entries/content/mtime contract of a read-only open."""
+
+    directory_stat = vector_dir.stat()
+    artifacts = {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in sorted(vector_dir.iterdir())
+        if path.is_file()
+    }
+    return (directory_stat.st_mtime_ns, directory_stat.st_ctime_ns), artifacts
+
+
+def _remove_vector_writer_locks(vector_dir: Path) -> None:
+    """Make a strict-read-only test able to detect accidental sidecar creation."""
+
+    for lock_path in vector_dir.glob(".*.lock"):
+        lock_path.unlink()
+
+
+def test_strict_read_only_vector_store_queries_without_mutating_artifacts(
+    tmp_path: Path,
+):
+    """Read-only related-query primitives must not repair, lock, or touch index files."""
+
+    vector_dir = tmp_path / "vectors"
+    config = _fake_config("https://embd.example.com/v1", "model-a", 4)
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        writer = VectorStore(vector_dir, dim=4)
+        writer.add_doc_vector(1, np.array([1, 0, 0, 0], dtype=np.float32))
+        writer.add_doc_vector(2, np.array([0.9, 0.1, 0, 0], dtype=np.float32))
+        writer.add_chunk_vector(1, 0, np.array([1, 0, 0, 0], dtype=np.float32))
+
+        # A legacy non-strict opener would recreate these writer lock files.
+        _remove_vector_writer_locks(vector_dir)
+        before = _strict_read_only_snapshot(vector_dir)
+
+        reader = VectorStore.open_readonly(vector_dir, dim=4)
+        vector = reader.get_doc_vector(1)
+        neighbors = reader.search_doc(vector, k=2)
+        chunk_indices = reader.get_chunk_indices_for_entry(1)
+        stats = reader.get_index_stats()
+
+    assert vector is not None
+    assert np.array_equal(vector, np.array([1, 0, 0, 0], dtype=np.float32))
+    assert [knowledge_id for knowledge_id, _ in neighbors] == [1, 2]
+    assert chunk_indices == [0]
+    assert stats["doc_count"] == 2
+    assert stats["chunk_count"] == 1
+    assert _strict_read_only_snapshot(vector_dir) == before
+    assert list(vector_dir.glob(".*.lock")) == []
+    assert list(vector_dir.glob(".*.pair-transaction.json")) == []
+
+
+def test_strict_read_only_vector_store_rejects_transaction_marker_without_recovery(
+    tmp_path: Path,
+):
+    """An interrupted pair stays intact for an explicit writer/recovery flow to handle."""
+
+    vector_dir = tmp_path / "vectors"
+    config = _fake_config("https://embd.example.com/v1", "model-a", 4)
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        VectorStore(vector_dir, dim=4)
+        _remove_vector_writer_locks(vector_dir)
+        marker = vector_dir / ".doc_vectors.pair-transaction.json"
+        marker.write_text('{"state":"incomplete"}', encoding="utf-8")
+        before = _strict_read_only_snapshot(vector_dir)
+
+        with pytest.raises(PKVRuntimeError) as raised:
+            VectorStore.open_readonly(vector_dir, dim=4)
+
+    assert raised.value.code is ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE
+    assert raised.value.stage == "vector_index_transaction"
+    assert _strict_read_only_snapshot(vector_dir) == before
+    assert marker.exists()
+    assert list(vector_dir.glob(".*.lock")) == []
+
+
+def test_strict_read_only_vector_store_rejects_incomplete_pair_without_recreating_it(
+    tmp_path: Path,
+):
+    """A missing metadata leaf is unavailable, not an invitation to publish an empty pair."""
+
+    vector_dir = tmp_path / "vectors"
+    config = _fake_config("https://embd.example.com/v1", "model-a", 4)
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        VectorStore(vector_dir, dim=4)
+        _remove_vector_writer_locks(vector_dir)
+        missing_metadata = vector_dir / "doc_vectors_metadata.json"
+        missing_metadata.unlink()
+        before = _strict_read_only_snapshot(vector_dir)
+
+        with pytest.raises(PKVRuntimeError) as raised:
+            VectorStore.open_readonly(vector_dir, dim=4)
+
+    assert raised.value.code is ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE
+    assert raised.value.stage == "vector_index_pair_load"
+    assert not missing_metadata.exists()
+    assert _strict_read_only_snapshot(vector_dir) == before
+    assert list(vector_dir.glob(".*.lock")) == []
+
+
+def test_strict_read_only_vector_store_rejects_legacy_metadata_without_migration(
+    tmp_path: Path,
+):
+    """Strict readers fail closed on metadata that would require a write-time migration."""
+
+    vector_dir = tmp_path / "vectors"
+    config = _fake_config("https://embd.example.com/v1", "model-a", 4)
+    with patch("src.storage.vector_store.get_config", return_value=config):
+        VectorStore(vector_dir, dim=4)
+        _remove_vector_writer_locks(vector_dir)
+        metadata_path = vector_dir / "doc_vectors_metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata.pop("schema_version")
+        metadata.pop(VectorStore.EMBEDDING_FINGERPRINT_V2_KEY)
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        before = _strict_read_only_snapshot(vector_dir)
+
+        with pytest.raises(PKVRuntimeError) as raised:
+            VectorStore.open_readonly(vector_dir, dim=4)
+
+    assert raised.value.code is ErrorCode.RETRIEVAL_METADATA_INCONSISTENT
+    assert raised.value.stage == "vector_index_metadata"
+    assert _strict_read_only_snapshot(vector_dir) == before
+    assert list(vector_dir.glob(".*.lock")) == []
+
+
 def _assert_vector_write_rejected_before_side_effects(
     store: VectorStore,
     vector_dir: Path,

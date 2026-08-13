@@ -2571,3 +2571,390 @@ def test_stats_malformed_table_exists_fails_closed(
     published = "\n".join(_printed_strings(console_spy)) + response.output
     assert "cli_stats_failed" in published
     assert "STATS-TABLE-SECRET-CANARY" not in published
+
+
+# ---------------------------------------------------------------------------
+# archive-text / tags / related command contracts
+# ---------------------------------------------------------------------------
+
+
+def test_archive_text_json_uses_literal_processor_seam_and_workflow(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    tmp_path: Path,
+) -> None:
+    """archive-text must treat path-shaped input as text and inject its Entry."""
+
+    path_shaped_text = str(tmp_path / "PRIVATE-TEXT-SOURCE-CANARY.txt")
+    entry = _make_entry(title="自动标题", source_url=None, tags=["text", "note"])
+    entry.content = path_shaped_text
+    processor = mocker.MagicMock()
+    processor.process_text = mocker.AsyncMock(return_value=entry)
+    engine = mocker.MagicMock()
+    engine.execute_async = mocker.AsyncMock(
+        return_value=WorkflowResult(
+            success=True,
+            terminal="success",
+            data={
+                "knowledge_id": 71,
+                "status": "ready",
+                "core_committed": True,
+                "file_path": "vault/text-note.md",
+                "entry": entry,
+            },
+            errors=[],
+            warnings=[],
+            issues=[],
+        )
+    )
+    mocker.patch.object(commands, "TextFallbackProcessor", return_value=processor)
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    path_exists = mocker.patch.object(
+        Path,
+        "exists",
+        side_effect=AssertionError("archive-text must not probe path-shaped text"),
+    )
+    path_read = mocker.patch.object(
+        Path,
+        "read_text",
+        side_effect=AssertionError("archive-text must not read path-shaped text"),
+    )
+
+    response = runner.invoke(
+        commands.cli,
+        [
+            "archive-text",
+            path_shaped_text,
+            "--title",
+            "人工标题",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert response.exit_code == 0
+    processor.process_text.assert_awaited_once_with(path_shaped_text)
+    path_exists.assert_not_called()
+    path_read.assert_not_called()
+    engine.execute_async.assert_awaited_once()
+    workflow_name, workflow_input = engine.execute_async.await_args.args
+    assert workflow_name == "archive-text"
+    assert workflow_input["text"] == path_shaped_text
+    assert workflow_input["title"] == "人工标题"
+    assert workflow_input["entry"] is entry
+    assert workflow_input["content"] == path_shaped_text
+    assert workflow_input["skip_review"] is True
+    assert workflow_input["skip_sharpen"] is True
+    assert entry.title == "人工标题"
+
+    payload = json.loads(response.output)
+    assert payload == {
+        "terminal": "success",
+        "status": "ready",
+        "knowledge_id": 71,
+        "title": "人工标题",
+        "tags": ["text", "note"],
+        "file_path": "vault/text-note.md",
+        "issues": [],
+    }
+
+
+def test_archive_text_invalid_completed_terminal_fails_closed_in_json(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    """A contradictory workflow terminal must never be rendered as archive success."""
+
+    entry = _make_entry(title="安全标题", source_url=None)
+    processor = mocker.MagicMock()
+    processor.process_text = mocker.AsyncMock(return_value=entry)
+    engine = mocker.MagicMock()
+    engine.execute_async = mocker.AsyncMock(
+        return_value=SimpleNamespace(
+            terminal="success",
+            success=False,
+            data={
+                "knowledge_id": 72,
+                "status": "ready",
+                "core_committed": True,
+                "entry": entry,
+            },
+            errors=[],
+            warnings=[],
+            issues=[],
+        )
+    )
+    mocker.patch.object(commands, "TextFallbackProcessor", return_value=processor)
+    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+
+    response = runner.invoke(
+        commands.cli,
+        ["archive-text", "普通文本", "--format", "json"],
+    )
+
+    assert response.exit_code != 0
+    payload = json.loads(response.output)
+    assert payload["terminal"] == "error"
+    assert payload["status"] == "error"
+    assert payload["knowledge_id"] is None
+    assert payload["issues"][0]["code"] == ErrorCode.WORKFLOW_STEP_FAILED.value
+    assert "安全标题" not in response.output
+
+
+@pytest.mark.parametrize("unsafe_title", ["../other", r"..\\other", "bad\nterminal"])
+def test_archive_text_rejects_path_shaped_or_control_titles_before_processing(
+    unsafe_title: str,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    """A display title must not become a filename/path or terminal-control channel."""
+
+    processor_type = mocker.patch.object(commands, "TextFallbackProcessor")
+    engine_type = mocker.patch.object(commands, "WorkflowEngine")
+
+    response = runner.invoke(
+        commands.cli,
+        ["archive-text", "safe literal text", "--title", unsafe_title, "--format", "json"],
+    )
+
+    assert response.exit_code != 0
+    assert json.loads(response.output)["status"] == "error"
+    processor_type.assert_not_called()
+    engine_type.assert_not_called()
+
+
+def test_tags_json_projects_store_rows(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    mock_config: DummyConfig,
+) -> None:
+    """tags should expose the validated SQLite tag/count projection in JSON."""
+
+    store = mocker.MagicMock()
+    store.get_all_tags_with_count.return_value = [
+        {"name": "python", "count": 4},
+        {"name": "workflow", "count": 2},
+    ]
+    store_type = mocker.patch.object(commands, "SQLiteStore", return_value=store)
+
+    response = runner.invoke(
+        commands.cli,
+        ["tags", "--limit", "7", "--format", "json"],
+    )
+
+    assert response.exit_code == 0
+    store_type.assert_called_once_with(mock_config.db_path)
+    store.get_all_tags_with_count.assert_called_once_with(limit=7)
+    assert json.loads(response.output) == {
+        "status": "success",
+        "total": 2,
+        "tags": [
+            {"name": "python", "count": 4},
+            {"name": "workflow", "count": 2},
+        ],
+    }
+
+
+def test_tags_rejects_unbounded_limit_before_opening_storage(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    """tags must not turn an arbitrary CLI integer into an unbounded DB read."""
+
+    store_type = mocker.patch.object(commands, "SQLiteStore")
+
+    response = runner.invoke(
+        commands.cli,
+        [
+            "tags",
+            "--limit",
+            str(commands._MAX_TAG_LIST_LIMIT + 1),
+            "--format",
+            "json",
+        ],
+    )
+
+    assert response.exit_code != 0
+    payload = json.loads(response.output)
+    assert payload == {
+        "status": "invalid",
+        "total": 0,
+        "tags": [],
+        "message": f"limit 必须是 1 到 {commands._MAX_TAG_LIST_LIMIT} 的整数",
+    }
+    store_type.assert_not_called()
+
+
+def test_tags_malformed_store_projection_fails_closed(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    """A malformed tag row is an error rather than a successful empty list."""
+
+    canary = "TAGS-STORE-PROJECTION-CANARY"
+    store = mocker.MagicMock()
+    store.get_all_tags_with_count.return_value = [
+        {"name": canary, "count": True},
+    ]
+    mocker.patch.object(commands, "SQLiteStore", return_value=store)
+
+    response = runner.invoke(
+        commands.cli,
+        ["tags", "--format", "json"],
+    )
+
+    assert response.exit_code != 0
+    payload = json.loads(response.output)
+    assert payload["status"] == "error"
+    assert payload["total"] == 0
+    assert payload["tags"] == []
+    assert canary not in response.output
+
+
+def test_related_json_returns_vector_neighbour_and_excludes_seed(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    mock_config: DummyConfig,
+) -> None:
+    """related should hydrate a vector neighbour locally without a Provider."""
+
+    seed = _make_db_entry(
+        knowledge_id=7,
+        title="Seed",
+        source_type="text",
+        source_url=None,
+        tags="seed",
+        summary_one_sentence="seed abstract",
+    )
+    neighbour = _make_db_entry(
+        knowledge_id=8,
+        title="Neighbour",
+        source_type="text",
+        source_url=None,
+        tags="python, vector",
+        summary_one_sentence="neighbour abstract",
+    )
+    store = mocker.MagicMock()
+    store.query_by_id.side_effect = [seed, neighbour]
+    store_type = mocker.patch.object(commands, "SQLiteStore", return_value=store)
+    vector_store = mocker.MagicMock()
+    vector_store.get_doc_vector.return_value = [0.25, 0.75]
+    vector_store.search_doc.return_value = [(7, 0.0), (8, 0.125)]
+    vector_type = mocker.patch.object(
+        commands,
+        "VectorStore",
+    )
+    vector_type.has_index_artifacts.return_value = True
+    vector_type.open_readonly.return_value = vector_store
+    provider_factory = mocker.patch.object(commands, "create_embedder")
+
+    response = runner.invoke(
+        commands.cli,
+        ["related", "7", "--limit", "2", "--format", "json"],
+    )
+
+    assert response.exit_code == 0
+    store_type.assert_called_once_with(mock_config.db_path)
+    vector_type.assert_not_called()
+    vector_type.open_readonly.assert_called_once_with(
+        index_dir=mock_config.vector_index_dir,
+        dim=None,
+    )
+    vector_store.get_doc_vector.assert_called_once_with(7)
+    vector_store.search_doc.assert_called_once_with([0.25, 0.75], k=3)
+    provider_factory.assert_not_called()
+    assert json.loads(response.output) == {
+        "status": "success",
+        "strategy": "vector_related",
+        "total": 1,
+        "results": [
+            {
+                "knowledge_id": 8,
+                "title": "Neighbour",
+                "abstract": "neighbour abstract",
+                "tags": ["python", "vector"],
+                "source_type": "text",
+                "score": 0.875,
+            }
+        ],
+        "issues": [],
+    }
+
+
+def test_related_missing_vector_index_is_explicit_degraded_json(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    """A missing local index is observable degradation, not a false no-hit."""
+
+    store = mocker.MagicMock()
+    store.query_by_id.return_value = _make_db_entry(
+        knowledge_id=4,
+        source_url=None,
+        summary_one_sentence="seed abstract",
+    )
+    mocker.patch.object(commands, "SQLiteStore", return_value=store)
+    vector_type = mocker.patch.object(commands, "VectorStore")
+    vector_type.has_index_artifacts.return_value = False
+
+    response = runner.invoke(
+        commands.cli,
+        ["related", "4", "--format", "json"],
+    )
+
+    assert response.exit_code == 0
+    vector_type.assert_not_called()
+    payload = json.loads(response.output)
+    assert payload["status"] == "degraded"
+    assert payload["strategy"] == "vector_related"
+    assert payload["total"] == 0
+    assert payload["results"] == []
+    assert payload["issues"] == [
+        {
+            "code": ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE.value,
+            "message": "检索索引不可用",
+            "stage": "vector_index",
+            "recoverable": True,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_stage"),
+    [
+        (["related", "not-an-id", "--format", "json"], "related_entry_lookup"),
+        (["related", "1", "--limit", "0", "--format", "json"], "limit_validation"),
+    ],
+)
+def test_related_invalid_inputs_are_structured_and_do_not_open_storage(
+    args: list[str],
+    expected_stage: str,
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    """Input rejection must occur before any database or vector access."""
+
+    store_type = mocker.patch.object(commands, "SQLiteStore")
+    vector_type = mocker.patch.object(commands, "VectorStore")
+
+    response = runner.invoke(commands.cli, args)
+
+    assert response.exit_code != 0
+    payload = json.loads(response.output)
+    assert payload["status"] == "invalid"
+    assert payload["strategy"] == "vector_related"
+    assert payload["total"] == 0
+    assert payload["results"] == []
+    assert payload["issues"][0]["code"] == ErrorCode.RETRIEVAL_INVALID_QUERY.value
+    assert payload["issues"][0]["stage"] == expected_stage
+    store_type.assert_not_called()
+    vector_type.assert_not_called()

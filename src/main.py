@@ -27,9 +27,12 @@ LOG_LEVEL_WARNING = "WARNING"
 
 COMMAND_ATTRS = {
     "archive": "archive",
+    "archive-text": "archive_text",
     "search": "search",
     "show": "show",
     "list": "list_entries",
+    "tags": "tags",
+    "related": "related",
     "config": "config_cmd",
     "stats": "stats",
 }
