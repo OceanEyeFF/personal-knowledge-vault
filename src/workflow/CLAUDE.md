@@ -321,7 +321,7 @@ class State:
         return dict(self._data)
 ```
 
-详细规范: [docs/refactor/Workflow数据模型规范.md](../../docs/refactor/Workflow数据模型规范.md)
+详细规范: [docs/specs/models/Workflow数据模型规范.md](../../docs/specs/models/Workflow数据模型规范.md)
 
 ---
 
@@ -555,10 +555,10 @@ result = await engine.execute_async("archive-text", {"entry": entry})
 
 | 文件 | 说明 |
 |------|------|
-| [docs/refactor/WorkflowEngine接口规范.md](../../docs/refactor/WorkflowEngine接口规范.md) | 引擎接口规范 |
-| [docs/refactor/Workflow数据模型规范.md](../../docs/refactor/Workflow数据模型规范.md) | 数据模型规范 |
-| [docs/design/工作流开发指南.md](../../docs/design/工作流开发指南.md) | 工作流开发指南 |
-| [docs/milestones/M5_COMPLETION_SUMMARY.md](../../docs/milestones/M5_COMPLETION_SUMMARY.md) | M5 完成报告 |
+| [docs/specs/interfaces/WorkflowEngine接口规范.md](../../docs/specs/interfaces/WorkflowEngine接口规范.md) | 引擎接口规范 |
+| [docs/specs/models/Workflow数据模型规范.md](../../docs/specs/models/Workflow数据模型规范.md) | 数据模型规范 |
+| [docs/modules/workflow/工作流开发指南.md](../../docs/modules/workflow/工作流开发指南.md) | 工作流开发指南 |
+| [docs/history/milestones/M5_COMPLETION_SUMMARY.md](../../docs/history/milestones/M5_COMPLETION_SUMMARY.md) | M5 完成报告 |
 
 ---
 

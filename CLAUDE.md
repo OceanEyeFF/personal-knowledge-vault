@@ -223,7 +223,6 @@ graph TD
     click RETRIEVAL "./src/retrieval/CLAUDE.md" "查看 Retrieval 模块文档"
     click WORKFLOW "./src/workflow/CLAUDE.md" "查看 Workflow 模块文档"
     click AI "./src/ai/CLAUDE.md" "查看 AI Services 模块文档"
-    click UTILS "./src/utils/CLAUDE.md" "查看 Utils 模块文档"
     click TESTS "./tests/CLAUDE.md" "查看 Tests 模块文档"
     click SCRIPTS "./scripts/CLAUDE.md" "查看 Scripts 模块文档"
     click CONFIG "./config/CLAUDE.md" "查看 Config 模块文档"
@@ -243,7 +242,7 @@ graph TD
 | **检索引擎** | `src/retrieval/` | BM25/向量/混合检索与智能路由 | [CLAUDE.md](./src/retrieval/CLAUDE.md) |
 | **存储层** | `src/storage/` | Markdown/SQLite/Vector 三层存储 + 数据库迁移管理 | [CLAUDE.md](./src/storage/CLAUDE.md) |
 | **AI 服务** | `src/ai/` | DeepSeek 摘要/OpenAI Embedding | [CLAUDE.md](./src/ai/CLAUDE.md) |
-| **工具函数** | `src/utils/` | 配置/日志/文本处理/验证脚本 | [CLAUDE.md](./src/utils/CLAUDE.md) |
+| **工具函数** | `src/utils/` | 配置/日志/文本处理/验证脚本 | 根级索引（无独立模块文档） |
 | **运维脚本** | `scripts/` | 环境搭建/数据备份恢复/数据库迁移/测试环境管理 | [CLAUDE.md](./scripts/CLAUDE.md) |
 | **测试** | `tests/` | 单元测试/集成测试/E2E/黑盒测试 | [CLAUDE.md](./tests/CLAUDE.md) |
 | **配置** | `config/` | 主配置/工作流配置/自定义词典 | [CLAUDE.md](./config/CLAUDE.md) |

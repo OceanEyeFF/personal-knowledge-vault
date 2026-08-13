@@ -273,9 +273,9 @@ Warning: AI summary generation failed
 
 ## 📚 相关文档
 
-- [MILESTONE3_TESTING_GUIDE.md](../../docs/MILESTONE3_TESTING_GUIDE.md) - 完整的测试指南
-- [MILESTONE3_COMPLETE.md](../../docs/MILESTONE3_COMPLETE.md) - Milestone 3 完成报告
-- [MILESTONE3_REVIEW.md](../../docs/MILESTONE3_REVIEW.md) - Milestone 3 审视报告
+- [MILESTONE3_TESTING_GUIDE.md](../../docs/history/milestones/MILESTONE3_TESTING_GUIDE.md) - 完整的测试指南
+- [MILESTONE3_COMPLETE.md](../../docs/history/milestones/MILESTONE3_COMPLETE.md) - Milestone 3 完成报告
+- [MILESTONE3_REVIEW.md](../../docs/history/milestones/MILESTONE3_REVIEW.md) - Milestone 3 审视报告
 
 ---
 

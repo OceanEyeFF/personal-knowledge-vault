@@ -141,7 +141,7 @@ class Entry:
     content: str
 ```
 
-详细规范: [docs/refactor/Entry数据模型规范.md](../../docs/refactor/Entry数据模型规范.md)
+详细规范: [docs/specs/models/Entry数据模型规范.md](../../docs/specs/models/Entry数据模型规范.md)
 
 ---
 

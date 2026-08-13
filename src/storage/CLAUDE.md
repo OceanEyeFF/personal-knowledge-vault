@@ -171,7 +171,7 @@ class SQLiteStore:
 - `knowledge_item_keywords`: 多对多关联表
 - `knowledge_fts`: FTS5 虚拟表（全文检索）
 
-详细设计: [docs/refactor/SQLite_Schema完整规范.md](../../docs/refactor/SQLite_Schema完整规范.md)
+详细设计: [docs/specs/database/SQLite_Schema完整规范.md](../../docs/specs/database/SQLite_Schema完整规范.md)
 
 ---
 
@@ -277,7 +277,7 @@ class Entry:
     content: str
 ```
 
-详细规范: [docs/refactor/Entry数据模型规范.md](../../docs/refactor/Entry数据模型规范.md)
+详细规范: [docs/specs/models/Entry数据模型规范.md](../../docs/specs/models/Entry数据模型规范.md)
 
 ---
 
@@ -337,7 +337,7 @@ CREATE TABLE knowledge_item_tags (
 
 **动机**: 领域驱动设计，避免通用 `id` 造成的混淆。
 
-详见: [docs/issues/SCHEMA_MIGRATION_PLAN.md](../../docs/issues/SCHEMA_MIGRATION_PLAN.md)
+详见: [docs/history/issues/SCHEMA_MIGRATION_PLAN.md](../../docs/history/issues/SCHEMA_MIGRATION_PLAN.md)
 
 ### 4. MCP 集成 (M8+M9)
 
@@ -444,7 +444,7 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 
 ### Q4: 如何迁移现有数据？
 
-参考迁移指南: [docs/issues/SCHEMA_MIGRATION_PLAN.md](../../docs/issues/SCHEMA_MIGRATION_PLAN.md)
+参考迁移指南: [docs/history/issues/SCHEMA_MIGRATION_PLAN.md](../../docs/history/issues/SCHEMA_MIGRATION_PLAN.md)
 
 ---
 
@@ -473,10 +473,10 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 
 | 文件 | 说明 |
 |------|------|
-| [docs/refactor/Entry数据模型规范.md](../../docs/refactor/Entry数据模型规范.md) | Entry 数据类规范 |
-| [docs/refactor/Storage接口规范.md](../../docs/refactor/Storage接口规范.md) | 三层存储架构设计 |
-| [docs/refactor/SQLite_Schema完整规范.md](../../docs/refactor/SQLite_Schema完整规范.md) | 数据库 Schema 详细设计 |
-| [docs/design/数据规范.md](../../docs/design/数据规范.md) | Markdown Front Matter 规范 |
+| [docs/specs/models/Entry数据模型规范.md](../../docs/specs/models/Entry数据模型规范.md) | Entry 数据类规范 |
+| [docs/specs/interfaces/Storage接口规范.md](../../docs/specs/interfaces/Storage接口规范.md) | 三层存储架构设计 |
+| [docs/specs/database/SQLite_Schema完整规范.md](../../docs/specs/database/SQLite_Schema完整规范.md) | 数据库 Schema 详细设计 |
+| [docs/specs/models/数据规范.md](../../docs/specs/models/数据规范.md) | Markdown Front Matter 规范 |
 
 ---
 

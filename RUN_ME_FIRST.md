@@ -137,40 +137,45 @@ fatal error C1189: #error: "this header requires Py_BUILD_CORE define"
 
 请查看:
 - 📖 [scripts/README.md](scripts/README.md) - 脚本详细说明
-- 📖 [docs/QUICKSTART.md](docs/QUICKSTART.md) - 完整安装指南
-- 📖 [docs/VALIDATION_REPORT.md](docs/VALIDATION_REPORT.md) - 验证报告
+- 📖 [docs/operations/QUICKSTART.md](docs/operations/QUICKSTART.md) - 完整安装指南
+- 📖 [docs/operations/CHANGELOG.md](docs/operations/CHANGELOG.md) - 当前变更与验证记录
 
 ---
 
 ## ✅ 安装成功后
 
-恭喜！你已经完成了 **Milestone 1: 基础设施层** 的搭建！
+恭喜！你已经完成了当前 Developer Preview 的本地安装。
 
-### 已经实现的功能：
+### 可用入口
 
-1. ✅ **配置系统** - 业务与 Provider 配置仅使用 YAML；环境变量仅用于运行路径隔离和进程开关
-2. ✅ **Markdown 存储** - YAML Front Matter 支持
-3. ✅ **SQLite 存储** - 完整 Schema + FTS5 全文搜索
-4. ✅ **向量存储** - hnswlib HNSW 算法
-5. ✅ **文本处理** - jieba 中文分词
+```powershell
+# GUI 工作台
+python -m src.gui
 
-### 下一步开发计划：
+# CLI 命令与帮助
+python -m src.main --help
 
-- 🚧 Milestone 2: AI 服务封装 (DeepSeek、OpenAI)
-- 🚧 Milestone 3: 内容处理器 (微信、知乎、通用网页)
-- 🚧 Milestone 4: 检索引擎 (BM25、向量、混合检索)
-- 🚧 Milestone 5: 工作流引擎
-- 🚧 Milestone 6: CLI 入口
-- 🚧 Milestone 7: 文档和交付
+# MCP stdio server
+python -m src.mcp.server
+```
+
+当前默认发布面是 Windows-first、离线、fresh-install 的 Developer Preview。GUI、CLI 与 MCP stdio 可用；MCP HTTP/Bearer、真实数据验收和原地升级不在本阶段承诺范围内。
+
+### 下一步
+
+- 查看 [当前战略与路线收敛](docs/overview/当前战略与路线收敛-2026-03.md)
+- 查看 [阶段开发路线与依赖](docs/overview/阶段开发路线与依赖-2026-03.md)
+- 按 [使用手册](docs/operations/使用手册.md) 选择 CLI、GUI 或 MCP stdio 工作流
 
 ---
 
 ## 📚 推荐阅读
 
-- 📖 [项目立项文档](docs/项目立项文档.md) - 了解项目愿景
-- 📖 [架构设计](docs/架构设计.md) - 深入理解系统架构
-- 📖 [Phase 1 开发计划](docs/archive/PHASE1_DEV_PROMPT.md) - Phase 1 开发计划（已归档）
-- 📖 [完成报告](docs/MILESTONE1_COMPLETE.md) - Milestone 1 成果
+- 📖 [项目立项文档](docs/overview/项目立项文档.md) - 了解项目愿景
+- 📖 [架构设计](docs/overview/架构设计.md) - 深入理解系统架构
+- 📖 [当前事实基线](docs/overview/当前事实基线-2026-03.md) - 当前能力与边界
+- 📖 [Phase 1 开发计划（已归档）](docs/history/prompts/PHASE1_DEV_PROMPT.md) - 追溯历史路线
+- 📖 [Milestone 1 完成报告（历史）](docs/history/milestones/MILESTONE1_COMPLETE.md) - 历史成果记录
 
 ---
 
@@ -178,6 +183,4 @@ fatal error C1189: #error: "this header requires Py_BUILD_CORE define"
 
 ---
 
-*作者: 幽浮酱 ฅ'ω'ฅ*
-*日期: 2026-02-14*
-*版本: v0.1.0*
+*本文档反映当前 Windows-first Developer Preview 的快速开始边界。*

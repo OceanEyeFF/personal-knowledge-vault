@@ -209,7 +209,7 @@ async def main():
     print("[完成] 所有测试完成")
     print("=" * 60)
     print("\n[下一步]")
-    print("1. 将测试结果记录到 docs/milestones/M12_RESEARCH/02_DEEPSEEK_API_RESEARCH.md")
+    print("1. 将测试结果记录到 docs/history/milestones/M12_RESEARCH/02_DEEPSEEK_API_RESEARCH.md")
     print("2. 补充 SSE 格式的详细解析逻辑")
     print("3. 测试限流场景（429 错误）")
 

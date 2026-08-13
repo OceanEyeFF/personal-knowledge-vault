@@ -543,8 +543,8 @@ summary = await deepseek.summarize(content)
 
 | 文件 | 说明 |
 |------|------|
-| [docs/refactor/AI服务接口规范.md](../../docs/refactor/AI服务接口规范.md) | AI 服务接口规范 |
-| [docs/milestones/MILESTONE2_COMPLETE.md](../../docs/milestones/MILESTONE2_COMPLETE.md) | M2 完成报告 |
+| [docs/specs/interfaces/AI服务接口规范.md](../../docs/specs/interfaces/AI服务接口规范.md) | AI 服务接口规范 |
+| [docs/history/milestones/MILESTONE2_COMPLETE.md](../../docs/history/milestones/MILESTONE2_COMPLETE.md) | M2 完成报告 |
 
 ---
 
