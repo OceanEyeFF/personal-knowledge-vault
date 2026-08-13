@@ -3,12 +3,12 @@
 > **AI-First Knowledge Workflow System**
 > 工作流驱动的个人知识管理系统
 
-[![Version](https://img.shields.io/badge/version-0.8.0--alpha-blue.svg)](./docs/operations/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.1-blue.svg)](./docs/operations/CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.11+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](./LICENSE)
 [![Status](https://img.shields.io/badge/status-alpha_development-yellow.svg)](./docs/history/milestones/)
 
-> 当前仓库基线：`v0.8.0-alpha`
+> 当前仓库基线：`0.8.1`
 > 说明：`v0.6.0` 是 CLI 首次稳定引入版本，`v0.7.0` 是 MCP 首次稳定引入版本；当前仓库在此基础上继续合入后续 GUI 与文档收敛工作。
 > 命名说明：当前路线里提到的“当前开发 Phase 1”实际对应 `Phase A：Relation Foundation`；历史文档中的旧 `Phase 1` 已归档完成，两者不是同一时间轴。
 > 2026-07-31 离线收口：Phase C 固定评测为 16 tasks / 119 checks，`overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`；三个探索 Tool 按 `partial-v1` 口径交付，公开合同仍诚实声明 `implementation_level=partial`。
@@ -52,26 +52,27 @@
 - **Embedding**: 默认 OpenAI text-embedding-3-small；模型/维度与向量索引绑定，不建议随意更换
 - **成本控制**: DeepSeek API 低成本方案
 
-### 💻 CLI 命令 (v0.6.0 新增)
-```bash
-# 归档 URL
-pkv archive https://mp.weixin.qq.com/xxx
+### 💻 CLI 命令
 
-# 智能搜索
-pkv search "关键词"
+源码树使用模块入口；Windows held test candidate 安装后才提供同名
+pkv.exe 可执行文件。
 
-# 查看详情
-pkv show <knowledge_id>
+~~~bash
+# 归档 URL 和纯文本
+python -m src.main archive https://mp.weixin.qq.com/xxx
+python -m src.main archive-text "一条本地笔记" --title "示例笔记"
 
-# 列表浏览
-pkv list --limit 20
+# 搜索、浏览、标签和已有向量近邻
+python -m src.main search "关键词"
+python -m src.main show <knowledge_id>
+python -m src.main list --limit 20
+python -m src.main tags --format json
+python -m src.main related <knowledge_id> --format json
 
-# 系统配置
-pkv config
-
-# 统计信息
-pkv stats
-```
+# 只读配置与统计
+python -m src.main config show
+python -m src.main stats
+~~~
 
 ### 🔌 MCP 服务 (v0.7.0 新增)
 
@@ -126,34 +127,43 @@ personal-knowledge-vault/
 ├── config/config.yaml                 # 默认配置，可复制为本机配置
 ├── requirements.txt                   # Python 依赖
 │
-├── src/                               # 源代码 (40+ 个文件)
+├── src/                               # 源代码（以下为核心结构，非完整文件清单）
 │   ├── main.py                        # CLI 入口
 │   ├── cli/                           # CLI 系统 (v0.6.0)
-│   │   ├── commands.py                # 6 个核心命令
+│   │   ├── commands.py                # 9 个公开命令
 │   │   ├── ui.py                      # Rich Console 界面
 │   │   └── formatters.py              # 输出格式化
+│   ├── gui/                           # PySide6 GUI 与 Chat 工作台
+│   ├── runtime/                       # 资源/用户路径、bootstrap 与启动保护
 │   ├── mcp/                           # MCP 服务 (v0.7.0)
 │   │   ├── server.py                  # FastMCP 主入口 (M13: stdio only)
 │   │   ├── tools.py                   # 14 个 Tool handler
 │   │   ├── resources.py               # 9 个 Resource handler
 │   │   ├── prompts.py                 # 3 个 Prompt 模板
 │   │   └── utils.py                   # 安全验证 + 序列化
-│   ├── processors/                    # 内容处理器 (7 个)
+│   ├── processors/                    # 内容处理器
 │   │   ├── wechat_processor.py        # 微信文章
 │   │   ├── zhihu_processor.py         # 知乎内容
 │   │   ├── chat_processor.py          # 聊天记录
 │   │   ├── ai_chat_processor.py       # AI 对话
+│   │   ├── generic_processor.py       # 通用网页
 │   │   └── text_fallback_processor.py # 纯文本
 │   ├── relations/                     # 关系模型与类型定义 (Phase A)
 │   │   ├── models.py                  # 关系记录 / 查询结果模型
 │   │   ├── extractors.py              # 低歧义关系抽取与回填服务
-│   │   └── query_service.py           # 一跳关系查询与分组服务
+│   │   ├── query_service.py           # 一跳关系查询与分组服务
+│   │   ├── evidence_service.py        # 文档级证据包
+│   │   ├── exploration_service.py     # 受限探索服务
+│   │   └── citations.py               # 引用投影
 │   ├── storage/                       # 三层存储
 │   │   ├── markdown_store.py          # Markdown 主存储
 │   │   ├── sqlite_store.py            # SQLite 元数据索引
 │   │   ├── vector_store.py            # hnswlib 向量索引
 │   │   ├── relation_store.py          # knowledge_relations 存储
-│   │   └── migration_manager.py       # 数据库迁移与健康检查
+│   │   ├── migration_manager.py       # 数据库迁移与健康检查
+│   │   ├── coordinator.py             # 跨存储终态协调
+│   │   ├── sqlite_connection.py       # SQLite 连接与事务边界
+│   │   └── vault_paths.py             # Vault containment
 │   ├── retrieval/                     # 检索引擎 (6 个)
 │   │   ├── bm25_retriever.py          # BM25 关键词检索
 │   │   ├── vector_retriever.py        # 向量语义检索
@@ -183,13 +193,15 @@ personal-knowledge-vault/
 │   ├── restore-data.ps1               # 数据恢复
 │   ├── backfill_relations.py          # 关系回填脚本（默认 dry-run）
 │   ├── migrate.py                     # 数据库迁移工具
+│   ├── run-test.ps1                   # 默认隔离测试入口
+│   ├── build-release.ps1              # W3 可复现 held-candidate 构建入口
 │   └── migrations/                    # SQL 迁移脚本
 │
-├── tests/                             # 测试套件（2026-03-06 仓库快照：96 个文件）
-│   ├── unit/                          # 单元测试（40 个文件）
-│   ├── integration/                   # 集成测试（8 个文件）
-│   ├── e2e/                           # E2E 测试（6 个文件）
-│   ├── blackbox/                      # 黑盒测试（5 个文件）
+├── tests/                             # 测试套件（精确 lane/证据见 tests/CLAUDE.md）
+│   ├── unit/                          # 单元测试
+│   ├── integration/                   # 集成测试
+│   ├── e2e/                           # E2E 测试
+│   ├── blackbox/                      # 黑盒测试
 │   ├── fixtures/                      # 测试数据
 │   ├── manual_test_m12/               # M12 专项手动验证（7 个文件）
 │   └── manual_test_*.py               # 手动测试脚本
@@ -440,20 +452,20 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 
 ## 📊 项目状态
 
-### 🎉 当前仓库基线: v0.8.0-alpha
+### 🎉 当前仓库基线: 0.8.1
 
 **发布状态**: 🧪 M13 W1/W2/W3 与 W4 installed-Artifact 功能验证已完成；当前 Artifact 是合规 hold 的 test candidate，尚未具备正式发布资格，真实数据验收也未执行。
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| **项目版本** | v0.8.0-alpha | 当前仓库基线 |
+| **项目版本** | 0.8.1 | 当前运行时、CLI 和 held test candidate 基线 |
 | **稳定能力基线** | v0.7.0 | MCP 服务 (8 Tool + 4 Resource + 3 Prompt) |
 | **开发进度** | M13 W4（hold） | W3 打包链与 W4 10/11 Artifact matrix 已完成；7 项合规 blocker 使候选保持 hold |
-| **源代码文件** | 40+ 个 | Python 模块 |
-| **测试文件** | 96 个 | 2026-03-06 仓库快照（tracked files） |
-| **测试覆盖率** | 待重新统计 | README 不再保留未经重新验证的旧覆盖率数字 |
+| **源代码文件** | 动态维护 | 以仓库树和模块索引为准 |
+| **测试文件** | 动态维护 | 精确测试 lane 与冻结证据见 `tests/CLAUDE.md` |
+| **测试覆盖率** | 门禁化维护 | 不在 README 固化易漂移的静态百分比 |
 | **MCP 测试** | 多层覆盖 | 相关用例分布在 unit / integration / blackbox / e2e |
-| **文档数量** | 60+ | Markdown 文档 |
+| **文档数量** | 动态维护 | 文档索引与模块入口见 `CLAUDE.md` / `AGENTS.md` |
 
 ### ✅ 里程碑完成情况
 
@@ -482,7 +494,7 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 | **内容归档** | 🧪 已实现（alpha） | 6 种处理器；真实数据验收尚未执行 |
 | **智能检索** | 🧪 已实现（alpha） | BM25/向量/混合，自动路由 |
 | **AI 分析** | 🧪 已实现（alpha） | 三层摘要、标签提取、成本优化 |
-| **CLI 交互** | 🧪 已实现（alpha） | 6 个核心命令，Rich Console 界面 |
+| **CLI 交互** | 🧪 已实现（alpha） | 9 个公开命令，Rich Console 界面 |
 | **工作流引擎** | 🧪 已实现（alpha） | YAML 配置，可编排/可观测 |
 | **数据迁移** | 🧪 W1 安全合同通过 | fresh/off-path 初始化与升级拒绝已验证；历史原地升级仍不在 M13 默认范围 |
 | **AI 安全** | 🧪 CAT-0 已验证 | 离线入口与测试隔离；不等同于 OS sandbox |
@@ -498,21 +510,20 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 
 ## 🧪 测试体系
 
-### 测试资产快照（2026-03-06）
+### 测试布局
 
 说明：
 
-- 下表使用仓库文件快照统计（基于 tracked files），不是测试用例数
-- 覆盖率数字需要重新执行覆盖率统计后再更新
+- 文件数量和覆盖率不在 README 固化；以 [tests/CLAUDE.md](tests/CLAUDE.md)
+  中对应冻结工作树的门禁与证据为准。
 
-| 测试类型 | 文件数 | 覆盖范围 | 运行方式 |
-|---------|--------|----------|----------|
-| **单元测试** | 40 个 | 核心业务逻辑、GUI、MCP、处理器、存储层 | `run-test.ps1 -Direct ... pytest tests/unit/` |
-| **集成测试** | 8 个 | 跨模块集成、MCP 功能、工作流、审核链路 | `run-test.ps1 -Direct ... pytest tests/integration/` |
-| **E2E 测试** | 6 个 | 默认离线端到端与 MCP 服务；network/manual 排除 | `run-test.ps1 -Direct ... pytest tests/e2e/` |
-| **黑盒测试** | 5 个 | CLI + MCP stdio 协议 | `run-test.ps1 -Direct ... pytest tests/blackbox/` |
-| **根目录测试/辅助文件** | 9 个 | 基础语法、手动验证脚本、测试说明 | 自动化经 wrapper；manual 由用户按说明执行 |
-| **M12 专项手动验证** | 7 个 | qasync、流式输出、线程/异步集成 | 用户手动、非默认自动化；按文件说明执行 |
+| 测试类型 | 覆盖范围 | 运行方式 |
+|---------|----------|----------|
+| **单元测试** | 核心业务逻辑、GUI、MCP、处理器、存储层 | run-test.ps1 -Direct ... pytest tests/unit/ |
+| **集成测试** | 跨模块集成、MCP 功能、工作流、审核链路 | run-test.ps1 -Direct ... pytest tests/integration/ |
+| **E2E 测试** | 默认离线端到端与 MCP 服务；network/manual 排除 | run-test.ps1 -Direct ... pytest tests/e2e/ |
+| **黑盒测试** | CLI + MCP stdio 协议 | run-test.ps1 -Direct ... pytest tests/blackbox/ |
+| **手动验证** | GUI、流式输出、线程/异步集成 | 用户手动、非默认自动化；按文件说明执行 |
 
 **MCP 多层测试结构**:
 
@@ -616,10 +627,10 @@ live/secret/proxy 环境并安装 Python 级网络与子进程 guard，但它不
 <div align="center">
 
 **项目代号**: Personal Knowledge Vault
-**当前版本**: v0.8.0-alpha
+**当前版本**: 0.8.1
 **创建日期**: 2026-01-27
-**文档版本**: v4.2
-**最后更新**: 2026-08-02
+**文档版本**: v4.3
+**最后更新**: 2026-08-13
 
 ---
 

@@ -294,38 +294,34 @@ print(entry.title)  # 分布式系统设计
 
 **职责**: SQLite 元数据索引
 
-#### `index_entry(entry: Entry) -> str`
+#### `insert_entry(entry: Entry, file_path: str) -> int`
 
-将条目索引到 SQLite。
+将条目及其已验证的 Markdown 相对路径写入 SQLite 投影。
 
 **参数**:
 - `entry` (Entry): 条目对象
+- `file_path` (str): Vault 内 Markdown 路径
 
 **返回**:
-- `str`: entry_id
+- `int`: knowledge_id
 
 **示例**:
 
 ```python
 from src.storage.sqlite_store import SQLiteStore
 
-db = SQLiteStore(db_path=".data/db/knowledge_vault.db")
+db = SQLiteStore(Path(".data/db/knowledge_vault.db"))
 
-entry_id = db.index_entry(entry)
+entry_id = db.insert_entry(entry, file_path="text/example.md")
 print(f"✅ 已索引: {entry_id}")
 ```
 
 ---
 
-#### `query_by_tag(tag: str) -> List[str]`
+#### `list_entries(..., tag: str | None = None) -> list[dict]`
 
-按标签查询 entry_id 列表。
-
-**参数**:
-- `tag` (str): 标签名
-
-**返回**:
-- `List[str]`: entry_id 列表
+按标签或其他受支持过滤条件分页列出条目；标签汇总使用
+`get_all_tags_with_count(limit=...)`。
 
 ---
 
@@ -333,23 +329,23 @@ print(f"✅ 已索引: {entry_id}")
 
 **职责**: hnswlib 向量索引
 
-#### `add(entry_id: str, embedding: np.ndarray)`
+#### `add_doc_vector(knowledge_id: int, vector: np.ndarray)`
 
 添加向量到索引。
 
 **参数**:
-- `entry_id` (str): 条目 ID
-- `embedding` (np.ndarray): 向量（shape: `(dim,)`，由当前模型实际维度决定）
+- `knowledge_id` (int): 条目 ID
+- `vector` (np.ndarray): 向量（shape: `(dim,)`，由当前模型实际维度决定）
 
 **示例**:
 
 ```python
 from src.storage.vector_store import VectorStore
 
-vector_store = VectorStore(index_path=".data/vectors/embeddings.index")
+vector_store = VectorStore(Path(".data/vectors"), dim=1536)
 
-embedding = embedder.embed(entry.content)  # shape: (dim,)
-vector_store.add(entry.id, embedding)
+vector = embedder.embed(entry.content)  # shape: (dim,)
+vector_store.add_doc_vector(entry.knowledge_id, vector)
 ```
 
 说明：
@@ -360,7 +356,7 @@ vector_store.add(entry.id, embedding)
 
 ---
 
-#### `search(query_vector: np.ndarray, k: int = 10) -> List[Tuple[str, float]]`
+#### `search_doc(query_vector: np.ndarray, k: int = 10) -> List[Tuple[int, float]]`
 
 向量检索。
 
@@ -369,7 +365,7 @@ vector_store.add(entry.id, embedding)
 - `k` (int): 返回数量
 
 **返回**:
-- `List[Tuple[str, float]]`: `[(entry_id, distance), ...]`
+- `List[Tuple[int, float]]`: `[(knowledge_id, distance), ...]`
 
 ---
 
@@ -444,7 +440,7 @@ class WorkflowResult:
     logs: List[str] = field(default_factory=list)  # 执行日志
     warnings: List[str] = field(default_factory=list)
     issues: List[dict] = field(default_factory=list)
-    terminal: str = "success"   # success/degraded/error
+    terminal: Optional[str] = None  # __post_init__ 推导 success/degraded/error
 ```
 
 ---
@@ -709,7 +705,7 @@ VALUES ('1.1.0', '新增 CLI 使用统计表');
 
 ### 概述
 
-Personal Knowledge Vault 提供了 6 个核心命令，涵盖归档、搜索、查看、配置等功能。
+Personal Knowledge Vault 提供 9 个公开命令，涵盖 URL/文本归档、检索、浏览、标签统计、已有向量近邻、配置与统计功能。
 
 **安装后使用**:
 ```bash
@@ -759,6 +755,31 @@ python -m src.main archive "https://example.com" --quiet
 - 调用 `WorkflowEngine.execute_async("archive-url", input_data)`
 - `input_data` 键名：`url`, `skip_sharpen`, `manual_tags`
 - 返回 `WorkflowResult` 包含 `knowledge_id`, `file_path`
+
+---
+
+### pkv archive-text - 归档纯文本
+
+归档字面文本；即使文本看起来像本地路径，也不会触发文件读取。
+
+**基本用法**:
+~~~bash
+python -m src.main archive-text "一条可归档的离线笔记" --title "笔记标题"
+python -m src.main archive-text "一条可归档的离线笔记" --format json
+~~~
+
+**参数**:
+
+- text（必填）：字面纯文本。
+- --title（可选）：覆盖回退处理器生成的标题。
+- --format table|json（可选）：默认 table。
+
+**集成接口**:
+
+- 先调用 TextFallbackProcessor.process_text(text) 构造 Entry。
+- 再调用 WorkflowEngine.execute_async("archive-text", input_data)，并固定
+  skip_review=true、skip_sharpen=true。
+- success 与 degraded 均会保留核心 Markdown/SQLite 归档终态；其余终态为错误。
 
 ---
 
@@ -828,9 +849,9 @@ python -m src.main show 42 --raw
 ```
 
 **集成接口**:
-- 调用 `SQLiteStore.get_entry_by_id(knowledge_id)`
-- 调用 `SQLiteStore.get_entry_by_url(url)`
-- 使用 `MarkdownStore.read(file_path)` 读取原始内容
+- 调用 `SQLiteStore.query_by_id(knowledge_id)`
+- 调用 `SQLiteStore.query_by_url(url)`
+- 使用 `MarkdownStore.load(file_path)` 读取原始内容
 
 ---
 
@@ -864,7 +885,53 @@ python -m src.main list --sort time --desc --limit 10
 ```
 
 **集成接口**:
-- 调用 `SQLiteStore.query_entries(filters, order_by, desc, limit)`
+- 调用 `SQLiteStore.list_entries(...)`
+
+---
+
+### pkv tags - 标签统计
+
+读取当前 SQLite 投影中的标签及条目计数；本命令不提供跨 Markdown/SQLite 的标签写入。
+
+**基本用法**:
+~~~bash
+python -m src.main tags --limit 20
+python -m src.main tags --format json
+~~~
+
+**参数**:
+
+- --limit：1 到 200，默认 50。
+- --format table|json：默认 table。
+
+**集成接口**:
+
+- 调用 SQLiteStore.get_all_tags_with_count(limit=...)。
+
+---
+
+### pkv related - 已有向量索引近邻
+
+返回指定知识条目的文档向量近邻。这是相似度推荐，不等同于关系图查询。
+
+**基本用法**:
+~~~bash
+python -m src.main related 42 --limit 5
+python -m src.main related 42 --format json
+~~~
+
+**参数**:
+
+- knowledge_id（必填）：正整数条目 ID。
+- --limit：1 到 20，默认 5。
+- --format table|json：默认 table。
+
+**集成接口与终态**:
+
+- 读取 SQLite 条目，并通过 VectorStore.open_readonly(...) 查询已存在的文档向量。
+- 查询不会创建向量索引、锁文件或 Provider。
+- 条目不存在返回 no_hits；索引或条目向量缺失返回显式 degraded；后端错误
+  不得伪装为空结果。
 
 ---
 
@@ -959,7 +1026,7 @@ python -m src.main stats
 **集成接口**:
 - 调用 `SQLiteStore.count_entries()`
 - 调用 `SQLiteStore.count_entries_by_source_type()`
-- 调用 `SQLiteStore.get_top_tags(limit=10)`
+- 调用 `SQLiteStore.get_all_tags_with_count(limit=10)`
 
 ---
 

@@ -127,6 +127,6 @@
 - [Retrieval 检索引擎规范](../../docs/specs/interfaces/Retrieval检索引擎规范.md)
 - [TestCase 设计审查与分阶段规划](../../docs/operations/testing/Review-TestCase设计审查与分阶段规划-2026-07-30.md)
 
-**当前版本**：`0.8.0-alpha`
+**当前版本**：`0.8.1`
 
-**最后核对**：2026-07-30（以当前源码公开符号为准）
+**最后核对**：2026-08-13（以当前源码公开符号为准）

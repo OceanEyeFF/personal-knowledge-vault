@@ -107,18 +107,25 @@ PKV 当前有三个主要入口。
 查看帮助：
 
 ```powershell
-.\scripts\run-windows.ps1 python -m src.cli.commands --help
+.\scripts\run-windows.ps1 python -m src.main --help
 ```
 
-常用命令：
+常用命令（源码 checkout）：
 
 ```bash
-pkv archive https://example.com/article
-pkv search "关键词"
-pkv show 1
-pkv list --limit 20
-pkv stats
+python -m src.main archive https://example.com/article
+python -m src.main archive-text "一条本地笔记" --title "示例笔记"
+python -m src.main search "关键词"
+python -m src.main show 1
+python -m src.main list --limit 20
+python -m src.main tags --format json
+python -m src.main related 1 --format json
+python -m src.main stats
 ```
+
+受控安装的 Windows held test candidate 才提供 pkv.exe；它仍处于 compliance
+hold，不应被表述为正式发布。安装与验收步骤见
+[用户指南](release/USER-GUIDE.md)。
 
 ### 5.2 MCP Server
 

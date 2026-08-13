@@ -14,7 +14,10 @@ scripts/migrations/
 ├── 004_add_chat_sessions.sql      # v1.1.1 新增 AI 对话会话表（M12）
 ├── 005_add_review_system.sql      # v1.1.2 新增审核系统表
 ├── 006_add_relations_foundation.sql # v1.2.0 新增关系层基础表（Phase A）
-└── (未来的迁移脚本...)
+├── 007_add_timeline_time_fields.sql # v1.2.1 新增真实时间字段
+├── 008_align_fts_contract.sql     # v1.2.2 统一 FTS 表与触发器合同
+├── 009_repair_fts_storage_contract.sql # v1.2.3 修复 FTS 存储合同
+└── 010_add_storage_operation_commits.sql # v1.2.4 新增跨存储提交凭据
 ```
 
 ---
@@ -121,6 +124,10 @@ VALUES ('{版本号}', '{变更描述}');
 | 1.1.1 | 004_add_chat_sessions.sql | M12 AI 对话会话表 | 2026-02-20 |
 | 1.1.2 | 005_add_review_system.sql | 审核系统表 | 2026-02-28 |
 | 1.2.0 | 006_add_relations_foundation.sql | Phase A 关系层基础表 | 2026-03-09 |
+| 1.2.1 | 007_add_timeline_time_fields.sql | 为 `knowledge_items` 增加 `event_time` / `published_at` | 2026-03-30 |
+| 1.2.2 | 008_align_fts_contract.sql | 统一 FTS 表名与触发器合同到 `knowledge_items_fts` | 2026-04-01 |
+| 1.2.3 | 009_repair_fts_storage_contract.sql | 修复 `knowledge_items_fts` 存储合同并清理重复索引 | 2026-04-03 |
+| 1.2.4 | 010_add_storage_operation_commits.sql | 新增跨存储操作提交凭据 | 2026-08-03 |
 
 ### 版本号规范
 
@@ -194,5 +201,5 @@ VALUES ('{版本号}', '{变更描述}');
 
 ---
 
-**最后更新**: 2026-02-16
+**最后更新**: 2026-08-13
 **维护者**: 幽浮酱 ฅ'ω'ฅ

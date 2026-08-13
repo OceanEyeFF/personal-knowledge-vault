@@ -360,18 +360,21 @@ Storage 层为 MCP Server 提供核心数据访问:
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\storage-markdown -Command @("pytest", "tests/unit/test_markdown_store.py", "-v")
 
 # 测试 SQLite 存储
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\storage-sqlite -Command @("pytest", "tests/unit/test_sqlite_store.py", "-v")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\storage-sqlite -Command @("pytest", "tests/unit/test_sqlite_store_queries.py", "tests/unit/test_sqlite_store_additional.py", "tests/unit/test_sqlite_store_management.py", "tests/unit/test_sqlite_store_initialize_compat.py", "-v")
 
 # 测试向量存储
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\storage-vector -Command @("pytest", "tests/unit/test_vector_store.py", "-v")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\storage-vector -Command @("pytest", "tests/unit/test_vector_store_safety.py", "tests/unit/test_vector_retriever_contract.py", "-v")
 ```
 
-### 集成测试
+### 跨存储协调测试
 
 ```powershell
-# 测试三层存储协同
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\storage-integration -Command @("pytest", "tests/integration/test_storage_integration.py", "-v")
+# 测试跨 Markdown / SQLite / Vector 的终态协调
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\storage-coordinator -Command @("pytest", "tests/unit/test_storage_coordinator.py", "-v")
 ```
+
+工作流和检索层的跨模块存储交互分别由对应 integration suite 覆盖；仓库当前没有
+`tests/integration/test_storage_integration.py`。
 
 ### 数据一致性测试
 
@@ -465,9 +468,9 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 | 文件 | 说明 |
 |------|------|
 | `tests/unit/test_markdown_store.py` | Markdown 存储测试 |
-| `tests/unit/test_sqlite_store.py` | SQLite 存储测试 |
-| `tests/unit/test_vector_store.py` | 向量存储测试 |
-| `tests/integration/test_storage_integration.py` | 三层存储集成测试 |
+| `tests/unit/test_sqlite_store_queries.py` 等 | SQLite 投影、查询和初始化兼容性测试 |
+| `tests/unit/test_vector_store_safety.py` | 向量索引一致性与只读安全测试 |
+| `tests/unit/test_storage_coordinator.py` | 跨 Markdown / SQLite / Vector 终态协调测试 |
 
 ### 文档
 
@@ -505,6 +508,6 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-02-19 00:58:06
+**最后更新**: 2026-08-13
 
 *本文档由 Claude Code 自动生成*

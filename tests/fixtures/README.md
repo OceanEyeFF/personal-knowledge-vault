@@ -2,19 +2,38 @@
 
 ## 📁 文件说明
 
-### 测试 Fixtures（测试样本文件）
+### 离线处理器样本
 
-这些文件用于离线单元测试，不需要真实的网络请求：
+这些文件用于离线单元、集成和黑盒测试，不需要真实网络请求：
 
-| 文件 | 用途 | 格式 |
+| 路径 | 用途 | 格式 |
 |------|------|------|
-| `chat_sample.txt` | 纯文本格式聊天记录样本 | 纯文本 |
-| `chat_sample.json` | JSON 格式聊天记录样本 | JSON |
+| `chat_sample.txt` / `chat_sample.json` | 通用聊天记录解析样本 | 纯文本 / JSON |
 | `generic_sample.html` | 通用网页 HTML 样本 | HTML |
-| `wechat_sample.html` | 微信文章 HTML 样本 | HTML |
-| `zhihu_sample.html` | 知乎内容 HTML 样本 | HTML |
+| `wechat_sample.html` / `wechat_chat_sample.txt` | 微信文章与聊天文本样本 | HTML / 纯文本 |
+| `zhihu_sample.html` / `zhihu_login_wall.html` / `zhihu/zhihu reply sample.txt` | 知乎内容、登录墙和回复文本样本 | HTML / 纯文本 |
+| `ai_chat/` | 合成 ChatGPT 与 DeepSeek 导出样本（HTML / Markdown） | HTML / Markdown |
 
-### 测试配置文件
+### 版本化合同与评测 Fixtures
+
+| 路径 | 用途 | 格式 |
+|------|------|------|
+| `w2/workflow/v1/states.v1.yaml` | Workflow 终态合同 fixture | YAML |
+| `w2/retrieval/v1/contract.json` | Retrieval 响应合同 fixture | JSON |
+| `w2/mcp/v1/matrix.yaml` | MCP stdio 合同矩阵 | YAML |
+| `w2/chat/v1/scenarios.yaml` | GUI Chat 合同场景 | YAML |
+| `w4/` | Artifact E2E 的离线文本、Chat prompt、语义 Provider 和 fixture manifest | JSON / YAML / 纯文本 |
+| `w4/semantic-vector-index.v1/` | 固定向量索引及其 manifest；仅供 W4 离线场景使用 | hnswlib / JSON |
+| `phase_b_5_4_min_regression.yaml` | Phase B 最小关系推理回归样例 | YAML |
+
+### 测试辅助文件
+
+| 路径 | 用途 | 格式 |
+|------|------|------|
+| `sample_data.py` | 创建确定性 SQLite 测试数据的辅助模块 | Python |
+| `offline_direct_probe.py` | Direct Python 离线入口验证探针 | Python |
+
+### 用户配置的测试 URL
 
 | 文件 | 用途 | 格式 |
 |------|------|------|

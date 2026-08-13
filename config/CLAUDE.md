@@ -58,17 +58,32 @@ ai:
 
 # 检索配置
 retrieval:
-  bm25_k1: 1.5                         # BM25 参数 k1
-  bm25_b: 0.75                         # BM25 参数 b
-  vector_top_k: 10                     # 向量检索返回数量
-  hybrid_rrf_k: 60                     # 混合检索 RRF 参数
-  query_router_threshold: 10           # 查询路由阈值 (tokens)
+  bm25:
+    k1: 1.5
+    b: 0.75
+  vector:
+    top_k: 10
+    ef_search: 50
+  hybrid:
+    bm25_weight: 0.4
+    vector_weight: 0.6
+  strategy_thresholds:
+    keyword_max_length: 2000
+    vector_min_length: 5000
 
 # 日志配置
 logging:
-  level: "INFO"                        # 日志级别
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: ".data/logs/pkv.log"           # 日志文件路径
+  level: "INFO"
+  format: "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
+  file:
+    enabled: true
+    path: ".data/logs/pkv.log"
+    max_bytes: 10485760
+    backup_count: 5
+  console:
+    enabled: true
+    colorize: true
 ```
 
 **读取方式**:
@@ -362,6 +377,6 @@ $env:DATA_DIR = ".data-custom"
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-02-19 00:58:06
+**最后更新**: 2026-08-13
 
 *本文档由 Claude Code 自动生成*

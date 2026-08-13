@@ -284,6 +284,7 @@
 1. 检查当前版本: 1.0.0
 2. 扫描待迁移脚本:
    - 002_add_cli_tables.sql (v1.1.0)
+   - ...（当前链的末端为 010_add_storage_operation_commits.sql，v1.2.4）
 3. 自动备份到 .data-backup/
 4. 执行迁移脚本
 5. 更新 schema_version 表
@@ -339,6 +340,13 @@ CREATE TABLE IF NOT EXISTS cli_stats (
 |------|------|------|
 | `001_initial_schema.sql` | 1.0.0 | M1 初始 Schema (5 张表) |
 | `002_add_cli_tables.sql` | 1.1.0 | M6 CLI 统计表 |
+| `004_add_chat_sessions.sql` | 1.1.1 | AI 对话会话表 |
+| `005_add_review_system.sql` | 1.1.2 | 审核系统表 |
+| `006_add_relations_foundation.sql` | 1.2.0 | Phase A 关系层基础表 |
+| `007_add_timeline_time_fields.sql` | 1.2.1 | 真实事件/发布时间字段 |
+| `008_align_fts_contract.sql` | 1.2.2 | FTS 表与触发器合同对齐 |
+| `009_repair_fts_storage_contract.sql` | 1.2.3 | FTS 存储合同修复 |
+| `010_add_storage_operation_commits.sql` | 1.2.4 | 跨存储操作提交凭据 |
 
 详见: [scripts/migrations/README.md](./migrations/README.md)
 
@@ -569,6 +577,13 @@ U1/G8/FT5 user-only gate 尚未交付
 |------|------|------|
 | `migrations/001_initial_schema.sql` | 1.0.0 | M1 初始 Schema |
 | `migrations/002_add_cli_tables.sql` | 1.1.0 | M6 CLI 统计表 |
+| `migrations/004_add_chat_sessions.sql` | 1.1.1 | AI 对话会话表 |
+| `migrations/005_add_review_system.sql` | 1.1.2 | 审核系统表 |
+| `migrations/006_add_relations_foundation.sql` | 1.2.0 | Phase A 关系层基础表 |
+| `migrations/007_add_timeline_time_fields.sql` | 1.2.1 | 真实事件/发布时间字段 |
+| `migrations/008_align_fts_contract.sql` | 1.2.2 | FTS 表与触发器合同对齐 |
+| `migrations/009_repair_fts_storage_contract.sql` | 1.2.3 | FTS 存储合同修复 |
+| `migrations/010_add_storage_operation_commits.sql` | 1.2.4 | 跨存储操作提交凭据 |
 | `migrations/README.md` | - | 迁移脚本说明 |
 
 ### 文档
@@ -602,6 +617,6 @@ U1/G8/FT5 user-only gate 尚未交付
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-02-16 18:51:32
+**最后更新**: 2026-08-13
 
 *本文档由 Claude Code 自动生成*
