@@ -24,10 +24,6 @@ COMPLIANCE_BLOCKERS = [
     "conda-native-license-materials-and-spdx",
     "html2text-gpl-compliance",
     "native-msvc-license-and-provenance",
-    "qt-corresponding-source-location",
-    "qt-linkage-and-replacement-not-proven",
-    "qt-module-license-audit",
-    "qt-notice-placeholders",
 ]
 pytestmark = [
     pytest.mark.packaging_contract,

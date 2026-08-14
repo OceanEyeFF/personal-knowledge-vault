@@ -1,0 +1,32 @@
+# Application composition module
+
+[Root](../../CLAUDE.md) > [src](..) > **application**
+
+## Responsibility
+
+`KnowledgeApplication` is the adapter-neutral composition root beneath the public
+headless Kernel. It owns lazy Store/Retriever/Provider factories and operation
+scoped Workflow/Processor creation for one validated runtime configuration.
+
+## Invariants
+
+- Never import an external wrapper, CLI, or MCP package.
+- Default workflows receive the application's exact configuration, Store ports,
+  coordinator, Provider factories, and vector writer factory explicitly.
+- BM25 and validation rejection paths must not create a Provider.
+- Missing vector artifacts are not negatively cached; a long-running process must
+  observe an index created later. Successfully opened stores may be cached.
+- Entry points configure the process application only after runtime bootstrap.
+- `reload_application` replaces the application and legacy configuration identity;
+  in-flight operations retain the old captured graph.
+
+## Tests
+
+```powershell
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\application -Command @(
+  "python", "-m", "pytest", "tests/unit/test_knowledge_application.py", "-q"
+)
+```
+
+Tests must include a config-A/config-B canary proving production workflow composition
+touches only B, plus absent-to-present vector-index behavior.

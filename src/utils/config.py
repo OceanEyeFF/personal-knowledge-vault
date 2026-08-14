@@ -219,7 +219,7 @@ def _is_endpoint_contract_credential_parameter(parameter_name: str) -> bool:
 
 
 def _is_endpoint_decision_credential_parameter(parameter_name: str) -> bool:
-    """精确识别 CLI/GUI 禁止通过普通输入渠道传递的 endpoint 凭据。"""
+    """精确识别 CLI/外部 Wrapper 禁止通过普通输入渠道传递的 endpoint 凭据。"""
     normalized = _normalize_security_identifier(unquote_plus(parameter_name))
     return normalized in _ENDPOINT_CONTRACT_CREDENTIAL_PARAMETER_NAMES
 

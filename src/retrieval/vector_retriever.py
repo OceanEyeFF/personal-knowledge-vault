@@ -34,6 +34,7 @@ class VectorRetriever:
         embedder: Embedder | None = None,
         *,
         embedder_factory: EmbedderFactory | None = None,
+        runtime_config: Any = None,
     ) -> None:
         if embedder is not None and embedder_factory is not None:
             raise ValueError("embedder 与 embedder_factory 只能提供一个")
@@ -42,6 +43,7 @@ class VectorRetriever:
         self.vector_index_dir = Path(vector_index_dir)
         self.embedder = embedder
         self._embedder_factory = embedder_factory
+        self._runtime_config = runtime_config
         self._embedder_lock = Lock()
         self._embedder_dim = self._read_embedder_dim(embedder)
 
@@ -199,6 +201,7 @@ class VectorRetriever:
             self.vector_store = VectorStore(
                 self.vector_index_dir,
                 dim=self._embedder_dim,
+                runtime_config=self._runtime_config,
                 allow_index_creation=False,
             )
             return self.vector_store

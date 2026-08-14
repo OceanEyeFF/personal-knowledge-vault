@@ -5,7 +5,7 @@
 ## 目录说明
 
 - `overview/`：项目定位、战略、PRD、架构总览、技术选型、结构说明
-- `modules/`：按模块拆分的设计文档，例如 `mcp/`、`workflow/`、`gui/`、`review/`
+- `modules/`：按模块拆分的设计文档，例如 `mcp/`、`workflow/`、`review/`；GUI 模块文档已迁至独立 `pkv-GUI` 仓库
 - `specs/`：接口、数据模型、Schema、数据流等细颗粒规范
 - `operations/`：安装、使用、维护、迁移、测试环境等操作型文档
 - `history/`：历史 Prompt、讨论、里程碑、问题记录、复盘材料
@@ -15,6 +15,7 @@
 - [当前战略与路线收敛-2026-03.md](./overview/当前战略与路线收敛-2026-03.md)
 - [当前事实基线-2026-03.md](./overview/当前事实基线-2026-03.md)
 - [阶段开发路线与依赖-2026-03.md](./overview/阶段开发路线与依赖-2026-03.md)
+- [后M13开发路线-2026-08.md](./overview/后M13开发路线-2026-08.md)（内部自测封包、知识成果与可选 Node）
 - [PhaseB-推理型MCP路线图-2026-03.md](./overview/PhaseB-推理型MCP路线图-2026-03.md)
 - [文档与代码差异清单-2026-03.md](./overview/文档与代码差异清单-2026-03.md)
 - [personal-knowledge-vault-prd.md](./overview/personal-knowledge-vault-prd.md)

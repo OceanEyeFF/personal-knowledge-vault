@@ -104,7 +104,7 @@
 - **成本可控**: BM25 路径不构造 Provider，向量/混合能力按需启用
 - **安全可靠**: 测试环境隔离、自动备份、数据库增量迁移
 - **MCP 开放**: 通过 MCP 协议将知识库暴露给任意 AI Agent
-- **桌面 GUI**: PySide6 桌面应用,AI 对话与知识浏览一体化
+- **外部桌面 Wrapper**: GUI 已独立到 `pkv-GUI` 仓库，只依赖本仓库的稳定 Kernel 接口
 
 ---
 
@@ -112,35 +112,31 @@
 
 ### 核心设计理念
 
-**工作流驱动 + 插件化处理 + 灵活深度 + AI 安全协作 + MCP 开放集成 + GUI 桌面应用**
+**无头 Kernel + 工作流驱动 + 插件化处理 + AI 安全协作 + 外围适配器**
 
-系统采用工作流引擎编排各模块,每种内容类型对应独立的处理 Pipeline,深度由内容复杂度决定而非架构强制。通过测试环境隔离和数据库版本管理确保生产数据安全。MCP 服务层使 AI Agent 可直接搜索、归档和管理知识库。GUI 桌面应用提供完整的知识浏览、搜索、归档和 AI 对话功能。
+系统由 `src/kernel` 提供稳定、无头的产品能力边界，内部经共享 application composition 组装工作流、处理器、检索、AI 与存储。桌面 GUI 已独立到相邻的 `pkv-GUI` 仓库，像 LM Studio 围绕 llama.cpp 一样只消费 Kernel 端口；本仓库不再包含 Qt 代码或 GUI 封包入口。
 
-M13 当前支持边界：MCP 只发布 stdio，不发布 HTTP/Bearer；Workflow 只加载 `config/workflows/` 下真实、版本化的 `archive-url.yaml` 与 `archive-text.yaml`，不支持 `search.yaml`；GUI 发布搜索只保证 BM25。向量/混合检索由 CLI/MCP 显式策略消费，并在实际需要时才构造 Provider。默认自动化必须离线，只使用合成数据和隔离数据根，不读取真实 key、Provider 或 Vault。
+M13 当前支持边界：MCP 只发布 stdio，不发布 HTTP/Bearer；Workflow 只加载 `config/workflows/` 下真实、版本化的 `archive-url.yaml` 与 `archive-text.yaml`，不支持 `search.yaml`。向量/混合检索由 CLI/MCP 显式策略消费，并在实际需要时才构造 Provider。默认自动化必须离线，只使用合成数据和隔离数据根，不读取真实 key、Provider 或 Vault。
 
 ### 技术栈
 
 - **语言**: Python 3.11+ (推荐 Conda 环境)
-- **GUI 框架**: PySide6 (Qt6) + qasync (asyncio 集成)
 - **CLI 框架**: Click 8.0+ (Rich 终端界面)
 - **MCP 框架**: FastMCP (mcp SDK) -- M13 Developer Preview 仅发布 stdio
 - **存储**: Markdown (YAML Front Matter) + SQLite (FTS5) + hnswlib (向量索引)
 - **AI 服务**: DeepSeek (摘要/标签/对话) + OpenAI (Embedding)
 - **检索**: BM25 + 向量检索 + 混合策略 (RRF 算法)
 - **分词**: jieba (中文分词)
-- **渲染**: markdown2 + Pygments (Markdown/代码高亮)
 - **安全**: URL 全链路 SSRF 重校验 + 文本长度验证 + 离线测试隔离
 
 ### 架构分层
 
+CLI/MCP 是本仓库的外围适配器；外部 GUI Wrapper 也只经 `pkv_kernel`
+调用无头能力。Kernel 再经 `src.application` 组装同一份已验证 config
+下的 Workflow/Processor/Retrieval/AI/Storage 依赖。Kernel 不得反向导入任何 Wrapper。
+
 ```
 ┌─────────────────────────────────────────┐
-│  GUI 桌面应用层 (src/gui/)    [M10-M12] │
-│  + PySide6 (Qt6) 桌面界面               │
-│  + MVVM: View / ViewModel / Model       │
-│  + AI 对话: 流式输出 + 知识引用          │
-│  + qasync: asyncio + Qt 事件循环集成    │
-├─────────────────────────────────────────┤
 │  CLI 交互层 (src/cli/)                   │
 │  + Click 命令组 (archive/search/...)    │
 │  + Rich 终端界面 (进度条/表格/面板)      │
@@ -195,7 +191,8 @@ graph TD
     ROOT --> SRC["src/"]
     SRC --> CLI["cli/"]
     SRC --> MCP["mcp/"]
-    SRC --> GUI["gui/"]
+    SRC --> KERNEL["kernel/"]
+    SRC --> APPLICATION["application/"]
     SRC --> PROCESSORS["processors/"]
     SRC --> STORAGE["storage/"]
     SRC --> RETRIEVAL["retrieval/"]
@@ -203,11 +200,7 @@ graph TD
     SRC --> AI["ai/"]
     SRC --> UTILS["utils/"]
 
-    GUI --> GUI_VIEWS["views/"]
-    GUI --> GUI_VM["viewmodels/"]
-    GUI --> GUI_MODELS["models/"]
-    GUI --> GUI_WIDGETS["widgets/"]
-    GUI --> GUI_STYLES["styles/"]
+    KERNEL --> APPLICATION
 
     ROOT --> TESTS["tests/"]
     TESTS --> UNIT["unit/"]
@@ -225,7 +218,8 @@ graph TD
 
     click CLI "./src/cli/CLAUDE.md" "查看 CLI 模块文档"
     click MCP "./src/mcp/CLAUDE.md" "查看 MCP 服务模块文档"
-    click GUI "./src/gui/CLAUDE.md" "查看 GUI 桌面应用模块文档"
+    click KERNEL "./src/kernel/CLAUDE.md" "查看无头 Kernel 模块文档"
+    click APPLICATION "./src/application/CLAUDE.md" "查看 Application 组合模块文档"
     click PROCESSORS "./src/processors/CLAUDE.md" "查看 Processors 模块文档"
     click STORAGE "./src/storage/CLAUDE.md" "查看 Storage 模块文档"
     click RETRIEVAL "./src/retrieval/CLAUDE.md" "查看 Retrieval 模块文档"
@@ -242,7 +236,8 @@ graph TD
 
 | 模块 | 路径 | 职责 | 文档 |
 | ------ | ------ | ------ | ------ |
-| **GUI 桌面应用** | `src/gui/` | PySide6 桌面界面 -- 浏览/搜索/归档/AI对话/统计/设置 | [CLAUDE.md](./src/gui/CLAUDE.md) |
+| **无头 Kernel** | `src/kernel/` | 稳定产品操作与外围 Wrapper 端口 | [CLAUDE.md](./src/kernel/CLAUDE.md) |
+| **Application 组合** | `src/application/` | 同一 validated config 下的惰性依赖与工作流组装 | [CLAUDE.md](./src/application/CLAUDE.md) |
 | **CLI 交互层** | `src/cli/` | Click 命令行界面、Rich 终端 UI | [CLAUDE.md](./src/cli/CLAUDE.md) |
 | **MCP 服务层** | `src/mcp/` | MCP stdio -- 14 Tool + 9 Resource + 3 Prompt + 安全加固 | [CLAUDE.md](./src/mcp/CLAUDE.md) |
 | **工作流引擎** | `src/workflow/` | 编排步骤、进度追踪、错误处理 | [CLAUDE.md](./src/workflow/CLAUDE.md) |
@@ -274,15 +269,12 @@ notepad config\local.yaml
 
 # 以下 AI/自动化示例统一使用隔离数据根目录；生产 .data/ 仅由用户明确授权后操作
 
-# 4. 启动 GUI 桌面应用 (推荐，隔离测试数据)
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\quickstart -Command @("python", "-m", "src.gui")
-
-# 5. 使用 CLI（隔离测试数据）
+# 4. 使用 CLI（隔离测试数据）
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\quickstart -Command @("python", "-m", "src.cli.commands", "--help")
 .\scripts\run-test.ps1 -DataRoot .data-test\quickstart stats
 .\scripts\run-test.ps1 -DataRoot .data-test\quickstart search "关键词" --strategy bm25
 
-# 6. 启动 MCP Server (Claude Code / Cursor 集成，隔离测试数据)
+# 5. 启动 MCP Server (Claude Code / Cursor 集成，隔离测试数据)
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\quickstart -Command @("python", "-m", "src.mcp.server")
 ```
 
@@ -302,9 +294,6 @@ conda activate py311-private
 以下示例面向 AI/自动化协作，数据相关命令默认使用隔离测试路径。生产 `.data/` 的查询或迁移必须由用户明确授权并执行，AI 不执行。
 
 ```powershell
-# GUI 桌面应用（隔离测试数据）
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\dev -Command @("python", "-m", "src.gui")
-
 # CLI 命令（测试数据）
 .\scripts\run-test.ps1 stats
 .\scripts\run-test.ps1 search "AI 工作流" --strategy bm25
@@ -339,7 +328,7 @@ conda activate py311-private
 2. **集成测试** (`tests/integration/`)
 3. **E2E 测试** (`tests/e2e/`，默认排除 `network/manual`)
 4. **黑盒测试** (`tests/blackbox/`)
-5. **手动测试** (`tests/manual_test_*.py` + `tests/manual_test_m12/`，用户手动、非默认自动化)
+5. **手动测试** (`tests/manual_test_*.py`，用户手动、非默认自动化)
 
 ### MCP 三层测试体系
 
@@ -364,8 +353,6 @@ conda activate py311-private
 2. **双重存储**: Markdown 主存储 + SQLite/Vector 辅助索引
 3. **检索路由**: `QueryRouter` 自动选择 BM25/Vector/Hybrid
 4. **MCP 异步**: `@mcp.tool` + `anyio.to_thread.run_sync()` 包装同步 I/O
-5. **GUI 异步**: qasync `@asyncSlot()` + OpenAI AsyncClient 流式输出
-6. **流式渲染**: 30ms QTimer 批量更新,减少 97% UI 刷新
 
 ### 命名规范
 
@@ -395,7 +382,9 @@ conda activate py311-private
 ### 当前版本: 0.8.1 (2026-08-13 事实核验)
 
 **已完成**: M1-M12，以及 M13 W1-W4 的 runtime、源代码合同、可复现
-held test candidate 打包和 installed-Artifact 功能验证。
+held test candidate 打包和 installed-Artifact 功能验证。该 W4 证据属于拆分前
+的历史 candidate；当前工作树的 headless 打包合同已更新，但不把历史 Artifact
+证据挪用为新 payload 的发布证明。
 
 | 里程碑 | 内容 | 日期 |
 | -------- | ------ | ------ |
@@ -408,16 +397,21 @@ held test candidate 打包和 installed-Artifact 功能验证。
 
 ### 下一步
 
-1. **合规 blocker 收口**：候选仍是 `test_candidate`，7 项 blocker 未关闭，
-   `release_eligible=false`、`decision=hold`。
-2. **部署与数据根策略**：个人软件、Service 与其他安装模式的默认路径和迁移策略
-   尚待单独设计讨论。
-3. **后续能力**：性能优化、RAG 问答、B 站处理器与 PDF 处理器。
+1. **M13 release hold**：候选仍是 `test_candidate`，当前合规合同中的 3 项 blocker 未关闭，
+   `release_eligible=false`、`decision=hold`；当前不安排合规收口或正式发布。
+2. **后 M13 P1-A 已完成**：共享应用服务和仅供本人验证的内部自测封包已完成，且仅以
+   合成数据通过仓库外 smoke；下一步验证可追溯的知识成果工作流。这不构成发布，也不改变当前默认数据根或安装拓扑。
+3. **高阶能力与外部 GUI**：按真实场景逐 Tool 补 full 语义和专属评测；桌面体验在相邻
+   `pkv-GUI` 仓库演进，只通过 `pkv_kernel` 的稳定边界消费本仓库能力。
+4. **可选本地 Node / Docker**：只有后台任务、并发写入或资源复用出现可测需求，且单写者
+   与持久任务前置完成后才评估 Node；Docker 与云端进一步后置。
+5. **部署与数据根策略**：个人软件、Service 与其他安装模式的默认路径和迁移策略仍待
+   单独设计讨论，不随上述内部自测路线改变。
 
 ---
 
-**文档版本**: v5.2
-**最近核验**: 2026-08-13
+**文档版本**: v5.5
+**最近核验**: 2026-08-14
 **项目代号**: Personal Knowledge Vault
 **当前版本**: 0.8.1
 

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any, Dict, List, Mapping, Optional, Type
 
 from src.runtime.errors import ErrorCode, PKVRuntimeError
@@ -41,6 +42,11 @@ class WorkflowEngine:
         self,
         reload_config: bool = False,
         step_registry: Optional[Mapping[str, Type[BaseStep]]] = None,
+        *,
+        runtime_config: Any | None = None,
+        step_factory: (
+            Callable[[Type[BaseStep], str, Dict[str, Any]], BaseStep] | None
+        ) = None,
     ) -> None:
         """
         初始化工作流引擎。
@@ -49,6 +55,8 @@ class WorkflowEngine:
             reload_config: 是否每次执行都重新加载配置
         """
         self._reload_config = reload_config
+        self._runtime_config = runtime_config
+        self._step_factory = step_factory
         self._config_cache: Dict[str, Dict[str, Any]] = {}
         self._step_registry: Dict[str, Type[BaseStep]] = dict(
             _STEP_REGISTRY if step_registry is None else step_registry
@@ -119,7 +127,16 @@ class WorkflowEngine:
             step_class = self._step_registry[step_type]
             step_config_data = step_config["config"]
             try:
-                step = step_class(step_id=step_id, config=step_config_data)
+                if self._step_factory is None:
+                    step = step_class(step_id=step_id, config=step_config_data)
+                else:
+                    step = self._step_factory(
+                        step_class,
+                        step_id,
+                        step_config_data,
+                    )
+                    if not isinstance(step, BaseStep):
+                        raise TypeError("step_factory 必须返回 BaseStep")
                 result = await step.execute(context)
             except Exception as e:
                 logger.error(
@@ -274,7 +291,11 @@ class WorkflowEngine:
             配置字典
         """
         if self._reload_config or workflow_name not in self._config_cache:
-            self._config_cache[workflow_name] = get_workflow_config(workflow_name)
+            if self._runtime_config is None:
+                workflow_config = get_workflow_config(workflow_name)
+            else:
+                workflow_config = self._runtime_config.get_workflow_config(workflow_name)
+            self._config_cache[workflow_name] = workflow_config
         return self._config_cache[workflow_name]
 
     @staticmethod

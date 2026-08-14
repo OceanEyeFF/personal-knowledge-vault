@@ -20,6 +20,7 @@ from src.utils.config import get_config
 from src.utils.logger import LoggerSetup
 from src.runtime.bootstrap import bootstrap_runtime, project_bootstrap_error
 from src.runtime.errors import PKVRuntimeError
+from src.application import configure_application
 
 LOG_LEVEL_DEBUG = "DEBUG"
 LOG_LEVEL_INFO = "INFO"
@@ -82,6 +83,7 @@ def _configure_logging(level: str) -> None:
         config = get_config()
         stage = "runtime_bootstrap"
         bootstrap_runtime(config)
+        configure_application(config)
         stage = "runtime_logging"
         log_file = config.log_dir / "pkv.log"
         LoggerSetup.setup(

@@ -7,8 +7,12 @@ MCP 辅助工具
 import logging
 from typing import Any, Dict, List, Tuple
 
+from src.application.validation import (
+    validate_text_length,
+    validate_url_security_result,
+)
 from src.processors.safe_fetch import is_forbidden_hostname, parse_http_target
-from src.runtime.errors import ErrorCode, PKVRuntimeError
+from src.runtime.errors import PKVRuntimeError
 
 logger = logging.getLogger("pkv.mcp")
 
@@ -177,58 +181,3 @@ def validate_url_security(url: str) -> Tuple[bool, str]:
         return True, ""
     logger.warning("[安全] URL 前置验证拒绝: code=%s", failure.code.value)
     return False, str(failure)
-
-
-def validate_url_security_result(url: str) -> PKVRuntimeError | None:
-    """Return a stable DNS-free URL-policy failure, or ``None`` when accepted.
-
-    Hostname DNS is intentionally not resolved here: resolving in an adapter and
-    then reconnecting by hostname would recreate a DNS-rebinding race.  The
-    processor's ``SafeFetcher`` performs resolution and connection atomically via
-    a ``PinnedTarget`` and can additionally report ``SSRF_RESOLUTION_FAILED``.
-    """
-
-    try:
-        target = parse_http_target(url)
-    except PKVRuntimeError as exc:
-        return PKVRuntimeError(
-            exc.code,
-            str(exc),
-            stage="url_preflight",
-            recoverable=exc.recoverable,
-        )
-    except Exception:
-        return PKVRuntimeError(
-            ErrorCode.URL_INVALID,
-            "URL 解析失败",
-            stage="url_preflight",
-            recoverable=False,
-        )
-    if is_forbidden_hostname(target.hostname):
-        return PKVRuntimeError(
-            ErrorCode.SSRF_TARGET_FORBIDDEN,
-            "禁止访问内网地址或其他非公网目标",
-            stage="url_preflight",
-            recoverable=False,
-        )
-    return None
-
-
-def validate_text_length(text: str, max_length: int = 100000) -> Tuple[bool, str]:
-    """验证文本长度是否在允许范围内。
-
-    Args:
-        text: 待验证的文本
-        max_length: 最大允许长度（默认 100,000 字符）
-
-    Returns:
-        (is_valid, error_message)
-    """
-    if not text or not text.strip():
-        return False, "文本内容不能为空"
-
-    if len(text) > max_length:
-        logger.warning(f"[安全] 文本长度超限: {len(text)} > {max_length}")
-        return False, f"文本长度 {len(text)} 超过限制 {max_length} 字符"
-
-    return True, ""

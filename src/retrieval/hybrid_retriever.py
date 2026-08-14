@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from src.ai.embedder import Embedder
 from src.retrieval.bm25_retriever import BM25Retriever
@@ -35,6 +35,7 @@ class HybridRetriever:
         rrf_k: int = 60,
         *,
         embedder_factory: Callable[[], Embedder] | None = None,
+        runtime_config: Any = None,
     ) -> None:
         self.bm25_retriever = BM25Retriever(db_path)
         self.vector_retriever = VectorRetriever(
@@ -42,6 +43,7 @@ class HybridRetriever:
             vector_index_dir,
             embedder,
             embedder_factory=embedder_factory,
+            runtime_config=runtime_config,
         )
         self.bm25_weight = bm25_weight
         self.vector_weight = vector_weight

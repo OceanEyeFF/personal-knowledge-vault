@@ -13,6 +13,19 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### 后 M13 P1-C：GUI 完整拆分（2026-08-14）
+
+- 将 `src/gui/`、GUI 单元/Qt 手工测试、GUI 样式和 `pkv-gui.exe` 封包入口完整迁至相邻的独立 `pkv-GUI` 本地仓库。
+- 核心仓库只保留 headless Kernel、CLI 与 MCP；`pkv_kernel` 是外部 Wrapper 唯一可导入的产品 API，核心不再携带 PySide6/qasync 运行时依赖或 Qt 资源。
+- GUI 仓库保留原有 GUI 测试，并新增正常关窗时等待 ArchiveWorker/Chat stream 收敛的生命周期回归；GUI 代码不得导入 Kernel 的 `src.*` 实现模块。
+
+### 后 M13 P1-A：共享应用服务与内部自测包（2026-08-13）
+
+- 新增 adapter-neutral 的 `KnowledgeApplication`：CLI、MCP 与外部 Wrapper 通过同一应用服务边界访问归档、检索、存储、关系/证据与 Chat Provider；Store、Workflow、Provider 保持惰性、按操作构造，BM25 不需要 Provider。
+- CLI 的本地文件一次性能力、MCP stdio-only 协议、五态检索结果和只读向量查询合同均保持；GUI 的显式注入与测试 seam 现由独立仓库维护。
+- 新增独立 `scripts/build-internal-package.ps1`，只生成 `dist/internal/` 下带 metadata、payload/ZIP 安全扫描的 `INTERNAL TEST ONLY` onedir/ZIP；它不调用、不替代也不修改严格的 W3 `build-release.ps1` / `build_release.py`。
+- 实际生成的包已从仓库外目录、仅用合成 `.data-test` 数据完成 CLI `--help` / BM25 和 MCP stdio `initialize`；结论仅为 `INTERNAL SELF-TEST PASSED`，不改变 M13 test candidate 的合规 hold 或发布资格。
+
 ### M13 W3：可复现打包链与 W4 Artifact E2E（2026-08-11）
 
 - W3 生成可追溯的 Windows `test_candidate`，交付 release payload 外的 deterministic loopback Provider harness；`chat.loopback_harness.v1` 仅登记为 `packaging_contract_verified`，仍是 deferred、无产品 surface 的 E2E 输入。

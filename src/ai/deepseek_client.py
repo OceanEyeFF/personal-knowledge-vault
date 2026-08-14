@@ -9,7 +9,7 @@ OpenAI-compatible LLM API 客户端
 import json
 import time
 from dataclasses import replace
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 from urllib.parse import urlsplit, urlunsplit
 import httpx
 
@@ -64,6 +64,7 @@ class DeepSeekClient:
         *,
         settings: ChatProviderSettings | None = None,
         layout: RuntimeLayout | None = None,
+        config: Any | None = None,
     ):
         """
         初始化 DeepSeek 客户端
@@ -76,8 +77,8 @@ class DeepSeekClient:
             max_retries: 最大重试次数
         """
         if settings is None:
-            config = get_config()
-            effective_settings = chat_settings_from_config(config)
+            runtime_config = config if config is not None else get_config()
+            effective_settings = chat_settings_from_config(runtime_config)
             effective_settings = replace(
                 effective_settings,
                 api_key=(effective_settings.api_key if api_key is None else api_key),
@@ -94,8 +95,10 @@ class DeepSeekClient:
                     else max_retries
                 ),
             )
-            effective_layout = layout or config.layout
+            effective_layout = layout or runtime_config.layout
         else:
+            if config is not None:
+                raise TypeError("settings 不能与 config 同时传入")
             if any(
                 value is not None
                 for value in (api_key, base_url, model, timeout, max_retries)

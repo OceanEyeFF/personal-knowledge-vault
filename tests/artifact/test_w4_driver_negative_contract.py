@@ -3140,10 +3140,6 @@ def _new_launcher_fixture(root: Path) -> dict[str, Path]:
         "conda-native-license-materials-and-spdx",
         "html2text-gpl-compliance",
         "native-msvc-license-and-provenance",
-        "qt-corresponding-source-location",
-        "qt-linkage-and-replacement-not-proven",
-        "qt-module-license-audit",
-        "qt-notice-placeholders",
     ]
     compliance_authority_sha = "7" * 64
     compliance_root = root / "compliance-sources"

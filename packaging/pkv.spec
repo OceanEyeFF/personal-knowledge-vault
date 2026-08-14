@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller onedir build graph for the three M13 Windows entrypoints."""
+"""PyInstaller onedir build graph for the headless PKV entrypoints."""
 
 import json
 from pathlib import Path
@@ -74,7 +74,7 @@ for collection in pyinstaller["collect_data_files"]:
         )
     )
 
-# A single Analysis/PYZ ensures the three executables share an identical module
+# A single Analysis/PYZ ensures the two headless executables share an identical module
 # and native-library closure.  COLLECT then emits one Windows x64 onedir tree.
 a = Analysis(
     [str(ENTRYPOINT)],
@@ -105,20 +105,6 @@ pkv_cli = EXE(
     disable_windowed_traceback=False,
     contents_directory="_internal",
 )
-pkv_gui = EXE(
-    pyz,
-    a.scripts,
-    python_options,
-    exclude_binaries=True,
-    name="pkv-gui",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    console=False,
-    disable_windowed_traceback=False,
-    contents_directory="_internal",
-)
 pkv_mcp = EXE(
     pyz,
     a.scripts,
@@ -136,7 +122,6 @@ pkv_mcp = EXE(
 
 coll = COLLECT(
     pkv_cli,
-    pkv_gui,
     pkv_mcp,
     a.binaries,
     a.datas,

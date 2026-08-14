@@ -90,7 +90,7 @@ def _is_build_only_payload_member(name: str) -> bool:
     return _has_build_only_module_prefix(normalized)
 
 
-def test_spec_has_one_analysis_three_exes_and_one_shared_collect() -> None:
+def test_spec_has_one_analysis_two_headless_exes_and_one_shared_collect() -> None:
     tree = ast.parse(SPEC_PATH.read_text(encoding="utf-8"), filename=str(SPEC_PATH))
 
     analysis_calls = [
@@ -104,7 +104,6 @@ def test_spec_has_one_analysis_three_exes_and_one_shared_collect() -> None:
 
     expectations = {
         "pkv_cli": ("pkv", True),
-        "pkv_gui": ("pkv-gui", False),
         "pkv_mcp": ("pkv-mcp", True),
     }
     for variable, (name, console) in expectations.items():
@@ -121,15 +120,14 @@ def test_spec_has_one_analysis_three_exes_and_one_shared_collect() -> None:
     assert isinstance(collect.func, ast.Name) and collect.func.id == "COLLECT"
     assert _keyword_constant(collect, "name") == "pkv"
     assert [
-        argument.id for argument in collect.args[:3] if isinstance(argument, ast.Name)
+        argument.id for argument in collect.args[:2] if isinstance(argument, ast.Name)
     ] == [
         "pkv_cli",
-        "pkv_gui",
         "pkv_mcp",
     ]
 
 
-def test_manifest_declares_dynamic_imports_metadata_and_conflicting_qt_excludes() -> (
+def test_manifest_declares_headless_dynamic_imports_and_metadata() -> (
     None
 ):
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -139,27 +137,19 @@ def test_manifest_declares_dynamic_imports_metadata_and_conflicting_qt_excludes(
     assert {
         "src.main",
         "src.cli.commands",
-        "src.gui.app",
         "src.mcp.server",
         "anyio._backends._asyncio",
         "bs4.builder._lxml",
         "hnswlib",
         "lxml.etree",
-        "pygments.formatters.html",
         "openai.resources.chat.completions",
     }.issubset(settings["hiddenimports"])
-    assert set(settings["collect_submodules"]) == {
-        "pygments.lexers",
-        "pygments.styles",
-    }
+    assert settings["collect_submodules"] == []
     assert settings["copy_metadata"] == ["mcp"]
     assert settings["collect_data_files"] == [
         {"package": "certifi", "includes": ["cacert.pem"]}
     ]
     assert {
-        "PyQt5",
-        "PyQt6",
-        "PySide2",
         "jsonschema.benchmarks",
         "jsonschema.tests",
         "tests",

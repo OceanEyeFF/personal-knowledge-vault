@@ -17,13 +17,11 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        "PySide6",
         "hnswlib",
         "httpx",
         "numpy",
         "openai",
         "pytest",
-        "qasync",
         "src",
     ],
     noarchive=False,

@@ -234,7 +234,7 @@ function Test-W4ScenarioContract {
 
     Assert-W4ExactFields -Object $Contract -Fields @(
         'schema_version', 'runner_version', 'artifact_version', 'ordered_scenarios',
-        'required_matrix_rows', 'required_artifact_files', 'mcp', 'uia'
+        'required_matrix_rows', 'required_artifact_files', 'mcp'
     ) -Label 'W4 scenario contract'
     if ([string]$Contract.schema_version -cne 'pkv.m13.w4-driver-scenarios.v2' -or
         [string]$Contract.runner_version -cne 'pkv.m13.artifact-runner.v2' -or
@@ -242,11 +242,11 @@ function Test-W4ScenarioContract {
         throw 'W4 scenario contract schema/runner/Artifact version is not frozen v2/v2/0.8.1'
     }
     $scenarios = @($Contract.ordered_scenarios)
-    if ($scenarios.Count -ne 10) {
-        throw "W4 contract must declare exactly 10 scenarios; got $($scenarios.Count)"
+    if ($scenarios.Count -ne 9) {
+        throw "W4 contract must declare exactly 9 scenarios; got $($scenarios.Count)"
     }
     $ids = @($scenarios | ForEach-Object { [string]$_.scenario_id })
-    if (@($ids | Sort-Object -Unique).Count -ne 10) {
+    if (@($ids | Sort-Object -Unique).Count -ne 9) {
         throw 'W4 scenario IDs are not unique'
     }
     foreach ($scenario in $scenarios) {
@@ -254,9 +254,6 @@ function Test-W4ScenarioContract {
             'scenario_id', 'matrix_rows', 'handler', 'timeout_seconds',
             'requires_harness'
         )
-        if ([string]$scenario.scenario_id -ceq 'w4.offline_text_archive.v1') {
-            $scenarioFields += 'expected_provider_requests'
-        }
         Assert-W4ExactFields -Object $scenario -Fields $scenarioFields `
             -Label "W4 scenario row $([string]$scenario.scenario_id)"
         if ($scenario.timeout_seconds -isnot [int] -or
@@ -264,15 +261,10 @@ function Test-W4ScenarioContract {
             $scenario.requires_harness -isnot [bool]) {
             throw "W4 scenario row types are invalid: $([string]$scenario.scenario_id)"
         }
-        if ([string]$scenario.scenario_id -ceq 'w4.offline_text_archive.v1' -and
-            ($scenario.expected_provider_requests -isnot [int] -or
-                [int]$scenario.expected_provider_requests -ne 3)) {
-            throw 'W4 offline archive scenario must require exactly three Provider requests'
-        }
     }
     $rows = @($scenarios | ForEach-Object { @($_.matrix_rows) } | ForEach-Object { [string]$_ })
-    if ($rows.Count -ne 11 -or @($rows | Sort-Object -Unique).Count -ne 11) {
-        throw 'W4 scenarios must uniquely own exactly 11 lifecycle rows'
+    if ($rows.Count -ne 10 -or @($rows | Sort-Object -Unique).Count -ne 10) {
+        throw 'W4 scenarios must uniquely own exactly 10 lifecycle rows'
     }
     $requiredRows = @($Contract.required_matrix_rows | ForEach-Object { [string]$_ } | Sort-Object)
     if (($rows | Sort-Object | ConvertTo-Json -Compress) -ne
@@ -280,33 +272,8 @@ function Test-W4ScenarioContract {
         throw 'W4 scenario matrix rows drifted from required_matrix_rows'
     }
     $harnessScenarios = @($scenarios | Where-Object { [bool]$_.requires_harness })
-    if ($harnessScenarios.Count -ne 1 -or
-        [string]$harnessScenarios[0].scenario_id -ne 'w4.chat_loopback.v1') {
-        throw 'Only w4.chat_loopback.v1 may require the external harness'
-    }
-    Assert-W4ExactFields -Object $Contract.uia -Fields @(
-        'chat_terminal_text', 'navigation_names', 'required_automation_ids'
-    ) -Label 'W4 UIA contract'
-    Assert-W4ExactFields -Object $Contract.uia.chat_terminal_text -Fields @(
-        'accepted', 'completed', 'provider_failed', 'ready', 'stopped'
-    ) -Label 'W4 UIA terminal text contract'
-    $navigationNames = @($Contract.uia.navigation_names | ForEach-Object { [string]$_ })
-    $requiredAutomationIds = @(
-        $Contract.uia.required_automation_ids | ForEach-Object { [string]$_ }
-    )
-    if ($navigationNames.Count -ne 6 -or
-        @($navigationNames | Sort-Object -Unique).Count -ne $navigationNames.Count -or
-        @($navigationNames | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -ne 0 -or
-        $requiredAutomationIds.Count -eq 0 -or
-        @($requiredAutomationIds | Sort-Object -Unique).Count -ne
-            $requiredAutomationIds.Count -or
-        @($requiredAutomationIds | Where-Object {
-            $_ -cnotmatch '^[a-z][a-z0-9_]*$'
-        }).Count -ne 0 -or
-        @($Contract.uia.chat_terminal_text.PSObject.Properties | Where-Object {
-            [string]::IsNullOrWhiteSpace([string]$_.Value)
-        }).Count -ne 0) {
-        throw 'W4 UIA registry names/IDs/terminal text are empty or duplicated'
+    if ($harnessScenarios.Count -ne 0) {
+        throw 'Headless W4 scenarios must not require the external provider harness'
     }
 }
 
@@ -553,11 +520,7 @@ try {
             (@(
                 'conda-native-license-materials-and-spdx',
                 'html2text-gpl-compliance',
-                'native-msvc-license-and-provenance',
-                'qt-corresponding-source-location',
-                'qt-linkage-and-replacement-not-proven',
-                'qt-module-license-audit',
-                'qt-notice-placeholders'
+                'native-msvc-license-and-provenance'
             ) | ConvertTo-Json -Compress)) {
         throw 'Artifact provenance does not bind the supplied ZIP identity/version/size'
     }
@@ -761,7 +724,7 @@ try {
         }
         python_required = $false
         conda_required = $false
-        desktop_uia_required = $true
+        desktop_uia_required = $false
     }
     $environmentPath = Join-Path $runRoot 'environment.json'
     Write-W4JsonFile -Path $environmentPath -Value $environmentRecord
@@ -916,70 +879,7 @@ try {
         })
     }
 
-    if (@($records | Where-Object { [string]$_.state -eq 'artifact_verified' }).Count -eq 10) {
-        $requiredUiaIds = @(
-            $contract.uia.required_automation_ids | ForEach-Object { [string]$_ }
-        )
-        $observedUiaIds = [System.Collections.Generic.HashSet[string]]::new(
-            [System.StringComparer]::Ordinal
-        )
-        $uiaSegmentFiles = @(
-            Get-ChildItem -LiteralPath (Join-Path $runRoot 'scenarios') -File -Recurse `
-                -Filter 'uia-contract-*.json' -Force
-        )
-        foreach ($uiaSegmentFile in $uiaSegmentFiles) {
-            foreach ($uiaRow in @(Read-W4JsonFile -Path $uiaSegmentFile.FullName)) {
-                Assert-W4ExactFields -Object $uiaRow -Fields @(
-                    'automation_id', 'control_type', 'exact_one', 'patterns', 'process_id'
-                ) -Label 'W4 UIA segment evidence row'
-                Assert-W4ExactBoolean -Value $uiaRow.exact_one -Expected $true `
-                    -Label 'W4 UIA segment exact_one'
-                $uiaId = [string]$uiaRow.automation_id
-                if ($requiredUiaIds -cnotcontains $uiaId -or
-                    [int]$uiaRow.process_id -le 0 -or
-                    [string]::IsNullOrWhiteSpace([string]$uiaRow.control_type)) {
-                    throw "W4 UIA segment evidence is outside the registry: $uiaId"
-                }
-                [void]$observedUiaIds.Add($uiaId)
-            }
-        }
-        $observedUiaIdList = @($observedUiaIds | Sort-Object)
-        if (($observedUiaIdList | ConvertTo-Json -Compress) -cne
-            (@($requiredUiaIds | Sort-Object) | ConvertTo-Json -Compress)) {
-            throw 'W4 full-matrix UIA evidence does not exactly cover required_automation_ids'
-        }
-        $navigationEvidenceFiles = @(
-            Get-ChildItem -LiteralPath (Join-Path $runRoot 'scenarios') -File -Recurse `
-                -Filter 'uia-navigation-contract.json' -Force
-        )
-        if ($navigationEvidenceFiles.Count -eq 0) {
-            throw 'W4 full-matrix evidence contains no UIA navigation registry proof'
-        }
-        foreach ($navigationEvidenceFile in $navigationEvidenceFiles) {
-            $navigationEvidence = Read-W4JsonFile -Path $navigationEvidenceFile.FullName
-            Assert-W4ExactFields -Object $navigationEvidence -Fields @(
-                'exact', 'navigation_names', 'schema_version'
-            ) -Label 'W4 UIA navigation evidence'
-            Assert-W4ExactBoolean -Value $navigationEvidence.exact -Expected $true `
-                -Label 'W4 UIA navigation evidence exact'
-            if ([string]$navigationEvidence.schema_version -cne
-                    'pkv.m13.w4-uia-navigation-evidence.v1' -or
-                (@($navigationEvidence.navigation_names) | ConvertTo-Json -Compress) -cne
-                    (@($contract.uia.navigation_names) | ConvertTo-Json -Compress)) {
-                throw 'W4 UIA navigation evidence differs from navigation_names'
-            }
-        }
-        Write-W4JsonFile -Path (Join-Path $runRoot 'uia-contract-coverage.json') `
-            -Value ([ordered]@{
-                schema_version = 'pkv.m13.w4-uia-contract-coverage.v1'
-                required_automation_ids = $requiredUiaIds
-                observed_automation_ids = $observedUiaIdList
-                navigation_names = @($contract.uia.navigation_names)
-                segment_evidence_count = $uiaSegmentFiles.Count
-                navigation_evidence_count = $navigationEvidenceFiles.Count
-                exact = $true
-            })
-    }
+    # UI Automation evidence is owned by the separately versioned pkv-GUI repository.
 
     $controllerAfter = @(Get-W4TreeManifest -Root $controllerRoot)
     $fixtureAfter = @(Get-W4TreeManifest -Root $fixtureRoot)
@@ -997,10 +897,13 @@ try {
         throw 'Controller, fixture, harness, candidate, or compliance input tree changed during W4 execution'
     }
 
+    $expectedScenarioCount = @($contract.ordered_scenarios).Count
     $verified = @($records | Where-Object { [string]$_.state -eq 'artifact_verified' }).Count
     $failed = @($records | Where-Object { [string]$_.state -eq 'artifact_failed' }).Count
-    $pending = 10 - $verified - $failed
-    $functionalVerified = ($verified -eq 10 -and $failed -eq 0 -and $pending -eq 0)
+    $pending = $expectedScenarioCount - $verified - $failed
+    $functionalVerified = (
+        $verified -eq $expectedScenarioCount -and $failed -eq 0 -and $pending -eq 0
+    )
     $decision = if ($functionalVerified -and [bool]$provenance.release_eligible -and
         @($provenance.release_blockers).Count -eq 0) {
         'release'
@@ -1025,8 +928,8 @@ try {
         release_blockers = @($provenance.release_blockers)
         controller_sha256 = $controllerSha
         fixture_sha256 = $fixtureSha
-        scenarios_total = 10
-        matrix_rows_total = 11
+        scenarios_total = $expectedScenarioCount
+        matrix_rows_total = @($contract.required_matrix_rows).Count
         artifact_verified = $verified
         artifact_failed = $failed
         artifact_pending = $pending

@@ -1,7 +1,7 @@
 """
 MCP Tools 单元测试
 
-使用 mock 隔离外部依赖（SQLiteStore, MarkdownStore, QueryRouter），
+使用 mock 隔离外部依赖（KnowledgeApplication、SQLiteStore、MarkdownStore），
 专注测试 Tool handler 的逻辑正确性。
 """
 
@@ -414,11 +414,11 @@ class TestSearchKnowledge:
 
     @pytest.mark.asyncio
     async def test_auto_strategy(self):
-        """auto 策略应调用 QueryRouter.search()。"""
-        mock_router = MagicMock()
-        mock_router.search.return_value = self._completed(strategy="bm25")
+        """auto 策略应委托共享应用服务。"""
+        mock_application = MagicMock()
+        mock_application.search.return_value = self._completed(strategy="bm25")
 
-        with patch("src.mcp.tools.get_query_router", return_value=mock_router):
+        with patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import search_knowledge
             result = await search_knowledge(query="AI", strategy="auto", top_k=5)
 
@@ -431,25 +431,29 @@ class TestSearchKnowledge:
         assert result["results"][0]["title"] == "AI 文章"
         assert result["results"][0]["abstract"] == "人工智能概述"
         assert result["results"][0]["tags"] == ["AI", "ML"]
-        mock_router.search.assert_called_once_with("AI", limit=5)
+        mock_application.search.assert_called_once_with(
+            "AI", "auto", 5, auto_token_threshold=5
+        )
 
     @pytest.mark.asyncio
     async def test_bm25_strategy(self):
-        """bm25 策略应直接实例化 BM25Retriever。"""
-        mock_retriever = MagicMock()
-        mock_retriever.search.return_value = self._completed(
+        """bm25 策略应委托共享应用服务。"""
+        mock_application = MagicMock()
+        mock_application.search.return_value = self._completed(
             MOCK_SEARCH_RESULTS[:1],
             strategy="bm25",
         )
 
-        # BM25Retriever 是在 _impl 内部延迟导入的，需要 mock 原始模块
-        with patch("src.retrieval.bm25_retriever.BM25Retriever", return_value=mock_retriever):
+        with patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import search_knowledge
             result = await search_knowledge(query="AI", strategy="bm25", top_k=3)
 
         assert result["total"] == 1
         assert result["status"] == "success"
         assert result["strategy"] == "bm25"
+        mock_application.search.assert_called_once_with(
+            "AI", "bm25", 3, auto_token_threshold=5
+        )
 
     @pytest.mark.asyncio
     async def test_invalid_strategy(self):
@@ -468,10 +472,8 @@ class TestSearchKnowledge:
         malicious_strategy = f"hybrid\r\n{secret}"
 
         with caplog.at_level(logging.INFO, logger="pkv.mcp"), patch(
-            "src.mcp.tools.get_query_router"
-        ) as mock_router, patch(
-            "src.mcp.tools.get_config"
-        ) as mock_config:
+            "src.mcp.tools.get_application"
+        ) as mock_application:
             from src.mcp.tools import search_knowledge
 
             result = await search_knowledge(
@@ -485,8 +487,7 @@ class TestSearchKnowledge:
         assert secret not in repr(result)
         assert secret not in caplog.text
         assert malicious_strategy not in caplog.text
-        mock_router.assert_not_called()
-        mock_config.assert_not_called()
+        mock_application.assert_not_called()
 
         class StrategySubclass(str):
             pass
@@ -502,18 +503,14 @@ class TestSearchKnowledge:
     @pytest.mark.parametrize("strategy", ["auto", "bm25", "vector", "hybrid"])
     @pytest.mark.parametrize("query", ["", "   ", None, 123])
     async def test_invalid_query_never_constructs_backend(self, strategy, query):
-        with patch("src.mcp.tools.get_query_router") as mock_router, \
-             patch("src.mcp.tools.get_config") as mock_config, \
-             patch("src.ai.provider_factory.create_embedder") as mock_create_embedder:
+        with patch("src.mcp.tools.get_application") as mock_application:
             from src.mcp.tools import search_knowledge
 
             result = await search_knowledge(query=query, strategy=strategy)
 
         assert result["status"] == "invalid"
         assert result["issues"][0]["stage"] == "query_validation"
-        mock_router.assert_not_called()
-        mock_config.assert_not_called()
-        mock_create_embedder.assert_not_called()
+        mock_application.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("strategy", ["auto", "bm25", "vector", "hybrid"])
@@ -528,9 +525,7 @@ class TestSearchKnowledge:
         tag,
         caplog,
     ):
-        with patch("src.mcp.tools.get_query_router") as mock_router, \
-             patch("src.mcp.tools.get_config") as mock_config, \
-             patch("src.ai.provider_factory.create_embedder") as mock_create_embedder:
+        with patch("src.mcp.tools.get_application") as mock_application:
             from src.mcp.tools import search_knowledge
 
             result = await search_knowledge(
@@ -544,21 +539,21 @@ class TestSearchKnowledge:
         assert result["issues"][0]["stage"] == "filter_validation"
         assert "pkv-filter-canary" not in repr(result)
         assert "pkv-filter-canary" not in caplog.text
-        mock_router.assert_not_called()
-        mock_config.assert_not_called()
-        mock_create_embedder.assert_not_called()
+        mock_application.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_top_k_clamped(self):
         """top_k 应被限制在 [1, 50] 范围内。"""
-        mock_router = MagicMock()
-        mock_router.search.return_value = SearchResponse.completed((), strategy="bm25")
+        mock_application = MagicMock()
+        mock_application.search.return_value = SearchResponse.completed((), strategy="bm25")
 
-        with patch("src.mcp.tools.get_query_router", return_value=mock_router):
+        with patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import search_knowledge
             await search_knowledge(query="AI", top_k=200)
 
-        mock_router.search.assert_called_once_with("AI", limit=50)
+        mock_application.search.assert_called_once_with(
+            "AI", "auto", 50, auto_token_threshold=5
+        )
 
     @pytest.mark.asyncio
     async def test_source_type_filter(self):
@@ -566,7 +561,7 @@ class TestSearchKnowledge:
         mock_router = MagicMock()
         mock_router.search.return_value = self._completed(strategy="bm25")
 
-        with patch("src.mcp.tools.get_query_router", return_value=mock_router):
+        with patch("src.mcp.tools.get_application", return_value=mock_router):
             from src.mcp.tools import search_knowledge
             result = await search_knowledge(query="AI", source_type="wechat")
 
@@ -579,7 +574,7 @@ class TestSearchKnowledge:
         mock_router = MagicMock()
         mock_router.search.return_value = self._completed(strategy="bm25")
 
-        with patch("src.mcp.tools.get_query_router", return_value=mock_router):
+        with patch("src.mcp.tools.get_application", return_value=mock_router):
             from src.mcp.tools import search_knowledge
             result = await search_knowledge(query="AI", tag="ML")
 
@@ -601,7 +596,7 @@ class TestSearchKnowledge:
             strategy="bm25",
         )
 
-        with patch("src.mcp.tools.get_query_router", return_value=mock_router):
+        with patch("src.mcp.tools.get_application", return_value=mock_router):
             from src.mcp.tools import search_knowledge
 
             result = await search_knowledge(query="AI", tag="知识图谱")
@@ -614,7 +609,7 @@ class TestSearchKnowledge:
         mock_router = MagicMock()
         mock_router.search.return_value = self._completed(strategy="bm25")
 
-        with patch("src.mcp.tools.get_query_router", return_value=mock_router):
+        with patch("src.mcp.tools.get_application", return_value=mock_router):
             from src.mcp.tools import search_knowledge
 
             result = await search_knowledge(query="AI", source_type="pdf")
@@ -640,7 +635,7 @@ class TestSearchKnowledge:
             strategy="bm25",
         )
 
-        with patch("src.mcp.tools.get_query_router", return_value=mock_router):
+        with patch("src.mcp.tools.get_application", return_value=mock_router):
             from src.mcp.tools import search_knowledge
 
             result = await search_knowledge(query="AI")
@@ -673,7 +668,7 @@ class TestSearchKnowledge:
             strategy="hybrid",
         )
 
-        with patch("src.mcp.tools.get_query_router", return_value=mock_router):
+        with patch("src.mcp.tools.get_application", return_value=mock_router):
             from src.mcp.tools import search_knowledge
 
             result = await search_knowledge(query="较长的 AI 工作流查询")
@@ -689,7 +684,7 @@ class TestSearchKnowledge:
         mock_router = MagicMock()
         mock_router.search.return_value = []
 
-        with patch("src.mcp.tools.get_query_router", return_value=mock_router):
+        with patch("src.mcp.tools.get_application", return_value=mock_router):
             from src.mcp.tools import search_knowledge
 
             result = await search_knowledge(query="AI")
@@ -698,35 +693,22 @@ class TestSearchKnowledge:
         assert result["issues"][0]["code"] == ErrorCode.RETRIEVAL_BACKEND_FAILED.value
 
     @pytest.mark.asyncio
-    async def test_vector_strategy_uses_provider_factory(self):
-        mock_config = MagicMock()
-        mock_config.db_path = Path("db.sqlite")
-        mock_config.vector_index_dir = Path("vectors")
-        mock_embedder = MagicMock()
-        mock_retriever = MagicMock()
-        mock_retriever.search.return_value = self._completed(
+    async def test_vector_strategy_delegates_to_application(self):
+        mock_application = MagicMock()
+        mock_application.search.return_value = self._completed(
             MOCK_SEARCH_RESULTS[:1],
             strategy="vector",
         )
 
-        with patch("src.mcp.tools.get_config", return_value=mock_config), \
-             patch("src.ai.provider_factory.create_embedder", return_value=mock_embedder) as factory, \
-             patch("src.retrieval.vector_retriever.VectorRetriever", return_value=mock_retriever) as retriever_type:
+        with patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import search_knowledge
 
             result = await search_knowledge(query="语义搜索", strategy="vector")
 
         assert result["status"] == "success"
-        retriever_type.assert_called_once_with(
-            mock_config.db_path,
-            mock_config.vector_index_dir,
-            None,
-            embedder_factory=retriever_type.call_args.kwargs["embedder_factory"],
+        mock_application.search.assert_called_once_with(
+            "语义搜索", "vector", 5, auto_token_threshold=5
         )
-        lazy_factory = retriever_type.call_args.kwargs["embedder_factory"]
-        factory.assert_not_called()
-        assert lazy_factory() is mock_embedder
-        factory.assert_called_once_with(mock_config)
 
     @pytest.mark.asyncio
     async def test_provider_factory_failure_has_stable_code(self):
@@ -737,14 +719,9 @@ class TestSearchKnowledge:
             recoverable=True,
         )
 
-        def _retriever_type(*_args, embedder_factory, **_kwargs):
-            retriever = MagicMock()
-            retriever.search.side_effect = lambda *_a, **_kw: embedder_factory()
-            return retriever
-
-        with patch("src.mcp.tools.get_config", return_value=MagicMock()), \
-             patch("src.ai.provider_factory.create_embedder", side_effect=provider_error), \
-             patch("src.retrieval.vector_retriever.VectorRetriever", side_effect=_retriever_type):
+        mock_application = MagicMock()
+        mock_application.search.side_effect = provider_error
+        with patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import search_knowledge
 
             result = await search_knowledge(query="语义搜索", strategy="vector")
@@ -763,7 +740,7 @@ class TestSearchKnowledge:
     async def test_invalid_top_k_does_not_call_backend(self, top_k):
         mock_router = MagicMock()
 
-        with patch("src.mcp.tools.get_query_router", return_value=mock_router):
+        with patch("src.mcp.tools.get_application", return_value=mock_router):
             from src.mcp.tools import search_knowledge
 
             result = await search_knowledge(query="AI", top_k=top_k)
@@ -782,14 +759,9 @@ class TestSearchKnowledge:
             recoverable=True,
         )
 
-        def _retriever_type(*_args, embedder_factory, **_kwargs):
-            retriever = MagicMock()
-            retriever.search.side_effect = lambda *_a, **_kw: embedder_factory()
-            return retriever
-
-        with patch("src.mcp.tools.get_config", return_value=MagicMock()), \
-             patch("src.ai.provider_factory.create_embedder", side_effect=runtime_error), \
-             patch("src.retrieval.vector_retriever.VectorRetriever", side_effect=_retriever_type):
+        mock_application = MagicMock()
+        mock_application.search.side_effect = runtime_error
+        with patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import search_knowledge
 
             result = await search_knowledge(query="语义搜索", strategy="vector")
@@ -2402,12 +2374,11 @@ class TestGetRelated:
         """无向量索引时应优雅降级。"""
         mock_store = MagicMock()
         mock_store.query_by_id.return_value = MOCK_ENTRY_DB
+        mock_application = MagicMock()
+        mock_application.readonly_vector_store = None
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.storage.vector_store.VectorStore.has_index_artifacts", return_value=False), \
-             patch("src.mcp.tools.get_config") as mock_config:
-            mock_config.return_value.vector_index_dir = "/tmp/vectors"
-            mock_config.return_value.get.return_value = 1536
+             patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import get_related
             result = await get_related(knowledge_id="1")
 
@@ -2424,35 +2395,31 @@ class TestGetRelated:
 
         mock_vector_store = MagicMock()
         mock_vector_store.get_doc_vector.return_value = None
+        mock_application = MagicMock()
+        mock_application.readonly_vector_store = mock_vector_store
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.storage.vector_store.VectorStore", return_value=mock_vector_store) as MockVectorStore, \
-             patch("src.mcp.tools.get_config") as mock_config:
-            mock_config.return_value.vector_index_dir = "/tmp/vectors"
-            mock_config.return_value.get.return_value = 1536
+             patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import get_related
             result = await get_related(knowledge_id="1", limit=100)
 
         # 结果应明确标记降级，而不是把缺失向量伪装成普通空命中。
         assert result["status"] == "degraded"
         assert result["issues"][0]["code"] == ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE.value
-        MockVectorStore.assert_called_once_with(
-            index_dir="/tmp/vectors",
-            dim=None,
-            allow_index_creation=False,
-        )
+        mock_vector_store.get_doc_vector.assert_called_once_with(1)
 
     @pytest.mark.asyncio
     async def test_vector_search_exception(self):
         """向量搜索异常应优雅降级。"""
         mock_store = MagicMock()
         mock_store.query_by_id.return_value = MOCK_ENTRY_DB
+        mock_vector_store = MagicMock()
+        mock_vector_store.get_doc_vector.side_effect = Exception("索引加载失败")
+        mock_application = MagicMock()
+        mock_application.readonly_vector_store = mock_vector_store
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.storage.vector_store.VectorStore", side_effect=Exception("索引加载失败")), \
-             patch("src.mcp.tools.get_config") as mock_config:
-            mock_config.return_value.vector_index_dir = "/tmp/vectors"
-            mock_config.return_value.get.return_value = 1536
+             patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import get_related
             result = await get_related(knowledge_id="1")
 
@@ -2471,12 +2438,13 @@ class TestGetRelated:
             stage="vector_index_load",
             recoverable=True,
         )
+        mock_vector_store = MagicMock()
+        mock_vector_store.get_doc_vector.side_effect = runtime_error
+        mock_application = MagicMock()
+        mock_application.readonly_vector_store = mock_vector_store
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.storage.vector_store.VectorStore.has_index_artifacts", return_value=True), \
-             patch("src.storage.vector_store.VectorStore", side_effect=runtime_error), \
-             patch("src.mcp.tools.get_config") as mock_config:
-            mock_config.return_value.vector_index_dir = "/tmp/vectors"
+             patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import get_related
 
             result = await get_related(knowledge_id="1")

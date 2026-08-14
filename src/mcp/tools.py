@@ -11,7 +11,7 @@ MCP Tool handler 实现
     - FastMCP 的同步 def handler 会直接在 asyncio 事件循环中调用（不同于 FastAPI）
     - 任何阻塞 I/O（SQLite/文件读取）都会冻结整个服务器
     - 只读 Tool 统一使用 async def + anyio.to_thread.run_sync() 包装同步操作
-    - 写入 Tool (archive_url/archive_text) 使用 WorkflowEngine.execute_async()（原生 async，无需 threadpool）
+    - 写入 Tool (archive_url/archive_text) 委托 KnowledgeApplication 的原生 async 工作流入口
 """
 
 import logging
@@ -23,11 +23,11 @@ from mcp.types import ToolAnnotations
 
 from src.mcp.server import (
     mcp,
+    get_application,
     get_evidence_collection_service,
     get_exploration_service,
     get_sqlite_store,
     get_markdown_store,
-    get_query_router,
     get_relation_query_service,
 )
 from src.mcp.utils import (
@@ -56,7 +56,6 @@ from src.relations.models import (
     RelationType,
     TimelineResult,
 )
-from src.utils.config import get_config
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.retrieval.result import (
     RetrievalIssue,
@@ -3409,40 +3408,15 @@ async def search_knowledge(
         )
 
         try:
-            # 根据 strategy 选择检索器。Embedding 统一通过 production
-            # provider factory；不得把 Config 对象误传给 OpenAIClient。
-            if strategy_safe == "auto":
-                response = get_query_router().search(query_clean, limit=top_k_safe)
-            else:
-                config = get_config()
-                if strategy_safe == "bm25":
-                    from src.retrieval.bm25_retriever import BM25Retriever
-
-                    retriever = BM25Retriever(config.db_path)
-                else:
-                    from src.ai.provider_factory import create_embedder
-
-                    def embedder_factory():
-                        return create_embedder(config)
-                    if strategy_safe == "vector":
-                        from src.retrieval.vector_retriever import VectorRetriever
-
-                        retriever = VectorRetriever(
-                            config.db_path,
-                            config.vector_index_dir,
-                            None,
-                            embedder_factory=embedder_factory,
-                        )
-                    else:
-                        from src.retrieval.hybrid_retriever import HybridRetriever
-
-                        retriever = HybridRetriever(
-                            config.db_path,
-                            config.vector_index_dir,
-                            None,
-                            embedder_factory=embedder_factory,
-                        )
-                response = retriever.search(query_clean, limit=top_k_safe)
+            # The application service owns strategy-specific retriever and
+            # Provider composition.  The MCP adapter is responsible only for
+            # input validation and its public response projection.
+            response = get_application().search(
+                query_clean,
+                strategy_safe,
+                top_k_safe,
+                auto_token_threshold=5,
+            )
         except Exception as exc:
             logger.error(
                 "search_knowledge 检索依赖失败: strategy=%s kind=%s",
@@ -3895,12 +3869,7 @@ async def archive_url(url: str) -> dict:
 
     try:
         logger.info("archive_url: 开始归档")
-        # WorkflowEngine() 无参构造，内部自动 get_config()
-        # execute_async() 是原生 async，可直接 await，无需 threadpool
-        from src.workflow.engine import WorkflowEngine
-        engine = WorkflowEngine()
-        result = await engine.execute_async(
-            "archive-url",
+        result = await get_application().archive_url(
             {
                 "url": url,
                 "skip_review": True,
@@ -3971,32 +3940,18 @@ async def archive_text(text: str, title: str = "") -> dict:
 
     try:
         logger.info("archive_text: 开始归档 text_len=%s", len(text))
-        # 步骤 1: 用 TextFallbackProcessor 解析文本，获得 Entry 对象
-        from src.processors.text_fallback_processor import TextFallbackProcessor
-        processor = TextFallbackProcessor()
-
-        # 强制走 raw-text seam，路径形状的文本也不得触发本地文件读取。
-        # 如果提供了 title，在生成 Entry 后覆盖
-        entry = await processor.process_text(text)
-        if title and title.strip():
-            entry.title = title.strip()
-
-        # 步骤 2: 将 Entry 注入工作流上下文，执行 ai_analyze → store_entry
-        from src.workflow.engine import WorkflowEngine
-        engine = WorkflowEngine()
-        result = await engine.execute_async(
-            "archive-text",
-            {
-                "text": text,
-                "title": entry.title,
-                "entry": entry,
-                "content": entry.content,
-                "skip_review": True,
-                "skip_sharpen": True,
-            },
+        # Literal text remains a raw-text operation.  Parsing and workflow
+        # composition live behind the shared application service, not in this
+        # protocol adapter.
+        title_fallback = title.strip() if isinstance(title, str) else ""
+        result = await get_application().archive_text(
+            text,
+            title=title_fallback,
+            skip_review=True,
+            skip_sharpen=True,
         )
 
-        payload = _workflow_result_payload(result, title_fallback=entry.title)
+        payload = _workflow_result_payload(result, title_fallback=title_fallback)
         if payload["terminal"] != "error":
             logger.info(
                 "archive_text: 归档终态=%s kid=%s",
@@ -4140,11 +4095,11 @@ async def get_related(knowledge_id: str, limit: int = 5) -> dict:
                 "error": message,
             }
 
-        # 尝试从 VectorStore 取回该条目的 embedding
+        # The application opens only existing vector artifacts.  MCP must not
+        # create an index or compose a VectorStore itself during a read.
         try:
-            from src.storage.vector_store import VectorStore
-            config = get_config()
-            if not VectorStore.has_index_artifacts(config.vector_index_dir):
+            vector_store = get_application().readonly_vector_store
+            if vector_store is None:
                 message = "该条目暂无向量索引，无法获取关联知识"
                 return {
                     "status": "degraded",
@@ -4163,12 +4118,6 @@ async def get_related(knowledge_id: str, limit: int = 5) -> dict:
                         )
                     ],
                 }
-            vector_store = VectorStore(
-                index_dir=config.vector_index_dir,
-                dim=None,
-                allow_index_creation=False,
-            )
-
             doc_vector = vector_store.get_doc_vector(kid)
             if doc_vector is None:
                 message = "该条目暂无向量，无法获取关联知识"

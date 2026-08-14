@@ -65,24 +65,6 @@ def _strict_entry_row(knowledge_id: int, title: str) -> dict[str, object]:
 
 
 @pytest.fixture
-def reset_server_singletons():
-    """Keep lazy-service tests independent from the process-wide cache."""
-    names = (
-        "_relation_query_service",
-        "_evidence_collection_service",
-        "_exploration_service",
-    )
-    previous = {name: getattr(server, name) for name in names}
-    for name in names:
-        setattr(server, name, None)
-    try:
-        yield
-    finally:
-        for name, value in previous.items():
-            setattr(server, name, value)
-
-
-@pytest.fixture
 def preserve_root_logger():
     """Restore handlers cleared by the server CLI setup."""
     root_logger = logging.getLogger()
@@ -98,114 +80,34 @@ def preserve_root_logger():
         root_logger.setLevel(previous_level)
 
 
-def test_relation_query_service_is_built_once(reset_server_singletons):
-    config = SimpleNamespace(db_path=Path("isolated") / "knowledge.db")
-    relation_store = object()
+def test_relation_query_service_delegates_to_application():
     relation_service = object()
+    application = MagicMock()
+    application.relation_query_service = relation_service
 
-    with (
-        patch.object(server, "get_config", return_value=config),
-        patch(
-            "src.storage.relation_store.RelationStore",
-            return_value=relation_store,
-        ) as store_type,
-        patch(
-            "src.relations.query_service.RelationQueryService",
-            return_value=relation_service,
-        ) as service_type,
-    ):
+    with patch.object(server, "get_application", return_value=application):
         assert server.get_relation_query_service() is relation_service
         assert server.get_relation_query_service() is relation_service
 
-    store_type.assert_called_once_with(config.db_path)
-    service_type.assert_called_once_with(relation_store)
 
-
-def test_evidence_service_wires_lazy_dependencies_once(
-    reset_server_singletons,
-):
-    dependencies = {
-        "query_router": object(),
-        "sqlite_store": object(),
-        "markdown_store": object(),
-        "relation_query_service": object(),
-    }
+def test_evidence_service_delegates_to_application():
     evidence_service = object()
+    application = MagicMock()
+    application.evidence_collection_service = evidence_service
 
-    with (
-        patch.object(
-            server,
-            "get_query_router",
-            return_value=dependencies["query_router"],
-        ),
-        patch.object(
-            server,
-            "get_sqlite_store",
-            return_value=dependencies["sqlite_store"],
-        ),
-        patch.object(
-            server,
-            "get_markdown_store",
-            return_value=dependencies["markdown_store"],
-        ),
-        patch.object(
-            server,
-            "get_relation_query_service",
-            return_value=dependencies["relation_query_service"],
-        ),
-        patch(
-            "src.relations.evidence_service.EvidenceCollectionService",
-            return_value=evidence_service,
-        ) as service_type,
-    ):
+    with patch.object(server, "get_application", return_value=application):
         assert server.get_evidence_collection_service() is evidence_service
         assert server.get_evidence_collection_service() is evidence_service
 
-    service_type.assert_called_once_with(**dependencies)
 
-
-def test_exploration_service_wires_lazy_dependencies_once(
-    reset_server_singletons,
-):
-    dependencies = {
-        "query_router": object(),
-        "sqlite_store": object(),
-        "relation_query_service": object(),
-        "vault_dir": Path(".data-test") / "coverage-contract-vault",
-    }
-    markdown_store = SimpleNamespace(vault_dir=dependencies["vault_dir"])
+def test_exploration_service_delegates_to_application():
     exploration_service = object()
+    application = MagicMock()
+    application.exploration_service = exploration_service
 
-    with (
-        patch.object(
-            server,
-            "get_query_router",
-            return_value=dependencies["query_router"],
-        ),
-        patch.object(
-            server,
-            "get_sqlite_store",
-            return_value=dependencies["sqlite_store"],
-        ),
-        patch.object(
-            server,
-            "get_relation_query_service",
-            return_value=dependencies["relation_query_service"],
-        ),
-        patch.object(
-            server,
-            "get_markdown_store",
-            return_value=markdown_store,
-        ),
-        patch(
-            "src.relations.exploration_service.ExplorationService",
-            return_value=exploration_service,
-        ) as service_type,
-    ):
+    with patch.object(server, "get_application", return_value=application):
         assert server.get_exploration_service() is exploration_service
         assert server.get_exploration_service() is exploration_service
-
-    service_type.assert_called_once_with(**dependencies)
 
 
 def test_server_main_rejects_unpublished_http_before_bootstrap(capsys):
@@ -296,34 +198,13 @@ def test_server_main_registers_validated_file_logger(
     assert add_file_handler.call_args.kwargs["level"] == logging.ERROR
 
 
-@pytest.mark.parametrize(
-    ("strategy", "retriever_path"),
-    [
-        ("vector", "src.retrieval.vector_retriever.VectorRetriever"),
-        ("hybrid", "src.retrieval.hybrid_retriever.HybridRetriever"),
-    ],
-)
+@pytest.mark.parametrize("strategy", ["vector", "hybrid"])
 @pytest.mark.asyncio
-async def test_search_semantic_strategies_are_constructed_offline(
-    strategy,
-    retriever_path,
-):
-    config = SimpleNamespace(
-        db_path=Path("isolated") / "knowledge.db",
-        vector_index_dir=Path("isolated") / "vectors",
-    )
-    embedder = object()
-    retriever = MagicMock()
-    retriever.search.return_value = SearchResponse.completed((), strategy=strategy)
+async def test_search_semantic_strategies_delegate_to_application(strategy):
+    application = MagicMock()
+    application.search.return_value = SearchResponse.completed((), strategy=strategy)
 
-    with (
-        patch.object(tools, "get_config", return_value=config),
-        patch(
-            "src.ai.provider_factory.create_embedder",
-            return_value=embedder,
-        ) as embedder_factory,
-        patch(retriever_path, return_value=retriever) as retriever_type,
-    ):
+    with patch.object(tools, "get_application", return_value=application):
         result = await tools.search_knowledge(
             query="offline",
             strategy=strategy,
@@ -337,16 +218,9 @@ async def test_search_semantic_strategies_are_constructed_offline(
         "results": [],
         "issues": [],
     }
-    retriever_type.assert_called_once_with(
-        config.db_path,
-        config.vector_index_dir,
-        None,
-        embedder_factory=retriever_type.call_args.kwargs["embedder_factory"],
+    application.search.assert_called_once_with(
+        "offline", strategy, 3, auto_token_threshold=5
     )
-    embedder_factory.assert_not_called()
-    assert retriever_type.call_args.kwargs["embedder_factory"]() is embedder
-    embedder_factory.assert_called_once_with(config)
-    retriever.search.assert_called_once_with("offline", limit=3)
 
 
 @pytest.mark.asyncio
@@ -630,7 +504,7 @@ async def test_search_corrupt_frozen_response_fails_closed_direct_and_fastmcp(ca
     router.search.return_value = response
     with patch.object(
         tools,
-        "get_query_router",
+        "get_application",
         return_value=router,
     ), patch(
         "src.retrieval.bm25_retriever.BM25Retriever",
@@ -664,7 +538,7 @@ async def test_search_rejects_scalar_subclasses_before_backend(field):
 
     kwargs = {"query": "safe"}
     kwargs[field] = IntSubclass(5) if field == "top_k" else StringSubclass(secret)
-    with patch.object(tools, "get_query_router") as factory:
+    with patch.object(tools, "get_application") as factory:
         payload = await tools.search_knowledge(**kwargs)
 
     assert payload["status"] == "invalid"
@@ -709,7 +583,7 @@ async def test_search_issue_fields_are_allowlisted_direct_and_fastmcp(terminal):
     router = MagicMock()
     router.search.return_value = response
 
-    with patch.object(tools, "get_query_router", return_value=router):
+    with patch.object(tools, "get_application", return_value=router):
         direct = await tools.search_knowledge("safe", strategy="auto")
         fastmcp_raw = await server.mcp.call_tool(
             "search_knowledge",
@@ -1707,17 +1581,13 @@ async def test_get_related_stops_after_requested_limit():
         (1, 0.0),
         (2, 0.1),
     ]
-    config = SimpleNamespace(
-        vector_index_dir=Path("isolated") / "vectors",
-    )
+    application = MagicMock()
+    application.readonly_vector_store = vector_store
 
     with (
         patch.object(tools, "get_sqlite_store", return_value=sqlite_store),
-        patch.object(tools, "get_config", return_value=config),
-        patch("src.storage.vector_store.VectorStore") as vector_type,
+        patch.object(tools, "get_application", return_value=application),
     ):
-        vector_type.has_index_artifacts.return_value = True
-        vector_type.return_value = vector_store
         result = await tools.get_related("1", limit=1)
 
     assert result["total"] == 1
@@ -1763,15 +1633,13 @@ async def test_get_related_backend_shape_is_strict_direct_and_fastmcp(
         vector_store.search_doc.return_value = [(2, float("nan"))]
     else:
         vector_store.search_doc.return_value = [(2, 0.1)]
-    config = SimpleNamespace(vector_index_dir=Path("isolated") / "vectors")
+    application = MagicMock()
+    application.readonly_vector_store = vector_store
 
     with (
         patch.object(tools, "get_sqlite_store", return_value=sqlite_store),
-        patch.object(tools, "get_config", return_value=config),
-        patch("src.storage.vector_store.VectorStore") as vector_type,
+        patch.object(tools, "get_application", return_value=application),
     ):
-        vector_type.has_index_artifacts.return_value = True
-        vector_type.return_value = vector_store
         direct = await tools.get_related("1")
         fastmcp_raw = await server.mcp.call_tool(
             "get_related",
@@ -1811,15 +1679,13 @@ async def test_get_related_rejects_unsafe_legacy_vector_direct_and_fastmcp(
         )
 
     vector_store.get_doc_vector.side_effect = reject_legacy_vector
-    config = SimpleNamespace(vector_index_dir=Path("isolated") / "vectors")
+    application = MagicMock()
+    application.readonly_vector_store = vector_store
 
     with (
         patch.object(tools, "get_sqlite_store", return_value=sqlite_store),
-        patch.object(tools, "get_config", return_value=config),
-        patch("src.storage.vector_store.VectorStore") as vector_type,
+        patch.object(tools, "get_application", return_value=application),
     ):
-        vector_type.has_index_artifacts.return_value = True
-        vector_type.return_value = vector_store
         direct = await tools.get_related("1")
         fastmcp_raw = await server.mcp.call_tool(
             "get_related",

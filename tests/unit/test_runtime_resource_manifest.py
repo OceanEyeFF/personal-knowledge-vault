@@ -27,7 +27,7 @@ def test_runtime_resource_manifest_expands_to_required_read_only_files() -> None
     assert any(path.startswith("config/workflows/") for path in included)
     assert any(path.startswith("scripts/migrations/") for path in included)
     assert any(path.startswith("src/ai/prompts/") for path in included)
-    assert {"src/gui/styles/light.qss", "src/gui/styles/dark.qss"}.issubset(included)
+    assert not any(path.startswith("src/gui/") for path in included)
 
 
 def test_manifest_includes_neither_secrets_nor_mutable_user_artifacts() -> None:

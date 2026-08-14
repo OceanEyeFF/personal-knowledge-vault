@@ -19,7 +19,6 @@ def resource_root(tmp_path: Path) -> Path:
     (root / "config" / "workflows").mkdir(parents=True)
     (root / "scripts" / "migrations").mkdir(parents=True)
     (root / "src" / "ai" / "prompts").mkdir(parents=True)
-    (root / "src" / "gui" / "styles").mkdir(parents=True)
     (root / "config" / "config.yaml").write_text("{}\n", encoding="utf-8")
     (root / "config" / "custom_dict.txt").write_text("PKV\n", encoding="utf-8")
     (root / "config" / "workflows" / "archive-url.yaml").write_text(
@@ -33,12 +32,6 @@ def resource_root(tmp_path: Path) -> Path:
     )
     (root / "src" / "ai" / "prompts" / "extract_tags.txt").write_text(
         "{content}\n", encoding="utf-8"
-    )
-    (root / "src" / "gui" / "styles" / "light.qss").write_text(
-        "/* light */\n", encoding="utf-8"
-    )
-    (root / "src" / "gui" / "styles" / "dark.qss").write_text(
-        "/* dark */\n", encoding="utf-8"
     )
     return root
 
@@ -63,7 +56,6 @@ def test_resolve_is_pure_and_derives_every_mutable_path_from_one_root(
     assert layout.log_dir == data_root / "logs"
     assert layout.tmp_dir == data_root / "tmp"
     assert layout.backup_dir == data_root / "backups"
-    assert layout.ui_settings_path == data_root / "config" / "ui.ini"
 
 
 def test_ensure_user_directories_creates_only_declared_tree(
@@ -158,9 +150,9 @@ def test_bundled_resource_validation_rejects_wrong_resource_type(
         user_data_root=tmp_path / "data",
         environment={},
     )
-    theme_path = layout.styles_dir / "light.qss"
-    theme_path.unlink()
-    theme_path.mkdir()
+    prompt_path = layout.prompts_dir / "summarize.txt"
+    prompt_path.unlink()
+    prompt_path.mkdir()
 
     with pytest.raises(PKVRuntimeError) as captured:
         layout.validate_bundled_resources()

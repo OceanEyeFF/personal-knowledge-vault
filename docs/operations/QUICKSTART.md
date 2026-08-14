@@ -1,7 +1,7 @@
 # Personal Knowledge Vault - 快速开始
 
 > 当前版本快速启动指南
-> 适用于想先把系统跑起来，再决定从 CLI、MCP 还是 GUI 进入的用户
+> 适用于想先把核心系统跑起来，再决定从 CLI 或 MCP 进入的用户
 
 **最后更新**: 2026-08-07
 
@@ -13,7 +13,6 @@
 
 - CLI 入口
 - MCP Server stdio 入口
-- GUI 桌面入口
 - 本地数据目录（Markdown / SQLite / 向量索引 / 日志）
 
 ---
@@ -100,7 +99,7 @@ python src/utils/verify_setup.py
 
 ## 5. 当前推荐入口
 
-PKV 当前有三个主要入口。
+PKV 核心当前有两个主要入口。
 
 ### 5.1 CLI
 
@@ -146,22 +145,7 @@ M13 Developer Preview 只支持 stdio；`streamable-http` 与 Bearer Token 认�
 
 已发现的 `find_bridges`、`timeline_of`、`contrast` 仍是 `partial-v1`：响应会继续声明 `implementation_level=partial` 并给出 `limitation_notes`，不能按 full 语义理解。
 
-### 5.3 GUI
-
-启动桌面应用：
-
-```bash
-python -m src.gui
-```
-
-适用场景：
-
-- 浏览知识条目
-- BM25 搜索结果检查
-- 归档状态查看
-- 配置和调试
-
----
+桌面 GUI 是单独 `pkv-GUI` 仓库中的外围 Kernel Wrapper，不随本仓库安装或封包。
 
 ## 6. 运行后你应该看到什么
 
@@ -178,7 +162,6 @@ python -m src.gui
 
 - `src/main.py`：CLI
 - `src/mcp/`：MCP Server
-- `src/gui/`：GUI 应用
 
 ---
 

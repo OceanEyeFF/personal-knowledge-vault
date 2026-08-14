@@ -1,6 +1,6 @@
 """Production OpenAI-compatible streaming chat provider.
 
-The GUI consumes this small protocol instead of constructing an SDK client
+External wrappers consume this small protocol instead of constructing an SDK client
 itself.  Keeping provider construction behind this seam makes the request
 configuration immutable and lets W3/W4 point the normal release path at an
 external loopback provider without adding an alternate runtime branch.

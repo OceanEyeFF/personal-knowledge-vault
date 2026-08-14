@@ -469,7 +469,6 @@ class RuntimeLayout:
     workflows_dir: Path
     migrations_dir: Path
     prompts_dir: Path
-    styles_dir: Path
     custom_dict_path: Path
     local_config_path: Path
     db_path: Path
@@ -479,7 +478,6 @@ class RuntimeLayout:
     tmp_dir: Path
     backup_dir: Path
     runtime_state_dir: Path
-    ui_settings_path: Path
 
     @classmethod
     def resolve(
@@ -560,7 +558,6 @@ class RuntimeLayout:
             workflows_dir=resolved_resources / "config" / "workflows",
             migrations_dir=resolved_resources / "scripts" / "migrations",
             prompts_dir=resolved_resources / "src" / "ai" / "prompts",
-            styles_dir=resolved_resources / "src" / "gui" / "styles",
             custom_dict_path=resolved_resources / "config" / "custom_dict.txt",
             local_config_path=local_path,
             db_path=resolved_children["db_path"],
@@ -570,7 +567,6 @@ class RuntimeLayout:
             tmp_dir=resolved_children["tmp_dir"],
             backup_dir=data_root / "backups",
             runtime_state_dir=data_root / "runtime",
-            ui_settings_path=data_root / "config" / "ui.ini",
         )
 
     def validate_bundled_resources(self) -> None:
@@ -583,9 +579,6 @@ class RuntimeLayout:
             "Prompt 目录": (self.prompts_dir, "directory"),
             "摘要 Prompt": (self.prompts_dir / "summarize.txt", "file"),
             "标签 Prompt": (self.prompts_dir / "extract_tags.txt", "file"),
-            "GUI 样式目录": (self.styles_dir, "directory"),
-            "明亮主题": (self.styles_dir / "light.qss", "file"),
-            "暗色主题": (self.styles_dir / "dark.qss", "file"),
             "自定义词典": (self.custom_dict_path, "file"),
         }
         for label, (path, expected_kind) in required.items():
@@ -717,7 +710,6 @@ class RuntimeLayout:
             self.tmp_dir,
             self.backup_dir,
             self.runtime_state_dir,
-            self.ui_settings_path.parent,
         )
         for directory in directories:
             if not _is_lexically_within(directory, self.user_data_root):

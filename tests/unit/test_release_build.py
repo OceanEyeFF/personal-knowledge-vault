@@ -27,7 +27,6 @@ pytestmark = pytest.mark.packaging_contract
 def _write_payload(root: Path, *, reverse: bool = False) -> None:
     files = {
         "app/pkv.exe": b"cli",
-        "app/pkv-gui.exe": b"gui",
         "app/pkv-mcp.exe": b"mcp",
         "app/_internal/config/config.yaml": (
             b'ai:\n  llm:\n    api_key: ""\nprocessors:\n  zhihu:\n    cookie: ""\n'
@@ -399,22 +398,14 @@ def test_inventory_sbom_uses_conda_declared_license_as_name_and_deduplicates_tag
                 "payload_paths": [],
                 "source_paths": [],
             },
-            {
-                "id": "framework:qt-pyside",
-                "identity_status": "classification-only",
-                "contains_native_payload": False,
-                "classification_ids": [],
-                "name": "Qt/PySide runtime",
-                "type": "framework",
-                "embedded_paths": ["app/pkv.exe!/PYZ.pyz"],
-                "payload_paths": [],
-                "source_paths": [],
-            },
         ],
     }
 
     components = build_release._inventory_sbom_components(inventory, [])
 
+    # The fixture has one Conda component plus four complete Python
+    # distributions.  ``native:openssl`` is classification-only and therefore
+    # deliberately omitted from the SBOM result.
     assert len(components) == 5
     assert components[0]["licenses"] == [
         {"license": {"name": "Apache 2.0 metadata spelling"}}
@@ -1027,7 +1018,7 @@ def test_compliance_authority_preserves_exact_candidate_hold(tmp_path: Path) -> 
     assert state == {
         "artifact_status": "test-candidate-on-compliance-hold",
         "compliance_manifest_sha256": (
-            "d1d9d8e0417360e35d11af15f5a088cf32ab4f5bb43a20d96c3a45d87d5e433f"
+            "95bbb2eb9de112a36aaf1f01321c827df76b4f013fcbf9903765428ee7381370"
         ),
         "release_blocker_authority": expected_authority,
         "release_blocker_authority_sha256": build_release.sha256_bytes(
@@ -1037,10 +1028,6 @@ def test_compliance_authority_preserves_exact_candidate_hold(tmp_path: Path) -> 
             "conda-native-license-materials-and-spdx",
             "html2text-gpl-compliance",
             "native-msvc-license-and-provenance",
-            "qt-corresponding-source-location",
-            "qt-linkage-and-replacement-not-proven",
-            "qt-module-license-audit",
-            "qt-notice-placeholders",
         ],
         "release_eligible": False,
     }
@@ -2022,7 +2009,6 @@ def test_distribution_license_materials_are_indexed_and_hashed(tmp_path: Path) -
         for item in index["entries"]
         for license_file in item["license_files"]
     )
-    assert any(item["name"] == "pyside6" for item in index["entries"])
     for item in index["entries"]:
         if item["name"] == "cpython":
             assert item["metadata_declared_license_files"] == []

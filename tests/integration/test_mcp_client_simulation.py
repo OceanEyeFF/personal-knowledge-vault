@@ -29,16 +29,12 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.gui.utils.knowledge_ref import (  # noqa: E402
-    build_knowledge_reference,
-    format_reference_card_html,
-)
+from src.application import configure_application, reset_application  # noqa: E402
 from src.mcp.server import mcp  # noqa: E402
 from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
 from src.storage.sqlite_store import SQLiteStore  # noqa: E402
 from src.storage.vector_store import VectorStore  # noqa: E402
 from src.workflow.models import WorkflowResult  # noqa: E402
-import src.mcp.server as mcp_server  # noqa: E402
 import src.utils.config as config_module  # noqa: E402
 
 
@@ -276,7 +272,8 @@ def test_env(monkeypatch, tmp_path: Path) -> Dict[str, Path]:
         monkeypatch.setenv(key, str(path))
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
 
-    # 重置配置与 MCP 单例缓存
+    # Configure the shared application service with this test's isolated
+    # runtime snapshot.  MCP no longer owns Store/Retriever singleton caches.
     config = config_module.Config(str(PROJECT_ROOT / "config" / "config.yaml"))
     config._config.setdefault("storage", {})
     config._config["storage"]["vector_index_dir"] = str(vector_dir)
@@ -285,22 +282,17 @@ def test_env(monkeypatch, tmp_path: Path) -> Dict[str, Path]:
         TEST_EMBEDDING_DIM
     )
     monkeypatch.setattr(config_module, "_config_instance", config)
-    for cache_name in (
-        "_sqlite_store",
-        "_markdown_store",
-        "_query_router",
-        "_relation_query_service",
-        "_evidence_collection_service",
-        "_exploration_service",
-    ):
-        monkeypatch.setattr(mcp_server, cache_name, None)
+    configure_application(config)
 
-    yield {
-        "base_dir": base_dir,
-        "db_path": db_path,
-        "vault_dir": vault_dir,
-        "vector_dir": vector_dir,
-    }
+    try:
+        yield {
+            "base_dir": base_dir,
+            "db_path": db_path,
+            "vault_dir": vault_dir,
+            "vector_dir": vector_dir,
+        }
+    finally:
+        reset_application()
 
 
 @pytest.fixture
@@ -467,8 +459,8 @@ async def test_scenario_2_archive_invalid_url(mcp_patches):
 
 
 @pytest.mark.asyncio
-async def test_scenario_3_related_and_reference_cards(mcp_patches, populated_env):
-    """场景 3: 关联条目查询 + 引用卡片生成。"""
+async def test_scenario_3_related_entries(mcp_patches, populated_env):
+    """场景 3: MCP 关联条目查询。"""
     simulator = MCPClientSimulator(mcp)
     entry_id = populated_env["entry_ids"][0]
 
@@ -477,18 +469,9 @@ async def test_scenario_3_related_and_reference_cards(mcp_patches, populated_env
     assert related["total"] == len(related["results"])
     assert related["total"] >= 1
 
-    cards = []
     for item in related["results"]:
         detail = await simulator.get_entry_detail(item["knowledge_id"])
         assert_entry_schema(detail)
-        reference = build_knowledge_reference(detail, content=detail["content"])
-        card = format_reference_card_html(reference)
-        assert reference.knowledge_id == detail["knowledge_id"]
-        assert detail["title"] in card
-        assert f"ID: {detail['knowledge_id']} |" in card
-        cards.append(card)
-
-    assert cards
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from src.ai.embedder import Embedder
 from src.retrieval.bm25_retriever import BM25Retriever
@@ -31,6 +32,7 @@ class QueryRouter:
         token_threshold: int = 5,
         *,
         embedder_factory: Callable[[], Embedder] | None = None,
+        runtime_config: Any = None,
     ) -> None:
         if isinstance(token_threshold, bool) or not isinstance(token_threshold, int):
             raise ValueError("token_threshold 必须是正整数")
@@ -43,6 +45,7 @@ class QueryRouter:
             vector_index_dir,
             embedder,
             embedder_factory=embedder_factory,
+            runtime_config=runtime_config,
         )
         self.text_processor = TextProcessor()
         self.token_threshold = token_threshold

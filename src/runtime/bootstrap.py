@@ -1,4 +1,4 @@
-"""Explicit, shared runtime bootstrap for GUI, CLI and MCP adapters."""
+"""Explicit, shared runtime bootstrap for CLI, MCP, and external wrappers."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from src.storage.migration_manager import (
 )
 
 
-_BOOTSTRAP_ADAPTERS = frozenset({"cli", "gui", "mcp"})
+_BOOTSTRAP_ADAPTERS = frozenset({"cli", "mcp", "wrapper"})
 _MACHINE_STAGE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
 

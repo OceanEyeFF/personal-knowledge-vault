@@ -1966,18 +1966,18 @@ function Assert-FullMatrixPostcondition {
         [bool]$summary.release_eligible -cne [bool]$ArtifactProvenance.release_eligible -or
         (@($summary.release_blockers) | ConvertTo-Json -Compress) -cne
             (@($ArtifactProvenance.release_blockers) | ConvertTo-Json -Compress) -or
-        [int]$summary.scenarios_total -cne 10 -or
-        [int]$summary.matrix_rows_total -cne 11 -or
-        [int]$summary.artifact_verified -cne 10 -or
+        [int]$summary.scenarios_total -cne 9 -or
+        [int]$summary.matrix_rows_total -cne 10 -or
+        [int]$summary.artifact_verified -cne 9 -or
         [int]$summary.artifact_failed -cne 0 -or
         [int]$summary.artifact_pending -cne 0 -or
         -not [bool]$summary.functional_verified -or
         [string]$summary.decision -cne $expectedDecision) {
-        throw 'W4 success summary did not satisfy the exact functional/eligibility/decision/10-0-0/hash postcondition'
+        throw 'W4 success summary did not satisfy the exact functional/eligibility/decision/9-0-0/hash postcondition'
     }
     $scenarioRows = @($summary.scenarios)
-    if ($scenarioRows.Count -cne 10) {
-        throw 'W4 success summary does not contain exactly 10 scenario rows'
+    if ($scenarioRows.Count -cne 9) {
+        throw 'W4 success summary does not contain exactly 9 scenario rows'
     }
     $summaryIds = [System.Collections.Generic.List[string]]::new()
     foreach ($row in $scenarioRows) {
@@ -2014,7 +2014,7 @@ function Assert-FullMatrixPostcondition {
         -Fields @('schema_version', 'execution_id', 'records') -Label 'W4 evidence registry'
     $records = @($registry.records)
     if ([string]$registry.schema_version -cne 'pkv.m13.w4-run-evidence.v1' -or
-        [string]$registry.execution_id -cne $ExecutionId -or $records.Count -cne 10) {
+        [string]$registry.execution_id -cne $ExecutionId -or $records.Count -cne 9) {
         throw 'W4 evidence registry identity/count is invalid'
     }
     $recordIds = [System.Collections.Generic.List[string]]::new()
@@ -2112,14 +2112,7 @@ function Assert-FullMatrixPostcondition {
             [string]$record.evidence_manifest_sha256 -cnotmatch '^[0-9a-f]{64}$') {
             throw "W4 evidence record is not a verified Artifact-only record: $($record.scenario_id)"
         }
-        $expectedHarnessSha = if ([string]$record.scenario_id -ceq 'w4.chat_loopback.v1') {
-            $HarnessRuntimeSha256
-        } else {
-            $null
-        }
-        if (($null -eq $expectedHarnessSha -and $null -cne $record.harness_sha256) -or
-            ($null -cne $expectedHarnessSha -and
-                [string]$record.harness_sha256 -cne $expectedHarnessSha)) {
+        if ($null -ne $record.harness_sha256) {
             throw "W4 evidence harness binding is invalid: $($record.scenario_id)"
         }
         $recordIds.Add([string]$record.scenario_id)
@@ -2526,11 +2519,7 @@ function Invoke-FullArtifactMatrix {
     $expectedBlockers = @(
         'conda-native-license-materials-and-spdx',
         'html2text-gpl-compliance',
-        'native-msvc-license-and-provenance',
-        'qt-corresponding-source-location',
-        'qt-linkage-and-replacement-not-proven',
-        'qt-module-license-audit',
-        'qt-notice-placeholders'
+        'native-msvc-license-and-provenance'
     )
     Assert-CondaHardlinkThreatEvidence `
         -Evidence $releaseProvenance.conda_hardlink_threat_evidence `
@@ -3199,7 +3188,7 @@ function Invoke-FullArtifactMatrix {
         -Path $resolvedScenarioContract -Label 'W4 scenario contract'
     Assert-ExactJsonFields -Object $scenarioContract -Fields @(
         'schema_version', 'runner_version', 'artifact_version', 'ordered_scenarios',
-        'required_matrix_rows', 'required_artifact_files', 'mcp', 'uia'
+        'required_matrix_rows', 'required_artifact_files', 'mcp'
     ) -Label 'W4 scenario contract'
     $expectedScenarioIds = @(
         $scenarioContract.ordered_scenarios | ForEach-Object { [string]$_.scenario_id }
@@ -3209,11 +3198,11 @@ function Invoke-FullArtifactMatrix {
     )
     if ([string]$scenarioContract.schema_version -cne 'pkv.m13.w4-driver-scenarios.v2' -or
         [string]$scenarioContract.runner_version -cne 'pkv.m13.artifact-runner.v2' -or
-        $expectedScenarioIds.Count -cne 10 -or
-        @($expectedScenarioIds | Sort-Object -Unique).Count -cne 10 -or
-        $expectedMatrixRows.Count -cne 11 -or
-        @($expectedMatrixRows | Sort-Object -Unique).Count -cne 11) {
-        throw 'W4 scenario contract does not freeze exactly 10 scenarios/11 rows'
+        $expectedScenarioIds.Count -cne 9 -or
+        @($expectedScenarioIds | Sort-Object -Unique).Count -cne 9 -or
+        $expectedMatrixRows.Count -cne 10 -or
+        @($expectedMatrixRows | Sort-Object -Unique).Count -cne 10) {
+        throw 'W4 scenario contract does not freeze exactly 9 scenarios/10 rows'
     }
     $artifactSha = (Get-LocalFileHash -LiteralPath $resolvedZip -Algorithm SHA256).Hash.ToLowerInvariant()
     $artifactId = [System.IO.Path]::GetFileNameWithoutExtension($resolvedZip)

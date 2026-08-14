@@ -7,11 +7,9 @@
     "config/workflows/archive-url.yaml",
     "config/workflows/archive-text.yaml",
     "scripts/migrations/*.sql",
-    "src/ai/prompts/*.txt",
-    "src/gui/styles/*.qss"
+    "src/ai/prompts/*.txt"
   ],
   "build_collections": [
-    "PySide6 Qt plugins and native libraries selected by the frozen dependency graph",
     "mcp distribution metadata required by FastMCP version discovery",
     "certifi CA bundle and jieba core dictionary"
   ],
@@ -19,29 +17,20 @@
     "hiddenimports": [
       "src.main",
       "src.cli.commands",
-      "src.gui.app",
       "src.mcp.server",
       "src.mcp.tools",
       "src.mcp.resources",
       "src.mcp.prompts",
-      "PySide6.QtCore",
-      "PySide6.QtGui",
-      "PySide6.QtWidgets",
-      "qasync",
       "anyio._backends._asyncio",
       "bs4.builder._lxml",
       "lxml.etree",
       "lxml._elementpath",
       "hnswlib",
-      "pygments.formatters.html",
       "openai.resources.chat",
       "openai.resources.chat.completions",
       "openai.resources.embeddings"
     ],
-    "collect_submodules": [
-      "pygments.lexers",
-      "pygments.styles"
-    ],
+    "collect_submodules": [],
     "copy_metadata": [
       "mcp"
     ],
@@ -54,9 +43,6 @@
       }
     ],
     "excludes": [
-      "PyQt5",
-      "PyQt6",
-      "PySide2",
       "pytest",
       "_pytest",
       "coverage",

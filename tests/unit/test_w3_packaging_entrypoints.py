@@ -1,13 +1,11 @@
-"""Packaging-contract tests for the frozen three-entrypoint surface."""
+"""Packaging-contract tests for the frozen headless entrypoint surface."""
 
 from __future__ import annotations
 
 import ast
 import importlib.util
 import json
-import os
 from pathlib import Path
-import subprocess
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -19,8 +17,6 @@ from src.runtime.bootstrap import bootstrap_runtime, project_bootstrap_error
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.runtime.layout import RuntimeLayout
 from src.utils.config import Config
-
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENTRYPOINT_PATH = PROJECT_ROOT / "packaging" / "pkv_entrypoint.py"
 pytestmark = pytest.mark.packaging_contract
@@ -40,7 +36,6 @@ def _load_dispatcher():
     ("executable", "module_name", "result", "expected"),
     [
         ("C:/PKV/pkv.exe", "src.main", None, 0),
-        ("C:/PKV/PKV-GUI.EXE", "src.gui.app", 7, 7),
         ("C:/PKV/pkv-mcp.exe", "src.mcp.server", None, 0),
     ],
 )
@@ -62,22 +57,6 @@ def test_dispatcher_selects_one_published_role_by_executable_name(
 
     assert dispatcher.dispatch(executable) == expected
     assert imported == [module_name]
-
-
-def test_gui_dispatch_pins_qt_api_before_import(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    dispatcher = _load_dispatcher()
-    monkeypatch.setenv("QT_API", "pyqt5")
-
-    def fake_import(name: str):
-        assert name == "src.gui.app"
-        assert dispatcher.os.environ["QT_API"] == "pyside6"
-        return SimpleNamespace(main=lambda: 0)
-
-    monkeypatch.setattr(dispatcher.importlib, "import_module", fake_import)
-
-    assert dispatcher.dispatch("C:/PKV/pkv-gui.exe") == 0
 
 
 def test_unknown_frozen_name_fails_with_stable_stderr_only(capsys) -> None:
@@ -301,58 +280,11 @@ def test_mcp_malformed_configuration_has_stable_cold_entry_failure(capsys) -> No
     run_server.assert_not_called()
 
 
-def test_gui_bootstrap_failure_preserves_stable_projection(caplog) -> None:
-    from src.gui import app as gui_app
-
-    failure = PKVRuntimeError(
-        ErrorCode.RESOURCE_MISSING,
-        "C:/private/missing-resource",
-        recoverable=False,
-    )
-    with (
-        patch.object(gui_app, "Config", return_value=object()),
-        patch.object(gui_app, "bootstrap_runtime", side_effect=failure),
-        caplog.at_level("ERROR", logger="pkv.gui.app"),
-    ):
-        assert gui_app.ensure_database_initialized() is False
-
-    assert gui_app.get_bootstrap_failure_projection() == {
-        "adapter": "gui",
-        "code": "resource_missing",
-        "recoverable": False,
-        "stage": "runtime_bootstrap",
-        "status": "error",
-    }
-    assert "private" not in caplog.text
-
-
-def test_gui_malformed_configuration_has_stable_cold_entry_failure(caplog) -> None:
-    from src.gui import app as gui_app
-
-    secret = "C:/private/local.yaml api_key=GUI-STARTUP-SECRET"
-    with (
-        patch.object(gui_app, "Config", side_effect=ValueError(secret)),
-        caplog.at_level("ERROR", logger="pkv.gui.app"),
-    ):
-        assert gui_app.ensure_database_initialized() is False
-
-    assert gui_app.get_bootstrap_failure_projection() == {
-        "adapter": "gui",
-        "code": "runtime_startup_failed",
-        "recoverable": False,
-        "stage": "runtime_configuration",
-        "status": "error",
-    }
-    assert secret not in caplog.text
-    assert "Traceback" not in caplog.text
-
-
 @pytest.mark.parametrize("exception_type", [KeyboardInterrupt, SystemExit])
 def test_adapter_startup_boundaries_do_not_swallow_base_exceptions(
     exception_type: type[BaseException],
 ) -> None:
     from src import main as cli_main
-    from src.gui import app as gui_app
     from src.mcp import server
 
     with patch.object(cli_main, "get_config", side_effect=exception_type()):
@@ -365,11 +297,6 @@ def test_adapter_startup_boundaries_do_not_swallow_base_exceptions(
     ):
         with pytest.raises(exception_type):
             server.main()
-
-    with patch.object(gui_app, "Config", side_effect=exception_type()):
-        with pytest.raises(exception_type):
-            gui_app.ensure_database_initialized()
-
 
 def test_bootstrap_routes_jieba_cache_to_runtime_tmp(
     tmp_path: Path,
@@ -388,40 +315,3 @@ def test_bootstrap_routes_jieba_cache_to_runtime_tmp(
 
     assert jieba.dt.tmp_dir == str(layout.tmp_dir)
     assert layout.tmp_dir.is_dir()
-
-
-def test_gui_source_pins_qt_api_before_qt_or_main_window_import() -> None:
-    source = (PROJECT_ROOT / "src" / "gui" / "app.py").read_text(encoding="utf-8")
-
-    qt_api = source.index('os.environ["QT_API"] = "pyside6"')
-    pyside = source.index("from PySide6.QtWidgets")
-    main_window = source.index("from src.gui.main_window")
-
-    assert qt_api < pyside < main_window
-
-
-def test_gui_module_cold_import_has_no_logger_runtime_cycle(tmp_path: Path) -> None:
-    code = (
-        "import sys;"
-        f"sys.path.insert(0, {str(PROJECT_ROOT)!r});"
-        "import src.gui.app;"
-        "print('gui-import-ok')"
-    )
-    environment = dict(os.environ)
-    environment["QT_QPA_PLATFORM"] = "offscreen"
-    environment["QT_API"] = "pyqt5"
-    environment.pop("PYTHONPATH", None)
-    result = subprocess.run(
-        [sys.executable, "-I", "-c", code],
-        cwd=tmp_path,
-        env=environment,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=30,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "gui-import-ok"

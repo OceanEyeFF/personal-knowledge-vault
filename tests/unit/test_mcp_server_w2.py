@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -259,38 +259,14 @@ def test_help_does_not_publish_http_or_port(capsys):
     get_config.assert_not_called()
 
 
-def test_query_router_receives_lazy_provider_factory():
-    previous = server._query_router
-    server._query_router = None
-    config = SimpleNamespace(
-        db_path=Path("isolated") / "knowledge.db",
-        vector_index_dir=Path("isolated") / "vectors",
-    )
+def test_query_router_delegates_to_shared_application():
     router = object()
-    embedder = object()
-    try:
-        with (
-            patch.object(server, "get_config", return_value=config),
-            patch(
-                "src.ai.provider_factory.create_embedder",
-                return_value=embedder,
-            ) as create_embedder,
-            patch(
-                "src.retrieval.query_router.QueryRouter",
-                return_value=router,
-            ) as router_type,
-        ):
-            assert server.get_query_router() is router
-            assert server.get_query_router() is router
+    application = MagicMock()
+    application.query_router.return_value = router
 
-            create_embedder.assert_not_called()
-            kwargs = router_type.call_args.kwargs
-            assert kwargs["db_path"] == config.db_path
-            assert kwargs["vector_index_dir"] == config.vector_index_dir
-            assert "embedder" not in kwargs
-            assert kwargs["embedder_factory"]() is embedder
+    with patch.object(server, "get_application", return_value=application):
+        assert server.get_query_router() is router
+        assert server.get_query_router() is router
 
-        create_embedder.assert_called_once_with(config)
-        router_type.assert_called_once()
-    finally:
-        server._query_router = previous
+    application.query_router.assert_called_with()
+    assert application.query_router.call_count == 2

@@ -145,10 +145,6 @@ FINAL_RUN_BLOCKERS = [
     "conda-native-license-materials-and-spdx",
     "html2text-gpl-compliance",
     "native-msvc-license-and-provenance",
-    "qt-corresponding-source-location",
-    "qt-linkage-and-replacement-not-proven",
-    "qt-module-license-audit",
-    "qt-notice-placeholders",
 ]
 FINAL_RECORD_DETAILS = {
     "w4.release_audit.v1": (

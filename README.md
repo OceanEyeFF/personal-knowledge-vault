@@ -9,12 +9,12 @@
 [![Status](https://img.shields.io/badge/status-alpha_development-yellow.svg)](./docs/history/milestones/)
 
 > 当前仓库基线：`0.8.1`
-> 说明：`v0.6.0` 是 CLI 首次稳定引入版本，`v0.7.0` 是 MCP 首次稳定引入版本；当前仓库在此基础上继续合入后续 GUI 与文档收敛工作。
+> 说明：`v0.6.0` 是 CLI 首次稳定引入版本，`v0.7.0` 是 MCP 首次稳定引入版本；桌面 GUI 已迁至独立的 `pkv-GUI` 仓库，本仓库只维护无头 Kernel、CLI 与 MCP。
 > 命名说明：当前路线里提到的“当前开发 Phase 1”实际对应 `Phase A：Relation Foundation`；历史文档中的旧 `Phase 1` 已归档完成，两者不是同一时间轴。
 > 2026-07-31 离线收口：Phase C 固定评测为 16 tasks / 119 checks，`overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`；三个探索 Tool 按 `partial-v1` 口径交付，公开合同仍诚实声明 `implementation_level=partial`。
 > 2026-08-07 M13 W1 安全复审：统一 runtime layout/bootstrap、Vault containment、跨存储补偿/repair 终态及 fail-closed migration 已完成；SQLite 事务提交凭据、Markdown identity + SHA-256 和 Vector 持久 pair marker 已补齐。W1 冻结时离线验收为 unit `1583 passed, 19 skipped`、integration/blackbox/e2e `277 passed, 9 deselected`。
-> 2026-08-07 M13 W2 收口：Workflow、Retrieval、MCP、GUI Chat 四条源代码合同均已 `source_verified`，独立复审无确定性 P0/P1；Phase C fresh run 为 16 tasks / 151 checks（119 项声明式 + 32 项自动公开 envelope）、全部维度 `1.0`、0 failed、`targets_met=true`。
-> 2026-08-11 M13 W3/W4：可复现打包链、payload 外 deterministic loopback harness 与 installed-Artifact 全矩阵已完成。外部 artifact-only 运行 `w4-53a45ed` 得到 10 个 scenario / 11 行 matrix / 10 verified / 0 failed / 0 pending，`functional_verified=true`；该 Artifact 仍是 `test_candidate`，因 7 项合规 blocker 保持 `release_eligible=false`、`decision=hold`，不得作为正式发布。
+> 2026-08-07 M13 W2 收口：Workflow、Retrieval、MCP 与当时的 GUI Chat 源代码合同均已 `source_verified`；GUI 后续已从本仓库拆出。
+> 2026-08-11 M13 W3/W4：可复现打包链、payload 外 deterministic loopback harness 与 installed-Artifact 全矩阵已完成。外部 artifact-only 运行 `w4-53a45ed` 得到 10 个 scenario / 11 行 matrix / 10 verified / 0 failed / 0 pending，`functional_verified=true`；这是拆分前 held candidate 的历史证据。当前 headless payload 仍为 `test_candidate`，当前合规合同的 3 项 blocker 使其保持 `release_eligible=false`、`decision=hold`，不得作为正式发布。
 
 ## ✨ 核心特点
 
@@ -26,7 +26,7 @@
 - 💰 **成本可控**: BM25 路径不构造 Provider，语义能力按需启用
 - 🛡️ **AI 安全**: 内置安全规范，测试环境完全隔离，数据备份自动化
 
-> **M13 Developer Preview 支持边界**：发布面只包含 Windows-first、fresh-install、GUI、CLI 与 MCP stdio。GUI 搜索只保证 BM25；向量/混合检索属于 CLI/MCP 的显式策略能力并依赖正常 Provider 配置。MCP HTTP transport 与 Bearer 合同不在本次发布面。默认自动化全程离线，只使用合成数据和可控 doubles，不读取真实 API key、真实 Provider 或真实 Vault；W4 已通过正常 Provider 配置使用 release payload 外的 deterministic loopback harness 完成 Chat Artifact 路径验证。
+> **当前支持边界**：本仓库的发布面只包含 Windows-first 的 CLI 与 MCP stdio；桌面 GUI 是单独仓库中的外部 Kernel Wrapper。向量/混合检索属于 CLI/MCP 的显式策略能力并依赖正常 Provider 配置。MCP HTTP transport 与 Bearer 合同不在本次发布面。默认自动化全程离线，只使用合成数据和可控 doubles，不读取真实 API key、真实 Provider 或真实 Vault。
 
 ## 🎯 核心功能
 
@@ -133,8 +133,9 @@ personal-knowledge-vault/
 │   │   ├── commands.py                # 9 个公开命令
 │   │   ├── ui.py                      # Rich Console 界面
 │   │   └── formatters.py              # 输出格式化
-│   ├── gui/                           # PySide6 GUI 与 Chat 工作台
 │   ├── runtime/                       # 资源/用户路径、bootstrap 与启动保护
+│   ├── application/                   # 共享依赖 composition 与领域操作
+│   ├── kernel/                        # 稳定的无头 Kernel facade
 │   ├── mcp/                           # MCP 服务 (v0.7.0)
 │   │   ├── server.py                  # FastMCP 主入口 (M13: stdio only)
 │   │   ├── tools.py                   # 14 个 Tool handler
@@ -179,6 +180,8 @@ personal-knowledge-vault/
 │   │   └── prompts/                   # 提示词模板
 │   └── utils/                         # 工具函数
 │
+├── pkv_kernel/                        # 外部 Wrapper 唯一可导入的 Kernel API
+│
 ├── config/                            # 配置文件
 │   ├── config.yaml                    # 主配置
 │   ├── workflows/                     # 工作流定义
@@ -203,7 +206,6 @@ personal-knowledge-vault/
 │   ├── e2e/                           # E2E 测试
 │   ├── blackbox/                      # 黑盒测试
 │   ├── fixtures/                      # 测试数据
-│   ├── manual_test_m12/               # M12 专项手动验证（7 个文件）
 │   └── manual_test_*.py               # 手动测试脚本
 │
 ├── docs/                              # 文档
@@ -454,13 +456,13 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 
 ### 🎉 当前仓库基线: 0.8.1
 
-**发布状态**: 🧪 M13 W1/W2/W3 与 W4 installed-Artifact 功能验证已完成；当前 Artifact 是合规 hold 的 test candidate，尚未具备正式发布资格，真实数据验收也未执行。
+**发布状态**: 🧪 拆分前的 M13 W1/W2/W3/W4 Artifact 证据已归档；当前 headless payload 仍是合规 hold 的 test candidate，尚未具备正式发布资格，真实数据验收也未执行。
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
 | **项目版本** | 0.8.1 | 当前运行时、CLI 和 held test candidate 基线 |
 | **稳定能力基线** | v0.7.0 | MCP 服务 (8 Tool + 4 Resource + 3 Prompt) |
-| **开发进度** | M13 W4（hold） | W3 打包链与 W4 10/11 Artifact matrix 已完成；7 项合规 blocker 使候选保持 hold |
+| **开发进度** | M13 W4（hold） | 历史 W4 10/11 Artifact matrix 已归档；当前 3 项合规 blocker 使 headless candidate 保持 hold |
 | **源代码文件** | 动态维护 | 以仓库树和模块索引为准 |
 | **测试文件** | 动态维护 | 精确测试 lane 与冻结证据见 `tests/CLAUDE.md` |
 | **测试覆盖率** | 门禁化维护 | 不在 README 固化易漂移的静态百分比 |
@@ -483,9 +485,10 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 | **M8** | ✅ | MCP 只读服务（5 Tool + 4 Resource） | 2026-02-18 |
 | **M9** | ✅ | MCP 写入 + Prompts + 安全加固 (v0.7.0) | 2026-02-19 |
 | **M13 W1** | ✅ | Runtime layout、Vault containment、跨存储终态与 fail-closed migration | 2026-08-02 |
-| **M13 W2** | ✅ | Workflow、Retrieval、MCP、GUI Chat 源代码功能合同与独立复审 | 2026-08-07 |
+| **M13 W2** | ✅ | Workflow、Retrieval、MCP 与当时 GUI Chat 源代码功能合同与独立复审；GUI 后续已拆出 | 2026-08-07 |
 | **M13 W3** | ✅ | 可复现 Windows test-candidate 打包链与 payload 外 loopback harness | 2026-08-11 |
-| **M13 W4** | 🟡 | installed-Artifact 10 scenario / 11 行 matrix 通过；合规审查结论为 hold | 2026-08-11 |
+| **M13 W4** | 🟡 | 拆分前 installed-Artifact 10 scenario / 11 行 matrix 通过；当前 headless candidate 仍需独立 Artifact 证据 | 2026-08-11 |
+| **P1-A** | ✅ | 共享 `KnowledgeApplication` / Kernel 边界与 INTERNAL TEST ONLY headless onedir/ZIP；仓库外合成 smoke 通过 | 2026-08-13 |
 
 ### 🚀 核心能力矩阵
 
@@ -504,9 +507,9 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 
 **当前优先级**:
 
-1. **合规 blocker 收口**：补齐许可证、Qt 对应源码/链接替换性、native provenance 与 notices，才可重新评估 test candidate。
-2. **后置增强**：按真实需求逐 Tool 扩展 full 语义；POSIX/CI、性能、多模态和重交互体验不阻塞当前 Developer Preview。
-3. **真实数据验收**：仍需用户授权与 U1/G8、FT5 等独立前置，未被 W4 替代。
+1. **可追溯知识成果**：以现有检索、关系和证据能力形成可审阅、可回链的成果工作流；再按真实需求逐 Tool 扩展 full 语义。
+2. **M13 release hold**：许可证、native provenance 与 notices 仍是未来重开发布时的 blocker；P1-A 的内部自测不改变该结论。
+3. **真实数据与后置增强**：真实数据验收仍需用户授权与 U1/G8、FT5 等独立前置；POSIX/CI、性能、多模态和重交互体验不阻塞当前路线。
 
 ## 🧪 测试体系
 
@@ -519,11 +522,11 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 
 | 测试类型 | 覆盖范围 | 运行方式 |
 |---------|----------|----------|
-| **单元测试** | 核心业务逻辑、GUI、MCP、处理器、存储层 | run-test.ps1 -Direct ... pytest tests/unit/ |
+| **单元测试** | 核心业务逻辑、MCP、处理器、存储层 | run-test.ps1 -Direct ... pytest tests/unit/ |
 | **集成测试** | 跨模块集成、MCP 功能、工作流、审核链路 | run-test.ps1 -Direct ... pytest tests/integration/ |
 | **E2E 测试** | 默认离线端到端与 MCP 服务；network/manual 排除 | run-test.ps1 -Direct ... pytest tests/e2e/ |
 | **黑盒测试** | CLI + MCP stdio 协议 | run-test.ps1 -Direct ... pytest tests/blackbox/ |
-| **手动验证** | GUI、流式输出、线程/异步集成 | 用户手动、非默认自动化；按文件说明执行 |
+| **手动验证** | 核心迁移/恢复等明确授权的人工验证 | 用户手动、非默认自动化；按文件说明执行 |
 
 **MCP 多层测试结构**:
 

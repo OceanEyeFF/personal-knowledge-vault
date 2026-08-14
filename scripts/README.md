@@ -174,6 +174,37 @@ FT7 是 Python 进程内 guard，不是 OS sandbox。`scripts/setup-test-db.py` 
 
 ---
 
+#### `build-internal-package.ps1` — INTERNAL TEST ONLY onedir + ZIP
+
+**用途**：快速生成仅供维护者本机合成数据自测的 PyInstaller `onedir` 目录和 ZIP。它是
+后 M13 P1-A 的内部封包入口，和严格的 `build-release.ps1` 完全分离：不会生成 installer，
+不会写入 `dist/release/`，也绝不能被描述为发布或候选发布。
+
+```powershell
+# 只构建；输出始终位于 Git 忽略的 dist\internal\
+.\scripts\build-internal-package.ps1
+
+# 构建后执行内部自测：自动生成合成 DB，并从仓库外临时工作目录启动解压后的包
+.\scripts\build-internal-package.ps1 -Smoke
+```
+
+每个包都含有 `INTERNAL-TEST-ONLY.txt` 和 `internal-build-info.json`。后者记录 UTC 构建时间、
+Git revision/dirty 状态、Python/平台信息及 `requirements.txt` 声明依赖的版本摘要。构建前会
+核验 runtime allowlist；构建后会 fail-closed 拒绝 `config/local.yaml`、`.env`、凭据痕迹、
+Vault、数据库/索引、日志及测试 fixture，并以有界递归解析检查冻结 EXE 内的 PyInstaller
+CArchive/PYZ、嵌套 ZIP 的解压内容和成员元数据；ZIP 还会拒绝 SFX/拼接、链接、加密、
+非规范 Windows 路径及无法完整验证的物理布局。正式 `scripts/build-release.ps1` 与
+`scripts/build_release.py` 不受此入口影响。
+
+`-Smoke` 的数据只由 `scripts/run-test.ps1` 创建在单独的 `.data-test\internal-package-*` 根中，
+不会读取 `local.yaml` 或真实 Provider 凭据。它从仓库外解压后的 headless onedir 依次检查
+CLI `--help`、CLI BM25 和 MCP stdio `initialize`；唯一可作出的结论文字是
+`INTERNAL SELF-TEST PASSED`。默认临时外部工作目录会清理；传入 `-KeepSmokeWorkspace` 仅用于
+人工排查。自动清理使用逐项 no-follow 审计和叶到根删除；如出现 junction/
+symlink/reparse 或目录竞态，会保留 workspace 并失败。
+
+---
+
 #### `rebuild-dev-vault.py` - 开发专用轻量重建入口（P1）
 
 **用途**: 在安全隔离根上执行 可受控清理 → 数据库迁移 → 确定性最小种子 → 健康检查 的完整重建流程，幂等可重复。

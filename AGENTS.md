@@ -21,7 +21,8 @@ Before making a change, read the canonical project guide in
 - [Project guide and safe commands](./CLAUDE.md)
 - [CLI](./src/cli/AGENTS.md)
 - [MCP](./src/mcp/AGENTS.md)
-- [GUI](./src/gui/AGENTS.md)
+- [Headless Kernel](./src/kernel/AGENTS.md)
+- [Application composition](./src/application/AGENTS.md)
 - [Workflow](./src/workflow/AGENTS.md)
 - [Processors](./src/processors/AGENTS.md)
 - [Retrieval](./src/retrieval/AGENTS.md)
@@ -35,3 +36,6 @@ Before making a change, read the canonical project guide in
 The default user-data-root and installation-topology discussion is intentionally
 deferred; do not change that product-policy decision as part of documentation
 maintenance.
+
+The PySide6 desktop wrapper lives in the separate `pkv-GUI` repository and is
+not a module, test lane, or packaged entrypoint of this headless repository.

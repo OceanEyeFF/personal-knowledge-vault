@@ -144,11 +144,10 @@ entry、chunk 与 frontmatter metadata-field Resource 在读取/返回内容前�
 
 - `mcp` (FastMCP): MCP Server 框架
 - `anyio`: 异步 I/O 桥接(同步操作包装为线程池任务)
-- `src.storage`: SQLiteStore, MarkdownStore, VectorStore
-- `src.retrieval`: QueryRouter, BM25/Vector/Hybrid Retriever
-- `src.workflow`: WorkflowEngine (写入 Tool 使用)
-- `src.processors`: TextFallbackProcessor (archive_text 使用)
-- `src.ai`: production Provider factory（Embedding / Chat）与 DeepSeek-compatible 摘要客户端
+- `src.application.KnowledgeApplication`: 同一 validated config 下的 Store、
+  Retrieval、Workflow、Provider 与领域服务 composition root
+- `src.storage` / `src.retrieval` / `src.workflow` / `src.processors` / `src.ai`:
+  application 的内部依赖；MCP handler 不直接构造它们
 
 ### 配置项
 
@@ -179,18 +178,13 @@ ai:
 
 ## 架构设计
 
-### 单例管理
+### Application 生命周期
 
-Server 生命周期内复用以下对象(延迟初始化):
-
-```python
-# server.py 中的单例工厂
-get_sqlite_store()   # SQLiteStore 单例
-get_markdown_store() # MarkdownStore 单例
-get_query_router()   # QueryRouter 单例(含 BM25 + HybridRetriever + VectorStore)
-```
-
-**为什么不能每次请求重建**: VectorRetriever 需加载 hnswlib 索引文件到内存(~1-3s),重复创建浪费资源。
+MCP 在 runtime bootstrap 成功后配置一次 `KnowledgeApplication`。Server 中的
+`get_sqlite_store()`、`get_markdown_store()` 和 `get_query_router()` 是已注册
+handler 的兼容访问器，全部委托给 application，不能成为重新自行装配后端的入口。
+application 以同一 validated config 惰性复用 Store、Retriever、Workflow 与
+Provider；Vector 检索按需打开已有索引，而不是每个 Tool 调用重新建索引。
 
 ### 异步策略
 
@@ -198,8 +192,8 @@ get_query_router()   # QueryRouter 单例(含 BM25 + HybridRetriever + VectorSto
 只读 Tool  →  async def + anyio.to_thread.run_sync(_impl)
                └── 将同步 SQLite/文件 I/O 包装到线程池
 
-写入 Tool  →  async def + await engine.execute_async(...)
-               └── WorkflowEngine 原生 async,无需 threadpool
+写入 Tool  →  async def + await application.archive_url/archive_text(...)
+               └── application 保持 Workflow 原生 async,无需 threadpool
 
 Resource   →  async def + anyio.to_thread.run_sync(_impl)
                └── 同只读 Tool

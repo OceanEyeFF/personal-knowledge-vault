@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from urllib.parse import urljoin, urlparse
 import hashlib
 
@@ -44,6 +44,8 @@ class WechatProcessor(BaseProcessor):
         max_images: int = MAX_WECHAT_IMAGES,
         max_image_bytes: int = MAX_WECHAT_IMAGE_BYTES,
         max_total_image_bytes: int = MAX_WECHAT_TOTAL_IMAGE_BYTES,
+        *,
+        config: Any | None = None,
     ):
         """
         Initialize the processor.
@@ -52,19 +54,19 @@ class WechatProcessor(BaseProcessor):
             timeout: HTTP timeout in seconds.
             user_agent: Optional custom User-Agent.
         """
-        config = get_config()
-        self._config = config
+        runtime_config = config if config is not None else get_config()
+        self._config = runtime_config
         self.timeout = timeout
         self._init_safe_fetcher(
             timeout_seconds=timeout,
             safe_fetcher=safe_fetcher,
         )
-        self.user_agent = user_agent or config.get(
+        self.user_agent = user_agent or runtime_config.get(
             "processors.wechat.user_agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         )
-        self.tmp_dir = config.tmp_dir
+        self.tmp_dir = runtime_config.tmp_dir
         self.max_images = _bounded_positive_int(
             max_images,
             hard_limit=MAX_WECHAT_IMAGES,

@@ -4,7 +4,7 @@
 >
 > 推荐使用 **Conda 方式**安装，可以避免 Python 3.13 兼容性问题喵～
 >
-> **M13 当前边界**：Windows-first fresh-install Developer Preview 支持 GUI、CLI 与 MCP stdio；GUI 搜索只保证 BM25。MCP HTTP/Bearer 和 `search.yaml` 不受支持。默认验证离线，只使用 `.data-test` 合成数据，不需要也不得读取真实 API key、真实 Provider 或真实 Vault。
+> **当前边界**：本仓库的 Windows-first Developer Preview 支持 CLI 与 MCP stdio；桌面 GUI 已迁至独立的 `pkv-GUI` 仓库。MCP HTTP/Bearer 和 `search.yaml` 不受支持。默认验证离线，只使用 `.data-test` 合成数据，不需要也不得读取真实 API key、真实 Provider 或真实 Vault。
 
 ---
 
@@ -149,9 +149,6 @@ fatal error C1189: #error: "this header requires Py_BUILD_CORE define"
 ### 可用入口
 
 ```powershell
-# GUI 工作台
-python -m src.gui
-
 # CLI 命令与帮助
 python -m src.main --help
 
@@ -159,13 +156,13 @@ python -m src.main --help
 python -m src.mcp.server
 ```
 
-当前默认发布面是 Windows-first、离线、fresh-install 的 Developer Preview。GUI、CLI 与 MCP stdio 可用；MCP HTTP/Bearer、真实数据验收和原地升级不在本阶段承诺范围内。
+当前默认发布面是 Windows-first、离线、fresh-install 的 Developer Preview。CLI 与 MCP stdio 可用；GUI 由独立仓库发布。MCP HTTP/Bearer、真实数据验收和原地升级不在本阶段承诺范围内。
 
 ### 下一步
 
 - 查看 [当前战略与路线收敛](docs/overview/当前战略与路线收敛-2026-03.md)
 - 查看 [阶段开发路线与依赖](docs/overview/阶段开发路线与依赖-2026-03.md)
-- 按 [使用手册](docs/operations/使用手册.md) 选择 CLI、GUI 或 MCP stdio 工作流
+- 按 [使用手册](docs/operations/使用手册.md) 选择 CLI 或 MCP stdio 工作流
 
 ---
 

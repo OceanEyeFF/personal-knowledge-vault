@@ -61,31 +61,6 @@ COMPLIANCE_ARTIFACT_CONTRACT = {
         32138,
         "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245",
     ),
-    "pyside6-6.11.1-license-selection": (
-        "packaging/licenses/pyside6-6.11.1-license-selection.txt",
-        144,
-        "dd6a83da77d0b6a113a574154c12cb009751c2b0dfe5c22e288cd86ebc2a1f13",
-    ),
-    "qt-pyside6-6.11.1-lgpl-3.0-only": (
-        "packaging/licenses/qt-pyside6-6.11.1-LGPL-3.0-only.txt",
-        7651,
-        "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
-    ),
-    "qt-pyside6-6.11.1-gpl-2.0-only": (
-        "packaging/licenses/qt-pyside6-6.11.1-GPL-2.0-only.txt",
-        18092,
-        "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
-    ),
-    "qt-pyside6-6.11.1-gpl-3.0-only": (
-        "packaging/licenses/qt-pyside6-6.11.1-GPL-3.0-only.txt",
-        35147,
-        "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
-    ),
-    "qt-pyside6-6.11.1-lgpl-user-notice-template": (
-        "packaging/licenses/qt-pyside6-6.11.1-LGPL-user-notice-template.txt",
-        3554,
-        "9112fd72a849a189e42cd8f3c742a93dfe8ea452d124d452e1e9d5954babf03a",
-    ),
     "html2text-2020.1.16-sdist": (
         "packaging/compliance-sources/html2text-2020.1.16.tar.gz",
         49464,
@@ -97,10 +72,6 @@ COMPLIANCE_BLOCKER_IDS = frozenset(
         "conda-native-license-materials-and-spdx",
         "html2text-gpl-compliance",
         "native-msvc-license-and-provenance",
-        "qt-corresponding-source-location",
-        "qt-linkage-and-replacement-not-proven",
-        "qt-module-license-audit",
-        "qt-notice-placeholders",
     }
 )
 HTML2TEXT_GPL_COMPLIANCE_REQUIREMENTS = (
@@ -300,7 +271,6 @@ def validate_release_contract(contract: Mapping[str, Any]) -> None:
     )
     expected_entrypoints = [
         {"path": "app/pkv.exe", "role": "cli", "console": True},
-        {"path": "app/pkv-gui.exe", "role": "gui", "console": False},
         {"path": "app/pkv-mcp.exe", "role": "mcp_stdio", "console": True},
     ]
     if contract.get("entrypoints") != expected_entrypoints:
@@ -375,7 +345,6 @@ def validate_payload_policy(policy: Mapping[str, Any]) -> None:
         ],
         "required_paths": [
             "app/pkv.exe",
-            "app/pkv-gui.exe",
             "app/pkv-mcp.exe",
             "Install.ps1",
             "Uninstall.ps1",
@@ -896,7 +865,6 @@ def payload_role(relative: str) -> str:
     if relative.startswith("app/"):
         if relative in {
             "app/pkv.exe",
-            "app/pkv-gui.exe",
             "app/pkv-mcp.exe",
         }:
             return "entrypoint"
@@ -2013,17 +1981,6 @@ def collect_license_materials(
             extra_asset_ids = ("cpython-3.11.15-license",)
         elif name == "pyinstaller":
             extra_asset_ids = ("pyinstaller-6.21.0-copying-and-bootloader-exception",)
-        elif name in {
-            "pyside6",
-            "pyside6-addons",
-            "pyside6-essentials",
-            "shiboken6",
-        }:
-            extra_asset_ids = (
-                "pyside6-6.11.1-license-selection",
-                "qt-pyside6-6.11.1-lgpl-3.0-only",
-                "qt-pyside6-6.11.1-gpl-3.0-only",
-            )
         for asset_id in extra_asset_ids:
             artifact = compliance_artifacts[asset_id]
             source_relative = _contract_relative_path(
@@ -2215,7 +2172,6 @@ def _inventory_sbom_components(
         ),
         "build-runtime:pyinstaller-hooks": "Apache-2.0",
         "build-runtime:pyinstaller-hooks-contrib": "Apache-2.0",
-        "framework:qt-pyside": "LGPL-3.0-only",
         "native:msvc-runtime": "LicenseRef-MicrosoftVisualCpp2015-2022Runtime",
         "native:openssl": "Apache-2.0",
         "native:sqlite": "LicenseRef-SQLite-Public-Domain",
@@ -2344,10 +2300,7 @@ def _inventory_sbom_components(
         classifications = list(raw_classifications)
         if component_id.startswith("conda-package:"):
             license_material_status = "metadata-only-compliance-hold"
-        elif contains_native_payload or set(classifications) & {
-            "framework:qt-pyside",
-            "native:msvc-runtime",
-        }:
+        elif contains_native_payload or "native:msvc-runtime" in classifications:
             license_material_status = "top-level-only-compliance-hold"
         else:
             license_material_status = "requires-license-index-binding"
@@ -3328,14 +3281,6 @@ def validate_compliance_sources(project_root: Path) -> dict[str, Any]:
     canonical_blockers = sorted(blocker_ids, key=lambda value: value.encode("utf-8"))
     blocker_authority.sort(key=lambda item: item["id"].encode("utf-8"))
     blocker_authority_sha256 = sha256_bytes(canonical_json_bytes(blocker_authority))
-    template_path = (
-        project_root
-        / COMPLIANCE_ARTIFACT_CONTRACT["qt-pyside6-6.11.1-lgpl-user-notice-template"][0]
-    )
-    if not re.search(r"<[A-Z0-9_]+>", template_path.read_text(encoding="utf-8")):
-        raise ReleaseBuildError(
-            "Qt notice changed without resolving the frozen compliance hold"
-        )
     return {
         "artifact_status": "test-candidate-on-compliance-hold",
         "compliance_manifest_sha256": sha256_file(manifest_path),

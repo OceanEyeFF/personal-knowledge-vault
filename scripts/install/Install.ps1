@@ -34,11 +34,7 @@ $ComplianceHoldToken = "W4-TEST-CANDIDATE-NOT-FOR-DISTRIBUTION"
 $ExpectedComplianceBlockers = @(
     "conda-native-license-materials-and-spdx",
     "html2text-gpl-compliance",
-    "native-msvc-license-and-provenance",
-    "qt-corresponding-source-location",
-    "qt-linkage-and-replacement-not-proven",
-    "qt-module-license-audit",
-    "qt-notice-placeholders"
+    "native-msvc-license-and-provenance"
 )
 $PackageRoot = $PSScriptRoot
 $utf8 = [System.Text.UTF8Encoding]::new($false)

@@ -19,9 +19,19 @@ from rich.table import Table
 
 import src.cli.commands as commands
 import src.workflow.steps as workflow_steps
+from src.ai.provider_factory import create_embedder
+from src.application import KnowledgeApplication
+from src.processors.text_fallback_processor import TextFallbackProcessor
+from src.retrieval.bm25_retriever import BM25Retriever
+from src.retrieval.hybrid_retriever import HybridRetriever
+from src.retrieval.query_router import QueryRouter
 from src.retrieval.result import RetrievalIssue, SearchResponse, SearchResult
+from src.retrieval.vector_retriever import VectorRetriever
 from src.runtime.errors import ErrorCode, PKVRuntimeError
-from src.storage.markdown_store import Entry
+from src.storage.markdown_store import Entry, MarkdownStore
+from src.storage.sqlite_store import SQLiteStore
+from src.storage.vector_store import VectorStore
+from src.workflow.engine import WorkflowEngine
 from src.workflow.models import WorkflowResult
 
 
@@ -66,6 +76,109 @@ class DummyStatus:
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         return False
+
+
+class _LegacyCLITestApplication(KnowledgeApplication):
+    """Keep focused adapter mocks behind the shared application seam.
+
+    The CLI no longer constructs stores, retrievers, Providers, processors, or
+    workflows.  Existing CLI tests still express their behavioural contracts in
+    terms of those fakes, so this test-only application supplies them through
+    the ``KnowledgeApplication`` factory seams.
+    """
+
+    def _new_vector_retriever(self) -> Any:
+        return commands.VectorRetriever(
+            self.config.db_path,
+            self.config.vector_index_dir,
+            embedder_factory=lambda: commands.create_embedder(self.config),
+        )
+
+    def _new_hybrid_retriever(self) -> Any:
+        return commands.HybridRetriever(
+            self.config.db_path,
+            self.config.vector_index_dir,
+            embedder_factory=lambda: commands.create_embedder(self.config),
+        )
+
+    @property
+    def readonly_vector_store(self) -> Any | None:
+        if not self._readonly_vector_store_checked:
+            self._readonly_vector_store_checked = True
+            if commands.VectorStore.has_index_artifacts(
+                self.config.vector_index_dir
+            ):
+                self._readonly_vector_store = commands.VectorStore.open_readonly(
+                    index_dir=self.config.vector_index_dir,
+                    dim=None,
+                )
+        return self._readonly_vector_store
+
+    def archive_cli_input(self, input_data: dict[str, Any]):
+        """Expose the workflow coroutine immediately for legacy CLI assertions."""
+
+        return self._new_workflow().execute_async("archive-url", input_data)
+
+
+@pytest.fixture(autouse=True)
+def application_adapter_seam(monkeypatch: pytest.MonkeyPatch):
+    """Route legacy command fakes through ``commands.get_application``.
+
+    Production code imports no concrete backend types from the CLI adapter.
+    Attaching these aliases in the test process preserves the older focused
+    mocks while ensuring every command exercises the application-service entry
+    point.
+    """
+
+    aliases = {
+        "WorkflowEngine": WorkflowEngine,
+        "TextFallbackProcessor": TextFallbackProcessor,
+        "QueryRouter": QueryRouter,
+        "BM25Retriever": BM25Retriever,
+        "VectorRetriever": VectorRetriever,
+        "HybridRetriever": HybridRetriever,
+        "SQLiteStore": SQLiteStore,
+        "MarkdownStore": MarkdownStore,
+        "VectorStore": VectorStore,
+        "create_embedder": create_embedder,
+    }
+    for name, implementation in aliases.items():
+        monkeypatch.setattr(commands, name, implementation, raising=False)
+
+    def _application_for(config: Any) -> KnowledgeApplication:
+        def _vector_store_factory(candidate_config: Any) -> Any:
+            if not commands.VectorStore.has_index_artifacts(
+                candidate_config.vector_index_dir
+            ):
+                return None
+            return commands.VectorStore.open_readonly(
+                index_dir=candidate_config.vector_index_dir,
+                dim=None,
+            )
+
+        return _LegacyCLITestApplication(
+            config,
+            sqlite_store_factory=lambda candidate_config: commands.SQLiteStore(
+                candidate_config.db_path
+            ),
+            markdown_store_factory=lambda candidate_config: commands.MarkdownStore(
+                candidate_config.vault_dir
+            ),
+            vector_store_factory=_vector_store_factory,
+            bm25_retriever_factory=lambda candidate_config: commands.BM25Retriever(
+                candidate_config.db_path
+            ),
+            query_router_factory=lambda candidate_config, token_threshold: commands.QueryRouter(
+                db_path=candidate_config.db_path,
+                vector_index_dir=candidate_config.vector_index_dir,
+                token_threshold=token_threshold,
+                embedder_factory=lambda: commands.create_embedder(candidate_config),
+            ),
+            workflow_factory=lambda: commands.WorkflowEngine(),
+            text_processor_factory=lambda: commands.TextFallbackProcessor(),
+        )
+
+    monkeypatch.setattr(commands, "get_application", _application_for)
 
 
 def _make_entry(

@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 from urllib.parse import urlsplit
 
 from src.ai.deepseek_client import DeepSeekClient
@@ -41,6 +41,8 @@ class ChatProcessor(BaseProcessor):
         self,
         max_summary_words: int = 120,
         deepseek_client: Optional[DeepSeekClient] = None,
+        *,
+        config: Any | None = None,
     ):
         """
         Initialize the processor.
@@ -49,11 +51,16 @@ class ChatProcessor(BaseProcessor):
             max_summary_words: Summary length in words.
             deepseek_client: Optional injected DeepSeek client (for testing).
         """
-        config = get_config()
-        self.max_summary_words = int(config.get("chat.summary_max_words", max_summary_words))
+        runtime_config = config if config is not None else get_config()
+        self._runtime_config = runtime_config
+        self.max_summary_words = int(
+            runtime_config.get("chat.summary_max_words", max_summary_words)
+        )
         self._deepseek_client = deepseek_client
-        self._deepseek_model = config.llm_model
-        self._summary_temperature = float(config.get("ai.llm.temperature", 0.7))
+        self._deepseek_model = runtime_config.llm_model
+        self._summary_temperature = float(
+            runtime_config.get("ai.llm.temperature", 0.7)
+        )
 
     @classmethod
     def can_handle(cls, url: str) -> bool:
@@ -227,7 +234,9 @@ class ChatProcessor(BaseProcessor):
             return "对话内容为空。", ["chat", "empty", "conversation"]
 
         try:
-            client = self._deepseek_client or DeepSeekClient(model=self._deepseek_model)
+            client = self._deepseek_client or DeepSeekClient(
+                config=self._runtime_config,
+            )
             summary = client.summarize(
                 conversation_text,
                 max_words=self.max_summary_words,

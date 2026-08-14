@@ -191,6 +191,7 @@ class VectorStore:
         index_dir: Path,
         dim: Optional[int] = None,
         *,
+        runtime_config: Any = None,
         layout: Any = None,
         path_validator: Optional[Callable[..., Any]] = None,
         allow_index_creation: bool = True,
@@ -202,6 +203,8 @@ class VectorStore:
         Args:
             index_dir: 向量索引目录
             dim: 向量维度；未传入时优先沿用已有索引维度，否则回落到配置值
+            runtime_config: 此实例绑定的已验证运行时配置。Application/Kernel
+                组合必须显式传入，避免索引路径与全局配置的 embedding 契约漂移。
             layout: 显式注入的 RuntimeLayout（测试/运维 seam）；缺省时若
                 index_dir 位于已声明用户数据根内则自动启用完整 containment 合同
             path_validator: 显式注入的叶子验证器（测试 seam）
@@ -218,10 +221,12 @@ class VectorStore:
         if read_only and allow_index_creation:
             raise ValueError("严格只读打开必须禁用索引创建")
         self.index_dir = Path(index_dir)
+        self._runtime_config = runtime_config
         self._allow_index_creation = allow_index_creation
         self._read_only = read_only
         self._contract = self._resolve_path_contract(
             self.index_dir,
+            runtime_config=runtime_config,
             layout=layout,
             path_validator=path_validator,
         )
@@ -280,6 +285,7 @@ class VectorStore:
         index_dir: Path,
         dim: Optional[int] = None,
         *,
+        runtime_config: Any = None,
         layout: Any = None,
         path_validator: Optional[Callable[..., Any]] = None,
     ) -> "VectorStore":
@@ -293,6 +299,7 @@ class VectorStore:
         return cls(
             index_dir,
             dim=dim,
+            runtime_config=runtime_config,
             layout=layout,
             path_validator=path_validator,
             allow_index_creation=False,
@@ -562,6 +569,7 @@ class VectorStore:
     def _resolve_path_contract(
         index_dir: Path,
         *,
+        runtime_config: Any = None,
         layout: Any = None,
         path_validator: Optional[Callable[..., Any]] = None,
     ) -> _PathContract:
@@ -575,9 +583,13 @@ class VectorStore:
             return _PathContract(layout=layout, validator=layout.writable_user_path)
         if path_validator is not None:
             return _PathContract(layout=None, validator=path_validator)
-        config = get_config()
+        config = runtime_config if runtime_config is not None else get_config()
         candidate_layout = getattr(config, "layout", None)
-        if candidate_layout is not None:
+        if (
+            candidate_layout is not None
+            and hasattr(candidate_layout, "user_data_root")
+            and callable(getattr(candidate_layout, "writable_user_path", None))
+        ):
             candidate = Path(
                 os.path.abspath(os.path.normpath(os.fspath(index_dir)))
             )
@@ -696,7 +708,12 @@ class VectorStore:
         if requested_dim is not None:
             return int(requested_dim)
 
-        config_dim = get_config().embedding_dim
+        config = (
+            self._runtime_config
+            if self._runtime_config is not None
+            else get_config()
+        )
+        config_dim = config.embedding_dim
         if config_dim is None:
             raise RuntimeError(
                 "当前未解析 Embedding 维度，无法创建新索引。"
@@ -706,7 +723,11 @@ class VectorStore:
 
     def _resolve_embedding_fingerprint(self, dim: int) -> dict[str, Any]:
         """解析当前向量索引应绑定的 Embedding 契约指纹。"""
-        config = get_config()
+        config = (
+            self._runtime_config
+            if self._runtime_config is not None
+            else get_config()
+        )
         resolved: Any = None
         if hasattr(config, "embedding_index_fingerprint"):
             resolved = config.embedding_index_fingerprint(dim)

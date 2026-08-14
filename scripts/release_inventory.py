@@ -2312,11 +2312,6 @@ def _classify_components(
     ):
         components.add("build-runtime:pyinstaller-hooks")
         components.discard("python-distribution:pyinstaller")
-    if any(
-        marker in folded_ref or marker in folded_destination
-        for marker in ("/pyside6/", "/shiboken6/")
-    ) or basename.startswith(("qt5", "qt6")):
-        components.add("framework:qt-pyside")
     if is_native and (
         basename.startswith(("libcrypto", "libssl"))
         or basename in {"crypto.dll", "openssl.exe", "ssl.dll"}
@@ -2434,12 +2429,6 @@ def _component_descriptor(
             "runtime",
             distribution_records.get("pyinstaller-hooks-contrib", {}).get("version"),
         ),
-        "framework:qt-pyside": (
-            "Qt / PySide runtime",
-            "framework",
-            distribution_records.get("pyside6", {}).get("version")
-            or distribution_records.get("pyside6-essentials", {}).get("version"),
-        ),
         "native:openssl": ("OpenSSL runtime", "native-library", ssl.OPENSSL_VERSION),
         "native:sqlite": ("SQLite runtime", "native-library", sqlite3.sqlite_version),
         "native:zlib": ("zlib runtime", "native-library", zlib.ZLIB_VERSION),
@@ -2471,7 +2460,6 @@ def _component_descriptor(
             f"unknown component classification: {component_id}"
         ) from exc
     classification_only = component_id in {
-        "framework:qt-pyside",
         "native:msvc-runtime",
         "native:openssl",
         "native:sqlite",

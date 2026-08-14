@@ -34,15 +34,8 @@ pytest==7.4.4              # 测试框架 (兼容 pytest-asyncio<8 要求)
 pytest-cov==4.1.0          # 测试覆盖率
 pytest-asyncio==0.23.4     # 异步测试支持
 pytest-mock==3.12.0        # Mock 工具
-pytest-qt==4.5.0           # PySide6 GUI 测试 fixture
 
 # Development Tools
 black==24.1.1              # 代码格式化
 flake8==7.0.0              # 代码检查
 mypy==1.8.0                # 类型检查
-
-# GUI (Phase 2B)
-PySide6>=6.8.0             # Qt6 Python 绑定 (跨平台桌面 GUI)
-qasync>=0.28.0             # 异步 Qt 事件循环 (M12 AI 对话)
-markdown2>=2.4.0           # Markdown 渲染 (M12 消息显示)
-Pygments>=2.17.0           # 代码高亮 (M12 代码块)

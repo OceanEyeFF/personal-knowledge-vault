@@ -16,7 +16,9 @@
 - **五态合同**: `success/no_hits/invalid/error/degraded` 不得互相伪装
 - **性能优化**: BM25 零成本；Embedding Provider 仅在语义分支实际执行时通过工厂构造
 
-M13 GUI 发布搜索只保证 BM25。Vector/Hybrid/Auto 由 CLI 与 MCP adapter 显式消费；默认离线验证不会连接真实 Embedding Provider、读取真实 API key 或真实 Vault。
+本仓库的 CLI/MCP，以及外部 `pkv-GUI` Wrapper，均通过 Kernel/Application
+边界消费检索能力。默认离线验证不会连接真实 Embedding Provider、读取真实
+API key 或真实 Vault。
 
 ---
 
@@ -333,7 +335,7 @@ def _select_strategy(self, query: str) -> str:
 
 | 策略 | Provider 行为 | 当前发布边界 |
 |------|---------------|--------------|
-| BM25 | 不构造 Provider | GUI/CLI/MCP 可用；GUI 发布搜索只保证此策略 |
+| BM25 | 不构造 Provider | Kernel/CLI/MCP 与外部 Wrapper 可用 |
 | Vector | 在执行时懒创建 Embedding Provider | CLI/MCP 显式策略 |
 | Hybrid | BM25 + 懒创建的 Vector 分支 | CLI/MCP 显式策略或 ≥5 tokens 的 auto 路由 |
 

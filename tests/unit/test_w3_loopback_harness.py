@@ -192,7 +192,6 @@ def test_runtime_is_stdlib_only_and_spec_physically_excludes_product_modules() -
         encoding="utf-8"
     )
     for forbidden in (
-        '"PySide6"',
         '"httpx"',
         '"openai"',
         '"pytest"',

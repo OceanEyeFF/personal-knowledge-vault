@@ -20,17 +20,6 @@ Material license families represented by the frozen runtime include:
 * MIT License
 * Mozilla Public License 2.0
 * Python Software Foundation License 2.0
-* GNU Lesser General Public License 3.0 (Qt for Python / PySide6 family)
-* GNU General Public License 2.0 and 3.0 family options
-
-PySide6, PySide6-Addons, PySide6-Essentials and shiboken6 are Qt for Python
-components.  They are dynamically loaded from the bundled onedir runtime and
-remain separate native/library files.  This candidate selects LGPL-3.0-only and
-includes the immutable upstream license-selection declaration plus the complete
-LGPL-3.0-only and incorporated GPL-3.0-only texts in licenses/.  The unresolved
-replacement test, module audit, notice placeholders, and exact corresponding-
-source location remain explicit compliance blockers; this candidate is not a
-release authorization.
 
 No third-party author endorses Personal Knowledge Vault.  This notice is an
 informational index and does not replace the license terms that apply to each

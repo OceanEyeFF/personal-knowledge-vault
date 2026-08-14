@@ -4,9 +4,8 @@
 
 ## 1. 支持范围
 
-本候选面向 Windows x86-64、离线优先、fresh-install 场景，包含以下入口：
+本候选面向 Windows x86-64、离线优先、fresh-install 场景，包含以下 headless 入口：
 
-- `app\pkv-gui.exe`：桌面 GUI
 - `app\pkv.exe`：CLI
 - `app\pkv-mcp.exe`：MCP stdio server
 
@@ -25,7 +24,7 @@ if ($PSVersionTable.PSVersion -lt [version]'5.1') {
 
 本候选不包含 MCP HTTP transport 或 Bearer 合同，不支持历史数据库原地升级，也不代表真实用户 Vault 已完成质量验收。
 
-候选的安装和启动成功不等于 W4 GUI Artifact 验收。可采信的 GUI W4 evidence 必须来自解锁、可交互的 Windows 桌面与 UI Automation；headless、Windows service session 或已断开的远程桌面不能替代该环境。
+候选的安装和启动成功不等于正式 release 验收。W4 仅验证本候选中的 CLI/MCP headless 合同；桌面 Wrapper 的安装、生命周期与 UI Automation evidence 由独立的 `pkv-GUI` 仓库负责。
 
 ## 2. 受控候选安装
 
@@ -56,10 +55,6 @@ $pkvExpectedBlockers = @(
   'conda-native-license-materials-and-spdx'
   'html2text-gpl-compliance'
   'native-msvc-license-and-provenance'
-  'qt-corresponding-source-location'
-  'qt-linkage-and-replacement-not-proven'
-  'qt-module-license-audit'
-  'qt-notice-placeholders'
 )
 if (
   $pkvProvenance.schema_version -ne 'pkv.artifact-provenance.v1' -or
@@ -76,7 +71,7 @@ if (
 }
 ```
 
-七个 blocker 按 UTF-8 顺序写入 provenance：`conda-native-license-materials-and-spdx`、`html2text-gpl-compliance`、`native-msvc-license-and-provenance`、`qt-corresponding-source-location`、`qt-linkage-and-replacement-not-proven`、`qt-module-license-audit`、`qt-notice-placeholders`。其中 `html2text-gpl-compliance` 只有在 `combined-work-licensing-decision`、`corresponding-source-scope-and-persistent-location`、`spdx-license-expression`、`whole-work-license-and-notices` 四项 machine-readable requirement 全部闭合后才能解除。任一 blocker 未关闭时，即使 W4 的 10 个功能场景全部通过，`functional_verified` 也只表示功能验证完成，最终决策仍必须是 `hold`，不能据此把候选重命名、复制或宣传为 release。
+三个 blocker 按 UTF-8 顺序写入 provenance：`conda-native-license-materials-and-spdx`、`html2text-gpl-compliance`、`native-msvc-license-and-provenance`。其中 `html2text-gpl-compliance` 只有在 `combined-work-licensing-decision`、`corresponding-source-scope-and-persistent-location`、`spdx-license-expression`、`whole-work-license-and-notices` 四项 machine-readable requirement 全部闭合后才能解除。任一 blocker 未关闭时，即使 W4 的所有 headless 功能场景全部通过，`functional_verified` 也只表示功能验证完成，最终决策仍必须是 `hold`，不能据此把候选重命名、复制或宣传为 release。
 
 仅在隔离数据根和受控评估环境中继续安装：
 
@@ -110,7 +105,7 @@ compliance-held test candidate，不授予分发权限；对真正的 release Ar
 
 成功时脚本向 stdout 输出一行 JSON，`status` 为 `installed`；重复安装完全相同的 `0.8.1` payload 时为 `already_installed`。校验失败时不要手工跳过检查或复制单个文件，请重新取得并完整解压候选包。
 
-本候选不承诺 portable 运行。受支持的已安装入口是 `Install.ps1` 校验并复制后的三个 EXE，不要把临时解压目录当作长期程序目录。
+本候选不承诺 portable 运行。受支持的已安装入口是 `Install.ps1` 校验并复制后的两个 EXE，不要把临时解压目录当作长期程序目录。
 
 ## 3. 首次启动
 
@@ -119,9 +114,6 @@ compliance-held test candidate，不授予分发权限；对真正的 release Ar
 ```powershell
 $pkvProgramRoot = Join-Path $env:LOCALAPPDATA 'Programs\PersonalKnowledgeVault'
 $env:PKV_DATA_ROOT = 'D:\PKV-0.8.1-Candidate-Data'
-
-# GUI
-& "$pkvProgramRoot\app\pkv-gui.exe"
 
 # CLI 版本与帮助
 & "$pkvProgramRoot\app\pkv.exe" --version
@@ -134,10 +126,9 @@ $env:PKV_DATA_ROOT = 'D:\PKV-0.8.1-Candidate-Data'
 
 | 类型 | 默认位置 | 规则 |
 |---|---|---|
-| 程序与 bundled 只读资源 | `%LOCALAPPDATA%\Programs\PersonalKnowledgeVault` | 由安装清单管理；包含三个入口、基础配置、workflows、migrations、Qt/native 依赖、许可证与 manifest，不应手工修改 |
+| 程序与 bundled 只读资源 | `%LOCALAPPDATA%\Programs\PersonalKnowledgeVault` | 由安装清单管理；包含两个 headless 入口、基础配置、workflows、migrations、native 依赖、许可证与 manifest，不应手工修改 |
 | 用户数据根 | `%LOCALAPPDATA%\PersonalKnowledgeVault` | 所有用户可写状态必须位于此根内；默认卸载保留 |
 | 本机私有配置 | `%LOCALAPPDATA%\PersonalKnowledgeVault\config\local.yaml` | 可包含 Provider key；不要分享或提交到版本库 |
-| GUI 设置 | `%LOCALAPPDATA%\PersonalKnowledgeVault\config\ui.ini` | GUI 本机状态 |
 | SQLite | `%LOCALAPPDATA%\PersonalKnowledgeVault\db\knowledge_vault.db` | 必需索引与会话数据；运行时不要手工编辑 |
 | Markdown Vault | `%LOCALAPPDATA%\PersonalKnowledgeVault\vault` | 主存储 |
 | 向量索引 | `%LOCALAPPDATA%\PersonalKnowledgeVault\vectors` | 可修复辅助索引；与 embedding 模型和维度绑定 |
@@ -149,10 +140,10 @@ $env:PKV_DATA_ROOT = 'D:\PKV-0.8.1-Candidate-Data'
 
 ```powershell
 $env:PKV_DATA_ROOT = 'D:\PKV-Data-0.8.1'
-& "$env:LOCALAPPDATA\Programs\PersonalKnowledgeVault\app\pkv-gui.exe"
+& "$env:LOCALAPPDATA\Programs\PersonalKnowledgeVault\app\pkv.exe" stats
 ```
 
-设置后，`config\local.yaml`、DB、Vault、vectors、logs、tmp、backups 与 runtime 均相对于该根。GUI、CLI 与 MCP 必须使用同一个值；不要在运行中切换。卸载器只识别并可选择删除默认 `%LOCALAPPDATA%\PersonalKnowledgeVault`，不会接管自定义根；自定义根必须由用户另行备份和管理。
+设置后，`config\local.yaml`、DB、Vault、vectors、logs、tmp、backups 与 runtime 均相对于该根。CLI 与 MCP 必须使用同一个值；不要在运行中切换。独立 `pkv-GUI` Wrapper 若安装，必须显式配置为使用同一 Kernel 数据根。卸载器只识别并可选择删除默认 `%LOCALAPPDATA%\PersonalKnowledgeVault`，不会接管自定义根；自定义根必须由用户另行备份和管理。
 
 ## 5. 首次配置
 
@@ -190,7 +181,7 @@ ai:
 
 - 不使用 `.env`、Provider 环境变量或仓库内 `config\local.yaml` 作为候选配置源。
 - 更换 embedding endpoint、model 或 `dim` 后，旧向量索引不再兼容，必须在受控流程中重建；不要直接改 metadata 规避检查。
-- Chat 的自动验收使用候选 payload 之外的 deterministic loopback harness；该 harness 不是用户功能且不会随候选包提供。正常使用 Chat 必须配置真实 Provider。
+- 本候选不包含桌面 Chat Wrapper；该能力的安装与验收由独立的 `pkv-GUI` 仓库管理。
 
 ## 6. 常用 CLI
 
@@ -241,7 +232,7 @@ MCP stdout 只用于协议数据。不要用会向 stdout 插入 banner 或日�
 
 ## 8. 冷备份与恢复
 
-0.8.1 没有承诺在线备份或跨版本恢复。完整备份必须在 GUI、CLI、MCP 及其子进程全部退出后，对整个用户数据根制作冷备份。以下示例针对默认数据根；如使用 `PKV_DATA_ROOT`，应把 `$pkvDataRoot` 改为实际的绝对路径。
+0.8.1 没有承诺在线备份或跨版本恢复。完整备份必须在 CLI、MCP 及其子进程全部退出后，对整个用户数据根制作冷备份；如另行使用桌面 Wrapper，也必须先退出它。以下示例针对默认数据根；如使用 `PKV_DATA_ROOT`，应把 `$pkvDataRoot` 改为实际的绝对路径。
 
 备份示例：
 
@@ -380,7 +371,7 @@ try {
 
 ## 10. 卸载
 
-关闭 GUI、CLI 与 MCP 后，从已安装程序目录运行：
+关闭 CLI、MCP 及任何外部 Wrapper 后，从已安装程序目录运行：
 
 ```powershell
 $pkvProgramRoot = Join-Path $env:LOCALAPPDATA 'Programs\PersonalKnowledgeVault'
@@ -412,7 +403,7 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
 
 ### 启动报告 bundled resource 或 DLL 缺失
 
-- 三个已安装入口位于 `app\`，但都依赖同目录的 `_internal\`；不要把单个 EXE 移出 `app\`，也不要从其他安装复制单个 DLL。
+- 两个已安装入口位于 `app\`，但都依赖同目录的 `_internal\`；不要把单个 EXE 移出 `app\`，也不要从其他安装复制单个 DLL。
 - 同版本 installer 不提供自动修复，payload 已缺失或变更时 uninstaller 也会拒绝。停止所有 PKV 进程、保留用户数据根和错误输出，不要强制覆盖或删除程序目录；重新取得完整候选包进行校验，并在人工确认损坏范围后处理。
 
 ### 数据库升级、未来版本或损坏错误
@@ -439,10 +430,10 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
   - `find_bridges` 只组合受限的显式关系子图、局部图桥接信号与标题/摘要/tags 轻量重合；子图截断时，候选集合和“未发现”结论都不代表全图。
   - `timeline_of` 只按 `event_time > published_at > archived_at` 使用可持久读取的结构化时间，不做正文事件时间抽取；缺少可靠时间的 item 会标记 `time_source/time_precision=unavailable`。
   - `contrast` 只组合检索候选的表层字段与跨主题显式关系路径信号，不是争议、因果、补充等完整语义对比。
-- 候选中的 GUI 搜索只保证 BM25。Vector/Hybrid 是 CLI/MCP 的显式 Provider-backed 能力。
+- Vector/Hybrid 是 CLI/MCP 的显式 Provider-backed 能力。
 - Workflow 只支持候选包内版本化的 `archive-url.yaml` 与 `archive-text.yaml`；不支持 `search.yaml` workflow。
 - MCP 仅 stdio；HTTP transport、Bearer、历史库原地升级、真实快照质量结论与正式稳定版 SLA 均未承诺。
-- 候选包不包含测试 fixture、真实数据、API key、local config、外置 Chat loopback harness 或 fake provider。
+- 候选包不包含测试 fixture、真实数据、API key、local config 或 fake provider。
 
 ## 13. 构建、合规状态与材料
 

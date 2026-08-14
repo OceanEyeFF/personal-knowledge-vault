@@ -7,7 +7,7 @@ Provides processor selection for different content sources.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
 from src.processors.base import BaseProcessor
 from src.runtime.errors import ErrorCode, PKVRuntimeError
@@ -60,7 +60,7 @@ def _load_processors() -> List[Type[BaseProcessor]]:
     return processors
 
 
-def get_processor(url: str) -> BaseProcessor:
+def get_processor(url: str, *, config: Any | None = None) -> BaseProcessor:
     """
     Get a processor instance for the given URL.
 
@@ -80,13 +80,13 @@ def get_processor(url: str) -> BaseProcessor:
     for processor_class in _PROCESSORS:
         if processor_class.can_handle(url):
             logger.info("Selected processor: %s", processor_class.__name__)
-            return processor_class()
+            return processor_class() if config is None else processor_class(config=config)
 
     # Fallback to generic processor (should always be last)
     from src.processors.generic_processor import GenericProcessor
 
     logger.warning("No specific processor matched. Falling back to GenericProcessor")
-    return GenericProcessor()
+    return GenericProcessor() if config is None else GenericProcessor(config=config)
 
 
 def get_processor_registry() -> Dict[str, Type[BaseProcessor]]:
@@ -107,7 +107,11 @@ def is_processor_available(processor_name: str) -> bool:
     return normalize_processor_name(processor_name) in get_processor_registry()
 
 
-def get_processor_by_name(processor_name: str) -> BaseProcessor:
+def get_processor_by_name(
+    processor_name: str,
+    *,
+    config: Any | None = None,
+) -> BaseProcessor:
     """Construct exactly the configured processor; never fall back to auto."""
     normalized = normalize_processor_name(processor_name)
     processor_class = get_processor_registry().get(normalized)
@@ -119,4 +123,4 @@ def get_processor_by_name(processor_name: str) -> BaseProcessor:
             recoverable=True,
         )
     logger.info("Selected explicit processor: %s", processor_class.__name__)
-    return processor_class()
+    return processor_class() if config is None else processor_class(config=config)

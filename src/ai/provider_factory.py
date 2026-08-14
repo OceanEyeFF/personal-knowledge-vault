@@ -1,4 +1,4 @@
-"""Production provider construction seams shared by GUI, CLI and MCP.
+"""Production provider construction seams shared by wrappers, CLI and MCP.
 
 The factory accepts immutable snapshots instead of a mutable ``Config``
 object.  Tests may replace the factory callable, while release code always

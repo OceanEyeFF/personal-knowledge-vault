@@ -1,4 +1,4 @@
-"""Single frozen dispatcher for the three published PKV executables."""
+"""Single frozen dispatcher for the headless PKV executables."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from typing import Any
 
 _ENTRYPOINTS = {
     "pkv": ("src.main", "main"),
-    "pkv-gui": ("src.gui.app", "main"),
     "pkv-mcp": ("src.mcp.server", "main"),
 }
 _UNKNOWN_ENTRYPOINT_EXIT = 64
@@ -49,9 +48,6 @@ def dispatch(executable: str | os.PathLike[str] | None = None) -> int:
         return _UNKNOWN_ENTRYPOINT_EXIT
 
     module_name, function_name = target
-    if name == "pkv-gui":
-        # This must happen before src.gui.app imports MainWindow/qasync.
-        os.environ["QT_API"] = "pyside6"
     module = importlib.import_module(module_name)
     result: Any = getattr(module, function_name)()
     return result if type(result) is int else 0

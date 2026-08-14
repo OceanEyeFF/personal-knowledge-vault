@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 
 from src.ai.deepseek_client import DeepSeekClient
 from src.processors.base import BaseProcessor
@@ -51,6 +51,8 @@ class TextFallbackProcessor(BaseProcessor):
         self,
         max_summary_words: int = 160,
         deepseek_client: Optional[DeepSeekClient] = None,
+        *,
+        config: Any | None = None,
     ):
         """
         Initialize the processor.
@@ -59,11 +61,16 @@ class TextFallbackProcessor(BaseProcessor):
             max_summary_words: Summary length in words.
             deepseek_client: Optional injected DeepSeek client (for testing).
         """
-        config = get_config()
-        self.max_summary_words = int(config.get("text_fallback.summary_max_words", max_summary_words))
+        runtime_config = config if config is not None else get_config()
+        self._runtime_config = runtime_config
+        self.max_summary_words = int(
+            runtime_config.get("text_fallback.summary_max_words", max_summary_words)
+        )
         self._deepseek_client = deepseek_client
-        self._deepseek_model = config.llm_model
-        self._summary_temperature = float(config.get("ai.llm.temperature", 0.7))
+        self._deepseek_model = runtime_config.llm_model
+        self._summary_temperature = float(
+            runtime_config.get("ai.llm.temperature", 0.7)
+        )
 
     @classmethod
     def can_handle(cls, url: str) -> bool:
@@ -394,7 +401,9 @@ class TextFallbackProcessor(BaseProcessor):
             return "内容为空。", ["text", "empty", "fallback"]
 
         try:
-            client = self._deepseek_client or DeepSeekClient(model=self._deepseek_model)
+            client = self._deepseek_client or DeepSeekClient(
+                config=self._runtime_config,
+            )
             summary = client.summarize(
                 text,
                 max_words=self.max_summary_words,

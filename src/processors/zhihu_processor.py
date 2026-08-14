@@ -5,7 +5,7 @@ Zhihu content processor.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from bs4 import BeautifulSoup, Tag
 
@@ -43,6 +43,8 @@ class ZhihuProcessor(BaseProcessor):
         timeout: float = 20.0,
         user_agent: Optional[str] = None,
         safe_fetcher: SafeFetcher | None = None,
+        *,
+        config: Any | None = None,
     ):
         """
         Initialize the processor.
@@ -51,18 +53,18 @@ class ZhihuProcessor(BaseProcessor):
             timeout: HTTP timeout in seconds.
             user_agent: Optional custom User-Agent.
         """
-        config = get_config()
+        runtime_config = config if config is not None else get_config()
         self.timeout = timeout
         self._init_safe_fetcher(
             timeout_seconds=timeout,
             safe_fetcher=safe_fetcher,
         )
-        self.user_agent = user_agent or config.get(
+        self.user_agent = user_agent or runtime_config.get(
             "processors.zhihu.user_agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         )
-        self._cookie_str: Optional[str] = config.zhihu_cookie
+        self._cookie_str: Optional[str] = runtime_config.zhihu_cookie
 
     @classmethod
     def can_handle(cls, url: str) -> bool:

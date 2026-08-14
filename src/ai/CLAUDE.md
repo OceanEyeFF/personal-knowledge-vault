@@ -29,6 +29,9 @@ from src.ai.deepseek_client import DeepSeekClient
 # 初始化客户端（从 config/local.yaml 合并配置读取）
 deepseek = DeepSeekClient()
 
+# Kernel/Application 路径传入其精确配置身份
+deepseek = DeepSeekClient(config=runtime_config)
+
 # 生成摘要
 summary = await deepseek.summarize(
     content="长文本内容...",
@@ -90,8 +93,10 @@ class DeepSeekClient:
         model: str = "deepseek-chat",
         timeout: float = 30.0,
         max_retries: int = 3,
+        *,
+        config: Any | None = None,
     ):
-        """初始化 DeepSeek 客户端"""
+        """优先使用显式 config 快照；省略时才走旧全局兼容路径。"""
 
     async def summarize(
         self,
@@ -523,7 +528,7 @@ summary = await deepseek.summarize(content)
 | `openai_client.py` | OpenAI API 客户端（备用） |
 | `embedder.py` | Embedding 服务封装 |
 | `provider_factory.py` | W2 Provider 配置快照、严格校验与生产构造入口 |
-| `chat_provider.py` | GUI Chat 的 OpenAI-compatible 流式 adapter |
+| `chat_provider.py` | 外部 Wrapper Chat 的 OpenAI-compatible 流式 adapter |
 | `prompts/` | Prompt 模板目录 |
 | `prompts/summarize.txt` | 摘要生成 Prompt |
 | `prompts/extract_tags.txt` | 标签提取 Prompt |

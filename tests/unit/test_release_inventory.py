@@ -441,7 +441,6 @@ def _fixture(tmp_path: Path) -> dict[str, Any]:
         / "pyiboot01_bootstrap.py",
         b"# bootstrap\n",
     )
-    qt = _write(prefix / "Lib" / "site-packages" / "PySide6" / "Qt6Core.dll", b"qt")
     native_sources = {
         "python311.dll": _write(prefix / "python311.dll", b"python"),
         "_sqlite3.pyd": _write(prefix / "DLLs" / "_sqlite3.pyd", b"sqlite-ext"),
@@ -520,7 +519,6 @@ def _fixture(tmp_path: Path) -> dict[str, Any]:
     toc[15].extend(
         [
             ("demo/ext.pyd", str(demo_extension), "EXTENSION"),
-            ("PySide6/Qt6Core.dll", str(qt), "BINARY"),
             ("base_library.zip", str(base_library), "DATA"),
         ]
     )
@@ -622,7 +620,6 @@ def _fixture(tmp_path: Path) -> dict[str, Any]:
     for name, source_path in native_sources.items():
         _write(payload / "_internal" / name, source_path.read_bytes())
     _write(payload / "_internal" / "demo" / "ext.pyd", demo_extension.read_bytes())
-    _write(payload / "_internal" / "PySide6" / "Qt6Core.dll", qt.read_bytes())
     _write(payload / "_internal" / "base_library.zip", base_library.read_bytes())
     _write(payload / "_internal" / "config" / "config.yaml", config.read_bytes())
     _write(payload / "pkv.exe", bootloader.read_bytes() + package_bytes)
@@ -645,12 +642,6 @@ def _fixture(tmp_path: Path) -> dict[str, Any]:
                 "Lib/site-packages/PyInstaller/hooks/rthooks/pyi_rth_demo.py",
                 "Lib/site-packages/PyInstaller/loader/pyiboot01_bootstrap.py",
             ],
-        ),
-        _FakeDistribution(
-            "PySide6",
-            "6.10.2",
-            prefix,
-            ["Lib/site-packages/PySide6/Qt6Core.dll"],
         ),
     ]
     executable_pkg_tocs = release_inventory.discover_executable_pkg_tocs(
@@ -712,7 +703,7 @@ def test_inventory_binds_actual_closure_and_explicit_runtime_components(
 
     assert first == second
     assert first["schema_version"] == "pkv.release-inventory.v1"
-    assert first["payload"]["file_count"] == 11
+    assert first["payload"]["file_count"] == 10
     assert len(first["payload"]["tree_sha256"]) == 64
     assert "analysis_toc_sha256" not in first["bindings"]
     assert "raw_toc_sha256" not in first["analysis"]
@@ -762,7 +753,6 @@ def test_inventory_binds_actual_closure_and_explicit_runtime_components(
     assert executable["embedded_pkg_size"] == archive["pkg_size"]
     assert "application:project" in executable["embedded_component_ids"]
     assert "runtime:cpython" in executable["embedded_component_ids"]
-    assert "framework:qt-pyside" not in executable["embedded_component_ids"]
     assert "native:msvc-runtime" not in executable["embedded_component_ids"]
     components = {item["id"]: item for item in first["components"]}
     assert "app/pkv.exe!/app" in components["application:project"]["embedded_paths"]
@@ -772,9 +762,6 @@ def test_inventory_binds_actual_closure_and_explicit_runtime_components(
         in components["build-runtime:pyinstaller-bootloader"]["embedded_paths"]
     )
     assert components["python-distribution:demo-pkg"]["classification_ids"] == []
-    assert components["python-distribution:pyside6"]["classification_ids"] == [
-        "framework:qt-pyside"
-    ]
     assert all(
         "contains_native_payload" in item
         for item in components.values()
@@ -799,7 +786,6 @@ def test_inventory_binds_actual_closure_and_explicit_runtime_components(
     assert [item["name"] for item in first["included_distributions"]] == [
         "demo-pkg",
         "pyinstaller",
-        "pyside6",
     ]
 
     component_ids = {item["id"] for item in first["components"]}
@@ -808,7 +794,6 @@ def test_inventory_binds_actual_closure_and_explicit_runtime_components(
         "application:project",
         "build-runtime:pyinstaller-bootloader",
         "build-runtime:pyinstaller-hooks",
-        "framework:qt-pyside",
         "native:msvc-runtime",
         "native:openssl",
         "native:sqlite",
@@ -1121,7 +1106,7 @@ def test_expected_bootloader_set_requires_an_exact_pkg_mapping(tmp_path: Path) -
     with pytest.raises(
         release_inventory.InventoryError, match="PKG executable mapping is incomplete"
     ):
-        _inventory(fixture, bootloader_executables=["pkv.exe", "pkv-gui.exe"])
+        _inventory(fixture, bootloader_executables=["pkv.exe", "pkv-mcp.exe"])
 
 
 def test_default_release_mode_requires_frozen_conda_authority(

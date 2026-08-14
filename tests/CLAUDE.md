@@ -26,7 +26,7 @@
 - `scripts/rebuild-dev-vault.py` 同样要求 FT7 runtime attestation，且 `--root` 必须位于本次所选 `DATA_DIR`；裸启动在产品 import 前 fail-closed。
 - `run-test.ps1` 对 `migrate.py` fail-closed 并返回 exit 2；真实迁移仍受 U1/G8/FT5 user-only gate 阻塞，尚未执行真实数据迁移。
 - `network` 表示会访问外部网络、真实 API 或可能产生费用；默认排除。
-- `manual` 表示需要人工、GUI、凭据或主观判断；默认排除。
+- `manual` 表示需要人工、凭据或主观判断；默认排除。GUI 手工测试位于独立 `pkv-GUI` 仓库。
 - `slow` 只表示耗时，不授予联网权限。
 - 测试模块在收集/import 阶段不得联网。
 - 仓库 `tests/` 默认 lane 的 pytest 父进程在 pytest/plugin 导入前安装经过路径验证的 base-only Config 与网络 guard；父环境的 plugin 注入被清除，但 Conda 环境内已安装的 autoload plugin 属于受信运行时边界。非 Python Direct 无等价 Python G0，不得据此宣称安全。
@@ -50,7 +50,7 @@
 
 - `tests/contracts/m13_w2.v1.yaml` 是详细路线的机器可检查投影：受支持、`partial-v1` 与明确 unsupported 的源代码能力为 `source_verified`；W3 外置 `chat.loopback_harness.v1` 为 `packaging_contract_verified`，仍是 deferred、无产品 surface 的 payload 外 E2E 输入。
 - `mcp.http.v1` 仍为 `defined`；`m13_w4_handoffs.v1.yaml` 中全部场景必须保持 `artifact_pending` 作为声明，源码树或 packaging-contract 测试不得升级为 Artifact 证据。
-- Workflow、Retrieval、MCP、GUI Chat 分别由唯一 owner、版本化 fixture、故障注入与稳定 oracle 覆盖；adapter 必须保留下游 `invalid/error/degraded`，不得改写为空结果或成功。
+- Workflow、Retrieval、MCP 分别由唯一 owner、版本化 fixture、故障注入与稳定 oracle 覆盖；adapter 必须保留下游 `invalid/error/degraded`，不得改写为空结果或成功。
 - Chat 的 W4 测试响应只能来自 W3 交付、release payload 外的 deterministic loopback harness，并经正常 Provider 配置接入；源码和 Artifact 不得包含隐藏 fake/test mode。
 - 2026-08-07 fresh 默认离线全量为 `3475 passed, 20 skipped, 9 deselected`；skip 均为当前 Windows 主机缺少 symlink 权限或 POSIX-only 合同，deselect 为离线入口排除 live 用例。
 - 同一收口工作树的 MCP coverage gate 为 `755 passed, 5 deselected`，`src.mcp` 为 1671 statements / 78 miss / `95.33%`，达到 `95%` 门槛。
@@ -414,13 +414,12 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 - 新增 `m13_test_lanes.v1.yaml`，冻结三条 lane 的 owner、允许输入/输出及禁止替代；`pytest.ini` 默认排除 `artifact`，packaging-contract 继续进入默认离线门禁。
 - 新增 fail-closed `scripts/run-artifact-e2e.ps1` T0 preflight 与显式 Artifact tests。runner/目标进程从仓库外 cwd 执行，清理 Python/Conda/source 注入；缺输入、repo containment、junction/reparse point、hardlink、harness 与 process-tree timeout 均有负例。
 - W4 handoff 声明与运行 evidence 分离，10 个 scenario 精确覆盖 11 行 lifecycle matrix；跨 lane 晋级、缺字段、非法 SHA、空证据和 Chat 缺 harness 均被 executable validator 拒绝。
-- `test_gui_main_window.py` 不再修改不可恢复的 `QSettings.setPath()`；default format 及 Qt organization/application name/domain/version 在 pass、fail、skip 后逐用例恢复。
 - 最终证据：contract `19 passed`；Qt/QSettings `45 passed, 1 skipped`；显式 Artifact `12 passed`；默认全量 `3492 passed, 20 skipped, 21 deselected`；MCP `758 passed, 2759 deselected`、`95.33%`；Phase C 16/151 全部通过。独立复审 P0=0、P1=0。
 - W3-T0 已完成，正式 W3 可以开始；W3 Artifact、外置 harness 与 W4 installed-Artifact evidence 尚未完成，全部记录保持 `artifact_pending`。
 
 ### 2026-08-07 (M13 W2 源代码功能合同收口)
 
-- Workflow、Retrieval、MCP、GUI Chat 四线已完成 source verification 与独立 P0/P1 复审。
+- Workflow、Retrieval、MCP 已完成 source verification 与独立 P0/P1 复审；GUI 测试与验证在独立仓库维护。
 - capability registry 的源代码能力升级为 `source_verified`；HTTP/harness deferred 能力仍为 `defined`，W4 handoff 仍为 `artifact_pending`。
 - fresh 默认离线全量为 `3475 passed, 20 skipped, 9 deselected`；MCP coverage gate 为 `755 passed, 5 deselected`、`src.mcp=95.33%`（门槛 `95%`）。
 - Phase C fresh run 达到 `16/16 tasks`、`151/151 checks`（119 声明式 + 32 自动公开 envelope）、`overall=1.0`、全部维度 `1.0`、0 failed、`targets_met=true`。

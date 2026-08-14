@@ -17,7 +17,6 @@
   ],
   "required_paths": [
     "app/pkv.exe",
-    "app/pkv-gui.exe",
     "app/pkv-mcp.exe",
     "Install.ps1",
     "Uninstall.ps1",

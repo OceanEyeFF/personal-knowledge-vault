@@ -16,6 +16,7 @@ import logging
 
 from mcp.server.fastmcp import FastMCP
 
+from src.application import configure_application, get_application
 from src.runtime.bootstrap import bootstrap_runtime, project_bootstrap_error
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.utils.config import get_config
@@ -76,120 +77,51 @@ mcp = FastMCP(
 
 
 # ============================================================
-# 服务对象单例管理（⚠️ 关键架构决策）
+# 应用服务访问器
 #
-# 以下对象在首次访问时延迟初始化，整个 Server 生命周期内复用：
-# - SQLiteStore：数据库连接复用
-# - MarkdownStore：Markdown 文件读取
-# - QueryRouter：BM25 立即可用；语义 Provider 与 hnswlib 索引按需加载
-#
-# 为什么不能每次请求重建？
-# - 语义路径首次使用时才构造 Provider/加载 hnswlib 索引
-# - QueryRouter 与关系服务重复创建会浪费连接和索引资源
+# MCP 是协议适配层，不在这里拼装 Store、Retriever、Provider、Workflow 或
+# relation service。所有长生命周期依赖都由 ``KnowledgeApplication`` 延迟创建并
+# 复用；下列兼容访问器只保留给已注册的 tool/resource 模块和测试 seam。
 # ============================================================
 
-_sqlite_store = None
-_markdown_store = None
-_query_router = None
-_relation_query_service = None
-_evidence_collection_service = None
-_exploration_service = None
-
-
 def get_sqlite_store():
-    """获取 SQLiteStore 单例。
+    """Return the shared application's SQLite store.
 
-    Returns:
-        SQLiteStore 实例
+    Kept as a narrow compatibility accessor so handlers do not need to know
+    how a store is composed.
     """
-    global _sqlite_store
-    if _sqlite_store is None:
-        from src.storage.sqlite_store import SQLiteStore
-        config = get_config()
-        _sqlite_store = SQLiteStore(config.db_path)
-        logger.info("SQLiteStore 单例初始化完成")
-    return _sqlite_store
+
+    return get_application().sqlite_store
 
 
 def get_markdown_store():
-    """获取 MarkdownStore 单例。
+    """Return the shared application's Markdown store."""
 
-    Returns:
-        MarkdownStore 实例
-    """
-    global _markdown_store
-    if _markdown_store is None:
-        from src.storage.markdown_store import MarkdownStore
-        config = get_config()
-        _markdown_store = MarkdownStore(config.vault_dir)
-        logger.info("MarkdownStore 单例初始化完成")
-    return _markdown_store
+    return get_application().markdown_store
 
 
 def get_query_router():
-    """获取 QueryRouter 单例（内含 BM25 + HybridRetriever + VectorStore）。
+    """Return the shared application's lazy query router."""
 
-    Returns:
-        QueryRouter 实例
-    """
-    global _query_router
-    if _query_router is None:
-        from src.ai.provider_factory import create_embedder
-        from src.retrieval.query_router import QueryRouter
-        config = get_config()
-        _query_router = QueryRouter(
-            db_path=config.db_path,
-            vector_index_dir=config.vector_index_dir,
-            embedder_factory=lambda: create_embedder(config),
-        )
-        logger.info("QueryRouter 单例初始化完成")
-    return _query_router
+    return get_application().query_router()
 
 
 def get_relation_query_service():
-    """获取 RelationQueryService 单例。"""
-    global _relation_query_service
-    if _relation_query_service is None:
-        from src.relations.query_service import RelationQueryService
-        from src.storage.relation_store import RelationStore
+    """Return the shared application's relation query service."""
 
-        config = get_config()
-        relation_store = RelationStore(config.db_path)
-        _relation_query_service = RelationQueryService(relation_store)
-        logger.info("RelationQueryService 单例初始化完成")
-    return _relation_query_service
+    return get_application().relation_query_service
 
 
 def get_evidence_collection_service():
-    """获取 EvidenceCollectionService 单例。"""
-    global _evidence_collection_service
-    if _evidence_collection_service is None:
-        from src.relations.evidence_service import EvidenceCollectionService
+    """Return the shared application's evidence collection service."""
 
-        _evidence_collection_service = EvidenceCollectionService(
-            query_router=get_query_router(),
-            sqlite_store=get_sqlite_store(),
-            markdown_store=get_markdown_store(),
-            relation_query_service=get_relation_query_service(),
-        )
-        logger.info("EvidenceCollectionService 单例初始化完成")
-    return _evidence_collection_service
+    return get_application().evidence_collection_service
 
 
 def get_exploration_service():
-    """获取 ExplorationService 单例。"""
-    global _exploration_service
-    if _exploration_service is None:
-        from src.relations.exploration_service import ExplorationService
+    """Return the shared application's exploration service."""
 
-        _exploration_service = ExplorationService(
-            query_router=get_query_router(),
-            sqlite_store=get_sqlite_store(),
-            relation_query_service=get_relation_query_service(),
-            vault_dir=get_markdown_store().vault_dir,
-        )
-        logger.info("ExplorationService 单例初始化完成")
-    return _exploration_service
+    return get_application().exploration_service
 
 
 # ============================================================
@@ -260,6 +192,7 @@ def main():
         config = get_config()
         stage = "runtime_bootstrap"
         bootstrap_runtime(config)
+        configure_application(config)
     except PKVRuntimeError as exc:
         sys.stderr.write(
             json.dumps(
@@ -302,7 +235,7 @@ def main():
     root_logger.addHandler(console_handler)
 
     # ── 文件 handler（读取 config.yaml 的 logging.file 配置）──
-    # 日志叶子和 CLI/GUI 一样走统一可写叶子合同；失败不阻止服务启动。
+    # 日志叶子和 CLI 一样走统一可写叶子合同；失败不阻止服务启动。
     # 配置边界只接受 YAML boolean；不要对字符串、数字或自定义对象执行
     # 隐式真值转换（后者甚至可能在 ``__bool__`` 中产生副作用）。
     file_enabled = config.get("logging.file.enabled", True)

@@ -844,8 +844,8 @@ def test_w4_uses_python_utf8_byte_order_for_canonical_inventory_paths(
 ) -> None:
     values = [
         "_internal/_asyncio.pyd",
-        "_internal/PySide6/plugins/platforms/qwindows.dll",
-        "_internal/PySide6/Qt/bin/Qt6Core.dll",
+        "_internal/native-framework/plugins/platforms/qwindows.dll",
+        "_internal/native-framework/bin/core.dll",
         "\U0001f600-supplementary",
         "\ue000-private-use",
     ]

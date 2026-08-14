@@ -179,7 +179,7 @@ def _probe_delete_commit(
 
 @dataclass(frozen=True)
 class StorageOperationResult:
-    """Stable result envelope shared by Workflow, GUI, CLI and MCP adapters."""
+    """Stable result envelope shared by Workflow, wrappers, CLI and MCP adapters."""
 
     operation_id: str
     action: str

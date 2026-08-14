@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -72,7 +73,12 @@ def _is_http_source(value: str) -> bool:
     return value.strip().lower().startswith(("http://", "https://"))
 
 
-def _literal_text_processor(processor_name: str, text: str):
+def _literal_text_processor(
+    processor_name: str,
+    text: str,
+    *,
+    runtime_config: Any | None = None,
+):
     """Select a processor for literal text without any filesystem probing."""
 
     from src.processors.ai_chat_processor import AIChatProcessor
@@ -80,10 +86,10 @@ def _literal_text_processor(processor_name: str, text: str):
 
     if processor_name == "auto":
         if AIChatProcessor._looks_like_ai_chat(text):
-            return AIChatProcessor()
-        return TextFallbackProcessor()
+            return AIChatProcessor(config=runtime_config)
+        return TextFallbackProcessor(config=runtime_config)
     if processor_name in {"ai_chat", "text_fallback"}:
-        return get_processor_by_name(processor_name)
+        return get_processor_by_name(processor_name, config=runtime_config)
     raise PKVRuntimeError(
         ErrorCode.WORKFLOW_STEP_FAILED,
         "非 URL 输入需要显式的本地文件能力或纯文本处理器",
@@ -92,7 +98,11 @@ def _literal_text_processor(processor_name: str, text: str):
     )
 
 
-async def _auto_local_file_processor(source: str):
+async def _auto_local_file_processor(
+    source: str,
+    *,
+    runtime_config: Any | None = None,
+):
     """Classify an already-authorized file through one verified content read."""
 
     from src.processors.ai_chat_processor import AIChatProcessor
@@ -101,15 +111,15 @@ async def _auto_local_file_processor(source: str):
     from src.processors.text_fallback_processor import TextFallbackProcessor
 
     if ChatProcessor.can_handle(source):
-        return ChatProcessor()
+        return ChatProcessor(config=runtime_config)
     sample = await asyncio.to_thread(
         read_local_text_file,
         Path(source),
         errors="ignore",
     )
     if AIChatProcessor._looks_like_ai_chat(sample):
-        return AIChatProcessor()
-    return TextFallbackProcessor()
+        return AIChatProcessor(config=runtime_config)
+    return TextFallbackProcessor(config=runtime_config)
 
 
 class BaseStep(ABC):
@@ -152,6 +162,16 @@ class BaseStep(ABC):
 class FetchStep(BaseStep):
     """内容抓取步骤（集成 processors）。"""
 
+    def __init__(
+        self,
+        step_id: str,
+        config: Dict[str, Any],
+        *,
+        runtime_config: Any | None = None,
+    ) -> None:
+        super().__init__(step_id, config)
+        self._runtime_config = runtime_config
+
     async def execute(self, context: WorkflowContext) -> Dict[str, Any]:
         """
         抓取内容并返回 Entry。
@@ -184,9 +204,21 @@ class FetchStep(BaseStep):
                 if trusted_local_file:
                     if processor_name != "auto":
                         self._log(context, f"使用指定处理器: {processor_name}")
-                        processor = get_processor_by_name(processor_name)
+                        if self._runtime_config is None:
+                            processor = get_processor_by_name(processor_name)
+                        else:
+                            processor = get_processor_by_name(
+                                processor_name,
+                                config=self._runtime_config,
+                            )
                     else:
-                        processor = await _auto_local_file_processor(url)
+                        if self._runtime_config is None:
+                            processor = await _auto_local_file_processor(url)
+                        else:
+                            processor = await _auto_local_file_processor(
+                                url,
+                                runtime_config=self._runtime_config,
+                            )
                     process_file = getattr(processor, "process_file", None)
                     if not callable(process_file):
                         raise PKVRuntimeError(
@@ -200,7 +232,14 @@ class FetchStep(BaseStep):
                         timeout=timeout,
                     )
                 elif not _is_http_source(url):
-                    processor = _literal_text_processor(processor_name, url)
+                    if self._runtime_config is None:
+                        processor = _literal_text_processor(processor_name, url)
+                    else:
+                        processor = _literal_text_processor(
+                            processor_name,
+                            url,
+                            runtime_config=self._runtime_config,
+                        )
                     process_text = getattr(processor, "process_text", None)
                     if not callable(process_text):
                         raise PKVRuntimeError(
@@ -215,13 +254,22 @@ class FetchStep(BaseStep):
                     )
                 elif processor_name != "auto":
                     self._log(context, f"使用指定处理器: {processor_name}")
-                    processor = get_processor_by_name(processor_name)
+                    if self._runtime_config is None:
+                        processor = get_processor_by_name(processor_name)
+                    else:
+                        processor = get_processor_by_name(
+                            processor_name,
+                            config=self._runtime_config,
+                        )
                     entry = await asyncio.wait_for(
                         processor.process(url),
                         timeout=timeout,
                     )
                 else:
-                    processor = get_processor(url)
+                    if self._runtime_config is None:
+                        processor = get_processor(url)
+                    else:
+                        processor = get_processor(url, config=self._runtime_config)
                     entry = await asyncio.wait_for(
                         processor.process(url),
                         timeout=timeout,
@@ -310,6 +358,9 @@ class AnalyzeStep(BaseStep):
         step_id: str,
         config: Dict[str, Any],
         deepseek_client: Optional[DeepSeekClient] = None,
+        *,
+        runtime_config: Any | None = None,
+        deepseek_client_factory: Callable[[], DeepSeekClient] | None = None,
     ) -> None:
         """
         初始化分析步骤。
@@ -321,6 +372,8 @@ class AnalyzeStep(BaseStep):
         """
         super().__init__(step_id, config)
         self._client = deepseek_client
+        self._runtime_config = runtime_config
+        self._deepseek_client_factory = deepseek_client_factory
 
     async def execute(self, context: WorkflowContext) -> Dict[str, Any]:
         """
@@ -345,12 +398,20 @@ class AnalyzeStep(BaseStep):
         errors: List[str] = []
         issues: List[Dict[str, Any]] = []
 
-        config = get_config()
+        config = (
+            self._runtime_config
+            if self._runtime_config is not None
+            else get_config()
+        )
         model = config.llm_model
         max_words = int(self.config.get("max_words", 300))
         num_tags = int(self.config.get("num_tags", 5))
 
-        client = self._client or DeepSeekClient(model=model)
+        client = self._client
+        if client is None and self._deepseek_client_factory is not None:
+            client = self._deepseek_client_factory()
+        if client is None:
+            client = DeepSeekClient(model=model, config=config)
 
         if "summarize" in tasks:
             try:
@@ -547,6 +608,11 @@ class StoreStep(BaseStep):
         sqlite_store: Optional[SQLiteStore] = None,
         vector_store: Optional[VectorStore] = None,
         embedder: Optional[Embedder] = None,
+        *,
+        runtime_config: Any | None = None,
+        storage_coordinator: StorageCoordinator | None = None,
+        embedder_factory: Callable[[], Embedder] | None = None,
+        vector_store_factory: Callable[[int | None], VectorStore] | None = None,
     ) -> None:
         """
         初始化存储步骤。
@@ -564,6 +630,10 @@ class StoreStep(BaseStep):
         self._sqlite_store = sqlite_store
         self._vector_store = vector_store
         self._embedder = embedder
+        self._runtime_config = runtime_config
+        self._storage_coordinator = storage_coordinator
+        self._embedder_factory = embedder_factory
+        self._vector_store_factory = vector_store_factory
 
     async def execute(self, context: WorkflowContext) -> Dict[str, Any]:
         """
@@ -596,7 +666,11 @@ class StoreStep(BaseStep):
             return {"errors": [message]}
 
         targets = self.config.get("targets") or ["markdown"]
-        config = get_config()
+        config = (
+            self._runtime_config
+            if self._runtime_config is not None
+            else get_config()
+        )
 
         required_targets = {"markdown", "sqlite"}
         if not required_targets.issubset(set(targets)):
@@ -620,7 +694,7 @@ class StoreStep(BaseStep):
 
         markdown_store = self._markdown_store or MarkdownStore(config.vault_dir)
         sqlite_store = self._sqlite_store or SQLiteStore(config.db_path)
-        coordinator = StorageCoordinator(
+        coordinator = self._storage_coordinator or StorageCoordinator(
             markdown_store,
             sqlite_store,
             config.layout.runtime_state_dir / "operations",
@@ -632,7 +706,11 @@ class StoreStep(BaseStep):
         vector_required = "vector_index" in targets
         if vector_required:
             try:
-                embedder = self._embedder or Embedder()
+                embedder = self._embedder
+                if embedder is None and self._embedder_factory is not None:
+                    embedder = self._embedder_factory()
+                if embedder is None:
+                    embedder = Embedder()
 
                 def prepare_vectors():
                     doc_vector = embedder.embed_document(entry.content)
@@ -644,10 +722,15 @@ class StoreStep(BaseStep):
                         resolved_dim = int(doc_vector.shape[-1])
                     if resolved_dim is None and hasattr(embedder, "resolve_dim"):
                         resolved_dim = embedder.resolve_dim()
-                    vector_store = self._vector_store or VectorStore(
-                        index_dir=config.vector_index_dir,
-                        dim=resolved_dim,
-                    )
+                    vector_store = self._vector_store
+                    if vector_store is None and self._vector_store_factory is not None:
+                        vector_store = self._vector_store_factory(resolved_dim)
+                    if vector_store is None:
+                        vector_store = VectorStore(
+                            index_dir=config.vector_index_dir,
+                            dim=resolved_dim,
+                            runtime_config=config,
+                        )
                     return doc_vector, chunk_vectors, prepared_chunks or [], vector_store
 
                 (
@@ -731,6 +814,10 @@ class ReviewStep(BaseStep):
         config: Dict[str, Any],
         review_manager: Optional[Any] = None,
         deepseek_client: Optional[DeepSeekClient] = None,
+        *,
+        runtime_config: Any | None = None,
+        review_manager_factory: Callable[[], Any] | None = None,
+        deepseek_client_factory: Callable[[], DeepSeekClient] | None = None,
     ) -> None:
         """
         初始化审核步骤。
@@ -744,6 +831,9 @@ class ReviewStep(BaseStep):
         super().__init__(step_id, config)
         self._review_manager = review_manager
         self._deepseek_client = deepseek_client
+        self._runtime_config = runtime_config
+        self._review_manager_factory = review_manager_factory
+        self._deepseek_client_factory = deepseek_client_factory
 
     async def execute(self, context: WorkflowContext) -> Dict[str, Any]:
         """
@@ -782,7 +872,16 @@ class ReviewStep(BaseStep):
         content_preview: str = (entry.content or "")[: self.config.get("preview_chars", 500)]
 
         # 创建审核队列条目
-        review_manager = self._review_manager or ReviewManager()
+        review_manager = self._review_manager
+        if review_manager is None and self._review_manager_factory is not None:
+            review_manager = self._review_manager_factory()
+        if review_manager is None:
+            runtime_config = (
+                self._runtime_config
+                if self._runtime_config is not None
+                else get_config()
+            )
+            review_manager = ReviewManager(db_path=runtime_config.db_path)
         item = ReviewItem(
             ai_generated_summary=summary,
             ai_generated_tags=",".join(tags),
@@ -971,7 +1070,11 @@ class ReviewStep(BaseStep):
                     default="i",
                 )
                 if edit_choice == "e":
-                    new_summary = await asyncio.to_thread(self._open_editor, current_summary)
+                    new_summary = await asyncio.to_thread(
+                        self._open_editor,
+                        current_summary,
+                        self._runtime_config,
+                    )
                 else:
                     new_summary = await asyncio.to_thread(Prompt.ask, "请输入新摘要")
 
@@ -1105,9 +1208,17 @@ class ReviewStep(BaseStep):
         Returns:
             (new_summary, new_tags) 元组
         """
-        config = get_config()
+        config = (
+            self._runtime_config
+            if self._runtime_config is not None
+            else get_config()
+        )
         model = config.llm_model
-        client = self._deepseek_client or DeepSeekClient(model=model)
+        client = self._deepseek_client
+        if client is None and self._deepseek_client_factory is not None:
+            client = self._deepseek_client_factory()
+        if client is None:
+            client = DeepSeekClient(model=model, config=config)
 
         messages = [
             {
@@ -1145,7 +1256,10 @@ class ReviewStep(BaseStep):
         return new_summary, new_tags
 
     @staticmethod
-    def _open_editor(content: str) -> Optional[str]:
+    def _open_editor(
+        content: str,
+        runtime_config: Any | None = None,
+    ) -> Optional[str]:
         """
         调用系统编辑器让用户编辑文本。
 
@@ -1162,7 +1276,7 @@ class ReviewStep(BaseStep):
         from src.runtime.layout import verify_fd_matches_path
 
         editor = os.environ.get("EDITOR", "vim")
-        config = get_config()
+        config = runtime_config if runtime_config is not None else get_config()
         layout = config.layout
         layout.ensure_user_directories()
         tmp_dir = layout.validate_user_directory(

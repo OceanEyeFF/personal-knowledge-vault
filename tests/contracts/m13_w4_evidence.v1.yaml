@@ -74,10 +74,6 @@ final_run:
     - "conda-native-license-materials-and-spdx"
     - "html2text-gpl-compliance"
     - "native-msvc-license-and-provenance"
-    - "qt-corresponding-source-location"
-    - "qt-linkage-and-replacement-not-proven"
-    - "qt-module-license-audit"
-    - "qt-notice-placeholders"
   scenarios_total: 10
   matrix_rows_total: 11
   artifact_verified: 10

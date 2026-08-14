@@ -26,9 +26,12 @@
 from src.processors import get_processor
 
 # 自动选择处理器
-processor = get_processor("https://mp.weixin.qq.com/xxx")
+processor = get_processor("https://mp.weixin.qq.com/xxx", config=runtime_config)
 entry = await processor.process(url)
 ```
+
+Kernel/Application 组合路径必须传入其已验证 config；省略 `config` 仅是旧调用方的
+进程全局兼容路径。处理器不得在已显式注入 config 时再读取另一份全局配置。
 
 ### 注册机制
 

@@ -133,6 +133,27 @@
 
 ---
 
+#### build-internal-package.ps1（P1-A 内部自测封包）
+
+**用途**：仅为维护者生成 `dist/internal/` 下的 PyInstaller onedir + ZIP，并可用 `-Smoke`
+在合成 `.data-test` 根上执行外置包的 CLI BM25 与 MCP stdio initialize 自测：
+
+```powershell
+.\scripts\build-internal-package.ps1
+.\scripts\build-internal-package.ps1 -Smoke
+```
+
+它是 **INTERNAL TEST ONLY** 工具：无 installer、绝不写 `dist/release/`、不会替代或弱化
+`build-release.ps1` 的 clean-checkout/reproducibility/hold 合同。生成包内含构建时间、Git
+revision/dirty 状态、Python/依赖摘要，并在构建后拒绝 `local.yaml`、凭据、Vault、日志、数据库
+及测试 fixture；冻结的 CArchive/PYZ 与 ZIP 会递归、有界地检查内容和成员元数据，且 ZIP 只接受
+可完整验证的规范物理布局。`-Smoke` 仍必须经 `run-test.ps1`；包从仓库外临时目录启动，数据始终留在
+`.data-test`，且结论只可称为 `INTERNAL SELF-TEST PASSED`。仓库外 workspace
+清理经 `internal-package-workspace.ps1` 逐项 no-follow 审计与叶到根删除；遇到 junction/
+symlink/reparse 或竞态变化必须失败并保留现场。
+
+---
+
 #### check-environment.ps1
 
 **用途**: 检测当前使用的数据库环境(生产/测试)

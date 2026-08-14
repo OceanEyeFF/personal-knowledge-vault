@@ -8,11 +8,15 @@
 
 当前实现的关键调用关系：
 
-- `archive` 通过 `WorkflowEngine.execute_async("archive-url", input_data)` 执行归档工作流。
-- `archive-text` 始终按字面纯文本处理，先经 `TextFallbackProcessor.process_text()` 构造条目，再调用 `execute_async("archive-text", ...)`；路径形状文本不会触发本地文件读取。
-- `search --strategy auto` 通过 `QueryRouter.search()` 路由；显式策略直接构造 BM25、Vector 或 Hybrid retriever。所有路径消费五态 `SearchResponse`，BM25/auto 的短查询路径不会提前创建 Provider。
-- `show`、`list`、`tags`、`stats` 读取 SQLite/Markdown 等已配置存储。
-- `related` 只读取已有文档向量索引，并返回向量近邻；索引或条目向量缺失时明确返回 `degraded`，不会创建索引或构造 Provider。
+- 每次入口先经 runtime bootstrap，再取得同一 validated config 的
+  `KnowledgeApplication`；CLI 只负责参数/本地文件能力校验与渲染，不自行装配
+  Store、Workflow、Retriever 或 Provider。
+- `archive` 调用 `application.archive_cli_input()`；`archive-text` 始终按字面
+  纯文本调用 `application.archive_text()`，路径形状文本不会触发本地文件读取。
+- `search` 调用 `application.search()`，并原样消费五态 `SearchResponse`；BM25
+  路径不提前创建 Provider。
+- `show`、`list`、`tags`、`stats` 与 `related` 都通过 application 的领域操作；
+  `related` 使用严格只读向量入口，索引或条目向量缺失时明确返回 `degraded`。
 - `config show/get` 读取配置并遮罩敏感值；`config set` 会写 `config/local.yaml`。
 
 ## 安全运行边界
@@ -40,8 +44,8 @@
 
 | 命令 | 主要参数/选项 | 当前接线与稳定边界 |
 |---|---|---|
-| `archive URL_OR_PATH` | `--skip-sharpen`、`--tags`、`--quiet`、`--type auto\|webpage\|chat\|news` | 调用 `execute_async("archive-url", ...)`；真实网络/Provider 仅后续显式 live 流程 |
-| `archive-text TEXT` | `--title`、`--format table\|json` | 字面纯文本 → `TextFallbackProcessor.process_text()` → `execute_async("archive-text", ...)`；完成时 JSON 输出严格的存储终态与条目定位 |
+| `archive URL_OR_PATH` | `--skip-sharpen`、`--tags`、`--quiet`、`--type auto\|webpage\|chat\|news` | 经 `KnowledgeApplication.archive_cli_input()`；真实网络/Provider 仅后续显式 live 流程 |
+| `archive-text TEXT` | `--title`、`--format table\|json` | 字面纯文本 → `KnowledgeApplication.archive_text()`；完成时 JSON 输出严格的存储终态与条目定位 |
 | `search QUERY` | `--strategy auto\|bm25\|vector\|hybrid`、`--limit`、`--format table\|json\|markdown` | 输出公开实际执行策略及 `success/no_hits/invalid/error/degraded`；JSON 含 `query/status/strategy/total/issues/results` |
 | `show [ID_OR_URL]` | `--url`、`--raw` | ID 或 URL 至少提供一个；`--raw` 经 `MarkdownStore.load()` 做 Vault containment 校验，不直接读取 DB 中的任意路径 |
 | `list` | `--tag`、`--sort time\|title\|id`、`--desc`、`--limit` | 从 SQLite 查询并以 Rich 表格输出；排序/tie 与非法 limit 仍需目标合同 |
@@ -58,9 +62,10 @@
 ### `commands.py`
 
 - `cli()`：直接模块入口；常规启动由 `src.main.LazyCLIGroup` 负责。
-- `archive()` / `archive_text()`：组装工作流输入、运行异步归档并渲染结果。
-- `search()`：选择 retriever、执行搜索、输出 table/JSON/Markdown。
-- `show()` / `list_entries()` / `tags()` / `related()` / `stats()`：读取存储并渲染可观察结果。
+- `archive()` / `archive_text()`：验证 CLI 输入、调用 application 异步归档并渲染结果。
+- `search()`：调用 application 搜索、输出 table/JSON/Markdown。
+- `show()` / `list_entries()` / `tags()` / `related()` / `stats()`：调用 application
+  领域操作并渲染可观察结果。
 - `config_show()` / `config_get()` / `config_set()`：配置读写与敏感值遮罩。
 - `_render_search_table()`、`_render_list_table()`、`_render_entry_panel()`：命令内 Rich 渲染辅助函数。
 

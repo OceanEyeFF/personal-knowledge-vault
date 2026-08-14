@@ -13,11 +13,6 @@
       "console": true
     },
     {
-      "path": "app/pkv-gui.exe",
-      "role": "gui",
-      "console": false
-    },
-    {
       "path": "app/pkv-mcp.exe",
       "role": "mcp_stdio",
       "console": true
@@ -50,14 +45,6 @@
   },
   "additional_fingerprint_inputs": [
     "packaging/pkv_entrypoint.py",
-    "packaging/harness/build_manifest.py",
-    "packaging/harness/contract.v1.json",
-    "packaging/harness/loopback_provider.py",
-    "packaging/harness/pkv-loopback-provider.spec",
-    "packaging/harness/scripts/provider-error.v1.json",
-    "packaging/harness/scripts/stop.v1.json",
-    "packaging/harness/scripts/success.v1.json",
-    "packaging/harness/scripts/w4-chat-lifecycle.v1.json",
     "packaging/hooks/hook-jieba.py",
     "packaging/hooks/hook-jsonschema.py",
     "docs/operations/release/USER-GUIDE.md"

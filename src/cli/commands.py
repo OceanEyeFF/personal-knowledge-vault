@@ -24,19 +24,16 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from src.application import KnowledgeApplication, get_application
+from src.application.validation import validate_text_length
 from src.utils.config import (
     Config,
     redact_url_credentials as _redact_url_credentials,
     set_yaml_config_value,
     url_contains_credentials as _url_contains_credentials,
 )
-from src.workflow.engine import WorkflowEngine
 from src.workflow.steps import _grant_cli_local_file_import
 from src.relations.citations import is_local_reference, sanitize_public_source_url
-from src.retrieval.query_router import QueryRouter
-from src.retrieval.bm25_retriever import BM25Retriever
-from src.retrieval.vector_retriever import VectorRetriever
-from src.retrieval.hybrid_retriever import HybridRetriever
 from src.retrieval.result import (
     RetrievalIssue,
     SearchResponse,
@@ -44,12 +41,7 @@ from src.retrieval.result import (
 )
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.runtime.layout import validate_path_components
-from src.storage.sqlite_store import SQLiteStore
-from src.storage.markdown_store import Entry, MarkdownStore
-from src.storage.vector_store import VectorStore
-from src.ai.provider_factory import create_embedder
-from src.processors.text_fallback_processor import TextFallbackProcessor
-from src.mcp.utils import validate_text_length
+from src.storage.markdown_store import Entry
 from src.utils.logger import get_logger
 
 
@@ -384,16 +376,16 @@ def _validate_list_projection(value: Any) -> List[Dict[str, Any]]:
     return rows
 
 
-def _get_entry_by_id(store: SQLiteStore, knowledge_id: int) -> Optional[Dict[str, Any]]:
+def _get_entry_by_id(store: Any, knowledge_id: int) -> Optional[Dict[str, Any]]:
     return _validate_entry_projection(store.query_by_id(knowledge_id))
 
 
-def _get_entry_by_url(store: SQLiteStore, url: str) -> Optional[Dict[str, Any]]:
+def _get_entry_by_url(store: Any, url: str) -> Optional[Dict[str, Any]]:
     return _validate_entry_projection(store.query_by_url(url))
 
 
 def _query_entries(
-    store: SQLiteStore,
+    store: Any,
     tag: Optional[str],
     order_by: str,
     desc: bool,
@@ -409,11 +401,11 @@ def _query_entries(
     )
 
 
-def _count_entries(store: SQLiteStore) -> int:
+def _count_entries(store: Any) -> int:
     return _require_nonnegative_count(store.count_entries())
 
 
-def _count_entries_by_source_type(store: SQLiteStore) -> List[Tuple[str, int]]:
+def _count_entries_by_source_type(store: Any) -> List[Tuple[str, int]]:
     value = store.count_entries_by_source_type()
     if type(value) is not list:
         raise _BackendReadContractError
@@ -428,7 +420,7 @@ def _count_entries_by_source_type(store: SQLiteStore) -> List[Tuple[str, int]]:
     return rows
 
 
-def _get_top_tags(store: SQLiteStore, limit: int = 10) -> List[Tuple[str, int]]:
+def _get_top_tags(store: Any, limit: int = 10) -> List[Tuple[str, int]]:
     value = store.get_all_tags_with_count(limit=limit)
     if type(value) is not list:
         raise _BackendReadContractError
@@ -451,7 +443,7 @@ _RELATED_ENTRY_REQUIRED_FIELDS = frozenset(
 
 
 def _get_related_entry_by_id(
-    store: SQLiteStore,
+    store: Any,
     knowledge_id: int,
 ) -> Optional[Dict[str, Any]]:
     """Read the exact SQLite projection consumed by ``related``."""
@@ -609,7 +601,8 @@ def _related_payload(knowledge_id: str, limit: int) -> Dict[str, Any]:
     safe_limit = min(limit, 20)
     try:
         config = _load_config()
-        store = SQLiteStore(config.db_path)
+        application = get_application(config)
+        store = application.sqlite_store
         seed_entry = _get_related_entry_by_id(store, related_id)
     except Exception as exc:
         return _related_failure_payload(
@@ -629,10 +622,8 @@ def _related_payload(knowledge_id: str, limit: int) -> Dict[str, Any]:
         }
 
     try:
-        has_artifacts = VectorStore.has_index_artifacts(config.vector_index_dir)
-        if type(has_artifacts) is not bool:
-            raise _BackendReadContractError
-        if not has_artifacts:
+        vector_store = application.readonly_vector_store
+        if vector_store is None:
             return {
                 "status": "degraded",
                 "strategy": "vector_related",
@@ -648,10 +639,6 @@ def _related_payload(knowledge_id: str, limit: int) -> Dict[str, Any]:
                 "message": "向量索引不可用，无法获取关联知识",
             }
 
-        vector_store = VectorStore.open_readonly(
-            index_dir=config.vector_index_dir,
-            dim=None,
-        )
         document_vector = vector_store.get_doc_vector(related_id)
         if document_vector is None:
             return {
@@ -1298,7 +1285,11 @@ def _run_search(
     strategy: str,
     limit: int,
 ) -> SearchResponse:
-    """Run one strategy while keeping Provider creation lazy for auto/BM25."""
+    """Delegate retrieval to the shared application service.
+
+    The CLI keeps only its public response validation and rendering contract;
+    retriever and Provider composition live in :class:`KnowledgeApplication`.
+    """
     strategy = strategy.lower()
     if not isinstance(query, str) or not query.strip():
         return SearchResponse.invalid("查询文本不能为空", strategy=strategy)
@@ -1308,44 +1299,21 @@ def _run_search(
             strategy=strategy,
             stage="limit_validation",
         )
+    if strategy not in _CLI_RESPONSE_STRATEGIES:
+        raise ValueError(f"不支持的检索策略: {strategy}")
     try:
-        if strategy == "auto":
-            router = QueryRouter(
-                db_path=config.db_path,
-                vector_index_dir=config.vector_index_dir,
-                token_threshold=10,
-                embedder_factory=lambda: create_embedder(config),
-            )
-            return _ensure_search_response(
-                router.search(query, limit),
-                strategy="auto",
-            )
-        if strategy == "bm25":
-            return _ensure_search_response(
-                BM25Retriever(config.db_path).search(query, limit),
-                strategy="bm25",
-            )
-        if strategy == "vector":
-            return _ensure_search_response(
-                VectorRetriever(
-                    config.db_path,
-                    config.vector_index_dir,
-                    embedder_factory=lambda: create_embedder(config),
-                ).search(query, limit),
-                strategy="vector",
-            )
-        if strategy == "hybrid":
-            return _ensure_search_response(
-                HybridRetriever(
-                    config.db_path,
-                    config.vector_index_dir,
-                    embedder_factory=lambda: create_embedder(config),
-                ).search(query, limit),
-                strategy="hybrid",
-            )
+        application = get_application(config)
+        return _ensure_search_response(
+            application.search(
+                query,
+                strategy,
+                limit,
+                auto_token_threshold=10,
+            ),
+            strategy=strategy,
+        )
     except Exception as exc:
         return _search_failure(exc, strategy=strategy)
-    raise ValueError(f"不支持的检索策略: {strategy}")
 
 
 def _search_payload(
@@ -1656,8 +1624,8 @@ def cli() -> None:
 def archive(url_or_path: str, skip_sharpen: bool, tags: Optional[str], quiet: bool, content_type: str) -> None:
     """归档内容到知识库。"""
     try:
-        _ = _load_config()
-        engine = WorkflowEngine()
+        config = _load_config()
+        application: KnowledgeApplication = get_application(config)
 
         input_data: Dict[str, Any] = {
             "url": url_or_path,
@@ -1682,7 +1650,7 @@ def archive(url_or_path: str, skip_sharpen: bool, tags: Optional[str], quiet: bo
             )
 
         with console.status("[cyan]归档中...[/cyan]"):
-            result = asyncio.run(engine.execute_async("archive-url", input_data))
+            result = asyncio.run(application.archive_cli_input(input_data))
 
         terminal, terminal_valid = _resolve_workflow_terminal(result)
         raw_result_data = getattr(result, "data", None)
@@ -1815,24 +1783,14 @@ def archive_text(text: str, title: str, output_format: str) -> None:
 
     result: Any | None = None
     try:
-        _ = _load_config()
-        processor = TextFallbackProcessor()
-        entry = asyncio.run(processor.process_text(text))
-        if normalized_title:
-            entry.title = normalized_title
-
-        engine = WorkflowEngine()
+        config = _load_config()
+        application: KnowledgeApplication = get_application(config)
         result = asyncio.run(
-            engine.execute_async(
-                "archive-text",
-                {
-                    "text": text,
-                    "title": entry.title,
-                    "entry": entry,
-                    "content": entry.content,
-                    "skip_review": True,
-                    "skip_sharpen": True,
-                },
+            application.archive_text(
+                text,
+                title=normalized_title,
+                skip_review=True,
+                skip_sharpen=True,
             )
         )
         terminal, terminal_valid = _resolve_workflow_terminal(result)
@@ -1991,7 +1949,8 @@ def show(id_or_url: Optional[str], source_url: Optional[str], raw: bool) -> None
     """显示条目详情。"""
     try:
         config = _load_config()
-        store = SQLiteStore(config.db_path)
+        application: KnowledgeApplication = get_application(config)
+        store = application.sqlite_store
 
         if not source_url and not id_or_url:
             console.print("[red]错误: 请提供 knowledge_id 或 --url[/red]")
@@ -2017,8 +1976,7 @@ def show(id_or_url: Optional[str], source_url: Optional[str], raw: bool) -> None
             if not file_path:
                 console.print("[red]错误: 条目缺少 file_path，无法读取原始 Markdown[/red]")
                 sys.exit(1)
-            markdown_store = MarkdownStore(config.vault_dir)
-            content = markdown_store.load(file_path).content
+            content = application.markdown_store.load(file_path).content
             console.print(content, markup=False)
             return
 
@@ -2051,7 +2009,8 @@ def list_entries(tag: Optional[str], sort_by: str, desc: bool, limit: int) -> No
     """列出知识条目。"""
     try:
         config = _load_config()
-        store = SQLiteStore(config.db_path)
+        application: KnowledgeApplication = get_application(config)
+        store = application.sqlite_store
 
         sort_map = {
             "time": "archived_at",
@@ -2122,7 +2081,8 @@ def tags(limit: int, output_format: str) -> None:
 
     try:
         config = _load_config()
-        store = SQLiteStore(config.db_path)
+        application: KnowledgeApplication = get_application(config)
+        store = application.sqlite_store
         rows = _get_top_tags(store, limit=limit)
         payload = {
             "status": "success" if rows else "no_hits",
@@ -2341,7 +2301,8 @@ def stats() -> None:
     """显示统计信息。"""
     try:
         config = _load_config()
-        store = SQLiteStore(config.db_path)
+        application: KnowledgeApplication = get_application(config)
+        store = application.sqlite_store
 
         if not config.db_path.exists():
             console.print("[yellow]警告: 数据库不存在，请先归档内容[/yellow]")

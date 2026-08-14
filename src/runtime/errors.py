@@ -8,7 +8,7 @@ from enum import Enum
 class ErrorCode(str, Enum):
     """Machine-readable runtime errors.
 
-    GUI, CLI, MCP and Workflow adapters may change presentation, but must not
+    External wrappers, CLI, MCP and Workflow adapters may change presentation, but must not
     erase or reinterpret these codes.
     """
 
