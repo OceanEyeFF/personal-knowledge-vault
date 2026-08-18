@@ -3,11 +3,19 @@
 > **AI-First Knowledge Workflow System**
 > 工作流驱动的个人知识管理系统
 
-**最后更新**: 2026-08-13
+**最后更新**: 2026-08-18
 
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-08-18（GUI 剥离后的 Core 重测与路线重排）
+
+- Core 默认离线重测为 `2947 passed, 21 skipped, 219 deselected`；Application/Kernel/CLI
+  定向回归为 `300 passed`，MCP 三层回归为 `762 passed`。唯一发现的旧 CLI
+  `WorkflowEngine` mock 已迁移到 `get_application(...).archive_cli_input(...)` seam。
+- GUI 已保持在独立 `pkv-GUI` 仓库；Core 下一项工作改为把 `pkv_kernel` 固化为可安装、
+  版本化且有兼容性合同的 SDK，随后才进行 config snapshot/reload hardening 与知识成果主线。
 
 ### 2026-08-13（文档入口与当前版本收敛）
 
@@ -399,19 +407,22 @@ held test candidate 打包和 installed-Artifact 功能验证。该 W4 证据属
 
 1. **M13 release hold**：候选仍是 `test_candidate`，当前合规合同中的 3 项 blocker 未关闭，
    `release_eligible=false`、`decision=hold`；当前不安排合规收口或正式发布。
-2. **后 M13 P1-A 已完成**：共享应用服务和仅供本人验证的内部自测封包已完成，且仅以
-   合成数据通过仓库外 smoke；下一步验证可追溯的知识成果工作流。这不构成发布，也不改变当前默认数据根或安装拓扑。
-3. **高阶能力与外部 GUI**：按真实场景逐 Tool 补 full 语义和专属评测；桌面体验在相邻
-   `pkv-GUI` 仓库演进，只通过 `pkv_kernel` 的稳定边界消费本仓库能力。
-4. **可选本地 Node / Docker**：只有后台任务、并发写入或资源复用出现可测需求，且单写者
-   与持久任务前置完成后才评估 Node；Docker 与云端进一步后置。
-5. **部署与数据根策略**：个人软件、Service 与其他安装模式的默认路径和迁移策略仍待
+2. **后 M13 P1-A/P1-C 已完成**：共享应用服务、内部自测封包和 GUI 完整剥离均已完成；
+   Core 仅以合成数据完成 headless 重测。这不构成发布，也不改变当前默认数据根或安装拓扑。
+3. **当前优先：Kernel SDK 合同**：先把 `pkv_kernel` 做成可离线安装、版本化且有公开
+   兼容性合同的 SDK；外部 Wrapper 不得依赖相邻 checkout 或 `src.*`。
+4. **随后：reload hardening 与知识成果**：先补 Kernel 配置快照/reload 并发合同，再按真实
+   场景逐 Tool 补 full 语义、专属评测和可追溯知识成果工作流。
+5. **外部 GUI 与可选 Node / Docker**：桌面封包、Qt/OS smoke、生命周期和升级策略只在
+   `pkv-GUI` 仓库演进；只有后台任务、并发写入或资源复用出现可测需求，且单写者与持久
+   任务前置完成后才评估 Node；Docker 与云端进一步后置。
+6. **部署与数据根策略**：个人软件、Service 与其他安装模式的默认路径和迁移策略仍待
    单独设计讨论，不随上述内部自测路线改变。
 
 ---
 
 **文档版本**: v5.5
-**最近核验**: 2026-08-14
+**最近核验**: 2026-08-18
 **项目代号**: Personal Knowledge Vault
 **当前版本**: 0.8.1
 
