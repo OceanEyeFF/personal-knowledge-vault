@@ -15,9 +15,8 @@ from src.workflow.models import WorkflowResult
 def test_archive_quiet_skips_interactive_review(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    class FakeWorkflowEngine:
-        async def execute_async(self, workflow_name: str, input_data: dict):
-            captured["workflow_name"] = workflow_name
+    class FakeApplication:
+        async def archive_cli_input(self, input_data: dict):
             captured["input_data"] = input_data
             entry = Entry(
                 title="Archived article",
@@ -36,7 +35,7 @@ def test_archive_quiet_skips_interactive_review(monkeypatch) -> None:
             )
 
     monkeypatch.setattr(commands, "_load_config", lambda: object())
-    monkeypatch.setattr(commands, "WorkflowEngine", FakeWorkflowEngine)
+    monkeypatch.setattr(commands, "get_application", lambda config: FakeApplication())
 
     result = CliRunner().invoke(
         commands.cli,
@@ -45,7 +44,6 @@ def test_archive_quiet_skips_interactive_review(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert result.output.strip() == "42"
-    assert captured["workflow_name"] == "archive-url"
     assert captured["input_data"] == {
         "url": "https://example.com/article",
         "skip_sharpen": True,
