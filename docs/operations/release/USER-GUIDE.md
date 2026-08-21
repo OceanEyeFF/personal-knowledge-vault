@@ -2,6 +2,8 @@
 
 本文档随 `Personal Knowledge Vault 0.8.1` Windows x86-64 unsigned test candidate 提供。当前产物固定声明 `artifact_kind=test_candidate`、`artifact_status=test-candidate-on-compliance-hold`、`release_eligible=false`，只用于 W4 功能 E2E 和受控评估，不是正式 release，也不应接入生产 Vault。候选包无需安装 Python 或 Conda；请勿把仓库源码运行说明当作本候选包的安装步骤。
 
+> **历史范围（2026-08-21）**：本指南冻结描述的是 0.8.1 held `test_candidate` 的 W4 受控评估流程。文中 `%LOCALAPPDATA%` 程序目录、候选 `PKV_DATA_ROOT` 示例和候选本地配置叙述都只是历史 Artifact 证据，不能定义当前产品的安装或数据政策；当前产品布局以 [用户配置与运行数据布局 ADR](../../overview/ADR-用户配置与运行数据布局-2026-08.md) 为准：唯一可编辑配置为 `%USERPROFILE%\.pkv\config.yaml`，默认 data root 为 `%USERPROFILE%\.pkv\data`。
+
 ## 1. 支持范围
 
 本候选面向 Windows x86-64、离线优先、fresh-install 场景，包含以下 headless 入口：
@@ -455,7 +457,9 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
   -File .\scripts\build-release.ps1
 ```
 
-命令会执行 PyInstaller A/B 构建并要求两个 unsigned ZIP 的 SHA-256 完全一致。当前七个合规 blocker 非空，因此 exit code `0` 只表示 test candidate 可复现；产品 ZIP 与 sidecar 只能输出到：
+命令会执行 PyInstaller A/B 构建并要求两个 unsigned ZIP 的 SHA-256 完全一致。当前 headless
+合规权威文件中的三个 blocker 非空，因此 exit code `0` 只表示 test candidate 可复现；产品 ZIP
+与 sidecar 只能输出到：
 
 ```text
 dist\candidate\PersonalKnowledgeVault-0.8.1-windows-x86_64.zip
@@ -471,5 +475,8 @@ dist\compliance-sources\html2text-2020.1.16.tar.gz.sha256
 dist\compliance-sources\manifest.json
 dist\compliance-sources\provenance.json
 ```
+
+本指南此前记录的“七个 blocker”描述的是 GUI 拆分前历史 candidate；它不再定义当前 headless
+candidate 的 blocker 计数。两种语境均保持 `hold`，均不构成发布授权。
 
 W4 使用的外置 deterministic harness 保持在 `dist\e2e-harness\`，不得进入产品 payload。只有合规权威状态同时满足 `release_eligible=true` 与 `release_blockers=[]` 时，产品 Artifact 才可声明 `artifact_kind=release` 并路由到 `dist\release\`；否则 `dist\release\` 必须不存在。

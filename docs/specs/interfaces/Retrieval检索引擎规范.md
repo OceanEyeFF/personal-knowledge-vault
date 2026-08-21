@@ -2,11 +2,11 @@
 
 > **版本**: 1.1
 > **创建日期**: 2026-02-15
-> **最后更新**: 2026-08-07（M13 W2 契约对齐）
+> **最后更新**: 2026-08-21（Config / RuntimeLayout 路径合同对齐）
 > **文件位置**: `src/retrieval/`
 > **作用**: M4 检索引擎的核心组件和接口规范
 
-> **M13 发布边界**：所有检索器统一返回五态 `SearchResponse`，不得把失败伪装成空列表。GUI 发布面只保证 BM25；CLI/MCP 可显式选择向量或混合检索，并在真正进入语义分支时才按需创建 Provider。默认验证必须离线运行，不使用真实 Provider、密钥或 Vault 数据。
+> **当前边界**：所有检索器统一返回五态 `SearchResponse`，不得把失败伪装成空列表。CLI/MCP 可显式选择向量或混合检索，并在真正进入语义分支时才按需创建 Provider；外部 Wrapper 只能经 `pkv_kernel` 调用，不导入 `src.*`。一次检索必须使用同一显式、不可变 `Config` snapshot 派生数据库、向量索引与 Provider。默认验证必须离线运行，不使用真实 Provider、密钥或 Vault 数据。
 
 ---
 
@@ -307,19 +307,22 @@ QueryRouter.search()
 ### 初始化示例
 
 ```python
-from pathlib import Path
 from src.ai.provider_factory import create_embedder
 from src.retrieval.query_router import QueryRouter
-from src.utils.config import get_config
+from src.utils.config import Config
 
-# 1. 声明懒工厂；短查询的 BM25 路径不会调用它
-embedder_factory = lambda: create_embedder(get_config())
+# 1. 在操作开始时捕获一个 Config snapshot；Application / Kernel 正常负责此组合。
+#    不要在 factory 中重新 get_config()，否则 reload 后可能混用路径/Provider。
+config = Config()
+embedder_factory = lambda: create_embedder(config)
 
-# 2. 创建 QueryRouter
+# 2. 由 snapshot 的 RuntimeLayout 派生所有存储路径。
+#    短查询的 BM25 路径不会调用 embedder_factory。
 router = QueryRouter(
-    db_path=Path(".data/pkv.db"),
-    vector_index_dir=Path(".data/vectors"),
+    db_path=config.db_path,
+    vector_index_dir=config.vector_index_dir,
     embedder_factory=embedder_factory,
+    runtime_config=config,
     token_threshold=5  # 可配置
 )
 
@@ -338,6 +341,11 @@ for result in response.results:
     print(f"摘要: {result.highlight}")
     print(f"元数据: {result.metadata}")
 ```
+
+`runtime_config=config` 指的是本次操作捕获的业务配置 snapshot；它让向量索引的
+维度、Embedding fingerprint 与索引路径属于同一份 `RuntimeLayout`。它不是
+`<data-root>/config/local.yaml`：后者是无密钥、PKV 管理的 runtime snapshot，只用于
+校验数据库/Embedding 运行事实，不会被合并为检索业务配置。
 
 ---
 

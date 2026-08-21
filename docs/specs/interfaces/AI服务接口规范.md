@@ -13,7 +13,7 @@
 
 **文件**: `src/ai/deepseek_client.py`
 
-**作用**: 封装 OpenAI-compatible Chat Completions API 调用，提供摘要生成和标签提取功能。`DeepSeekClient` 为历史类名，实际端点和模型由机器本地配置 `config/local.yaml` 中的 `ai.llm.*` 控制。
+**作用**: 封装 OpenAI-compatible Chat Completions API 调用，提供摘要生成和标签提取功能。`DeepSeekClient` 为历史类名；实际端点和模型来自调用开始时捕获的 `Config` snapshot（bundled defaults 加唯一可编辑的 `%USERPROFILE%\\.pkv\\config.yaml` 中的 `ai.llm.*`），而不是 data root 内的 runtime snapshot。
 
 #### 构造函数
 
@@ -25,6 +25,8 @@ def __init__(
     model: str = "deepseek-chat",
     timeout: float = 30.0,
     max_retries: int = 3,
+    *,
+    config: Any | None = None,
 ):
     """
     初始化 DeepSeek 客户端
@@ -35,6 +37,7 @@ def __init__(
         model: 使用的模型名称
         timeout: 请求超时时间（秒）
         max_retries: 最大重试次数
+        config: 调用开始时捕获的不可变配置快照；省略时才走旧全局兼容路径
     """
 ```
 
@@ -47,6 +50,15 @@ def __init__(
 | `model` | `ai.llm.model` | `"deepseek-chat"` |
 | `timeout` | - | `30.0` |
 | `max_retries` | - | `3` |
+
+路径与 snapshot 合同：
+
+- Application / Kernel 必须把同一个显式、不可变 `Config` snapshot 传给 Provider
+  factory 或客户端；归档、Embedding 与索引不能在执行中回退读取过期的全局配置。
+- `PKV_DATA_ROOT` 只选择数据根，优先于用户配置的 `storage.data_root`；
+  它不替代上述用户业务配置。
+- `<data-root>/config/local.yaml` 是 PKV 管理的无密钥 runtime snapshot，可包含
+  数据库/Embedding 合同事实，但绝不包含 API key，也绝不参与业务配置合并。
 
 #### Prompt 模板加载
 
@@ -112,7 +124,10 @@ summary = self._call_api(
 
 **使用示例**:
 ```python
-client = DeepSeekClient()
+from src.utils.config import Config
+
+config = Config()
+client = DeepSeekClient(config=config)
 summary = client.summarize("长文本内容...", max_words=300)
 print(summary)
 ```
@@ -177,7 +192,10 @@ if len(tags) > 5:
 
 **使用示例**:
 ```python
-client = DeepSeekClient()
+from src.utils.config import Config
+
+config = Config()
+client = DeepSeekClient(config=config)
 tags = client.extract_tags("文本内容...", num_tags=5)
 assert 3 <= len(tags) <= 5
 ```
@@ -584,7 +602,8 @@ class DeepSeekClient:
 ### 问题 6: Embedding 索引迁移仍需人工执行
 
 **问题描述**:
-- 当前模型、端点、维度由 `config/config.yaml` 与本机 `config/local.yaml` 显式配置
+- 当前模型、端点、维度由 bundled `config/config.yaml` 与用户
+  `%USERPROFILE%\\.pkv\\config.yaml` 合并后的同一 `Config` snapshot 显式配置
 - 新索引会记录非敏感契约指纹，加载时会拒绝复用不匹配索引
 - 但系统不会自动删除旧索引或自动重算已有 Embedding
 
@@ -623,9 +642,11 @@ class DeepSeekClient:
 
 ```python
 from src.ai.deepseek_client import DeepSeekClient
+from src.utils.config import Config
 
 # 1. 初始化客户端
-client = DeepSeekClient()
+config = Config()
+client = DeepSeekClient(config=config)
 
 # 2. 生成摘要
 summary = client.summarize(
@@ -647,10 +668,12 @@ print(f"标签: {tags}")
 ### Embedder 使用示例
 
 ```python
-from src.ai.embedder import Embedder
+from src.ai.provider_factory import create_embedder
+from src.utils.config import Config
 
 # 1. 初始化
-embedder = Embedder(chunk_size=500, chunk_overlap=50)
+config = Config()
+embedder = create_embedder(config)
 
 # 2. 文档级向量化
 doc_vector = embedder.embed_document("这是一篇文档")
@@ -671,4 +694,4 @@ print(f"自身相似度: {similarity}")  # 应接近 1.0
 ---
 
 **文档维护者**: AI Agent
-**最后更新**: 2026-02-15
+**最后更新**: 2026-08-21

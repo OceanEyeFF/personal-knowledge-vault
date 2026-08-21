@@ -36,13 +36,21 @@
 - 通过 `conda run` 固定环境并升级 pip
 - 安装所有依赖包
 - 验证关键依赖
-- 创建 Git 忽略的 `config/local.yaml`
-- 创建数据目录结构
+- 首次仅创建不覆盖的用户配置 `%USERPROFILE%\.pkv\config.yaml`
+- 不创建数据库、向量索引或数据根；运行时初始化必须先 `inspect`、再审阅 `setup` 计划并显式确认
+- 发现旧 checkout `config/local.yaml` 或 `.data/` 时只提示并保留；不读取内容、不复制、不删除、不迁移
 
 **优势**:
 - 避免 Python 3.13 兼容性问题
 - 环境隔离更彻底
 - 可以方便地切换 Python 版本
+
+**当前运行时布局**:
+
+- 唯一可编辑的用户配置是 `%USERPROFILE%\.pkv\config.yaml`。
+- 默认数据根是 `%USERPROFILE%\.pkv\data`；用户配置中的 `storage.data_root` 可选择其他根，进程级 `PKV_DATA_ROOT` 优先级更高。
+- `<data-root>/config/local.yaml` 是 PKV 写入的无密钥运行时快照，不是第二份用户配置，不能放 API Key、Cookie 或其他敏感值。
+- 旧 checkout 路径不是自动迁移来源。迁移前必须先展示影响并获得用户确认；当前安装脚本不执行迁移。
 
 ---
 
@@ -56,10 +64,16 @@
 ```
 
 **功能**:
-- 检查 `py311-private` 环境是否存在
-- 通过 `run-windows.ps1` 固定 Conda 环境与 UTF-8
-- 运行 `src/utils/verify_setup.py` 验证脚本
+- 检查 Conda 环境及 Python 3.11 合同，并执行 `pip check`
+- 通过 `run-test.ps1` 运行 smoke、收集契约、完整离线或 Windows P0 套件
+- 全部 pytest 运行保持在新建的 `.data-test/conda-*` 根中
 - 显示测试结果
+
+默认环境与 `setup-conda.ps1` 相同，为 `py311-private`。若使用
+`setup-test-conda.ps1` 创建的独立测试环境，必须显式传入
+`-EnvironmentName`。pytest 的临时目录与 cache 完全由 `run-test.ps1`
+在所选 `.data-test` 根内管理；`test-conda.ps1` 不传 `--basetemp` 或
+`cache_dir` 覆盖。
 
 **适用场景**:
 - 首次安装后验证
@@ -99,7 +113,7 @@
 - 在当前进程直接设置完整测试路径覆盖，不读取 `.env.test`
 - 支持 `-DataRoot` 创建彼此隔离的测试场景
 - 默认 CLI、MCP 离线子进程由 `tests/offline_entrypoint.py` 启动；pytest 由同一入口的 `pytest` 目标在 pytest/plugin 导入前建立 G0，根 `tests/conftest.py` 再维持逐用例隔离
-- Direct Python（FT7）仅允许仓库 `python -m <module>` 或仓库 `.py`，拒绝 `-c`、stdin 和解释器 flags；同进程 `runpy` 在产品导入前清理 live/secret/proxy，并安装 base-only Config、网络及子进程 guard
+- Direct Python（FT7）只允许显式 test-safe target：pytest、`setup-test-db.py`、`rebuild-dev-vault.py`、受控 consistency checker、`src.cli.commands`、`src.mcp.server`、`src.utils.verify_setup` 和固定 MCP 评测；其他仓库脚本/模块（含 build helper）在创建 DataRoot 前拒绝，`-c`、stdin 和解释器 flags 同样拒绝；同进程 `runpy` 在产品导入前清理 live/secret/proxy，并安装 base-only Config、网络及子进程 guard
 - 隔离测试数据到 `.data-test/` 目录
 - 自动创建测试目录结构
 - 显示测试环境状态(绿色提示)
@@ -110,13 +124,28 @@
 - 支持离线 CLI 子命令；需要网络或真实数据的命令仍受 user-only gate 阻塞
 - FT7 是 Python 进程内 guard，不是 OS sandbox；非 Python Direct 仍须经 wrapper 启动，但不属于 Python G0、不保证离线，需单独审查
 - `setup-test-db.py` 的输出必须精确位于所选 `DATA_DIR`（默认 `DB_PATH`）
-- `migrate.py` 被包装器 fail-closed 拒绝并返回 exit 2；真实迁移仍受 U1/G8/FT5 user-only gate 阻塞，尚未执行真实数据迁移
+- `migrate.py` 以及已停用的原始回填/初始化入口被包装器 fail-closed 拒绝并返回 exit 2；真实迁移仍受 U1/G8/FT5 user-only gate 阻塞，尚未执行真实数据迁移
 
 **AI 安全规范**:
 - 所有 AI 协作测试**必须**使用此脚本
 - 禁止直接操作生产数据
 
 详见: [.ai-safety-rules.md](../.ai-safety-rules.md)
+
+---
+
+#### 已停用的原始维护入口（R3.1 fence）
+
+`backfill_chunks.py`、`backfill_relations.py`、`init_db.py` 与 `migrate.py`
+不再是当前产品操作入口。无论裸跑还是经 `run-test.ps1` 的 Direct Python 调用，它们都会在
+加载 `Config`、打开数据根、执行迁移或发起网络请求之前返回 exit 2。它们不能替代
+`inspect → plan → confirm → execute`，也不能绕过单写者 lease。
+
+其中少量模块级兼容 helper 仍被隔离的合成 fixture 测试调用；这不是给 Wrapper、CLI、MCP
+或用户数据根提供的 API。需要未来维护动作时，应以独立 lifecycle plan 明确范围、影响、备份和确认。
+
+`check_chunk_index_consistency.py` 是唯一保留的遗留诊断入口：它只以 SQLite `mode=ro` 打开
+一个已存在且安全的数据库；缺失、链接/替换或不可读数据库均返回 exit 2，绝不新建数据库或索引。
 
 ---
 
@@ -194,6 +223,10 @@ symlink/reparse 或竞态变化必须失败并保留现场。
 ---
 
 ### 数据备份与恢复脚本
+
+> **历史路径提示**：本节的仓库 `.data/`、`.data-backup/` 描述的是保留的旧 checkout 运维脚本，
+> 不构成当前默认运行时布局，也不会被 `setup-conda.ps1` 自动接管或迁移。任何旧目录迁移都须先
+> 展示影响、保留原目录并由用户明确确认。
 
 本节脚本会读取或替换生产 `.data/`，只供用户明确授权后的人工 runbook；AI 不执行。
 
@@ -282,17 +315,17 @@ symlink/reparse 或竞态变化必须失败并保留现场。
 
 ### 数据库迁移脚本
 
-#### migrate.py (Python 脚本)
+#### migrate.py（已停用的 Python 脚本）
 
-**用途**: 数据库 Schema 增量迁移工具
+**用途**: 历史数据库 Schema 增量迁移实现；当前入口已 fail-closed。
 
 **当前门禁**:
 
-- `run-test.ps1` 明确拒绝 `migrate.py`（exit 2），不得把它包装成当前自动化命令。
+- `run-test.ps1` 与裸 `migrate.py` 均明确拒绝执行（exit 2），不得把它包装成当前自动化命令。
 - 真实旧库/生产迁移仍受 U1/G8/FT5 user-only gate 阻塞；截至当前尚未执行任何真实数据迁移。
 - 门禁交付后也只能由用户在明确授权、备份和脱敏旧版夹具验证完成后，按专用迁移 Runbook 操作；AI/自动化不执行。
 
-**功能**:
+**历史功能（非当前命令）**:
 - 获取当前数据库版本(从 `schema_version` 表)
 - 扫描 `scripts/migrations/` 目录下的待执行脚本
 - 语义化版本号比较(如 `1.0.0` < `1.1.0`)
@@ -399,9 +432,14 @@ CREATE TABLE IF NOT EXISTS cli_stats (
 
 ### 配置文件
 
-#### config/local.yaml
+#### `%USERPROFILE%\.pkv\config.yaml`
 
-用户/生产运行的服务、模型和密钥配置在 Git 忽略的 `config/local.yaml`。默认自动化不读取该文件，由 `run-test.ps1` 与 offline entrypoint 安装 base-only Config。
+用户/生产运行的服务、模型和密钥只配置在 `%USERPROFILE%\.pkv\config.yaml`。默认自动化不读取该文件，
+而由 `run-test.ps1` 与 offline entrypoint 安装 base-only Config。`PKV_DATA_ROOT` 和
+`PKV_LOG_LEVEL` 是正式的进程级覆盖；其中数据根覆盖优先于该配置内的 `storage.data_root`。
+
+`<data-root>/config/local.yaml` 仅是 PKV 管理、无敏感字段的运行时快照。它用于验证当前数据库/
+Embedding 构建合同，不能替代或覆盖用户配置。
 
 ---
 
@@ -476,14 +514,22 @@ Get-ChildItem .data-backup | Sort-Object LastWriteTime -Descending | Select-Obje
 # 1. 安装 Conda 环境
 .\scripts\setup-conda.ps1
 
-# 2. 编辑本机配置
-notepad config\local.yaml
+# 2. 编辑唯一的本机配置
+notepad "%USERPROFILE%\.pkv\config.yaml"
 
-# 4. 验证安装
-.\scripts\test-conda.ps1
+# 3. 无副作用检查配置、数据根与待执行工作
+.\scripts\run-windows.ps1 python -m src.cli.commands inspect
 
-# 4. 初始化/迁移默认数据库当前受 U1/G8/FT5 user-only gate 阻塞；此处不提供现行命令
+# 4. 只展示初始化计划；仍不写入数据根
+.\scripts\run-windows.ps1 python -m src.cli.commands setup
+
+# 5. 审阅上一步的影响后，由用户使用其 PLAN_ID 明确确认。
+#    --allow-network 只授权计划中的最小 Provider 连通性探测，可能联网或产生费用。
+.\scripts\run-windows.ps1 python -m src.cli.commands setup --apply --confirm <PLAN_ID> --allow-network
 ```
+
+`setup-conda.ps1` 不创建 `%USERPROFILE%\.pkv\data`，也不会接管 checkout 中遗留的
+`config/local.yaml` 或 `.data/`。若发现旧目录，先保留它们并取得用户确认的独立迁移方案。
 
 ---
 
@@ -589,8 +635,8 @@ U1/G8/FT5 user-only gate 尚未交付
 | 文件 | 用途 |
 |------|------|
 | `rebuild-dev-vault.py` | 开发专用轻量重建（隔离根清理/迁移/确定性种子/健康检查，P1） |
-| `migrate.py` | 数据库迁移工具 |
-| `init_db.py` | 数据库初始化(Legacy) |
+| `migrate.py` | 已停用的原始迁移入口（fail-closed） |
+| `init_db.py` | 已停用的原始初始化入口（fail-closed） |
 
 ### 迁移脚本
 

@@ -8,7 +8,11 @@
 **最后更新**: 2026-08-07
 **目标读者**: 开发者（AI Agent 仅作接口参考）
 
-> **执行边界**：本文 Python/CLI 片段主要说明公开接口，不是 Agent 可直接执行的 Runbook。AI 自动化只能使用 `scripts/run-test.ps1` 与合成 CAT-0 数据；会加载 `config/local.yaml` 的 config 命令、真实 URL archive、vector/hybrid 检索以及真实迁移均为 user-only，当前受 U1/G8（迁移另需 FT5）阻塞。当前可执行合同以 [`tests/CLAUDE.md`](../../tests/CLAUDE.md) 与 [`testing/真实数据验证Runbook.md`](./testing/真实数据验证Runbook.md) 为准。
+> **执行边界**：本文 Python/CLI 片段用于说明公开边界与 Core 内部组合，不是 Agent 可直接执行的 Runbook。AI 自动化只能使用 `scripts/run-test.ps1` 与合成 CAT-0 数据；会读取用户配置的 config 命令、真实 URL archive、vector/hybrid 检索以及真实迁移均为 user-only，当前受 U1/G8（迁移另需 FT5）阻塞。当前可执行合同以 [`tests/CLAUDE.md`](../../tests/CLAUDE.md) 与 [`testing/真实数据验证Runbook.md`](./testing/真实数据验证Runbook.md) 为准。
+
+> **公开 Kernel 边界**：本文保留的 `from src.*` 构造器片段仅用于 Core 源码开发和隔离测试，不构成外部 SDK。外部 GUI、Wrapper 与自动化应用只能导入 `pkv_kernel` 的稳定公开门面，并在启动时使用其版本/能力握手；不得 import `src.*`，也不得将本文的 Workflow、Store 或 Processor 内部类当作公开依赖。
+>
+> **当前配置与路径合同**：唯一可编辑的用户配置是 `%USERPROFILE%\.pkv\config.yaml`。数据根按 `PKV_DATA_ROOT` → 该文件的 `storage.data_root` → `%USERPROFILE%\.pkv\data` 解析；同一个不可变 `Config` snapshot 的 `layout` 决定数据库、Vault、vectors、日志等全部子路径。`<data-root>/config/local.yaml` 是 PKV 管理的无密钥 runtime state，不是用户配置层，用户和 Wrapper 都不应编辑或将凭据写入其中。`.data-test` 仅用于隔离测试，绝不是用户数据根。
 >
 > **M13 W2 接口边界**：Workflow 只加载真实、版本化的 `archive-url.yaml` 与 `archive-text.yaml`，不支持 `search.yaml`；Retrieval 返回显式五态 `SearchResponse`；GUI 发布搜索只保证 BM25；MCP 只发布 stdio，HTTP/Bearer 不受支持。三个探索 Tool 仍为 `partial-v1` / `implementation_level=partial`。
 
@@ -254,9 +258,12 @@ M13 GUI 只保证 BM25；CLI/MCP 可显式选择 `bm25/vector/hybrid/auto`。后
 **示例**:
 
 ```python
+from pkv_kernel import Config
 from src.storage.markdown_store import MarkdownStore
 
-store = MarkdownStore(vault_dir=".data/vault")
+config = Config()
+layout = config.layout
+store = MarkdownStore(vault_dir=layout.vault_dir)
 
 entry = Entry(
     title="分布式系统设计",
@@ -284,7 +291,7 @@ print(f"✅ 已保存: {file_path}")
 **示例**:
 
 ```python
-entry = store.load(Path(".data/vault/2026/02/20260214-distributed-systems.md"))
+entry = store.load(layout.vault_dir / "2026/02/20260214-distributed-systems.md")
 print(entry.title)  # 分布式系统设计
 ```
 
@@ -308,9 +315,12 @@ print(entry.title)  # 分布式系统设计
 **示例**:
 
 ```python
+from pkv_kernel import Config
 from src.storage.sqlite_store import SQLiteStore
 
-db = SQLiteStore(Path(".data/db/knowledge_vault.db"))
+config = Config()
+layout = config.layout
+db = SQLiteStore(layout.db_path)
 
 entry_id = db.insert_entry(entry, file_path="text/example.md")
 print(f"✅ 已索引: {entry_id}")
@@ -340,9 +350,15 @@ print(f"✅ 已索引: {entry_id}")
 **示例**:
 
 ```python
+from pkv_kernel import Config
 from src.storage.vector_store import VectorStore
 
-vector_store = VectorStore(Path(".data/vectors"), dim=1536)
+config = Config()
+layout = config.layout
+dimension = config.embedding_dim
+if dimension is None:
+    raise RuntimeError("Embedding 维度尚未由当前配置快照解析")
+vector_store = VectorStore(layout.vector_index_dir, dim=dimension)
 
 vector = embedder.embed(entry.content)  # shape: (dim,)
 vector_store.add_doc_vector(entry.knowledge_id, vector)
@@ -350,6 +366,9 @@ vector_store.add_doc_vector(entry.knowledge_id, vector)
 
 说明：
 
+- 同一轮操作必须使用同一个 `Config` snapshot 的 `layout.vector_index_dir`、
+  `embedding_dim` 与 embedding fingerprint；不得把显式 Config、全局 Config
+  或不同 reload 代的路径/维度混用。
 - 如果配置 `ai.embedding.dim: auto`，维度会在首次成功的 Embedding 请求后锁定
 - 新建索引前必须确保 `VectorStore` 使用的维度与 Embedding 服务实际返回维度一致
 - Embedding 模型同样属于索引契约；更换模型后，即使维度相同，也应重建向量索引并重新生成 Embedding
@@ -859,7 +878,7 @@ python -m src.main show 42 --raw
 
 列出知识库中的所有条目。
 
-裸命令读取当前数据目录；AI 默认使用 `.\scripts\run-test.ps1 list ...`，不读取生产 `.data/`。生产查询仅由明确授权的用户执行。
+裸命令从本次 `Config` snapshot 的 `layout.user_data_root` 读取数据，不假定仓库内存在数据根。AI 默认只通过 `.\scripts\run-test.ps1` 使用隔离 `.data-test` 根，绝不读取用户数据根；生产查询仅由明确授权的用户执行。
 
 **基本用法**:
 ```bash
@@ -962,7 +981,7 @@ python -m src.main config get db_path
 
 #### config set - 设置配置
 
-`config set` 会修改真实的 `config/local.yaml`，测试包装器会拒绝该命令。只有用户明确授权时才由用户执行；AI 不执行，也不得通过命令行传入密钥。
+`config set` 会修改唯一可编辑的用户配置 `%USERPROFILE%\.pkv\config.yaml`，测试包装器会拒绝该命令。只有用户明确授权时才由用户执行；AI 不执行，也不得通过命令行传入密钥。
 
 ```bash
 python -m src.main config set <key> <value>
@@ -977,13 +996,13 @@ python -m src.main config set ai.llm.model local-model
 python -m src.main config set logging.level DEBUG
 ```
 
-LLM、Embedding 和处理器配置统一写入 Git 忽略的 `config/local.yaml`，使用 `ai.llm.*`、`ai.embedding.*` 等点号路径键。不要再使用 `.env` 或旧的 `PKV_LLM_*` / `PKV_EMBD_*` 键。凭据建议直接在本机编辑 `config/local.yaml`，不要作为命令行参数传入，以免进入终端历史。
+LLM、Embedding 和处理器配置统一写入 `%USERPROFILE%\.pkv\config.yaml`，使用 `ai.llm.*`、`ai.embedding.*` 等点号路径键。正式环境变量白名单只有 `PKV_DATA_ROOT` 与 `PKV_LOG_LEVEL`；`PKV_DATA_ROOT` 覆盖 `storage.data_root`，后者未设置时默认使用 `%USERPROFILE%\.pkv\data`。凭据仅由用户在本机编辑 `config.yaml`，不要作为命令行参数传入，以免进入终端历史。`<data-root>/config/local.yaml` 仅保存 PKV 管理的无密钥 runtime state，不能作为配置或凭据文件。
 
-默认自动化由 `scripts/run-test.ps1` 锁定 `.data-test/` 路径，不创建或加载 `.env.test`，并固定 `PKV_RUN_LIVE=0`。`PKV_RUN_LIVE` 只是 pytest 收集开关，不授权应用联网；真实服务验证仍受 U1/G8 与用户授权阻塞。
+默认自动化由 `scripts/run-test.ps1` 锁定 `.data-test/` 测试根，不创建或加载 `.env.test`，并固定 `PKV_RUN_LIVE=0`。`.data-test` 不参与上述用户数据根优先级。`PKV_RUN_LIVE` 只是 pytest 收集开关，不授权应用联网；真实服务验证仍受 U1/G8 与用户授权阻塞。
 
 **集成接口**:
-- 读取 `Config` 对象属性
-- 修改 `config/local.yaml`（set 命令）
+- 读取同一 `Config` snapshot 的对象属性与 `layout`
+- 修改 `%USERPROFILE%\.pkv\config.yaml`（`set` 命令）；不读写 runtime `local.yaml`
 
 ---
 
@@ -991,7 +1010,7 @@ LLM、Embedding 和处理器配置统一写入 Git 忽略的 `config/local.yaml`
 
 显示知识库统计信息。
 
-裸命令读取当前数据目录；AI 默认使用 `.\scripts\run-test.ps1 stats`，不读取生产 `.data/`。生产统计仅由明确授权的用户执行。
+裸命令从本次 `Config` snapshot 的 `layout.user_data_root` 读取数据，不假定仓库内存在数据根。AI 默认只通过 `.\scripts\run-test.ps1` 使用隔离 `.data-test` 根，绝不读取用户数据根；生产统计仅由明确授权的用户执行。
 
 **基本用法**:
 ```bash

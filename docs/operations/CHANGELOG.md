@@ -13,6 +13,25 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### 后 M13 最终隔离回归刷新与 R2 CLI adapter（2026-08-21）
+
+- 当前工作树的最终默认隔离全量回归通过：`3182 passed, 21 skipped, 219 deselected, 35 warnings`（exit 0）。该结果替代活动真相源中的上一轮当前全量计数，不改变 release hold、PyPI、默认数据根或 MCP stdio-only 合同。
+- R2 CLI 已补未创建嵌套合成 data root 的 fresh-root adapter 回归，覆盖 setup plan、plan-only 零写、PLAN_ID 与 `--allow-network` 门禁；不接触真实 Provider、网络、迁移或用户 Vault。
+
+### 后 M13 K1a/K2/K1b 与 R1–R4：限定内部验证（2026-08-21）
+
+- K1a/K2/K1b 与 R1–R4 的定向隔离回归和最终默认隔离全量回归均已通过：`3101 passed, 21 skipped, 219 deselected, 35 warnings`（exit 0）。本轮证据覆盖用户配置/数据布局、runtime lifecycle、受支持业务/数据写入的数据根 lease 与 `write_busy`、本地审计和 staged Embedding generation。
+- K1b 只证明本地 wheel/source-free clean-install 兼容；R3 不宣称所有文件系统写入均已串行化，运行时日志写入归属和遗留维护 writer 仍是 R3.1 P1 hardening。
+- R4 仍是 runtime-internal staged core，不新增 `pkv_kernel`、CLI 或 MCP 的公共重建接口；public rebuild adapter、自动清理和公开 rollback 均属未来工作。
+- 所有验证只使用 `.data-test`、合成数据与 fake Provider；不改变 M13 release hold、PyPI 状态或 MCP stdio-only 合同。
+
+### 后 M13 K1a/K2/K1b：公开 Kernel、配置快照与本地安装合同（2026-08-19）
+
+- K1a 冻结 `pkv_kernel` API-major-1 的公开清单、SDK/API 版本与能力握手、兼容和弃用规则；K2 将默认 Application/Kernel reload 收敛为原子 snapshot 发布，旧 in-flight 操作保持其原 config graph。
+- K1b 新增 `pkv-kernel` 本地 distribution 元数据与资源构建 hook。wheel 仅嵌入 headless Kernel 所需闭包和 allowlist 的 config/workflow/migration/Prompt，拒绝 `local.yaml`、CLI、MCP、GUI、PySide6 与 qasync payload。
+- 新增离线 clean-install 合同：在仓库外 temporary workspace 构建本地 wheel，安装至 clean venv，再以 `-I` 子进程仅通过 `pkv_kernel` 验证 capability handshake、wheel 内资源根和 `bootstrap_kernel()`；PKV 数据始终在 `.data-test` 合成根。
+- 当次 K1b 变更后的默认离线回归为 `2954 passed, 21 skipped, 219 deselected`（21 项 skip 均为 Windows symlink 权限或 POSIX-only 合同）；不上传 PyPI、不改变 release hold、默认数据根或 MCP stdio-only 合同。
+
 ### 后 M13 P1-C：GUI 完整拆分（2026-08-14）
 
 - 将 `src/gui/`、GUI 单元/Qt 手工测试、GUI 样式和 `pkv-gui.exe` 封包入口完整迁至相邻的独立 `pkv-GUI` 本地仓库。
@@ -30,7 +49,7 @@
 
 - W3 生成可追溯的 Windows `test_candidate`，交付 release payload 外的 deterministic loopback Provider harness；`chat.loopback_harness.v1` 仅登记为 `packaging_contract_verified`，仍是 deferred、无产品 surface 的 E2E 输入。
 - 外部 artifact-only 运行 `w4-53a45ed` 从安装后的入口完成 10 个 scenario / 11 行 lifecycle matrix，结果为 10 verified / 0 failed / 0 pending、`functional_verified=true`；W4 evidence registry 绑定实际 Artifact、fingerprint、外部 registry/summary/manifest/launcher 哈希。
-- 该结果不是正式发布：候选保持 `artifact_kind=test_candidate`、`artifact_status=test-candidate-on-compliance-hold`、`release_eligible=false`、`decision=hold`。7 项未关闭 blocker 为 conda/native 许可与 SPDX、html2text GPL、MSVC provenance、Qt 对应源码、Qt 链接/替换性、Qt module license audit 和 Qt notices。
+- 该结果不是正式发布：候选保持 `artifact_kind=test_candidate`、`artifact_status=test-candidate-on-compliance-hold`、`release_eligible=false`、`decision=hold`。这里的 7 项未关闭 blocker（conda/native 许可与 SPDX、html2text GPL、MSVC provenance、Qt 对应源码、Qt 链接/替换性、Qt module license audit 和 Qt notices）是 GUI 拆分前历史 candidate 的冻结记录；它不定义当前 headless 合规权威文件中的 3 项 blocker，后者同样保持 hold。
 - 默认验证仍只使用合成数据与隔离根，未读取真实 API key、Provider 或 Vault。
 
 ### M13 W3-T0：短期 Test 治理门禁（2026-08-10）

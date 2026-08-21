@@ -3,11 +3,18 @@
 > **AI-First Knowledge Workflow System**
 > 工作流驱动的个人知识管理系统
 
-**最后更新**: 2026-08-18
+**最后更新**: 2026-08-21
 
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-08-21（K1a/K2/K1b 与 R1–R4 内部隔离验证）
+
+- K1a/K2/K1b 与 R1–R4 的定向回归及最终默认隔离全量回归均已通过：`3182 passed, 21 skipped, 219 deselected, 35 warnings`（exit 0）。K1b 只证明本地 wheel/source-free clean-install 兼容，不是 PyPI、安装器或 release 资格。
+- R2 的 CLI 适配层已补齐未创建嵌套 data root 的 fresh-root 回归，覆盖 setup plan、plan-only 零写、PLAN_ID 与 `--allow-network` 门禁；测试只使用合成 Config/fake executor，不触发 Provider、迁移或真实网络。
+- R3 已覆盖受支持的业务/数据写入路径：竞争写入返回 `write_busy`，读操作可继续；这不等同于所有文件系统写入均已串行化。运行时日志写入归属和遗留维护写入口仍是 R3.1 P1 hardening。
+- R4 仍仅为 runtime-internal staged core；公开 rebuild adapter、自动清理和公开 rollback 均属未来工作。所有验证只使用 `.data-test`、合成数据与 fake Provider，不改变 release hold、PyPI 或 stdio-only 合同。
 
 ### 2026-08-18（GUI 剥离后的 Core 重测与路线重排）
 
@@ -17,18 +24,41 @@
 - GUI 已保持在独立 `pkv-GUI` 仓库；Core 下一项工作改为把 `pkv_kernel` 固化为可安装、
   版本化且有兼容性合同的 SDK，随后才进行 config snapshot/reload hardening 与知识成果主线。
 
+### 2026-08-19（K1a/K2 公开边界与 reload 合同）
+
+- K1a 已冻结 `pkv_kernel` API-major-1 的公开清单、SDK 版本/能力握手、兼容和废弃规则；
+  外部 Wrapper 仍只可导入 `pkv_kernel`，不依赖 `src.*`、CLI、MCP 或 GUI。
+- K2 已把默认 Application/Kernel reload 收敛为原子 snapshot 发布：旧 in-flight 操作保留
+  原 config graph，新 Kernel 以递增 generation 承载新图；显式 Config B 与 legacy Config A
+  可隔离并存，向量 absent → archive-created → related/delete 状态转换不负缓存。
+- 下一个工作包是 K1b：仅做离线本地 wheel 与 clean-install 兼容验证，不是发布、PyPI 或
+  release-hold 变更。
+
+### 2026-08-19（K1b 本地 wheel / clean-install 合同）
+
+- 新增 `pkv-kernel` 本地 distribution 元数据与资源构建 hook：wheel 只带 headless Kernel
+  所需闭包和显式 allowlist 的配置、工作流、迁移与 Prompt，拒绝 `local.yaml`、CLI、MCP、
+  GUI、PySide6 与 qasync payload。
+- K1b 合同在仓库外临时目录离线构建 wheel，并用 clean venv 的 `-I` 子进程验证已安装
+  `pkv_kernel` 的版本/能力握手、wheel 内资源根和 `bootstrap_kernel()`；所有 PKV 数据仍在
+  `.data-test` 合成根。当次 K1b 变更后的默认离线回归为 `2954 passed, 21 skipped, 219 deselected`。它不验证
+  依赖索引，也不构成发布、PyPI 或 release-hold 变更。
+
 ### 2026-08-13（文档入口与当前版本收敛）
 
 - 当前运行时、CLI 与 held test candidate 的版本口径统一为 `0.8.1`；历史
   `v0.8.0-alpha` 条目仍保留其原始时间语境，不再表示当前基线。
 - 根 `AGENTS.md` 改为可移植的 Agent 入口，并为各核心模块补齐
   `AGENTS.md` 转接页；既有模块 `CLAUDE.md` 继续是其规范性说明来源。
-- 默认用户数据根与安装拓扑的产品设计单列待决，不在本次文档收敛中变更。
+- 用户配置与默认数据根已由
+  [ADR：用户配置与运行数据布局](./docs/overview/ADR-用户配置与运行数据布局-2026-08.md)
+  定义；它覆盖此前“待决”的路径口径。held release candidate 的历史
+  `%LOCALAPPDATA%` 布局仍仅是历史证据，不能被当作当前产品政策。
 
 ### 2026-07-31 (P0 自动化 G0/FT7 收口)
 
 - 默认自动化统一经 `scripts/run-test.ps1`；pytest 在加载 pytest/plugin 前先经 `tests/offline_entrypoint.py pytest` 建立 G0，再由根 `tests/conftest.py` 维持逐用例隔离；CLI/MCP 也由 offline entrypoint 启动
-- Direct Python（FT7）只允许仓库 `python -m module` 或仓库 `.py`，拒绝 `-c`/stdin/解释器 flags；同进程 `runpy` 在产品导入前落实环境清理、base-only Config、网络及子进程 guard
+- Direct Python（FT7）建立了受保护的离线入口；当前执行范围已收窄为显式离线测试白名单（见 `scripts/CLAUDE.md`），其余仓库模块/脚本会在创建 DataRoot 前拒绝；仍拒绝 `-c`/stdin/解释器 flags，并由同进程 `runpy` 在产品导入前落实环境清理、base-only Config、网络及子进程 guard
 - Python guard 不是 OS sandbox；非 Python Direct 仍须经 wrapper 启动，但不属于 Python G0、不保证离线
 - `setup-test-db.py` 输出精确绑定所选 `DATA_DIR`；`rebuild-dev-vault.py` 同样要求 FT7 attestation 且 `--root` 只能位于所选 `DATA_DIR`；`migrate.py` 仍被测试包装器以 exit 2 拒绝
 - 真实迁移仍受 U1/G8/FT5 user-only gate 阻塞，尚未执行真实数据迁移
@@ -150,7 +180,7 @@ CLI/MCP 是本仓库的外围适配器；外部 GUI Wrapper 也只经 `pkv_kerne
 │  + Rich 终端界面 (进度条/表格/面板)      │
 ├─────────────────────────────────────────┤
 │  MCP 服务层 (src/mcp/)        [M8+M9]  │
-│  + 14 Tools (12只读 + 2写入)            │
+│  + 15 Tools (13只读 + 2写入)            │
 │  + 9 Resources (正文/chunk/关系/统计等)  │
 │  + 3 Prompts (搜索总结/知识问答/思想磨砺)│
 │  + 安全层 (SSRF 重校验/文本验证)        │
@@ -247,7 +277,7 @@ graph TD
 | **无头 Kernel** | `src/kernel/` | 稳定产品操作与外围 Wrapper 端口 | [CLAUDE.md](./src/kernel/CLAUDE.md) |
 | **Application 组合** | `src/application/` | 同一 validated config 下的惰性依赖与工作流组装 | [CLAUDE.md](./src/application/CLAUDE.md) |
 | **CLI 交互层** | `src/cli/` | Click 命令行界面、Rich 终端 UI | [CLAUDE.md](./src/cli/CLAUDE.md) |
-| **MCP 服务层** | `src/mcp/` | MCP stdio -- 14 Tool + 9 Resource + 3 Prompt + 安全加固 | [CLAUDE.md](./src/mcp/CLAUDE.md) |
+| **MCP 服务层** | `src/mcp/` | MCP stdio -- 15 Tool（13 只读 + 2 写入）+ 9 Resource + 3 Prompt + 安全加固 | [CLAUDE.md](./src/mcp/CLAUDE.md) |
 | **工作流引擎** | `src/workflow/` | 编排步骤、进度追踪、错误处理 | [CLAUDE.md](./src/workflow/CLAUDE.md) |
 | **内容处理器** | `src/processors/` | 插件化内容抓取与解析(微信/知乎/聊天/AI 聊天/文本回退) | [CLAUDE.md](./src/processors/CLAUDE.md) |
 | **检索引擎** | `src/retrieval/` | BM25/向量/混合检索与智能路由 | [CLAUDE.md](./src/retrieval/CLAUDE.md) |
@@ -268,14 +298,15 @@ graph TD
 # 1. 安装 Conda 环境(推荐)
 .\scripts\setup-conda.ps1
 
-# 2. 配置本机私有 YAML（文件已被 Git 忽略）
-notepad config\local.yaml
-# 填入 ai.llm.* 与 ai.embedding.*
+# 2. 用户手工配置唯一的私有 YAML（绝不由默认测试读取）
+notepad $env:USERPROFILE\.pkv\config.yaml
+# 填入 ai.llm.* 与 ai.embedding.*；<data-root>\config\local.yaml
+# 是 PKV 管理的无密钥 runtime snapshot，不能手工当作业务配置编辑
 
 # 3. 验证安装
 .\scripts\test-conda.ps1
 
-# 以下 AI/自动化示例统一使用隔离数据根目录；生产 .data/ 仅由用户明确授权后操作
+# 以下 AI/自动化示例统一使用隔离数据根目录；真实用户 data root 仅由用户明确授权后操作
 
 # 4. 使用 CLI（隔离测试数据）
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\quickstart -Command @("python", "-m", "src.cli.commands", "--help")
@@ -299,7 +330,7 @@ conda activate py311-private
 
 ### 常用命令
 
-以下示例面向 AI/自动化协作，数据相关命令默认使用隔离测试路径。生产 `.data/` 的查询或迁移必须由用户明确授权并执行，AI 不执行。
+以下示例面向 AI/自动化协作，数据相关命令默认使用隔离测试路径。当前有效用户 `<data-root>`（默认 `%USERPROFILE%\.pkv\data`）的查询或迁移必须由用户明确授权并执行，AI 不执行。
 
 ```powershell
 # CLI 命令（测试数据）
@@ -312,8 +343,8 @@ conda activate py311-private
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\dev -Command @("python", "-m", "src.mcp.server")
 
 # 数据库迁移
-# migrate.py 当前被 run-test.ps1 fail-closed 拒绝（exit 2）。
-# 真实迁移须等待 U1/G8/FT5 user-only gate，并仅由用户授权执行；尚未执行真实数据迁移。
+# 遗留 migrate.py 已停用：裸调用和 run-test.ps1 都会在读取 Config/数据库前 fail-closed（exit 2）。
+# 真实迁移须等待未来 user-only lifecycle 入口、U1/G8/FT5 与用户授权；尚未执行真实数据迁移。
 
 # 测试环境
 .\scripts\run-test.ps1 stats
@@ -374,12 +405,12 @@ conda activate py311-private
 
 ### AI 安全规范
 
-1. 禁止直接操作生产数据 (`.data/`)
+1. 禁止直接操作用户数据根（当前有效 `<data-root>`；默认 `%USERPROFILE%\.pkv\data`）
 2. 强制使用测试环境 (`run-test.ps1`)
 3. 重要变更前必须备份 (`backup-data.ps1`)
 4. MCP: stdio-only + URL 全链路 SSRF 重校验 + 文本验证；HTTP/Bearer 不在 M13 发布面
 5. pytest 先经 offline pytest bootstrap，再使用根 conftest；CLI/MCP 使用 offline entrypoint
-6. Direct Python 仅允许仓库模块/脚本并由 FT7 同进程保护；不是 OS sandbox；非 Python Direct 仍须经 wrapper，但不属于 Python G0、不保证离线
+6. Direct Python 不是通用仓库脚本运行器：只允许 pytest 及 `scripts/CLAUDE.md` 所列的显式离线测试目标（`src.cli.commands`、`src.mcp.server`、`src.utils.verify_setup`、`evals.mcp_quality`、`setup-test-db.py`、`rebuild-dev-vault.py` 和受控 consistency checker）；其余仓库模块/脚本会在创建 DataRoot 前拒绝。FT7 不是 OS sandbox；非 Python Direct 仍须经 wrapper，但不属于 Python G0、不保证离线
 
 详见: [.ai-safety-rules.md](./.ai-safety-rules.md)
 
@@ -408,21 +439,27 @@ held test candidate 打包和 installed-Artifact 功能验证。该 W4 证据属
 1. **M13 release hold**：候选仍是 `test_candidate`，当前合规合同中的 3 项 blocker 未关闭，
    `release_eligible=false`、`decision=hold`；当前不安排合规收口或正式发布。
 2. **后 M13 P1-A/P1-C 已完成**：共享应用服务、内部自测封包和 GUI 完整剥离均已完成；
-   Core 仅以合成数据完成 headless 重测。这不构成发布，也不改变当前默认数据根或安装拓扑。
-3. **当前优先：Kernel SDK 合同**：先把 `pkv_kernel` 做成可离线安装、版本化且有公开
-   兼容性合同的 SDK；外部 Wrapper 不得依赖相邻 checkout 或 `src.*`。
-4. **随后：reload hardening 与知识成果**：先补 Kernel 配置快照/reload 并发合同，再按真实
-   场景逐 Tool 补 full 语义、专属评测和可追溯知识成果工作流。
-5. **外部 GUI 与可选 Node / Docker**：桌面封包、Qt/OS smoke、生命周期和升级策略只在
-   `pkv-GUI` 仓库演进；只有后台任务、并发写入或资源复用出现可测需求，且单写者与持久
-   任务前置完成后才评估 Node；Docker 与云端进一步后置。
-6. **部署与数据根策略**：个人软件、Service 与其他安装模式的默认路径和迁移策略仍待
-   单独设计讨论，不随上述内部自测路线改变。
+   Core 仅以合成数据完成 headless 重测。这不构成发布或 held-candidate 状态变化。
+3. **S0 / K1a / K2 / K1b 内部 checkpoint**：`pkv_kernel` 的公开 API/版本能力握手、config
+   snapshot/reload 与本地 wheel/source-free clean-install 已完成隔离验证；外部 Wrapper
+   始终不得依赖相邻 checkout 或 `src.*`。这不授予 PyPI、发布或安装兼容承诺。
+4. **R1 → R4 限定运行时 checkpoint**：三平面配置与换根门禁、inspect/plan/confirm/execute、
+   受支持业务/数据写入的 lease、`write_busy`、审计和 Embedding staged generation 已通过最终
+   默认隔离全量回归。R3.1 的运行时日志写入归属与遗留维护 writer 仍是 P1；R4 仍仅是
+   runtime-internal 合同，不新增 Kernel、CLI 或 MCP 的公共重建动作。
+5. **随后：知识成果**：在 R3.1 与实际需要的 R4 public-adapter gate 明确收口后，从
+   `Topic / Claim / Evidence / Outcome` 的最小合同开始，将现有证据和关系能力收束为可审阅、
+   可追溯的成果工作流；`partial-v1` 仍须按真实场景逐 Tool 补 full 语义与专属评测。
+6. **Windows-first 与可选 Node / Docker**：当前自动化与内部验证只以 Windows 为支持基线；完整跨平台测试工程留待 Rust 代码版本再重新评估。桌面封包、Qt/OS smoke、生命周期和升级策略只在 `pkv-GUI` 仓库演进；只有后台任务、并发写入或资源复用出现可测需求，且单写者与持久任务前置完成后才评估 Node；Docker 与云端进一步后置。
+7. **个人运行布局**：唯一用户配置是 `%USERPROFILE%\\.pkv\\config.yaml`，默认 data
+   root 是 `%USERPROFILE%\\.pkv\\data`；`PKV_DATA_ROOT`/`PKV_LOG_LEVEL` 是正式环境
+   覆盖，`<data-root>\\config\\local.yaml` 仅保存无密钥 runtime snapshot。迁移、旧目录
+   接管和实际初始化必须经过 inspect → plan → 展示影响/备份 → 用户确认 → execute。
 
 ---
 
-**文档版本**: v5.5
-**最近核验**: 2026-08-18
+**文档版本**: v5.7
+**最近核验**: 2026-08-21
 **项目代号**: Personal Knowledge Vault
 **当前版本**: 0.8.1
 

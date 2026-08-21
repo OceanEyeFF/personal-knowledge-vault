@@ -4,6 +4,7 @@
 > **版本**: v1.1（P0 安全合同同步）
 > **作者**: 幽浮酱 ฅ'ω'ฅ
 > **2026-07-31 P0 状态**: CAT-0 G0 已交付并逐入口核验；真实数据尚未执行。CAT-U/CAT-C 仍等待 U1/G8，migration 另需 FT5；`run-test.ps1` 会拒绝 `migrate.py`（exit 2）。
+> **2026-08 运行态政策覆盖**：本文 CAT-0 隔离规则仍有效；下文若提及 checkout `.data/` 或 `config/local.yaml`，均为保留的历史/兼容性路径，不能作为当前产品配置指引。当前唯一可编辑用户配置为 `%USERPROFILE%\.pkv\config.yaml`；`<data-root>\config\local.yaml` 仅是 PKV 管理、无密钥的运行态快照。
 
 ---
 
@@ -32,7 +33,7 @@
 
 - pytest 由 `tests/offline_entrypoint.py pytest` 在 pytest/plugin 导入前安装 base-only Config 与网络 fail-closed，root `tests/conftest.py` 再维持逐用例隔离。
 - CLI/MCP 由 `tests/offline_entrypoint.py` 在产品导入前安装同类门禁。
-- FT7 generic Direct Python 仅接受仓库 `python -m <module>` 或 `python <script.py>`，并在同一受保护进程内通过 `runpy` 执行；拒绝 `-c`、stdin、解释器 flags 与仓库外目标。
+- FT7 Direct Python 只接受测试合同中列明的显式 test-safe module/script，并在同一受保护进程内通过 `runpy` 执行；拒绝任意仓库 module/script、`-c`、stdin、解释器 flags 与仓库外目标。
 - 入口会清理 live/secret/proxy 环境、绑定不加载 `config/local.yaml` 的 base-only Config，并安装网络 guard；Direct Python 另安装子进程 guard。
 - 非 Python `-Direct` 不属于 Python G0；上述 guard 是 Python 进程内防护，**不是 OS sandbox**。
 - fixed seed 的 `setup-test-db.py --output` 必须精确位于本次所选 `DATA_DIR`；dev vault 重建与 `--check-only` 都必须经 wrapper Direct Python。`rebuild-dev-vault.py` 要求 FT7 runtime attestation（`process_guarded=True`），`--root` 必须位于本次 selected `DATA_DIR`；裸启动会在产品 import 前失败，任意 `.data-test` sibling 也不能旁路。
@@ -73,10 +74,11 @@ python -m src.main archive "https://example.com"
 # 备份数据（AI 不应修改）
 .data-backup/
 
-# 本机敏感配置（AI 不应读取或打印）
+# checkout 兼容性路径（AI 不应读取或打印；不是当前用户配置）
 config/local.yaml
 
-# 兼容性防泄漏兜底；应用配置不再使用 .env
+# 兼容性防泄漏兜底；当前用户配置位于 %USERPROFILE%\.pkv\config.yaml，
+# 应用配置不再使用 .env
 .env*
 ```
 
@@ -138,8 +140,8 @@ config/local.yaml
    # 全部指向 .data-test/，无需创建或加载 .env.test。
    .\scripts\run-test.ps1 <CLI-subcommand>
 
-   # pytest、仓库 Python 模块/脚本使用 -Direct；FT7 只接受 python -m 或仓库 .py
-   .\scripts\run-test.ps1 -Direct -Command @("python", "-m", "<repo.module>", "<arg>")
+   # pytest、CLI/MCP 等仅使用 FT7 allowlist 中的显式目标；不能把 Direct 当通用脚本 runner
+   .\scripts\run-test.ps1 -Direct -Command @("python", "-m", "src.cli.commands", "--help")
    ```
 
 3. **确认命令仍指向测试环境**
@@ -150,7 +152,7 @@ config/local.yaml
 
    AI 不读取生产 `.data/` 作前后对比；如需额外确认，由用户自行检查备份或文件时间戳。
 
-用户生产服务配置仍写入 Git 忽略的 `config/local.yaml`，但 CAT-0 的 base-only Config **不会读取它**，Agent 也不得读取或打印它。`PKV_RUN_LIVE` 只控制 pytest 收集，既不是应用网络开关，也不能解除 U1/G8 或用户授权门禁。
+用户可编辑且可能含密钥的配置只写入 `%USERPROFILE%\.pkv\config.yaml`；`<data-root>\config\local.yaml` 是 PKV 管理、无密钥的运行态快照，不能作为业务配置或凭据落点。CAT-0 的 base-only Config **不会读取任一用户配置或运行态快照**，Agent 也不得读取或打印它们。`PKV_RUN_LIVE` 只控制 pytest 收集，既不是应用网络开关，也不能解除 U1/G8 或用户授权门禁。
 
 ---
 
@@ -503,7 +505,7 @@ if ($remaining) {
 
 1. **AI 协作时**
    - 使用 `run-test.ps1 config show` 检查测试路径，不裸跑会读取默认数据库的检测命令
-   - 默认使用 `run-test.ps1` 执行 CLI；Direct Python 只使用仓库 `python -m` / `.py`，不使用 `-c`/stdin/解释器 flags；非 Python Direct 不属于 Python G0
+   - 默认使用 `run-test.ps1` 执行 CLI；Direct Python 只使用 FT7 allowlist 中的显式目标，不使用任意仓库 `python -m` / `.py`、`-c`/stdin/解释器 flags；非 Python Direct 不属于 Python G0
    - 重要变更前提示用户备份
 
 2. **数据库升级时**
@@ -519,7 +521,7 @@ if ($remaining) {
 ### ⚠️ 注意事项
 
 1. **AI 协作**
-   - AI 不应读取或打印 `config/local.yaml`（可能包含 API 密钥）
+   - AI 不应读取或打印 `<data-root>/config/local.yaml`；它是无密钥 runtime snapshot，不是 API Key 或 Cookie 的存放位置
    - 服务地址、模型和密钥不得通过旧环境变量配置
    - AI 不应直接修改 `.data/` 目录
    - AI 不应跳过安全检查
@@ -530,7 +532,7 @@ if ($remaining) {
    - 大数据量迁移时使用批量处理
 
 3. **版本控制**
-   - `config/local.yaml` 不应提交到 Git（已忽略）
+   - `<data-root>/config/local.yaml` 是 PKV 管理的数据根 runtime state，绝不复制进源码、payload 或用户配置；它不是旧 checkout 的敏感业务配置
    - `.env*` 保持在忽略规则中，仅作为防泄漏兜底
    - `.data-test/` 不应提交到 Git（已忽略）
    - `.data-backup/` 不应提交到 Git（已忽略）

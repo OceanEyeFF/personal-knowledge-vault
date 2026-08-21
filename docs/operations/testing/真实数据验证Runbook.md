@@ -10,6 +10,21 @@
 
 ## 0. 阅读须知与安全红线
 
+### 0.0 当前路径合同
+
+本 Runbook 中的 `<effective-data-root>` 一律按下列顺序解析：
+
+```text
+PKV_DATA_ROOT（若设置）
+  → %USERPROFILE%\.pkv\config.yaml 中的 storage.data_root
+  → %USERPROFILE%\.pkv\data
+```
+
+- `%USERPROFILE%\.pkv\config.yaml` 是唯一可编辑的用户业务配置，可能包含 Provider Key/Cookie；Agent 不读取、打印或修改。
+- `<effective-data-root>/config/local.yaml` 是 PKV 管理、无敏感字段的 runtime snapshot，不是第二份用户配置、不 merge 到 `Config`，也不手工编辑。它与外部配置/当前数据库构建契约不一致时，只提示用户评估 Embedding 重建。
+- checkout 中旧 `.data/`、旧 `config/local.yaml`，以及 held release candidate 的 `%LOCALAPPDATA%\PersonalKnowledgeVault` 只保留为历史用户资产/证据。不得自动探测、接管、复制、迁移或删除；只有用户走 inspect → plan → 展示影响与备份 → 确认 → execute → smoke test 后才能处理。
+- `.data-test/<scenario>/` 始终是测试隔离根，不是用户数据根；它不授予 Agent 读取真实快照或用户配置的权限。
+
 ### 0.1 本 Runbook 是什么
 
 本 Runbook 定义一套**未来在用户明确授权后**可执行的小样本真实数据验证流程，包含三个递进阶段：
@@ -23,7 +38,7 @@
 三个阶段共享同一套授权、脱敏、隔离、判读、门禁、审计、清除与回滚机制（见第 4–14 章）。
 
 **默认离线 + 双通道原则**：三阶段的默认步骤全部离线（不联网），但"离线"不改变执行通道——
-读取真实快照或可能加载 `config/local.yaml` 的步骤一律 user-only（0.2-7/9、8 章）。任何会触发
+读取真实快照、用户配置或生产 runtime snapshot 的步骤一律 user-only（0.2-7/9、8 章）。任何会触发
 真实抓取、LLM 摘要或 Embedding HTTP 的命令（archive、`search --strategy vector/hybrid/auto` 等，
 见 7.3）属于 **live/数据出境阶段**：必须单独授权、单列记录，同样由用户执行，**不作为当前可执行默认步骤**。
 
@@ -31,7 +46,7 @@
 
 以下禁令**不因授权而解除**，适用于所有角色（含 AI 代理 / 自动化）：
 
-1. **AI/自动化永不直接访问生产数据**：禁止读取、复制、导出、上传、打印或修改 `.data/` 及其子目录；禁止读取 `config/local.yaml` 或打印其中任何密钥。
+1. **AI/自动化永不直接访问生产数据**：禁止读取、复制、导出、上传、打印或修改 `<effective-data-root>/` 及其子目录；禁止读取 `%USERPROFILE%\.pkv\config.yaml` 或打印其中任何密钥；不得把 runtime snapshot 当作可编辑配置。
 2. **真实数据进入验证环境只有一条通道**：用户手动执行"授权快照"（见 4.2 与 9.1-S1），把经脱敏/假名化的样本副本放入 `.data-test/<scenario>/`。除此之外的任何"取数"路径都视为违规。
 3. **未经授权单签核（第 4 章），不得对真实数据副本执行任何命令**，包括只读命令。
 4. **默认离线；live/数据出境必须单独授权**。`archive`（URL 或文本）与
@@ -40,12 +55,12 @@
    **live/数据出境阶段**：必须单独授权、单独记录，且只在 `.data-test/` 快照数据根下
    执行；默认离线阶段一律不执行。`PKV_RUN_LIVE` 只是 pytest 测试收集开关（skipif
    门禁），**不是应用层网络开关**——它既不阻止也不代表应用层网络行为，应用层联网
-   由配置（`config/local.yaml` 的 base_url/api_key）驱动。
+   由用户配置（`%USERPROFILE%\.pkv\config.yaml` 的 base_url/api_key）驱动。
 5. **不自动执行生产迁移、删除、恢复**：`scripts/backup-data.ps1`、`restore-data.ps1`、生产 `migrate.py --auto` 均为用户手动命令，AI 不代为执行（详见命令类别 CAT-D，第 8 章）。
 6. **Agent 可读或位于工作区内的**报告、文件日志、模板、证据包和 commit 中不得出现真实数据原文、真实 URL、个人标识符或密钥；只允许出现样本清单中的**假名/占位标识**。用户终端中的原始运行输出不得复制给 Agent；如确需保存，只能进入第 12 章定义的工作区外 E9。当前产品会记录 query/URL/title，故 U1 user-only launcher 未交付前，任何真实快照命令均不得执行。
-7. **双通道执行模型**：执行分两个通道（第 2、8 章）。**Agent-safe 通道**仅限不接触授权快照、不加载 `config/local.yaml` 的静态/合成验证，且必须经过**完整离线 launcher**；**user-only 通道**覆盖所有会读取真实快照、或可能加载 local.yaml 的实际 CLI/MCP/migrate 命令——**无论离线还是 live**，一律由用户在其受控本机终端手动执行，并在 U1 交付后通过专用 launcher 禁用/净化工作区文件日志。Agent 不执行、不读取原始输出，只接收脱敏摘要（第 12 章）。
+7. **双通道执行模型**：执行分两个通道（第 2、8 章）。**Agent-safe 通道**仅限不接触授权快照、不加载用户配置或生产 runtime snapshot 的静态/合成验证，且必须经过**完整离线 launcher**；**user-only 通道**覆盖所有会读取真实快照、用户配置或生产 runtime snapshot 的实际 CLI/MCP/migrate 命令——**无论离线还是 live**，一律由用户在其受控本机终端手动执行，并在 U1 交付后通过专用 launcher 禁用/净化工作区文件日志。Agent 不执行、不读取原始输出，只接收脱敏摘要（第 12 章）。
 8. **G0 是按目标子进程核验的离线入口，不是全局保护**：CAT-0 G0 已交付并逐入口核验。pytest 先经 `tests/offline_entrypoint.py pytest` 在 pytest/plugin 导入前建立 G0，root `tests/conftest.py` 再维持逐用例隔离；CLI/MCP 由 `tests/offline_entrypoint.py` 保护；FT7 generic Direct Python 只接受仓库内 `python -m <module>` 或 `python <script.py>`，在同一进程内以 `runpy` 执行，并在导入产品代码前清理 live/secret/proxy 环境、绑定 base-only Config、安装网络与子进程 fail-closed guard。FT7 明确拒绝 `-c`、stdin 与解释器 flags；非 Python `-Direct` 不属于 Python G0；该机制是进程内防护，**不是 OS sandbox**。它也不改变 user-only CLI/MCP/migrate 的执行通道。不得以“G0 通过”为由让 Agent 执行真实快照命令。
-9. **绝不以"默认离线"为由让 Agent 执行真实快照命令**：离线只说明该命令不联网；是否读取快照、是否加载 local.yaml 这两个事实单独决定执行通道（0.2-7）。`PKV_RUN_LIVE` 绝不是网络开关（7.3）。
+9. **绝不以"默认离线"为由让 Agent 执行真实快照命令**：离线只说明该命令不联网；是否读取快照、用户配置或生产 runtime snapshot 这几个事实单独决定执行通道（0.2-7）。`PKV_RUN_LIVE` 绝不是网络开关（7.3）。
 
 > 违反 0.2 的任何一条，立即暂停流程并按第 11 章失败分流处理。
 
@@ -53,7 +68,7 @@
 
 | 术语 | 定义 |
 | --- | --- |
-| 真实数据（real data） | 用户生产环境 `.data/` 中的内容，或与之一致、未经脱敏的内容 |
+| 真实数据（real data） | 用户生产 `<effective-data-root>/` 中的内容，或与之一致、未经脱敏的内容 |
 | 授权快照（authorized snapshot） | 用户手动创建的真实数据副本（经选择与脱敏），存放在 `.data-test/<scenario>/`，是本流程唯一允许的真实数据载体 |
 | 样本清单（sample manifest） | 版本化的选择说明：包含哪些条目、为何有代表性、脱敏规则、规模上限（模板见 T-B） |
 | 合成 fixture | `tests/fixtures/`、`evals/mcp_quality/` 中的确定性离线数据；**只能证明契约正确，不能证明真实数据质量**（第 16 章） |
@@ -62,8 +77,8 @@
 | disposable clone | 每场景从授权快照制作的独立副本（`.data-test/<scenario>/clones/<clone-id>/`）；所有破坏性演练（删除、可写迁移）只在其上进行，原快照根保持只读（7.1） |
 | 离线种子（offline seed） | `scripts/setup-test-db.py` 等纯本地脚本；必须显式固定 seed/count/output 才具备确定性与场景隔离，用于 archive 的离线替代验证（15.1） |
 | 判读（interpretation） | 人工对照预期结果与实际结果，给出通过/不通过/需复查结论的动作（第 10.2 章） |
-| Agent-safe 通道 | 不接触授权快照、不加载 `config/local.yaml` 的静态/合成验证（离线 pytest / 16-task 闭环、合成种子脚本、已交付的 base-only 工具）；Agent 可执行（2/8 章） |
-| user-only 通道 | 所有会读取真实快照、或可能加载 local.yaml 的实际命令（离线或 live）；只能由用户在其受控本机终端手动执行，Agent 不执行也不读取原始输出（2/8 章） |
+| Agent-safe 通道 | 不接触授权快照、不加载用户配置或生产 runtime snapshot 的静态/合成验证（离线 pytest / 16-task 闭环、合成种子脚本、已交付的 base-only 工具）；Agent 可执行（2/8 章） |
+| user-only 通道 | 所有会读取真实快照、用户配置或生产 runtime snapshot 的实际命令（离线或 live）；只能由用户在其受控本机终端手动执行，Agent 不执行也不读取原始输出（2/8 章） |
 | 完整离线入口 | CAT-0 已交付的按入口 fail-closed 机制：pytest=offline pytest bootstrap + root conftest；CLI/MCP=`offline_entrypoint.py`；Direct Python=FT7 generic guard（仅仓库 `python -m` / `.py`，同进程 `runpy`）。拒绝 `-c`/stdin/flags；非 Python Direct 不在 Python G0 内；不是 OS sandbox（7.1/10.3） |
 | user-only launcher（U1） | 第 19 章待交付的真实数据用户入口：验证授权/路径/只读快照与 writable clone，禁用或净化工作区文件日志；对应 G8，不进入 CI |
 | 模板指纹（template fingerprint） | 记录所用模板的 ID 与版本（如 T-D v1.3），用于审计追溯；不含任何命令实参（12 章） |
@@ -95,16 +110,16 @@
 
 | 角色 | 谁担任 | 责任 | 可自动化 |
 | --- | --- | --- | --- |
-| **数据所有者** | 用户 | 拥有 `.data/`；决定哪些数据可进入样本；确认分级与脱敏规则 | 否 |
+| **数据所有者** | 用户 | 拥有 `<effective-data-root>/`；决定哪些数据可进入样本；确认分级与脱敏规则 | 否 |
 | **授权人** | 用户（可与数据所有者同一人） | 签署/撤销授权单；批准命令类别与留存期限 | 否 |
-| **用户执行者（user-only）** | 用户本人 | 手动执行所有读取真实快照或可能加载 local.yaml 的命令（离线与 live 均如此）；不向 Agent 交付原始输出，只交付脱敏摘要（第 12 章） | 否 |
-| **Agent 执行者（Agent-safe）** | AI 代理 / 自动化（CI、pytest） | 仅执行不接触授权快照、不加载 local.yaml 的静态/合成验证与已交付的 base-only 工具（CAT-0）；整理用户交付的脱敏摘要到记录与判读辅助 | 是（受 CAT-0 约束） |
+| **用户执行者（user-only）** | 用户本人 | 手动执行所有读取真实快照、用户配置或生产 runtime snapshot 的命令（离线与 live 均如此）；不向 Agent 交付原始输出，只交付脱敏摘要（第 12 章） | 否 |
+| **Agent 执行者（Agent-safe）** | AI 代理 / 自动化（CI、pytest） | 仅执行不接触授权快照、不加载用户配置或生产 runtime snapshot 的静态/合成验证与已交付的 base-only 工具（CAT-0）；整理用户交付的脱敏摘要到记录与判读辅助 | 是（受 CAT-0 约束） |
 | **判读人** | 用户（或用户指定的人工） | 对真实数据相关结果给出人工结论（第 10.2 章判读表） | 否 |
 | **审核人**（可选） | 用户或第二位人工 | 复核授权单与最终报告的一致性 | 否 |
 
 责任铁律：
 
-- Agent 不得执行或读取任何会读取授权快照、或可能加载 local.yaml 的命令——即使该命令离线、即使"默认离线"（0.2-7/8/9）。
+- Agent 不得执行或读取任何会读取授权快照、用户配置或生产 runtime snapshot 的命令——即使该命令离线、即使"默认离线"（0.2-7/8/9）。
 - 用户不向 Agent 交付原始 stdout/stderr、实际 URL、真实命令实参、正文、姓名、绝对路径或密钥；只交付脱敏摘要、退出码、计数、哈希、假名 ID、时间、命令类别与模板指纹（第 12 章）。
 - G0 只证明与目标命令匹配的 base-only 受控入口（10.3-G0）；未接入入口的合成 CAT-0 命令保持阻塞，真实快照命令始终 user-only，不得把预检当作全局保护（0.2-8）。
 - 判读结论只能由人工给出；自动门禁（第 10.3 章）只负责"客观可机器校验"的部分，不能替代判读。
@@ -259,7 +274,7 @@ P0/P1 报告产出前必须运行脱敏检查（后续任务 FT1 提供工具，
 - [ ] 报告/日志中不出现快照内已知个人标识原文（用假名映射反向检查）。
 - [ ] 不出现 `api_key`/`token`/`password` 等字段值。
 - [ ] 不出现 `file://`、盘符绝对路径、UNC 路径（产品层已脱敏，报告层再核一遍）。
-- [ ] 不出现 `config/local.yaml` 的任何内容。
+- [ ] 不出现 `%USERPROFILE%\.pkv\config.yaml` 的任何内容，也不出现 production runtime snapshot 的内容。
 - [ ] 证据只保留**脱敏摘要、退出码、计数、哈希、假名 ID、时间、命令类别与模板指纹**；不保存原始 stdout/stderr、URL、命令实参、正文、姓名（第 12 章）。
 
 ### 6.4 例外处理
@@ -274,7 +289,7 @@ P0/P1 报告产出前必须运行脱敏检查（后续任务 FT1 提供工具，
 ### 7.1 隔离强制规则（双通道）
 
 1. **执行通道是硬边界**：CAT-0 的 Python G0 已交付并逐入口核验：pytest 先经 `tests/offline_entrypoint.py pytest` bootstrap，再由 root `tests/conftest.py` 维持逐用例隔离，CLI/MCP 由 `offline_entrypoint.py` 保护，FT7 generic Direct Python 经 wrapper 路由到同一入口。Direct Python 只接受仓库模块/脚本并用同进程 `runpy` 执行；`-c`、stdin、解释器 flags 与仓库外目标均拒绝。非 Python `-Direct` 不属于 Python G0。`scripts/migrate.py` 和所有真实快照命令仍一律 user-only，并在 U1/G8（迁移另加 FT5）交付前保持阻塞。
-2. **`-DataRoot` 只能指向仓库内 `.data-test/` 下的路径**（run-test.ps1 自带校验：拒绝 junction/symlink/硬链接、拒绝生产 `.data` 路径，并遮蔽敏感参数）。该校验只约束命令指向，**不使命令变为 Agent 可执行**。
+2. **`-DataRoot` 只能指向仓库内 `.data-test/` 下的路径**（run-test.ps1 自带校验：拒绝 junction/symlink/硬链接、拒绝生产 `<effective-data-root>` 路径，并遮蔽敏感参数）。该校验只约束命令指向，**不使命令变为 Agent 可执行**。
 3. 快照与 clone 布局：
 
 ```text
@@ -288,14 +303,15 @@ CLONE_ID   -> .data-test/<scenario>/clones/<clone-id>    # 破坏性演练唯一
 ```
 
 4. 每个阶段使用**独立场景名**（`real-sample-p0` / `real-eval-p1` / `real-regression-p2`），互不复用数据根；破坏性演练的 `clone-id` 由用户生成（如 `c-<yyyyMMdd>-<序号>`）并在 T-G/T-H 记录。
-5. **G0 按目标命令核验**：wrapper、root `tests/conftest.py`、`offline_runtime.py` 与 `offline_entrypoint.py` 已成套集成；pytest、CLI/MCP、16-task、合成 seed 与 dev-vault 重建/`--check-only` 已按各自入口核验。generic Direct Python 在导入产品代码前清理 live/secret/proxy、绑定 base-only Config 并安装网络/子进程 guard；它是 Python 进程内防护而非 OS sandbox。路径预检单独通过不构成 G0，非 Python Direct 也不自动获得 Python G0。预检不得用 `config show`（其加载 local.yaml，7.2）。
+5. **G0 按目标命令核验**：wrapper、root `tests/conftest.py`、`offline_runtime.py` 与 `offline_entrypoint.py` 已成套集成；pytest、CLI/MCP、16-task、合成 seed 与 dev-vault 重建/`--check-only` 已按各自入口核验。generic Direct Python 在导入产品代码前清理 live/secret/proxy、绑定 base-only Config 并安装网络/子进程 guard；它是 Python 进程内防护而非 OS sandbox。路径预检单独通过不构成 G0，非 Python Direct 也不自动获得 Python G0。预检不得用 `config show`（它可能读取用户配置或生产 runtime snapshot，7.2）。
 6. **破坏性演练只能在 disposable clone 内执行**：删除/可写迁移前，用户从授权快照制作独立副本 `.data-test/<scenario>/clones/<clone-id>/`（见 15.5 制备步骤）；演练失败直接丢弃 clone 重建，快照根保持只读，不做"事后回滚"（第 14 章）。
 7. **clone 制备与验证（仅用户，可审计步骤）**：① 用户复制快照根到 `.data-test/<scenario>/clones/<clone-id>/`（db/vault/vectors 齐全）；② 用户以只读命令验证 clone 可打开且条目数与快照一致，并记录条目数哈希；③ 用户记录 `clone-id`、制备时间、源快照与目录哈希（T-G/T-H）；④ 制备后快照根恢复只读，clone 成为破坏性演练的唯一操作对象。
 
-### 7.2 凭据隔离
+### 7.2 凭据与 runtime snapshot 隔离
 
-- `config/local.yaml` 只由用户维护；**任何角色**（含 Agent）不得读取、打印、复制或上传。
-- AI/自动化**不得执行任何会加载 local.yaml 的命令**（`config show` / `config get` / 任何未接入 base-only 入口的 CLI/MCP/migrate 命令）；预检只走 base-only 受控入口（7.1-5）。
+- `%USERPROFILE%\.pkv\config.yaml` 只由用户维护；**任何角色**（含 Agent）不得读取、打印、复制或上传。
+- `<effective-data-root>/config/local.yaml` 是 secret-free、PKV 管理的 runtime snapshot；不作为用户配置或凭据来源，不得手工编辑。它与外部配置/数据库构建契约不一致时，只能提示用户评估重建。
+- AI/自动化**不得执行任何会读取用户配置、生产 runtime snapshot 或真实快照的命令**（`config show` / `config get` / 任何未接入 base-only 入口的 CLI/MCP/migrate 命令）；预检只走 base-only 受控入口（7.1-5）。
 - `run-test.ps1` 只遮蔽命令行中的凭据，不能遮蔽应用日志里的 query/URL/title。真实快照命令必须等待 U1：禁用工作区文件日志或在写入前源头脱敏；事后 G5 扫描不能替代该前置。
 - 报告中禁止出现任何密钥或密钥前缀；必要时写 `<REDACTED>`。
 
@@ -309,8 +325,8 @@ CLONE_ID   -> .data-test/<scenario>/clones/<clone-id>    # 破坏性演练唯一
 补充说明（勿混淆开关语义）：
 
 - `PKV_RUN_LIVE` 只是 **pytest 收集开关**（`skipif os.getenv("PKV_RUN_LIVE") != "1"`），只作用于带 `network` marker 的测试用例；它**绝不是应用层网络开关**，不阻止也不代表 CLI/MCP 发起的 Provider 出站连接。这里不是指 MCP HTTP transport；M13 MCP 只发布 stdio。
-- 应用层联网由 `config/local.yaml` 的 `base_url` / `api_key` 驱动；判断"某步是否联网"应看命令本身（archive / vector / hybrid 必然联网），而不是看环境变量。
-- **"纯离线"只说明不联网，不改变执行通道**：读取真实快照或可能加载 local.yaml 的命令，无论离线还是 live，一律 user-only（0.2-7/9）。live/数据出境阶段不是默认步骤。
+- 应用层联网由 `%USERPROFILE%\.pkv\config.yaml` 的 `base_url` / `api_key` 驱动；判断"某步是否联网"应看命令本身（archive / vector / hybrid 必然联网），而不是看环境变量。
+- **"纯离线"只说明不联网，不改变执行通道**：读取真实快照、用户配置或生产 runtime snapshot 的命令，无论离线还是 live，一律 user-only（0.2-7/9）。live/数据出境阶段不是默认步骤。
 
 ---
 
@@ -321,14 +337,14 @@ CLONE_ID   -> .data-test/<scenario>/clones/<clone-id>    # 破坏性演练唯一
 | 类别 | 内容 | 数据接触 | 执行通道 |
 | --- | --- | --- | --- |
 | **CAT-0 Agent-safe 静态/合成** | 静态文档/交叉引用检查；经各自 G0 入口运行的 pytest、CLI/MCP；经 FT7 generic Direct guard 运行的 16-task、固定参数合成 seed、dev-vault 重建与 `--check-only`；已交付的 base-only 工具 | 无真实快照 | Agent + 用户 |
-| **CAT-U 用户手动·快照命令** | 会读取真实快照或可能加载 local.yaml 的实际命令，离线与 live 均含：`stats` / `list` / `show` / BM25、MCP 只读 Tool、vector/hybrid/auto、archive；**U1 user-only launcher 未交付前全部阻塞** | 快照只读；archive 仅 writable clone | **仅用户**（Agent 只接收脱敏摘要，12 章） |
+| **CAT-U 用户手动·快照命令** | 会读取真实快照、用户配置或生产 runtime snapshot 的实际命令，离线与 live 均含：`stats` / `list` / `show` / BM25、MCP 只读 Tool、vector/hybrid/auto、archive；**U1 user-only launcher 未交付前全部阻塞** | 快照只读；archive 仅 writable clone | **仅用户**（Agent 只接收脱敏摘要，12 章） |
 | **CAT-C 迁移演练** | `scripts/migrate.py --version` / `--health-check` / `--dry-run`；可写演练 `--auto --no-backup` | 仅 `.data-test/<scenario>/clones/<clone-id>` 内 | **仅用户**（需 FT5 + U1 + 授权；G0 不适用，15.5） |
-| **CAT-D 生产触碰** | `backup-data.ps1`、`restore-data.ps1`、生产库 `migrate.py --auto`、生产 `.data/` 任何操作 | 生产 | **仅用户** |
+| **CAT-D 生产触碰** | `backup-data.ps1`、`restore-data.ps1`、生产库 `migrate.py --auto`、生产 `<effective-data-root>/` 任何操作 | 生产 | **仅用户** |
 
 说明：
 
-- 所有真实快照命令（含"离线"的 stats/list/show/bm25）都可能加载 local.yaml，因此归 CAT-U；**不存在 Agent 可安全执行的"离线真实快照命令"**（0.2-7/9）。
-- 未来工具（FT3/FT5/FT6）若以 base-only 方式交付（不加载 local.yaml、不联网、输出仅脱敏摘要），可归 CAT-0；未交付或未证明 base-only 前一律按 user-only 处理（第 19 章）。
+- 所有真实快照命令（含"离线"的 stats/list/show/bm25）都可能读取用户配置或生产 runtime snapshot，因此归 CAT-U；**不存在 Agent 可安全执行的"离线真实快照命令"**（0.2-7/9）。
+- 未来工具（FT3/FT5/FT6）若以 base-only 方式交付（不加载用户配置或生产 runtime snapshot、不联网、输出仅脱敏摘要），可归 CAT-0；未交付或未证明 base-only 前一律按 user-only 处理（第 19 章）。
 
 ### 8.2 阶段 × 命令类别矩阵
 
@@ -376,7 +392,7 @@ writable-clone:    python scripts/migrate.py --health-check | --dry-run
 - [ ] 授权单已签核（4.1），样本清单已定稿（5.3）。
 - [ ] P0 排练基底就绪：**（#3 dev vault 已就绪）或（合成样本预演降级）**，二选一，并明确写入执行记录（18.2）。
 - [ ] 隔离核验通过（G4）：用户先核对授权单、场景/clone 路径与快照只读状态；CAT-U/C 还必须由 U1/G8 再次验证。FT7/G0 仅负责合成 CAT-0 入口。
-- [ ] 备份策略确认：任何会修改快照的命令前，用户已确认生产 `.data/` 备份状态（`backup-data.ps1` 由用户决定执行）。
+- [ ] 备份策略确认：任何会修改快照的命令前，用户已确认生产 `<effective-data-root>/` 备份状态（`backup-data.ps1` 由用户决定执行）。
 - [ ] 破坏性演练的 disposable clone 目录约定已确认（7.1-6/7.1-7：`clones/<clone-id>` 制备与验证流程）。
 
 ### 9.1 P0 小样本预演
@@ -504,7 +520,7 @@ delete 完整性（FT3 工具）。未纳入指标必须在报告中以"剔除�
 | G4 隔离核验 | 用户核对授权单、场景/clone 路径与快照只读状态；CAT-U/C 另要求 G8/U1，通过受控摘要记录，**不用 `config show`** | 无生产路径；写操作仅 clone；工作区无 raw log | P0/P1/P2 每步前 |
 | G5 脱敏扫描 | 报告不含假名映射原文/密钥/盘符路径，且只含退出码/计数/哈希/假名/脱敏摘要/模板指纹（后续任务 FT1 工具） | 零命中 | P1/P2 报告产出前 |
 | G6 指标漂移 | P2 趋势对比：任一**默认指标**相对下降 > 5pp（绝对值） | 触发分流 | P2 |
-| G7 真实快照 MCP harness | **待实现前置（FT6）**：16-task runner 当前固定 `OfflineMcpScenario`，不能跑真实快照；G7 在 FT6 交付前**不可执行**，从 P1/P2 默认门禁剔除（离线证据契约门禁仍由 G2 承担）。FT6 交付后仅当其为 base-only（不加载 local.yaml、不联网、输出仅脱敏摘要）才可归 CAT-0，否则 user-only | 交付后：100% 可读（否则降级记录） | P1/P2（FT6 交付后） |
+| G7 真实快照 MCP harness | **待实现前置（FT6）**：16-task runner 当前固定 `OfflineMcpScenario`，不能跑真实快照；G7 在 FT6 交付前**不可执行**，从 P1/P2 默认门禁剔除（离线证据契约门禁仍由 G2 承担）。FT6 交付后仅当其为 base-only（不加载用户配置或生产 runtime snapshot、不联网、输出仅脱敏摘要）才可归 CAT-0，否则 user-only | 交付后：100% 可读（否则降级记录） | P1/P2（FT6 交付后） |
 | **G8 user-only launcher** | U1：授权令牌 + `.data-test`/clone 路径验证 + 不回显原始 argv + 工作区文件日志禁用/源头脱敏 + stdout/stderr 捕获后仅输出脱敏摘要；不得复用强制离线的 G0 launcher 执行 live | 原始 query/URL/title/argv 不落入工作区或 Agent 输出；快照写入为 0 | 所有 CAT-U/CAT-C 硬前置 |
 
 > 门禁只负责客观可机器校验部分；人工判读表（10.2）不可被门禁替代。
@@ -607,7 +623,7 @@ delete 完整性（FT3 工具）。未纳入指标必须在报告中以"剔除�
 
 **状态**：**live/数据出境阶段**（需单独授权，默认不执行）。`archive` 经 `archive-url` / `archive-text` 工作流触发 `FetchStep`（URL 抓取）与 `AnalyzeStep`（DeepSeek 摘要/标签；`config/workflows/*.yaml` 固定含 `ai_analyze`），向量索引写入另触发 Embedding HTTP——这些网络行为**无法通过开关关闭**（7.3）。
 
-**执行通道**：**user-only**（8.1 CAT-U）：`archive` 会加载 local.yaml，并写入由快照制备的 writable clone；只能由用户经 U1 执行。Agent 不执行、不读取原始输出，只接收脱敏摘要。
+**执行通道**：**user-only**（8.1 CAT-U）：`archive` 会读取用户配置并写入由快照制备的 writable clone；只能由用户经 U1 执行。Agent 不执行、不读取原始输出，只接收脱敏摘要。
 
 **验证内容（授权后，用户执行）**：真实内容归档后三重存储一致（Markdown 主存储 + SQLite 索引 + 向量索引按需）、Front Matter 字段完整、处理器选择正确（wechat/zhihu/chat/generic/text_fallback）。
 
@@ -641,7 +657,7 @@ U1 launcher -> DataRoot=.data-test/real-eval-p1/clones/<archive-clone-id>
 
 **验证内容**：真实文本上的检索相关性与排序；中文分词效果（jieba）；英文回退。
 
-- **默认（离线）**：`search --strategy bm25`（FTS5，无 Embedder）与 MCP `search_knowledge` strategy=bm25——**user-only**（命令会加载 local.yaml 并读取快照，8.1）。
+- **默认（离线）**：`search --strategy bm25`（FTS5，无 Embedder）与 MCP `search_knowledge` strategy=bm25——**user-only**（命令会读取用户配置/生产 runtime snapshot 并读取快照，8.1）。
 - **live/数据出境（单独授权后）**：`--strategy vector/hybrid`、路由到 Hybrid 的 `auto`（当前为 ≥5 tokens）及 MCP 对应语义检索路径会触发 Embedding Provider——**user-only**。短查询 `auto` 路由到 BM25，不提前构造 Provider，但读取真实快照仍是 user-only。
 
 **目标命令意图（全部由用户经 U1 执行；Agent 只接收脱敏摘要）**：
@@ -662,7 +678,7 @@ U1 launcher -> readonly snapshot -> search "<占位查询>" --strategy hybrid --
 
 **目标离线能力（已逐入口核验）**：G2 16-task 闭环经 FT7 generic Direct guard 运行（证据契约门禁，CAT-0）；MCP 只读 bm25 工具冒烟经受保护的 `offline_entrypoint.py` 运行，可覆盖 `search_knowledge` strategy=bm25 / `get_entry` / `query_subgraph` / `explain_relation` / `collect_evidence`(文档级) / `find_bridges` / `timeline_of` / `contrast`。后者只要作用于真实快照即 user-only，仍需 U1/G8。
 
-**FT6 交付后的验证内容**：`collect_evidence` / `explain_relation` / `query_subgraph` / `timeline_of` / `contrast` 在真实样本上的证据质量与 citation 可解析性；`pkv://entries/{id}/chunks/{chunk_id}` 等 locator 可经 MCP Resource 读取。FT6 交付后仅当其以 base-only 方式实现（不加载 local.yaml、不联网、输出仅脱敏摘要）才可归 CAT-0；否则仍 user-only（8.1、10.3-G7）。
+**FT6 交付后的验证内容**：`collect_evidence` / `explain_relation` / `query_subgraph` / `timeline_of` / `contrast` 在真实样本上的证据质量与 citation 可解析性；`pkv://entries/{id}/chunks/{chunk_id}` 等 locator 可经 MCP Resource 读取。FT6 交付后仅当其以 base-only 方式实现（不加载用户配置或生产 runtime snapshot、不联网、输出仅脱敏摘要）才可归 CAT-0；否则仍 user-only（8.1、10.3-G7）。
 
 **判读点**：证据相关性（人工）、citation 可解析率（FT6 交付后自动，G7）、partial Tool 的 `implementation_level/limitation_notes/evidence_sources` 是否诚实公开、无本机绝对路径泄漏。
 
@@ -672,7 +688,7 @@ U1 launcher -> readonly snapshot -> search "<占位查询>" --strategy hybrid --
 
 **执行边界**：只能在 **disposable clone**（`.data-test/<scenario>/clones/<clone-id>/`）内执行（7.1-6/7）；快照根保持只读，不做"事后回滚"。
 
-> **现状缺口与门禁**：当前无 CLI delete 子命令，delete 位于存储层（`SQLiteStore.delete_entry` / `MarkdownStore.delete`），且没有在 clone 上执行删除并核验四层一致的安全执行器。因此 **delete 完整性指标默认从 P1/P2 指标剔除**（10.1）；若纳入，**FT3 工具是其硬前置**——FT3 未交付前 delete 不进入 P1 DoD，也不计分（9.2）。执行通道：FT3 交付后若为 base-only（不加载 local.yaml、不联网、输出仅脱敏摘要）可归 CAT-0，否则 user-only（8.1）。
+> **现状缺口与门禁**：当前无 CLI delete 子命令，delete 位于存储层（`SQLiteStore.delete_entry` / `MarkdownStore.delete`），且没有在 clone 上执行删除并核验四层一致的安全执行器。因此 **delete 完整性指标默认从 P1/P2 指标剔除**（10.1）；若纳入，**FT3 工具是其硬前置**——FT3 未交付前 delete 不进入 P1 DoD，也不计分（9.2）。执行通道：FT3 交付后若为 base-only（不加载用户配置或生产 runtime snapshot、不联网、输出仅脱敏摘要）可归 CAT-0，否则 user-only（8.1）。
 
 **判读点**：删除后 `show <id>` 返回不存在；`list` 计数减少；chunk/向量/关系无孤儿（FT3 提供断言）。
 
@@ -680,7 +696,7 @@ U1 launcher -> readonly snapshot -> search "<占位查询>" --strategy hybrid --
 
 **验证内容**：快照库在 disposable clone 上从历史 schema baseline 迁移到目标版本成功；条目数/字段值在迁移前后一致；`schema_version` 更新。
 
-**执行通道**：**user-only**（CAT-C）：`scripts/migrate.py` 用 `Config()`（默认加载 local.yaml）读取 DB 路径，且未接入 base-only 受控入口；`--auto` 不带 `--no-backup` 时还会把备份写入 `.data-backup/`。`scripts/run-test.ps1` 当前会明确拒绝 `migrate.py` 并返回 exit 2，因此不得提供或使用任何 wrapper migrate 命令。迁移只能在 FT5 + U1/G8 + 用户授权齐备后由专用 user-only launcher 执行；Agent 不执行、不读取原始输出（0.2-7、8.1）。
+**执行通道**：**user-only**（CAT-C）：`scripts/migrate.py` 用 `Config()` 解析用户配置和有效数据根，且未接入 base-only 受控入口；迁移可能创建备份。历史 checkout 的 `.data-backup/` 语义不构成当前运行布局，且不得自动接管。`scripts/run-test.ps1` 当前会明确拒绝 `migrate.py` 并返回 exit 2，因此不得提供或使用任何 wrapper migrate 命令。迁移只能在 FT5 + U1/G8 + 用户授权齐备后由专用 user-only launcher 执行；Agent 不执行、不读取原始输出（0.2-7、8.1）。
 
 **可审计步骤（全部由用户执行）**：
 
@@ -701,7 +717,7 @@ U1 launcher -> DataRoot=.data-test/<scenario>/clones/<clone-id>
              -> python scripts/migrate.py --auto --no-backup
 ```
 
-> **DataRoot 支持前置**：`migrate.py` 当前没有显式 `--db-path`，需 FT5 提供可审计的 clone 寻址与前后一致性断言。它作为 user-only 命令可以加载 local.yaml，但必须由 U1 将 DB_PATH 锁定到 clone、禁用/净化工作区日志并验证授权；不得声称 FT7/G0 base-only 预检保护了 migration。
+> **DataRoot 支持前置**：`migrate.py` 当前没有显式 `--db-path`，需 FT5 提供可审计的 clone 寻址与前后一致性断言。它作为 user-only 命令可以读取用户配置/生产 runtime snapshot，但必须由 U1 将 DB_PATH 锁定到 clone、禁用/净化工作区日志并验证授权；不得声称 FT7/G0 base-only 预检保护了 migration。
 
 **判读点**：迁移前条目数 = 迁移后条目数；抽样 3 条 `show` 字段一致；迁移日志无异常（均为用户执行的脱敏摘要）。生产迁移永远由用户按[数据库迁移指南](../数据库迁移指南.md)执行。
 
@@ -833,7 +849,7 @@ U1 launcher -> DataRoot=.data-test/<scenario>/clones/<clone-id>
 | FT7（已交付） | 完整离线 launcher 扩展：pytest、CLI/MCP 与 generic Direct Python 均有匹配入口；Direct Python 仅仓库 `python -m` / `.py`、同进程 `runpy`，清理 live/secret/proxy、绑定 base-only Config、安装网络/子进程 guard，拒绝 `-c`/stdin/flags | 安全工具 | **已解除受支持 Direct Python 的 G0 / CAT-0 阻塞**；非 Python Direct 不在 Python G0 内，guard 不是 OS sandbox | 已完成逐入口核验 |
 | U1 | user-only 真实数据 launcher：验证授权令牌与 `.data-test` 边界、快照只读/clone 可写策略、live 授权与预算；不回显原始 argv，禁用工作区文件日志或源头脱敏，捕获输出后只生成退出码/计数/哈希/假名摘要 | 用户安全工具 | **G8；所有 CAT-U/CAT-C 硬前置**，解决 raw query/URL/title/argv 落盘与 G0 强制离线不适用于 live 的问题 | FT1 脱敏规则；用户审阅 |
 
-所有后续任务必须满足：只在 `.data-test/` 下运行；不得读取 `.data/`；除 U1 明确授权的 live 命令外不得联网。FT1–FT6 只有以 base-only、无网络、**不读取真实快照**、仅脱敏输出交付才可进入 CAT-0；任何读取真实快照的实现仍为 user-only。已交付 FT7 维持同一合同。U1 明确为 user-only，可加载用户凭据但不得把凭据或原始数据写入工作区/交给 Agent。进入默认 CI 前先过 F1–F5 分流（U1 不进入 CI）。
+所有后续任务必须满足：只在 `.data-test/` 下运行；不得读取 `<effective-data-root>/`、用户配置或生产 runtime snapshot；除 U1 明确授权的 live 命令外不得联网。FT1–FT6 只有以 base-only、无网络、**不读取真实快照**、仅脱敏输出交付才可进入 CAT-0；任何读取真实快照的实现仍为 user-only。已交付 FT7 维持同一合同。U1 明确为 user-only，可加载用户凭据但不得把凭据或原始数据写入工作区/交给 Agent。进入默认 CI 前先过 F1–F5 分流（U1 不进入 CI）。
 
 ---
 
@@ -844,10 +860,10 @@ U1 launcher -> DataRoot=.data-test/<scenario>/clones/<clone-id>
 - [x] 双通道模型一致：CAT-0（Agent-safe）vs CAT-U/CAT-C/CAT-D（user-only）；全文无"Agent 可执行离线真实快照命令"的表述（0.2-7/9、2、8、9）。
 - [x] G0 语义正确：pytest、CLI/MCP 与 FT7 Direct Python 已按目标子进程逐入口验证；FT7 只支持仓库 `python -m` / `.py`，拒绝 `-c`/stdin/flags，非 Python Direct 不属于 Python G0，且进程内 guard 不是 OS sandbox；user-only 命令另由 U1/G8 保护。
 - [x] 证据契约统一：T-D/E3 无"原样记录"；版本化/Agent 可读记录仅含脱敏摘要、退出码、计数、哈希、假名 ID、时间、命令类别与模板指纹；无 raw stdout/stderr、实际 URL、真实命令实参、正文、姓名、绝对路径、密钥（6.3、10.2、12 章、模板）。
-- [x] 原始证据仅存于**工作区之外、用户 ACL 隔离、Agent 不可读**的位置；未将 `.data-backup/` 或任何工作区内目录称为 Agent 不可读（12/13 章、T-G）。
+- [x] 原始证据仅存于**工作区之外、用户 ACL 隔离、Agent 不可读**的位置；未将历史 checkout `.data-backup/` 或任何工作区内目录称为 Agent 不可读（12/13 章、T-G）。
 - [x] clone/migration 步骤可审计：`clones/<clone-id>` 路径、制备与验证（7.1-7）、历史 schema baseline 与 pending migration 要求（15.5）。
 - [x] 全文未宣称 `PKV_RUN_LIVE` 为网络开关（0.2-9、7.3）。
-- [x] 仅 CAT-0 提供当前可复制命令，且明确依赖完整 G0；真实快照仅保留 U1 目标接口，不提供可误执行的裸 `run-test.ps1` 命令；无生产路径示例。
+- [x] 仅 CAT-0 提供当前可复制命令，且明确依赖完整 G0；真实快照仅保留 U1 目标接口，不提供可误执行的裸 `run-test.ps1` 命令；文中不出现已解析的真实生产绝对路径。
 - [x] `git diff --check` 无空白错误；本文件不含任何真实数据。
 
 ### 20.2 相关文档
@@ -864,7 +880,7 @@ U1 launcher -> DataRoot=.data-test/<scenario>/clones/<clone-id>
 
 ---
 
-**文档版本**: v1.4（2026-07-31 P0 收口：CAT-0 G0/FT7 已交付，dev-vault 已核验，真实数据门禁不变）
+**文档版本**: v1.5（2026-08-21：路径合同切换到用户 profile / effective data root；CAT-0、真实数据门禁不变）
 **创建日期**: 2026-07-31
-**状态**: CAT-0 G0 已按 pytest、CLI/MCP、FT7 Direct Python 逐入口交付并核验；真实数据尚未执行，CAT-U/CAT-C 仍等待 U1/G8 与用户授权，migration 另需 FT5
+**状态**: CAT-0 G0 已按 pytest、CLI/MCP、FT7 Direct Python 逐入口交付并核验；真实数据尚未执行，CAT-U/CAT-C 仍等待 U1/G8 与用户授权，migration 另需 FT5。旧 checkout 路径与 held release artifacts 仅历史保留，不触发自动迁移。
 **作者**: AI Agent（P2 任务）

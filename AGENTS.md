@@ -33,9 +33,14 @@ Before making a change, read the canonical project guide in
 - [Tests](./tests/AGENTS.md)
 - [Configuration](./config/AGENTS.md)
 
-The default user-data-root and installation-topology discussion is intentionally
-deferred; do not change that product-policy decision as part of documentation
-maintenance.
+The personal runtime layout is governed by
+[ADR：用户配置与运行数据布局](./docs/overview/ADR-用户配置与运行数据布局-2026-08.md):
+the only editable user configuration is `%USERPROFILE%\\.pkv\\config.yaml`,
+the default data root is `%USERPROFILE%\\.pkv\\data`, and
+`<data-root>/config/local.yaml` is PKV-managed, secret-free runtime state rather
+than an editable configuration layer. `PKV_DATA_ROOT` and `PKV_LOG_LEVEL` are
+the formal product environment overrides. Do not change this policy, the held
+historical release layout, or any installation topology incidentally.
 
 The PySide6 desktop wrapper lives in the separate `pkv-GUI` repository and is
 not a module, test lane, or packaged entrypoint of this headless repository.

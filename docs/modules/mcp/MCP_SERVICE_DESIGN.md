@@ -4,17 +4,23 @@
 >
 > **文档版本**: v1.2
 > **创建日期**: 2026-02-16
-> **最后更新**: 2026-08-07 (对齐 M13 W2 stdio-only 发布合同)
+> **最后更新**: 2026-08-20 (对齐当前 MCP runtime / 单写者合同)
 > **作者**: 幽浮喵 (猫娘工程师)
 > **目标版本**: v0.7.0
 
 > **当前代码补注（2026-08-07）**：
 > - 本文主体仍保留 `v0.7.0` 设计稿结构；当前代码真相以 `README.md`、`docs/overview/当前事实基线-2026-03.md` 与 `src/mcp/tools.py` 为准。
-> - 当前 MCP 代码基线已扩展为 `14` 个 Tool，其中 `query_subgraph`、`explain_relation`、`collect_evidence`、`find_bridges`、`timeline_of`、`contrast` 已落地。
+> - 当前 MCP 代码基线为 `15` 个 Tool（13 个只读 + 2 个写入）；`get_runtime_status` 只读报告运行时 readiness 与下一步计划，不会初始化、修复或探测 Provider。`query_subgraph`、`explain_relation`、`collect_evidence`、`find_bridges`、`timeline_of`、`contrast` 已落地。
 > - `find_bridges`、`timeline_of`、`contrast` 仍属于 `partial-v1`，公开 `implementation_level=partial`：当前分别补入 `graph_bridge_signal`、`structured_time_fields`、`relation_graph_signal` 等受限推理信号。
 > - 当前已注册 `9` 条 Resource；chunk、metadata field 和 relation locator 都可直接读取。公开 MCP 的结构化字段不返回本机文件路径，写入 Tool 以 `pkv://entries/{id}` locator 回传新条目；entry Markdown 正文保持原文，不做内容级路径替换。
 > - M13 Developer Preview 只发布 MCP stdio。HTTP transport、监听端口和 Bearer Token 均已从当前入口移除；非 stdio 请求会在读取应用配置、bootstrap 数据或 bind 前 fail-closed。
 > - 默认验证离线，只使用合成数据与 `.data-test` 隔离根，不连接真实 Provider、不读取真实 API key 或真实 Vault。
+
+> **历史设计阅读边界（2026-08-20）**：第 3–6 节中 `src.*`、直接构造
+> `WorkflowEngine`、`SQLiteStore` 或 `QueryRouter` 的示例和映射是 v0.7.0 的历史设计
+> 证据，**不是**当前集成或新增实现指南。当前 MCP adapter 通过共享
+> `KnowledgeApplication` 和 runtime lifecycle 取得已验证的依赖图；外部 Wrapper 只可
+> 导入 `pkv_kernel`，不得把这些历史 `src.*` 示例当成可支持的集成路径。
 
 ---
 
@@ -32,7 +38,7 @@
 ### 设计原则
 
 - **只读优先**：首期以查询能力为主，写入操作需确认
-- **现有复用**：直接调用 `src/` 下的现有模块，不重复实现
+- **现有复用（历史设计语境）**：本节的直接 `src/` 映射仅保留设计背景；当前 adapter 必须复用共享 application composition，而不是按示例自行构造内部依赖
 - **标准协议**：严格遵循 MCP 规范（2025-11-05 版本）
 - **轻量部署**：M13 仅支持由本地 MCP Client 管理的 stdio
 
@@ -53,6 +59,7 @@ AI Agent 可调用的操作能力：
 | `archive_url` | 归档网页 URL | url | 归档结果 | **P1** |
 | `archive_text` | 归档纯文本 | text, title? | 归档结果 | **P1** |
 | `get_stats` | 知识库统计信息 | - | 统计数据 | **P1** |
+| `get_runtime_status` | 只读检查运行时状态 | - | readiness、issues 与下一步计划 | **P0** |
 | `get_related` | 获取关联知识 | knowledge_id, limit? | 关联条目列表 | **P2** |
 | `query_subgraph` | 查询关系子图 | knowledge_id, depth?, relation_types?, max_nodes? | 节点、边和截断状态 | **P1** |
 | `explain_relation` | 解释两条目关系 | source_knowledge_id, target_knowledge_id, max_depth? | 最短关系路径与证据 | **P1** |
@@ -61,7 +68,7 @@ AI Agent 可调用的操作能力：
 | `timeline_of` | 查询弱时间线 | topic, top_k? | partial-v1 timeline 线索 | **P1** |
 | `contrast` | 比较两个主题 | topic_a, topic_b, top_k? | partial-v1 contrast 线索 | **P1** |
 
-W2 adapter 合同要求 12 个只读 Tool 都返回稳定 `status` 与 `issues`，不能把底层异常伪装成空结果。检索类状态使用 `success/no_hits/invalid/error/degraded`；`degraded` 可以携带仍可用的部分结果，但必须带机器可读 issue。三个探索 Tool 的响应还必须保留 `implementation_level=partial` 和 `limitation_notes`，不得宣称 full。
+历史 W2 adapter 合同仍覆盖原有 12 个内容访问只读 Tool：它们返回稳定 `status` 与 `issues`，不能把底层异常伪装成空结果。检索类状态使用 `success/no_hits/invalid/error/degraded`；`degraded` 可以携带仍可用的部分结果，但必须带机器可读 issue。新增的 `get_runtime_status` 遵循 [Runtime 生命周期合同](../../specs/interfaces/Runtime生命周期合同.md)，返回无敏感信息的 readiness、issue 与计划，不执行 bootstrap、repair 或 Provider probe。三个探索 Tool 的响应还必须保留 `implementation_level=partial` 和 `limitation_notes`，不得宣称 full。
 
 ### 2.2 Resources（资源）
 
@@ -702,7 +709,9 @@ def idea_sharpen(content: str, entry_id: str = "") -> str:
 }
 ```
 
-Windows 客户端通过 `run-windows.ps1` 固定使用 `py311-private`。Provider 配置由该工作目录下 Git 忽略的 `config/local.yaml` 提供，不放入 MCP 客户端 JSON。
+Windows 客户端通过 `run-windows.ps1` 固定使用 `py311-private`。唯一可编辑的 Provider
+配置位于 `%USERPROFILE%\.pkv\config.yaml`，不放入 MCP 客户端 JSON；
+`<data-root>/config/local.yaml` 是 PKV 管理的无密钥 runtime snapshot，不是配置来源。
 
 ### 5.2 不支持的远程方式
 
@@ -710,7 +719,12 @@ M13 不提供 HTTP URL、监听端口或远程客户端配置。不要把历史�
 
 ---
 
-## 6. 与现有模块的集成
+## 6. 与现有模块的集成（历史直接调用映射；不可作为当前实现指南）
+
+本节表格和代码片段保留 v0.7.0 设计时的依赖调查。当前 MCP 只在 status-only 启动时执行
+只读 runtime inspection；首个 READY 后端请求才配置一次共享 `KnowledgeApplication`。新增
+MCP handler 不得据此表重新直接构造 `WorkflowEngine`、Store、Retriever 或 Provider，也不应
+令外部调用方依赖 `src.*`。
 
 ### 6.1 直接调用映射
 
@@ -749,6 +763,13 @@ class SQLiteStore:
 - **写入操作** (archive_url, archive_text):
   - stdio 模式：AI Agent 自行决策（用户已授权）
   - HTTP 模式：M13 不支持，入口在运行时初始化前拒绝
+
+### 7.1.1 共享数据根并发
+
+- 数据根采用一写多读：读取 Tool/Resource 可与一个写操作并行，第二个写操作不得并行。
+- 写入 Tool 无法取得 write lease 时返回稳定失败 envelope：
+  `{success: false, terminal: "error", error_code: "write_busy", retryable: true, issues: [...]}`。
+- Client 可退避后重试；不得把 `write_busy` 转成成功、空结果或另起未协调的写操作。
 
 ### 7.2 输入验证
 
@@ -841,7 +862,7 @@ anyio>=4.0.0          # 异步 I/O 工具库（FastMCP 自身已依赖，通常�
 
 ## 10. 历史 M8/M9 实施路线
 
-> 下列 checkbox 是设计阶段留下的任务清单，不代表当前完成状态，也不是 M13 W2 验收证据。当前运行 manifest 为 14 Tool（12 只读 + 2 写入）、9 Resource、3 Prompt；W2 状态以本文开头的现行补注、真实注册清单和离线门禁为准。
+> 下列 checkbox 是设计阶段留下的任务清单，不代表当前完成状态，也不是 M13 W2 验收证据。当前运行 manifest 为 15 Tool（13 只读 + 2 写入）、9 Resource、3 Prompt；历史 W2 的 14 Tool candidate surface 仍保留在其 release-evidence 文档中。当前状态以本文开头的现行补注、真实注册清单和离线门禁为准。
 
 ### M8: 只读服务 (v0.7.0-alpha)
 
@@ -874,7 +895,7 @@ MCP Server 复用项目现有的 `src/utils/logger.py` 日志基础设施：
 
 | 传输模式 | stdout | stderr | 日志文件 |
 |---------|--------|--------|---------|
-| **stdio** | ❌ 被 MCP 协议占用 | ✅ 可输出日志（客户端可捕获） | ✅ `.data/logs/pkv-mcp.log` |
+| **stdio** | ❌ 被 MCP 协议占用 | ✅ 可输出日志（客户端可捕获） | ✅ `<data-root>/logs/pkv.log`（仅 READY runtime 创建） |
 
 **关键约束**：stdio 模式下 **stdout 是 MCP 协议通道**，绝对不能 `print()`，只能用 `logger` 写到 stderr 或文件。
 
@@ -900,7 +921,8 @@ logger = logging.getLogger("pkv.mcp")
 |------|------|---------|
 | Claude Code 无法发现 Tool | MCP Server 未启动或配置错误 | 检查 `claude_desktop_config.json` 中的 `cwd` 和 `command` |
 | Tool 没有可用结果 | 可能是 `no_hits`、`degraded`、`invalid` 或 `error` | 先检查 `status` / `issues`；只有 `no_hits` 表示请求成功但无命中 |
-| 归档超时 | 网络不通或 AI API 超时 | 检查 `config/local.yaml` 的 `ai.llm.*` / `ai.embedding.*` |
+| 归档超时 | 网络不通或 AI API 超时 | 检查 `%USERPROFILE%\.pkv\config.yaml` 的 `ai.llm.*` / `ai.embedding.*` |
+| `write_busy` | 另一 CLI、MCP 或 GUI 写操作持有数据根 lease | 保持当前读操作；等待写者结束后退避重试，不要并行重放写入 |
 | 非 stdio transport 被拒绝 | M13 只发布 stdio | 改用本地 MCP Client 的 stdio 子进程配置 |
 | "冻结"无响应 | 同步阻塞了事件循环 | 检查所有 handler 是否使用了 `async def` + `anyio.to_thread.run_sync()` |
 

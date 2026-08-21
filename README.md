@@ -15,6 +15,8 @@
 > 2026-08-07 M13 W1 安全复审：统一 runtime layout/bootstrap、Vault containment、跨存储补偿/repair 终态及 fail-closed migration 已完成；SQLite 事务提交凭据、Markdown identity + SHA-256 和 Vector 持久 pair marker 已补齐。W1 冻结时离线验收为 unit `1583 passed, 19 skipped`、integration/blackbox/e2e `277 passed, 9 deselected`。
 > 2026-08-07 M13 W2 收口：Workflow、Retrieval、MCP 与当时的 GUI Chat 源代码合同均已 `source_verified`；GUI 后续已从本仓库拆出。
 > 2026-08-11 M13 W3/W4：可复现打包链、payload 外 deterministic loopback harness 与 installed-Artifact 全矩阵已完成。外部 artifact-only 运行 `w4-53a45ed` 得到 10 个 scenario / 11 行 matrix / 10 verified / 0 failed / 0 pending，`functional_verified=true`；这是拆分前 held candidate 的历史证据。当前 headless payload 仍为 `test_candidate`，当前合规合同的 3 项 blocker 使其保持 `release_eligible=false`、`decision=hold`，不得作为正式发布。
+> 2026-08-19 K1a/K2/K1b：`pkv_kernel` 已冻结公开 API、版本/能力握手和 reload snapshot 合同，并完成本地离线 wheel/clean-install 验证；仓库外 clean venv 仅通过已安装的 `pkv_kernel` 启动，资源与合成数据根均受合同约束。默认离线全量为 `2954 passed, 21 skipped, 219 deselected`；这不是 PyPI 或正式发布结论。
+> 2026-08-21 R1–R4：个人配置/数据布局、inspect → plan → confirm → execute、受支持业务/数据写入的 lease / `write_busy` / 审计，以及 staged Embedding generation 的限定内部合同已由最终隔离全量 `3182 passed, 21 skipped, 219 deselected, 35 warnings` 验证。R2 CLI 已补 nested fresh-root adapter 回归，覆盖 setup plan、plan-only 零写及 PLAN_ID / `--allow-network` gate；R4 不公开 rebuild action；R3.1 与 public rebuild adapter 仍为后续 P1 gate，不改变 M13 release hold、PyPI、默认数据根或 MCP stdio-only 合同。
 
 ## ✨ 核心特点
 
@@ -85,9 +87,10 @@ AI Agent（Claude Code、Cursor 等）通过 MCP 协议直接操作知识库：
 
 M13 只支持 `stdio`。`streamable-http` 与 Bearer Token 认证均未发布；服务入口会在初始化配置、数据或监听端口前拒绝非 stdio transport。
 
-**14 个 Tool**:
+**15 个 Tool（13 个只读 + 2 个写入）**:
 - `search_knowledge` — 智能搜索（BM25/向量/混合）
 - `get_entry` / `list_entries` / `list_tags` / `get_stats` — 只读浏览
+- `get_runtime_status` — 只读检查运行时 readiness 与下一步计划，不初始化、修复或探测 Provider
 - `archive_url` — 归档网页（SSRF 防护）
 - `archive_text` — 归档纯文本
 - `get_related` — 关联知识推荐（向量相似度）
@@ -110,7 +113,7 @@ M13 只支持 `stdio`。`streamable-http` 与 Bearer Token 认证均未发布；
 - 已新增 `src/storage/relation_store.py`，提供 `knowledge_relations` 的最小读写能力
 - 已新增 `scripts/migrations/006_add_relations_foundation.sql`，显式引入关系表与索引
 - 已新增 `src/relations/extractors.py`，当前支持 Markdown 显式链接、Front Matter `related_docs`，以及 Front Matter 关系字段 `children` / `version_of` 的低歧义关系抽取
-- 已新增 `scripts/backfill_relations.py`，默认 `dry-run`，仅在显式传入 `--apply` 时写入关系表
+- 历史 `scripts/backfill_relations.py` 入口已停用：除 `--help` 外的裸脚本调用会在读取 `Config` 或数据根前 fail-closed（exit 2）；它不能绕过 lifecycle 或单写者 lease
 - 已扩展 `src/relations/query_service.py`，当前提供一跳关系查询、内部 `query_subgraph` 多跳子图遍历基础、最小 `explain_relation` 能力、关系类型分组和稳定排序能力
 - 已新增 `src/relations/evidence_service.py`，当前提供文档级 `collect_evidence` 证据包聚合 v1
 - 已新增 `src/relations/exploration_service.py`，当前提供 `find_bridges`、`timeline_of`、`contrast` 的受限版本
@@ -124,7 +127,7 @@ personal-knowledge-vault/
 ├── README.md                          # 项目说明
 ├── CLAUDE.md                          # AI 协作上下文（根级索引）
 ├── RUN_ME_FIRST.md                    # 快速开始指南
-├── config/config.yaml                 # 默认配置，可复制为本机配置
+├── config/config.yaml                 # bundled 默认配置（只读，不含私钥）
 ├── requirements.txt                   # Python 依赖
 │
 ├── src/                               # 源代码（以下为核心结构，非完整文件清单）
@@ -138,7 +141,7 @@ personal-knowledge-vault/
 │   ├── kernel/                        # 稳定的无头 Kernel facade
 │   ├── mcp/                           # MCP 服务 (v0.7.0)
 │   │   ├── server.py                  # FastMCP 主入口 (M13: stdio only)
-│   │   ├── tools.py                   # 14 个 Tool handler
+│   │   ├── tools.py                   # 15 个 Tool handler
 │   │   ├── resources.py               # 9 个 Resource handler
 │   │   ├── prompts.py                 # 3 个 Prompt 模板
 │   │   └── utils.py                   # 安全验证 + 序列化
@@ -194,8 +197,8 @@ personal-knowledge-vault/
 │   ├── test-conda.ps1                 # 环境验证
 │   ├── backup-data.ps1                # 数据备份
 │   ├── restore-data.ps1               # 数据恢复
-│   ├── backfill_relations.py          # 关系回填脚本（默认 dry-run）
-│   ├── migrate.py                     # 数据库迁移工具
+│   ├── backfill_relations.py          # 已停用的历史关系回填入口（fail-closed）
+│   ├── migrate.py                     # 已停用的历史 Schema 迁移入口（fail-closed）
 │   ├── run-test.ps1                   # 默认隔离测试入口
 │   ├── build-release.ps1              # W3 可复现 held-candidate 构建入口
 │   └── migrations/                    # SQL 迁移脚本
@@ -216,11 +219,14 @@ personal-knowledge-vault/
 │   ├── history/                       # 历史 Prompt、问题、讨论、里程碑
 │   └── README.md                      # 文档总索引
 │
-└── .data/                             # 运行时数据（已忽略）
+%USERPROFILE%/.pkv/                    # 用户 profile（不在仓库或 payload 中）
+├── config.yaml                        # 唯一可编辑配置，可含 Provider Key/Cookie
+└── data/                              # 默认运行数据根（PKV_DATA_ROOT 可覆盖）
+    ├── config/local.yaml              # PKV 管理的无密钥 runtime snapshot
     ├── db/knowledge_vault.db          # SQLite 数据库
-    ├── vectors/*.idx                  # 向量索引
+    ├── vectors/                       # 向量索引 generation
     ├── vault/                         # Markdown 文件存储
-    └── logs/                          # 日志文件
+    └── logs/                          # 日志与本地审计轨迹
 ```
 
 ## 🚀 快速开始
@@ -232,7 +238,7 @@ personal-knowledge-vault/
 - Python 3.11+ (通过 Conda 自动创建)
 - SQLite 3.35+ (支持 FTS5，通常系统自带)
 
-**可选 Provider 配置**：BM25、浏览、stdio 能力发现和默认离线验证不需要真实 API Key。只有用户主动使用摘要、Chat、向量或混合检索等 Provider-backed 能力时，才需要在 Git 忽略的 `config/local.yaml` 中配置相应服务。任何自动化/Agent 验证都不得使用真实 key、真实 Provider 或真实数据。
+**Provider 配置**：个人运行模式当前要求同时配置 LLM 与 Embedding Provider；首次初始化会先展示 endpoint、发送内容和潜在费用，并在用户确认后做最小健康探测。唯一可编辑文件是 `%USERPROFILE%\.pkv\config.yaml`；`<data-root>\config\local.yaml` 是无密钥运行态快照，不能拿来保存 Key。任何自动化/Agent 验证都不得使用真实 key、真实 Provider 或真实数据。
 
 ### Codex/Claude 专用环境
 
@@ -255,8 +261,8 @@ cd personal-knowledge-vault
 # 2️⃣ 运行自动安装脚本（创建 Python 3.11 环境 + 安装依赖）
 .\scripts\setup-conda.ps1
 
-# 3️⃣ 可选：仅在手动使用 Provider-backed 能力时配置本机服务
-notepad config/local.yaml
+# 3️⃣ 配置唯一的用户私有文件（首次 setup 前由用户手工完成）
+notepad $env:USERPROFILE\.pkv\config.yaml
 
 # ✅ 验证安装
 .\scripts\test-conda.ps1
@@ -265,7 +271,7 @@ notepad config/local.yaml
 .\scripts\run-windows.ps1 python -m src.cli.commands --help
 ```
 
-> **Breaking configuration migration:** Provider 环境变量、`.env` 加载、`Config.get_env()`，以及 `deepseek_*` / `openai_*` 兼容属性已移除。外部插件和集成必须迁移到 `config/local.yaml` 的 `ai.llm.*` / `ai.embedding.*` 键，并改用 `Config.llm_api_key`、`llm_base_url`、`llm_model`、`embd_api_key`、`embd_base_url`、`embd_model` 与 `embedding_dim` 等现行属性。请不要恢复旧环境变量或兼容接口；这会重新引入双配置源和不可预测的优先级。
+> **Configuration migration:** 唯一用户业务配置是 `%USERPROFILE%\.pkv\config.yaml` 的 `ai.llm.*` / `ai.embedding.*` 键；`PKV_DATA_ROOT` 与 `PKV_LOG_LEVEL` 是正式环境覆盖。`<data-root>\config\local.yaml` 不参与业务配置 merge，只保存 PKV 管理的无密钥 runtime snapshot。不要恢复旧 Provider 环境变量、`.env` 加载或第二个用户配置源；外部集成应使用 `pkv_kernel` 的稳定公开接口。
 
 ### 📚 详细指南
 
@@ -423,7 +429,7 @@ steps:
 - 安全测试脚本（无真实 API 调用）
 
 **测试环境完全隔离**:
-- 生产环境：`.data/`
+- 用户数据默认根：`%USERPROFILE%\.pkv\data`（`PKV_DATA_ROOT` 覆盖 `config.yaml` 的 `storage.data_root`）
 - 测试环境：`.data-test/`
 - 自动备份：`scripts/backup-data.ps1`
 
@@ -431,20 +437,11 @@ steps:
 
 **版本化 Schema 管理**:
 
-以下裸命令仅作为用户维护 API 说明；未设置路径覆盖时会读取或修改生产
-`.data/`，AI/自动化不执行。当前 `run-test.ps1` 会明确拒绝
-`scripts/migrate.py` / `scripts.migrate` 并返回 exit 2；自动化只运行使用临时
-SQLite 的迁移单元/集成测试。真实快照迁移必须等待 FT5、U1/G8 和用户明确授权，
+遗留 `scripts/migrate.py` 当前不是用户维护 API：除 `--help` 外，裸脚本调用会在读取
+`Config` 或数据库前 fail-closed（exit 2）；`run-test.ps1` 也会明确拒绝该入口。它不能
+用于升级、dry-run、版本查询或健康检查。自动化只运行使用临时 SQLite 的迁移单元/集成
+测试。真实快照迁移仍须等待未来的 user-only lifecycle 入口、FT5、U1/G8 和用户明确授权，
 并且只能在 disposable writable clone 中执行。
-
-```bash
-# 迁移工具
-python scripts/migrate.py                # 交互式升级
-python scripts/migrate.py --auto         # 自动升级
-python scripts/migrate.py --dry-run      # 仅检查待执行迁移
-python scripts/migrate.py --version      # 查看当前数据库版本
-python scripts/migrate.py --health-check # 只读检查迁移链健康度
-```
 
 **特点**:
 - 版本号追踪（存储在 `schema_version` 表）
@@ -507,7 +504,7 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 
 **当前优先级**:
 
-1. **可追溯知识成果**：以现有检索、关系和证据能力形成可审阅、可回链的成果工作流；再按真实需求逐 Tool 扩展 full 语义。
+1. **可追溯知识成果**：K1b payload 闭合与重验完成后，以现有检索、关系和证据能力形成可审阅、可回链的成果工作流；再按真实需求逐 Tool 扩展 full 语义。
 2. **M13 release hold**：许可证、native provenance 与 notices 仍是未来重开发布时的 blocker；P1-A 的内部自测不改变该结论。
 3. **真实数据与后置增强**：真实数据验收仍需用户授权与 U1/G8、FT5 等独立前置；POSIX/CI、性能、多模态和重交互体验不阻塞当前路线。
 
@@ -555,8 +552,11 @@ python scripts/migrate.py --health-check # 只读检查迁移链健康度
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\readme-verify -Command @("python", "src/utils/verify_setup.py")
 ```
 
-`-Direct` Python 当前经 FT7 通用离线入口执行，只接受仓库内 `python -m <module>`
-或仓库内 `.py` 脚本；`-c`、stdin 与解释器 flags 会 fail-closed。入口清理
+`-Direct` Python 当前经 FT7 显式离线测试 allowlist 执行，不是通用仓库脚本运行器：只允许
+pytest、`src.cli.commands`、`src.mcp.server`、`src.utils.verify_setup`、`evals.mcp_quality`，以及
+`scripts/setup-test-db.py`、`scripts/rebuild-dev-vault.py`、受控
+`scripts/check_chunk_index_consistency.py` 和 `src/utils/verify_setup.py`；完整参数与路径规则见
+[scripts/CLAUDE.md](scripts/CLAUDE.md)。其余目标、`-c`、stdin 与解释器 flags 会 fail-closed。入口清理
 live/secret/proxy 环境并安装 Python 级网络与子进程 guard，但它不是 OS sandbox，
 也不覆盖非 Python 的 `-Direct` 命令。
 
@@ -633,7 +633,7 @@ live/secret/proxy 环境并安装 Python 级网络与子进程 guard，但它不
 **当前版本**: 0.8.1
 **创建日期**: 2026-01-27
 **文档版本**: v4.3
-**最后更新**: 2026-08-13
+**最后更新**: 2026-08-21
 
 ---
 

@@ -2,7 +2,7 @@
 
 > **版本**: 1.1
 > **创建日期**: 2026-02-15
-> **最后更新**: 2026-03-31
+> **最后更新**: 2026-08-21（Config / RuntimeLayout 路径合同对齐）
 > **文件位置**: `src/storage/markdown_store.py`
 > **作用**: 知识条目的核心数据结构，贯穿整个系统的数据流
 
@@ -10,6 +10,8 @@
 > - `Entry` dataclass 当前只内建 `related_docs`，不内建 `children` / `version_of`
 > - `children` / `version_of` 当前属于原始 Markdown Front Matter 扩展字段，由 `src/relations/extractors.py` 直接解析
 > - 当前自动回填只消费显式低歧义关系字段，不消费纯语义推断信号
+> - `Entry` 不携带数据根或绝对文件路径；Application / Kernel 在操作开始时捕获
+>   同一 `Config` snapshot，并由其 `RuntimeLayout` 决定 Vault 与索引位置
 
 ---
 
@@ -395,12 +397,14 @@ entry = Entry(
 
 ```python
 from src.storage.markdown_store import MarkdownStore
-from pathlib import Path
+from src.utils.config import Config
 
-# 保存
-store = MarkdownStore(vault_dir=Path(".data/vault"))
+# 在操作开始时取得一个 Config snapshot；外部 Wrapper 应经 pkv_kernel，
+# 不应直接导入此内部存储类。
+config = Config()
+store = MarkdownStore(vault_dir=config.vault_dir)
 file_path = store.save(entry, subdir="wechat")
-# 文件路径: .data/vault/wechat/测试文章.md
+# 文件路径: <data-root>/vault/wechat/测试文章.md
 
 # 加载
 loaded_entry = store.load(file_path)

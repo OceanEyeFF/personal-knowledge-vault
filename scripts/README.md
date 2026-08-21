@@ -29,7 +29,7 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 
 ---
 
-#### `setup-conda.ps1` - Conda 自动安装脚本 ⭐⭐推荐
+#### `setup-conda.ps1` - Conda 本地开发环境脚本 ⭐⭐推荐
 
 **用途**: 使用 Conda 创建 Python 3.11 环境并安装依赖
 
@@ -48,8 +48,15 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 - ✅ 升级 pip
 - ✅ 安装所有依赖包
 - ✅ 验证关键依赖
-- ✅ 创建 Git 忽略的 `config/local.yaml`
-- ✅ 创建数据目录
+- ✅ 首次仅创建不覆盖的用户配置 `%USERPROFILE%\.pkv\config.yaml`
+- ✅ 引导用户先执行只读 `inspect`、再审阅 `setup` 计划
+- ✅ 检测旧 checkout `config/local.yaml` / `.data` 时只提示并保留，绝不自动迁移
+
+**运行时边界**:
+
+- 默认数据根为 `%USERPROFILE%\.pkv\data`。`PKV_DATA_ROOT` 可在进程级覆盖用户配置中的 `storage.data_root`。
+- `<data-root>/config/local.yaml` 是 PKV 维护的无密钥运行时快照，不是可编辑配置。
+- 本脚本不创建数据库、向量索引或数据根；任何旧目录迁移必须先展示影响、保留原目录并取得用户确认。
 
 **优势**:
 
@@ -67,7 +74,7 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 
 ```powershell
 .\scripts\test-conda.ps1
-.\scripts\test-conda.ps1 -EnvironmentName pkv-test-py311 -Suite P0
+.\scripts\test-conda.ps1 -EnvironmentName py311-private -Suite P0
 ```
 
 **功能**:
@@ -75,9 +82,35 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 - ✅ 检查 Conda 环境是否存在
 - ✅ 强制 Python 3.11 并执行 `pip check`
 - ✅ 通过 `run-test.ps1` 使用显式目标环境和隔离路径
+- ✅ 默认环境与 `setup-conda.ps1` 一致，为 `py311-private`；
+  `setup-test-conda.ps1` 创建的测试环境仍须显式传入 `-EnvironmentName`
 - ✅ 默认运行纯离线基础语法 smoke；可选择 Windows P0 预检
 - ✅ 排除 manual/network，测试数据只写入 `.data-test/`
+- ✅ pytest 的临时目录和 cache 仅由 `run-test.ps1` 管理，调用方不传
+  `--basetemp` 或 `cache_dir`
 - ✅ 显示测试结果
+
+---
+
+#### `run-docker-test.ps1` — Linux Docker 源码白盒（测试专用）
+
+**用途**：在 Docker/Linux 中补充运行离线源码测试，不是部署 Docker 镜像、发布包或
+Windows 兼容性替代品。脚本先把源码复制到 `.data-test` 下的受限上下文；它拒绝
+`local.yaml`、`.env*`、链接和疑似凭据的未跟踪文件，容器运行阶段没有宿主 checkout、
+用户 profile、Docker socket 或真实数据挂载。
+
+```powershell
+# 首次明确允许拉取基础镜像与安装测试依赖；这一步可能联网。
+./scripts/run-docker-test.ps1 -ProvisionImage
+
+# 镜像已存在时，运行阶段始终 --network none / --read-only / 非 root。
+./scripts/run-docker-test.ps1 -DataRoot .data-test/docker-source
+```
+
+运行时只挂载本轮 `.data-test/.../runtime` 输出目录，并经
+`tests/offline_entrypoint.py` 启动；Provider、真实 Vault、真实配置和真实迁移均不可用。
+Docker lane 只提供 Linux 源码证据，不能替代 Windows source、wheel clean-install、
+内部包黑盒或任何 release 证据。
 
 ---
 
@@ -95,24 +128,29 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
    .\scripts\setup-conda.ps1
    ```
 
-3. **编辑本机配置**:
+3. **编辑唯一的本机配置**:
 
    ```powershell
-   notepad config\local.yaml
+   notepad "%USERPROFILE%\.pkv\config.yaml"
    # 填入 ai.llm.api_key 和 ai.embedding.api_key
    ```
 
-4. **运行验证测试**:
+4. **无副作用检查配置、数据根与待执行工作**:
 
    ```powershell
-   .\scripts\test-conda.ps1
+   .\scripts\run-windows.ps1 python -m src.cli.commands inspect
    ```
 
-5. **使用统一 Windows 运行器**:
+5. **先审阅初始化计划；仅在用户确认后才执行**:
 
    ```powershell
-   .\scripts\run-windows.ps1 python -m src.cli.commands --help
+   .\scripts\run-windows.ps1 python -m src.cli.commands setup
+   # --allow-network 只授权计划中的最小 Provider 连通性探测，可能联网或产生费用。
+   .\scripts\run-windows.ps1 python -m src.cli.commands setup --apply --confirm <PLAN_ID> --allow-network
    ```
+
+`setup-conda.ps1` 不会创建 `%USERPROFILE%\.pkv\data`，也不读取内容、不复制、不删除、不迁移 checkout
+遗留的 `config/local.yaml` / `.data`。需要迁移时，先保留旧目录并按用户确认的单独方案处理。
 
 ### Legacy 方案 (不推荐)
 
@@ -146,9 +184,9 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 
 **功能**:
 
-- ✅ 由脚本直接设置进程级测试路径，不读取 `config/local.yaml`
+- ✅ 由脚本直接设置进程级测试路径，不读取 `%USERPROFILE%\.pkv\config.yaml`
 - ✅ pytest 先由 `tests/offline_entrypoint.py pytest` 在 pytest/plugin 导入前建立 G0，再由根 `tests/conftest.py` 维持逐用例隔离，CLI/MCP 离线子进程由 `tests/offline_entrypoint.py` 启动
-- ✅ Direct Python（FT7）仅接受仓库 `python -m <module>` 或仓库 `.py`；拒绝 `-c`、stdin 与解释器 flags
+- ✅ Direct Python（FT7）仅接受 pytest 或 `scripts/CLAUDE.md` 所列的显式离线测试 allowlist；仓库内位置本身不足以获准，其他模块/脚本、`-c`、stdin 与解释器 flags 均会拒绝
 - ✅ FT7 通过同进程 `runpy` 在产品导入前清理 live/secret/proxy、安装 base-only Config、网络 guard 与子进程 guard
 - ✅ 隔离测试数据到 `.data-test/` 目录
 - ✅ 自动创建测试目录结构
@@ -164,13 +202,26 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 - 非 Python Direct 仍须经 wrapper 启动，但属于原样命令、不在 Python G0 内，也不保证离线；使用前必须单独审查边界与副作用。
 - 两种模式都会先设置 `DATA_DIR`、`DB_PATH`、`VAULT_DIR`、`VECTOR_DIR`、`LOG_DIR`、`TMP_DIR`，并拒绝 `.data/`、junction 与符号链接目标。
 
-FT7 是 Python 进程内 guard，不是 OS sandbox。`scripts/setup-test-db.py` 只能通过该入口运行，输出必须精确位于本次 `-DataRoot` 对应的 `DATA_DIR`（默认 `DB_PATH`）。`migrate.py` 尚未接入等价边界，包装器会 fail-closed 并返回 exit 2；真实迁移仍受 U1/G8/FT5 user-only gate 阻塞，且尚未执行真实数据迁移。
+FT7 是 Python 进程内 guard，不是 OS sandbox。`scripts/setup-test-db.py` 只能通过该入口运行，输出必须精确位于本次 `-DataRoot` 对应的 `DATA_DIR`（默认 `DB_PATH`）。`migrate.py` 与已停用的原始回填/初始化入口会 fail-closed 并返回 exit 2；真实迁移仍受 U1/G8/FT5 user-only gate 阻塞，且尚未执行真实数据迁移。
 
 **使用场景**:
 
 - 在受控 `.data-test` 路径内验证离线新功能（不是 OS sandbox）
 - 验证数据库变更
 - 开发调试
+
+---
+
+#### 已停用的原始维护入口（R3.1 fence）
+
+`backfill_chunks.py`、`backfill_relations.py`、`init_db.py` 和 `migrate.py` 不再是 PKV
+产品入口。它们的裸脚本调用会在读取 `Config` 或打开数据根之前以 exit 2 拒绝；
+`run-test.ps1 -Direct` 也会在创建测试运行时路径之前拒绝它们。不要用它们绕过
+`inspect → plan → confirm → execute` 或单写者 lease。
+
+少量模块级 helper 仅为 `.data-test` 下的合成 fixture 保留，不是 Wrapper/CLI/MCP 或用户数据根的
+支持接口。`check_chunk_index_consistency.py` 则只保留为诊断：它以 SQLite `mode=ro` 打开已存在
+数据库，缺失或不安全数据库会 fail-closed（exit 2），绝不会创建 DB 或索引。
 
 ---
 
@@ -190,7 +241,7 @@ FT7 是 Python 进程内 guard，不是 OS sandbox。`scripts/setup-test-db.py` 
 
 每个包都含有 `INTERNAL-TEST-ONLY.txt` 和 `internal-build-info.json`。后者记录 UTC 构建时间、
 Git revision/dirty 状态、Python/平台信息及 `requirements.txt` 声明依赖的版本摘要。构建前会
-核验 runtime allowlist；构建后会 fail-closed 拒绝 `config/local.yaml`、`.env`、凭据痕迹、
+核验 runtime allowlist；构建后会 fail-closed 拒绝 checkout 遗留的 `config/local.yaml`、`.env`、凭据痕迹、
 Vault、数据库/索引、日志及测试 fixture，并以有界递归解析检查冻结 EXE 内的 PyInstaller
 CArchive/PYZ、嵌套 ZIP 的解压内容和成员元数据；ZIP 还会拒绝 SFX/拼接、链接、加密、
 非规范 Windows 路径及无法完整验证的物理布局。正式 `scripts/build-release.ps1` 与
@@ -309,7 +360,8 @@ symlink/reparse 或目录竞态，会保留 workspace 并失败。
 .\scripts\run-test.ps1 -DataRoot .data-test\feature-a stats
 ```
 
-用户/生产运行的服务、模型和密钥来自 Git 忽略的 `config/local.yaml`；默认自动化不会读取该文件，而由 offline entrypoint 安装 base-only Config。
+用户/生产运行的服务、模型和密钥只来自 `%USERPROFILE%\.pkv\config.yaml`；默认自动化不会读取该文件，
+而由 offline entrypoint 安装 base-only Config。`<data-root>/config/local.yaml` 仅为无密钥运行时快照。
 
 ---
 
@@ -395,15 +447,18 @@ python -m pip install --upgrade pip
 # 4. 安装依赖
 python -m pip install -r requirements.txt
 
-# 5. 可选：仅在用户主动启用 Chat/摘要/向量能力时，
-#    手动创建 Git 忽略的 config/local.yaml 并填写对应 Provider 配置
-#    BM25、MCP stdio 能力发现和默认离线验证无需真实 API Key
+# 5. 首次手动创建唯一用户配置（存在时不要覆盖）
+$pkvConfigPath = "$env:USERPROFILE\.pkv\config.yaml"
+if (-not (Test-Path -LiteralPath $pkvConfigPath)) {
+    New-Item -ItemType Directory -Force "$env:USERPROFILE\.pkv"
+    Copy-Item config\config.yaml $pkvConfigPath
+}
+#    填写 Provider 配置；不要把密钥放入 <data-root>\config\local.yaml
 
-# 6. 创建数据目录
-mkdir .data\db, .data\vectors, .data\vault, .data\logs, .data\tmp
-
-# 7. 运行验证
-python src\utils\verify_setup.py
+# 6. 先检查，再审阅初始化计划；setup 默认不写入数据根
+.\scripts\run-windows.ps1 python -m src.cli.commands inspect
+.\scripts\run-windows.ps1 python -m src.cli.commands setup
+#    仅在审阅输出后，由用户以 PLAN_ID 显式确认 --apply
 ```
 
 ---
@@ -412,7 +467,7 @@ python src\utils\verify_setup.py
 
 - 🔧 首次安装可能需要 3-5 分钟
 - 📦 Conda 环境名称: `py311-private` (Python 3.11)
-- 🔑 `config/local.yaml` 只用于用户主动启用的 Provider-backed 能力；默认离线/BM25 验证不需要真实 API Key
+- 🔑 API Key 只放在 `%USERPROFILE%\.pkv\config.yaml`；`<data-root>/config/local.yaml` 绝不保存密钥
 - 📝 运行测试确保一切正常
 - 🌟 推荐通过 `scripts/run-windows.ps1` 运行命令
 - 🔤 PowerShell 脚本使用 UTF-8 BOM 以兼容 Windows PowerShell 5.1；编辑时不要移除 BOM

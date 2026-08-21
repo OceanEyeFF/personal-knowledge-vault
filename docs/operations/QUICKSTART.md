@@ -1,218 +1,187 @@
 # Personal Knowledge Vault - 快速开始
 
-> 当前版本快速启动指南
-> 适用于想先把核心系统跑起来，再决定从 CLI 或 MCP 进入的用户
+> **当前用途**：PKV 是个人知识数据库，管理互联网信源、历史新闻和过往文章。CLI、MCP 与未来 GUI 共用一个 PKV 数据根；外部应用（例如 `个人文章`）只是调用方。
 
-**最后更新**: 2026-08-07
-
----
-
-## 1. 你会得到什么
-
-完成本指南后，你将得到一个可运行的 PKV 本地环境，包含：
-
-- CLI 入口
-- MCP Server stdio 入口
-- 本地数据目录（Markdown / SQLite / 向量索引 / 日志）
+**最后更新**：2026-08-21
+**适用对象**：本仓库的内部个人使用者与开发者
+**不适用**：正式发布、PyPI 安装、历史 release candidate 升级或自动迁移
 
 ---
 
-## 2. 前置要求
+## 1. 当前运行合同
 
-### 推荐配置
+| 项目 | 当前规则 |
+|---|---|
+| 可编辑配置 | `%USERPROFILE%\.pkv\config.yaml`，仅此一份；可含 Provider Key/Cookie |
+| 默认数据根 | `%USERPROFILE%\.pkv\data` |
+| 数据根优先级 | `PKV_DATA_ROOT` → `storage.data_root` → 默认数据根 |
+| 日志级别覆盖 | `PKV_LOG_LEVEL`；与 `PKV_DATA_ROOT` 是仅有的正式环境变量 |
+| runtime snapshot | `<data-root>/config/local.yaml`；PKV 管理、无密钥、不可编辑，也不参与业务配置 merge |
+| 首次初始化 | `inspect` → `setup` 计划 → 用户确认的 `setup --apply --confirm PLAN_ID --allow-network` |
+| 并发 | 同一数据根允许多个读操作，但一次只允许一个写操作；冲突返回 `write_busy` |
 
-- Conda（Miniconda 或 Anaconda）
-- Python 3.11+
-- Git
-
-### 可选 Provider 配置
-
-- `ai.llm.*`：仅在用户手动使用摘要、标签或 Chat 等 Provider-backed 能力时需要
-- `ai.embedding.*`：仅在用户手动使用向量/混合检索或生成 Embedding 时需要
-
-BM25、浏览、MCP stdio 能力发现及默认自动化验证均不需要真实 API Key。项目默认验证必须离线，只使用 `.data-test` 隔离根和合成数据，不连接真实 Provider，也不读取真实 Vault。
+历史 checkout 的 `config/local.yaml`、`.data/`，以及历史 `%LOCALAPPDATA%` held candidate 都不是当前产品数据根。本指南不读取内容、不复制、不删除、不迁移这些路径；若需要处理它们，先查看影响与备份策略，再由用户确认专门方案。
 
 ---
 
-## 3. 推荐安装方式（Conda）
+## 2. 安装开发环境
 
-### Step 1：运行安装脚本
+推荐 Windows + Conda + Python 3.11：
 
 ```powershell
+# 在源码 checkout 根目录执行。该脚本只准备开发依赖，
+# 不会初始化/迁移用户数据根，也不会接管旧 checkout 目录。
 .\scripts\setup-conda.ps1
+conda activate py311-private
 ```
 
-该脚本会完成：
-
-- 创建 Python 3.11 Conda 环境
-- 安装依赖
-- 初始化基础目录
-
-### Step 2：配置本机 YAML
+或在已有 Python 3.11+ 虚拟环境中安装：
 
 ```powershell
-notepad config/local.yaml
+python -m pip install -r requirements.txt
 ```
 
-`config/local.yaml` 已被 Git 忽略。只有需要 Provider-backed 能力时才填写以下内容：
+依赖安装可能访问 Conda/PyPI 镜像；这不是 PKV Provider 调用。
+
+---
+
+## 3. 准备唯一用户配置
+
+用户只需编辑 `%USERPROFILE%\.pkv\config.yaml`。下面的 PowerShell 片段只会在该文件不存在时复制无密钥模板，已有文件不会被覆盖：
+
+```powershell
+$pkvProfile = Join-Path $env:USERPROFILE '.pkv'
+$userConfig = Join-Path $pkvProfile 'config.yaml'
+New-Item -ItemType Directory -Path $pkvProfile -Force | Out-Null
+
+if (-not (Test-Path -LiteralPath $userConfig)) {
+    try {
+        [System.IO.File]::Copy(
+            (Resolve-Path -LiteralPath .\config\config.yaml).Path,
+            $userConfig,
+            $false  # overwrite = false；并发创建时绝不覆盖另一份配置
+        )
+    } catch [System.IO.IOException] {
+        if (-not (Test-Path -LiteralPath $userConfig)) { throw }
+    }
+}
+
+notepad $userConfig
+```
+
+首次 setup 必须能验证 LLM 与 Embedding Provider，因此在配置中填入可用服务（真实 Key 只留在此文件）：
 
 ```yaml
 ai:
   llm:
-    api_key: "your-llm-key"
+    base_url: "https://your-llm.example/v1"
+    api_key: "<local-only>"
+    model: "<llm-model>"
   embedding:
-    api_key: "your-embedding-key"
+    base_url: "https://your-embedding.example/v1"
+    api_key: "<local-only>"
+    model: "<embedding-model>"
+    dim: 1536
+
+# 可选；未设置时使用 %USERPROFILE%\.pkv\data。
+# storage:
+#   data_root: "D:\\PKV\\data"
 ```
 
-### Step 3：运行验证
+如果只想让当前终端临时使用另一个根：
 
 ```powershell
-.\scripts\test-conda.ps1
+$env:PKV_DATA_ROOT = 'D:\PKV\data'
+$env:PKV_LOG_LEVEL = 'DEBUG'
 ```
 
-如果验证通过，说明基础环境已就绪。
+不要通过 `DATA_DIR`、`DB_PATH`、`VAULT_DIR`、`VECTOR_DIR`、`LOG_DIR` 或 `TMP_DIR` 配置产品；它们只为隔离测试内部兼容而保留。也不要在 `<data-root>/config/local.yaml` 写入 Key、Cookie、endpoint 或业务配置。
 
 ---
 
-## 4. 传统安装方式（venv）
+## 4. 第一次运行：检查、计划、确认执行
 
-如果你不使用 Conda，可以手动创建虚拟环境：
-
-```bash
-python -m venv .venv
-```
-
-激活后安装依赖：
-
-```bash
-pip install -r requirements.txt
-```
-
-然后复制并编辑 `config/local.yaml`，再运行：
+所有用户数据写入都从只读检查开始：
 
 ```powershell
-Copy-Item config/config.yaml config/local.yaml
-python src/utils/verify_setup.py
+# 只读：显示 root、readiness、风险、现有状态和计划。
+python -m src.main inspect
+
+# 仍只读：显示 setup 动作、影响范围、PLAN_ID、网络与备份/保留说明。
+python -m src.main setup
 ```
+
+首次 fresh setup 的计划会包含 LLM/Embedding 的最小健康探测、创建新数据库以及写入无密钥 runtime snapshot。健康探测会访问你配置的 endpoint，可能产生网络流量和 Provider 费用。确认目标根、计划影响、`PLAN_ID`、`requires_network` 后，再由用户执行：
+
+```powershell
+$planId = '从上一条 setup 输出复制的 PLAN_ID'
+python -m src.main setup --apply --confirm $planId --allow-network
+
+# 只读复核，预期进入 READY。
+python -m src.main inspect
+```
+
+`--apply --confirm PLAN_ID --allow-network` 是一次特定计划的授权，不能复用。如果配置、数据根或 runtime 状态改变，重新 `inspect` / `setup` 取得新 ID。`setup` 遇到非空、不完整或已有数据的根时不会把它当 fresh install；使用 `repair` 先查看只读计划，不要自行删除数据库或向量目录。
 
 ---
 
-## 5. 当前推荐入口
+## 5. 使用 CLI 与 MCP
 
-PKV 核心当前有两个主要入口。
-
-### 5.1 CLI
-
-查看帮助：
+在 `READY` 后，源码 checkout 的 CLI 入口是：
 
 ```powershell
-.\scripts\run-windows.ps1 python -m src.main --help
-```
-
-常用命令（源码 checkout）：
-
-```bash
-python -m src.main archive https://example.com/article
+python -m src.main --help
+python -m src.main archive "https://example.com/article" --skip-sharpen
 python -m src.main archive-text "一条本地笔记" --title "示例笔记"
-python -m src.main search "关键词"
-python -m src.main show 1
-python -m src.main list --limit 20
-python -m src.main tags --format json
+python -m src.main search "关键词" --strategy bm25
 python -m src.main related 1 --format json
 python -m src.main stats
 ```
 
-受控安装的 Windows held test candidate 才提供 pkv.exe；它仍处于 compliance
-hold，不应被表述为正式发布。安装与验收步骤见
-[用户指南](release/USER-GUIDE.md)。
+MCP 只支持 stdio：
 
-### 5.2 MCP Server
-
-stdio 模式：
-
-```bash
+```powershell
 python -m src.mcp
 ```
 
-M13 Developer Preview 只支持 stdio；`streamable-http` 与 Bearer Token 认证未进入发布面，不能作为启动或部署方式。
-
-适用场景：
-
-- Claude Code
-- Codex
-- Cursor
-- 其他 MCP Client
-
-已发现的 `find_bridges`、`timeline_of`、`contrast` 仍是 `partial-v1`：响应会继续声明 `implementation_level=partial` 并给出 `limitation_notes`，不能按 full 语义理解。
-
-桌面 GUI 是单独 `pkv-GUI` 仓库中的外围 Kernel Wrapper，不随本仓库安装或封包。
-
-## 6. 运行后你应该看到什么
-
-### 数据目录
-
-系统运行后，数据一般位于 `.data/`：
-
-- `.data/vault/`：Markdown 主存储
-- `.data/db/`：SQLite 数据库
-- `.data/vectors/`：向量索引
-- `.data/logs/`：日志文件
-
-### 核心代码入口
-
-- `src/main.py`：CLI
-- `src/mcp/`：MCP Server
+真实 URL archive、AI 分析、Embedding、向量/混合检索均可能联网和收费。读操作可以并行；写操作发生冲突时，CLI/MCP 会返回可恢复的 `write_busy`，应等待再试。外部 GUI 仅能通过 `pkv_kernel` 使用这一数据根，不能从 GUI import `src.*`。
 
 ---
 
-## 7. 推荐阅读顺序
+## 6. 验证开发 checkout（隔离且离线）
 
-如果你刚接手项目，建议按下面顺序看文档：
+默认验证不能读取用户 profile、真实 Vault、真实 Key 或真实 Provider：
 
-1. [当前战略与路线收敛-2026-03.md](../overview/当前战略与路线收敛-2026-03.md)
-2. [personal-knowledge-vault-prd.md](../overview/personal-knowledge-vault-prd.md)
-3. [架构设计.md](../overview/架构设计.md)
-4. [技术选型.md](../overview/技术选型.md)
-5. [项目结构说明.md](../overview/项目结构说明.md)
+```powershell
+.\scripts\test-conda.ps1
 
-如果你需要查看历史执行上下文，请到：
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\quickstart -Command @(
+  "python", "-m", "pytest", "-q"
+)
+```
 
-- `docs/history/prompts/`
-
-而不是继续把历史 Prompt 当作当前核心路线文档。
+这只验证合成 `.data-test` 根与离线合同；不等于真实数据、Provider 连通性或迁移已获验证。
 
 ---
 
-## 8. 常见问题
+## 7. 常见问题
 
-### Q1：Python 3.13 兼容性问题
+### 配置还没写好
 
-如果出现 `lxml`、`greenlet` 或构建相关报错，优先使用 Python 3.11。
+先编辑 `%USERPROFILE%\.pkv\config.yaml`，然后重新运行 `python -m src.main inspect`。不要把 Key 作为命令行参数传入，也不要使用 runtime snapshot 当作第二份配置。
 
-### Q2：hnswlib 安装失败
+### `setup` 没有执行写入
 
-Windows 通常需要 C++ Build Tools。  
-macOS / Linux 需要系统编译工具链。
+这是设计行为。`setup` 默认只展示计划；检查输出的 `PLAN_ID` 和 `requires_network`，再显式传入 `--apply --confirm PLAN_ID --allow-network`。
 
-### Q3：数据存储在哪里
+### 发现旧 `config/local.yaml` 或 `.data/`
 
-默认在 `.data/` 目录，而不是 `docs/`。
+保留它们，不要复制、删除或指向新 root。当前流程不会自动接管旧目录；需要处理时先做只读 `inspect`，展示影响范围和备份/保留计划，等待用户确认。
 
-### Q4：应该优先用哪个入口
+### 向量检索提示 drift 或需要重建
 
-建议：
-
-- 调试和批量操作优先 `CLI`
-- AI Agent 集成优先 `MCP`
-- 浏览和检查优先 `GUI`
+Embedding endpoint、模型或维度是索引契约。不要手工删除 `<data-root>/vectors`；先运行 `inspect`，再查看 `repair` / 后续 Embedding 生命周期计划的影响、网络和确认要求。
 
 ---
 
-## 9. 一句话建议
-
-如果你只是想确认系统可用，最短路径是：
-
-1. 跑安装脚本
-2. 配 `config/local.yaml`
-3. 启动 CLI 或 MCP
-4. 归档一条内容再搜索一次
+下一步请阅读 [使用手册](使用手册.md) 与 [用户配置与运行数据布局 ADR](../overview/ADR-用户配置与运行数据布局-2026-08.md)。
