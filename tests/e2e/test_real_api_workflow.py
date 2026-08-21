@@ -1,7 +1,7 @@
 """端到端测试 - 使用真实 API 进行完整工作流测试。
 
 ⚠️ 注意：
-1. 此测试需要 PKV_RUN_LIVE=1，并在 config/local.yaml 配置有效 API Key
+1. 此测试需要 PKV_RUN_LIVE=1，并在 %USERPROFILE%\\.pkv\\config.yaml 配置有效 API Key
 2. 会产生真实的 API 调用费用（预计 <$0.01）
 3. 需要网络连接
 
@@ -35,7 +35,8 @@ def _require_live_api_config(config: object) -> None:
     missing = [name for name, value in required_fields.items() if not value]
     if missing:
         pytest.fail(
-            "PKV_RUN_LIVE=1 需要在 config/local.yaml 配置: " + ", ".join(missing),
+            "PKV_RUN_LIVE=1 需要在 %USERPROFILE%\\.pkv\\config.yaml 配置: "
+            + ", ".join(missing),
             pytrace=False,
         )
 
@@ -66,6 +67,7 @@ class TestRealAPIWorkflow:
 
         env = os.environ.copy()
         runtime_paths = {
+            "PKV_DATA_ROOT": data_dir,
             "DATA_DIR": data_dir,
             "DB_PATH": data_dir / "db" / "knowledge_vault.db",
             "VAULT_DIR": data_dir / "vault",

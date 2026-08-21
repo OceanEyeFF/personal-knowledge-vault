@@ -3,6 +3,9 @@ schema_version: pkv.m13.w2.mcp-fixture.v1
 # The order is part of the stdio oracle: discovery is followed by one protocol
 # invocation of every published readonly tool in a single client session.
 readonly_tools:
+  - name: get_runtime_status
+    arguments: {}
+    forbid_error: true
   - name: search_knowledge
     arguments: {query: AI, strategy: bm25, top_k: 3}
     forbid_error: true

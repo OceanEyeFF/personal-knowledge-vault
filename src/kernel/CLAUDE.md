@@ -24,13 +24,40 @@ while the Kernel remains usable without importing PySide6 or any GUI module.
 - Runtime bootstrap remains an entry-point responsibility. Call
   `configure_kernel(context.config)` only after bootstrap succeeds.
 
+## K1a public SDK contract
+
+- External code imports only `pkv_kernel`; its frozen API-major-1 surface is
+  `pkv_kernel.__all__`. `src.*`, CLI, MCP and all implementation instances are
+  private and must not become Wrapper dependencies.
+- Wrapper startup calls `get_kernel_capabilities()` or
+  `require_kernel_compatibility(...)` to negotiate the SDK version and the
+  specific capabilities it needs. Current protocol/API, Python/platform range,
+  compatibility and deprecation policy are normative in
+  `docs/specs/interfaces/KernelSDK公开合同.md`.
+- Compatible releases may add symbols/capabilities but cannot remove or
+  incompatibly change a public symbol. Removal requires a documented
+  `DeprecationWarning` for at least one compatible SDK version and a new API
+  major.
+
 ## Configuration and lifecycle
 
 One `KnowledgeKernel` wraps one `KnowledgeApplication` built from one validated
 configuration identity. WorkflowEngine and every default workflow step receive
 that same configuration and application-owned dependencies explicitly. A settings
-reload replaces both the Kernel/application singleton and the legacy config
-identity; in-flight work retains its captured dependencies.
+reload atomically replaces both the Kernel/application singleton and the legacy
+config identity; the returned Kernel has a higher `configuration_generation`.
+In-flight work retains its captured dependencies and generation, while subsequent
+operations must use the returned/new default Kernel.
+
+An explicit `get_kernel(config_b)` graph is isolated from the process default.
+Its `update_local_config(...)` writes and reloads only Config B, returning a new
+isolated B Kernel without replacing legacy/default Config A. Conversely, a
+process-default Kernel may update settings only while it is the current default;
+a stale former default is rejected before it can overwrite newer settings.
+Both default and isolated setting updates preflight a successor Config before
+writing it: a data-root change fails as `data_root_switch_required` and leaves
+the user config unmodified. A manually edited root is likewise rejected during
+reload; only the explicit lifecycle plan/confirmation flow may move a root.
 
 Missing vector artifacts are not negatively cached. Long-running wrappers re-probe
 until an index exists, then cache the successfully opened store.
@@ -51,4 +78,5 @@ Use the repository wrapper and an isolated `.data-test` root:
 ```
 
 The architecture test is mandatory for changes on this boundary: it AST-scans
-for wrapper/Qt imports and rejects reverse dependencies.
+for wrapper/Qt imports and rejects reverse dependencies. It also freezes the
+`pkv_kernel` API-major-1 export set and handshake behavior.

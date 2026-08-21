@@ -22,22 +22,25 @@
 ### 初始化存储
 
 ```python
-from pathlib import Path
 from src.storage.markdown_store import MarkdownStore
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.vector_store import VectorStore
 
-# 初始化三层存储
-vault_dir = Path(".data/vault")
-db_path = Path(".data/db/knowledge_vault.db")
-vector_dir = Path(".data/vectors")
+# 在操作开始时捕获同一个 Config snapshot；Application / Kernel 正常负责该组合。
+# 外部 Wrapper 只能使用 pkv_kernel，不能直接导入这些内部存储类。
+from src.utils.config import Config
 
-md_store = MarkdownStore(vault_dir)
-sql_store = SQLiteStore(db_path)
-vec_store = VectorStore(vector_dir)
+config = Config()
+md_store = MarkdownStore(config.vault_dir)
+sql_store = SQLiteStore(config.db_path)
+vec_store = VectorStore(
+    config.vector_index_dir,
+    runtime_config=config,
+    layout=config.layout,
+)
 
-# 初始化数据库 Schema
-sql_store.initialize()
+# 用户数据根的目录/Schema 初始化须走 inspect → plan → 确认 → execute 生命周期，
+# 而不是把此依赖组合示例当作对真实数据根的直接初始化命令。
 ```
 
 ### 存储一个条目
@@ -98,7 +101,7 @@ class MarkdownStore:
 ```
 格式: {YYYYMMDD}-{title-slug}.md
 示例: 20260216-claude-code-intro.md
-路径: .data/vault/2026/02/20260216-claude-code-intro.md
+路径: <data-root>/vault/2026/02/20260216-claude-code-intro.md
 ```
 
 **YAML Front Matter 结构**:
@@ -226,16 +229,27 @@ class VectorStore:
 
 ### 配置项
 
-在 `config/config.yaml` 中:
+存储路径不再由调用方拼接 `.data` 或从独立的 `storage.*_dir` 配置读取。
+在产品路径中，bundled `config/config.yaml` 与唯一可编辑的
+`%USERPROFILE%\\.pkv\\config.yaml` 构造一个不可变 `Config` snapshot：
 
-```yaml
-storage:
-  vault_dir: ".data/vault"          # Markdown 存储目录
-  db_path: ".data/db/knowledge_vault.db"  # SQLite 数据库路径
-  vector_index_dir: ".data/vectors" # 向量索引目录
-  log_dir: ".data/logs"             # 日志目录
-  tmp_dir: ".data/tmp"              # 临时文件目录
+```python
+from src.utils.config import Config
+
+config = Config()
+vault_dir = config.vault_dir
+db_path = config.db_path
+vector_dir = config.vector_index_dir
+log_dir = config.log_dir
+tmp_dir = config.tmp_dir
 ```
+
+有效 data root 的选择顺序为 `PKV_DATA_ROOT` → 用户配置
+`storage.data_root` → `%USERPROFILE%\\.pkv\\data`。上述全部子路径由同一
+snapshot 的 `RuntimeLayout` 派生并被 containment 校验；不要在用户配置中把
+`vault_dir`、`db_path` 或 `vector_index_dir` 当成第二套产品布局。
+`<data-root>/config/local.yaml` 仅保存 PKV 管理的无密钥 runtime snapshot（数据库/
+Embedding 合同等），不是可编辑用户配置，也不包含 Provider 密钥。
 
 ---
 
@@ -403,10 +417,17 @@ assert sql_store.count() == len(md_store.list_all())
 
 ```python
 from src.storage import MarkdownStore, SQLiteStore, VectorStore
+from src.utils.config import Config
 
-md_store = MarkdownStore(Path(".data/vault"))
-sql_store = SQLiteStore(Path(".data/db/knowledge_vault.db"))
-vec_store = VectorStore(Path(".data/vectors"))
+# 仅在已经通过生命周期确认的 data root 或隔离测试根中执行重建。
+config = Config()
+md_store = MarkdownStore(config.vault_dir)
+sql_store = SQLiteStore(config.db_path)
+vec_store = VectorStore(
+    config.vector_index_dir,
+    runtime_config=config,
+    layout=config.layout,
+)
 
 # 重建 SQLite
 sql_store.initialize()  # 重建表结构
@@ -508,6 +529,6 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-08-13
+**最后更新**: 2026-08-21
 
 *本文档由 Claude Code 自动生成*

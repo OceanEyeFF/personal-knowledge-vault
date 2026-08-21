@@ -9,7 +9,7 @@ never selected by this script. The MCP 95% coverage gate remains an Ubuntu
 Python 3.11 CI responsibility.
 
 .EXAMPLE
-.\scripts\test-conda.ps1 -EnvironmentName pkv-test-py311 -Suite P0
+.\scripts\test-conda.ps1 -EnvironmentName py311-private -Suite P0
 #>
 
 [CmdletBinding()]
@@ -29,7 +29,7 @@ $envName = if ($EnvironmentName) {
 } elseif ($env:PKV_CONDA_ENV) {
     $env:PKV_CONDA_ENV
 } else {
-    "pkv-test-py311"
+    "py311-private"
 }
 
 $condaCommand = Get-Command conda.exe -ErrorAction SilentlyContinue
@@ -115,6 +115,64 @@ function Invoke-IsolatedTestStep {
     }
 }
 
+function Assert-NoUnsafeCleanupLinks {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter()]
+        [switch]$Recurse
+    )
+
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "测试运行目录不得包含 junction 或符号链接: $Path"
+    }
+    $linkTypeProperty = $item.PSObject.Properties["LinkType"]
+    if (
+        -not $item.PSIsContainer -and
+        $linkTypeProperty -and
+        $item.LinkType -eq "HardLink"
+    ) {
+        throw "测试运行目录不得包含硬链接文件: $Path"
+    }
+
+    if ($Recurse -and $item.PSIsContainer) {
+        foreach ($child in Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop) {
+            Assert-NoUnsafeCleanupLinks -Path $child.FullName -Recurse
+        }
+    }
+}
+
+function Assert-SafeTestRunCleanup {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DataRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RunPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedLeaf
+    )
+
+    $normalizedDataRoot = [IO.Path]::GetFullPath($DataRoot).TrimEnd('\', '/')
+    $normalizedRunPath = [IO.Path]::GetFullPath($RunPath).TrimEnd('\', '/')
+    $dataRootPrefix = $normalizedDataRoot + [IO.Path]::DirectorySeparatorChar
+    if (-not $normalizedRunPath.StartsWith(
+        $dataRootPrefix,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "测试运行目录不在预期的 .data-test 下: $normalizedRunPath"
+    }
+    if ([IO.Path]::GetFileName($normalizedRunPath) -ne $ExpectedLeaf) {
+        throw "测试运行目录不是预期场景: $normalizedRunPath"
+    }
+
+    Assert-NoUnsafeCleanupLinks -Path $normalizedDataRoot
+    Assert-NoUnsafeCleanupLinks -Path $normalizedRunPath -Recurse
+}
+
 $exitCode = 1
 $runId = [Guid]::NewGuid().ToString("N").Substring(0, 8)
 $testRunRoot = ".data-test\conda-$runId"
@@ -170,10 +228,7 @@ try {
                 "pytest",
                 "tests\test_basic_syntax.py",
                 "-m",
-                "not network and not manual",
-                "--basetemp=$testRunRoot\smoke\tmp\pytest",
-                "-o",
-                "cache_dir=$testRunRoot\smoke\cache",
+                "not manual and not network and not artifact and not windows_release_env",
                 "-q"
             )
         if ($lastStepExitCode -ne 0) {
@@ -191,9 +246,6 @@ try {
                 "-m",
                 "pytest",
                 "--collect-only",
-                "--basetemp=$testRunRoot\collect\tmp\pytest",
-                "-o",
-                "cache_dir=$testRunRoot\collect\cache",
                 "-q"
             ) `
             -CaptureOutput
@@ -220,10 +272,7 @@ try {
                 "-m",
                 "pytest",
                 "-m",
-                "not network and not manual",
-                "--basetemp=$testRunRoot\offline\tmp\pytest",
-                "-o",
-                "cache_dir=$testRunRoot\offline\cache",
+                "not manual and not network and not artifact and not windows_release_env",
                 "-q"
             )
         if ($lastStepExitCode -ne 0) {
@@ -263,6 +312,10 @@ try {
     }
     if ($exitCode -eq 0 -and (Test-Path -LiteralPath $testRunPath)) {
         try {
+            Assert-SafeTestRunCleanup `
+                -DataRoot $testDataRoot `
+                -RunPath $testRunPath `
+                -ExpectedLeaf "conda-$runId"
             Remove-Item `
                 -LiteralPath $testRunPath `
                 -Recurse `

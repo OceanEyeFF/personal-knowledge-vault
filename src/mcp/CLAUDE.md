@@ -10,7 +10,7 @@
 
 ### 核心能力
 
-- **14 个 Tool**: 12 只读 + 2 写入
+- **15 个 Tool**: 13 只读 + 2 写入
 - **9 个 Resource**: 条目全文/元数据、精确 chunk、时间字段、关系边、标签与统计
 - **3 个 Prompt 模板**: 搜索总结/知识问答/思想磨砺
 - **安全加固**: URL DNS/连接目标/重定向/子资源 SSRF 重校验 + 文本长度验证
@@ -35,7 +35,7 @@ npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Comm
 .\scripts\run-windows.ps1 python -m src.mcp.server --log-level DEBUG
 ```
 
-`--transport` 只接受 `stdio`。任何非 stdio 值都会在读取应用配置、bootstrap 数据目录或绑定端口之前 fail-closed；不存在可部署的 HTTP/Bearer 路径。
+`--transport` 只接受 `stdio`。任何非 stdio 值都会在读取应用配置、检查数据根或绑定端口之前 fail-closed；不存在可部署的 HTTP/Bearer 路径。
 
 ### Claude Code 集成配置
 
@@ -59,18 +59,19 @@ npx @modelcontextprotocol/inspector powershell.exe -ExecutionPolicy Bypass -Comm
 }
 ```
 
-Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；Provider 配置继续由工作目录下 Git 忽略的 `config/local.yaml` 提供。
+Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；用户可编辑的 Provider 配置位于 `%USERPROFILE%\.pkv\config.yaml`。正式产品环境变量白名单**仅**为 `PKV_DATA_ROOT` 与 `PKV_LOG_LEVEL`，它们覆盖对应运行设置；不以环境变量传递 Provider key。`<data-root>/config/local.yaml` 是无密钥的 runtime snapshot，不是用户配置来源。
 
 ---
 
 ## 对外接口
 
-### Tools (14 个)
+### Tools (15 个)
 
 #### 只读 Tool (readOnlyHint=True)
 
 | Tool | 参数 | 返回 | 说明 |
 |------|------|------|------|
+| `get_runtime_status` | (无) | `{status, readiness, inspection, plan, issues}` | 只读检查运行时与下一步计划；未就绪数据根唯一可调用 Tool，不初始化/迁移/修复/Provider 探测 |
 | `search_knowledge` | `query`, `strategy?`, `top_k?`, `source_type?`, `tag?` | `{status, strategy, total, results[], issues[]}` | 搜索知识库，支持 auto/bm25/vector/hybrid 五态响应 |
 | `get_entry` | `knowledge_id` | `{knowledge_id, title, tags, content, ...}` | 获取条目完整内容(含 Markdown 全文) |
 | `list_tags` | (无) | `{total_tags, tags[{name, count}]}` | 列出所有标签及计数 |
@@ -90,6 +91,22 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；P
 |------|------|------|------|
 | `archive_url` | `url` | `{success, knowledge_id, title, ...}` | 归档网页 (含 SSRF 防护) |
 | `archive_text` | `text`, `title?` | `{success, knowledge_id, title, ...}` | 归档纯文本 (含长度验证) |
+
+共享数据根实行**一写多读**：CLI、MCP 与未来 GUI 可并行读取，但不允许两个写操作
+并行。若 MCP 写入 Tool 发现其他应用持有数据根 write lease，它立即返回失败终态，至少含：
+
+```json
+{
+  "success": false,
+  "terminal": "error",
+  "error_code": "write_busy",
+  "retryable": true,
+  "issues": [{"code": "write_busy", "recoverable": true}]
+}
+```
+
+客户端可在短暂退避后重试；不得把 `write_busy` 误报为归档成功、空结果或在 adapter
+层自行并行重放写入。
 
 ### Resources (9 个)
 
@@ -151,7 +168,7 @@ entry、chunk 与 frontmatter metadata-field Resource 在读取/返回内容前�
 
 ### 配置项
 
-MCP Server 共享 `config/config.yaml` 与 Git 忽略的 `config/local.yaml`。LLM 与 Embedding 配置只从 YAML 读取：
+MCP Server 读取 bundled `config/config.yaml` 与唯一用户配置 `%USERPROFILE%\.pkv\config.yaml`。LLM 与 Embedding 配置只从 YAML 读取；环境变量只覆盖已发布的少量运行设置，不传递 Provider key：
 
 ```yaml
 ai:
@@ -166,7 +183,10 @@ ai:
     dim: auto
 ```
 
-`DATA_DIR` / `DB_PATH` / `LOG_LEVEL` 仅用于进程级运行隔离。`PKV_MCP_AUTH_TOKEN` 不属于当前配置合同；M13 不发布 HTTP transport 或 Bearer 认证。
+正式环境变量白名单仅为 `PKV_DATA_ROOT` / `PKV_LOG_LEVEL`。`DATA_DIR`、`DB_PATH`
+和 `LOG_LEVEL` 仅在 `PKV_TEST_OFFLINE=1` 时作为测试进程隔离注入 seam，不能作为用户
+产品配置或 Provider 凭据来源。`PKV_MCP_AUTH_TOKEN` 不属于当前配置合同；M13 不发布
+HTTP transport 或 Bearer 认证。
 
 ### 工作流配置
 
@@ -180,11 +200,17 @@ ai:
 
 ### Application 生命周期
 
-MCP 在 runtime bootstrap 成功后配置一次 `KnowledgeApplication`。Server 中的
-`get_sqlite_store()`、`get_markdown_store()` 和 `get_query_router()` 是已注册
-handler 的兼容访问器，全部委托给 application，不能成为重新自行装配后端的入口。
-application 以同一 validated config 惰性复用 Store、Retriever、Workflow 与
-Provider；Vector 检索按需打开已有索引，而不是每个 Tool 调用重新建索引。
+MCP 启动只解析 Config 并执行只读 `inspect_runtime()`，绝不调用历史 mutating
+bootstrap、迁移、恢复或 Provider probe。未 READY 时仍保留 stdio 会话与
+`get_runtime_status`，其他 Tool/Resource 以稳定 readiness issue 拒绝，且不创建
+数据库、runtime snapshot、Provider 或文件日志。
+
+首次 READY 的后端请求才以启动时捕获的不可变 Config snapshot 配置一次
+`KnowledgeApplication`。Server 中的 `get_sqlite_store()`、`get_markdown_store()`
+和 `get_query_router()` 是已注册 handler 的兼容访问器，全部委托给这个共享
+application，不能成为重新自行装配后端的入口。后续 Tool 不传显式 Config 重新
+创建 application；它们复用同一 Store、Retriever、Workflow 与 Provider 图。
+Vector 检索按需打开已有索引，而不是每个 Tool 调用重新建索引。
 
 ### 异步策略
 
@@ -280,7 +306,10 @@ transport
 
 ### Q1: stdio 模式下为什么日志不能输出到 stdout?
 
-stdio 模式下 stdout 被 MCP JSON-RPC 协议占用,日志必须走 stderr。Server 已自动处理,所有日志输出到 `sys.stderr` 和 `pkv.log` 文件。
+stdio 模式下 stdout 被 MCP JSON-RPC 协议占用，日志必须走 stderr。Server 已自动处理；
+`pkv.log` 使用延迟 handler，只有当前写入 Tool 已持有同一 data-root 的 writer lease
+时才会创建或追加。READY 读取与 status-only 启动都保持 stderr-only，避免日志把读
+操作伪装成数据根写入。
 
 ### Q2: 如何调试 MCP Tool 返回值?
 
@@ -320,7 +349,7 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 | `__init__.py` | 模块入口,描述模块结构 |
 | `__main__.py` | 支持 `python -m src.mcp.server` 启动 |
 | `server.py` | FastMCP 主入口,单例管理,注册子模块 |
-| `tools.py` | 14 个 Tool handler 实现 |
+| `tools.py` | 15 个 Tool handler 实现 |
 | `resources.py` | 9 个 Resource handler 实现 |
 | `prompts.py` | 3 个 Prompt 模板实现 |
 | `utils.py` | 辅助工具(序列化/安全验证/参数约束) |
@@ -379,6 +408,6 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-02-19 00:58:06
+**最后更新**: 2026-08-20
 
 *本文档由 Claude Code 自动生成*

@@ -3,6 +3,12 @@
 The generated reports can contain private browsing/knowledge URLs, so the
 default output directory (``.migration/``) is intentionally git-ignored.
 This script is read-only with respect to the source vault.
+
+This is a legacy, user-only utility. It is never a default automation entry
+point: callers must explicitly supply ``--vault`` after a user has authorized
+reading that Vault. URL validation performs outbound network requests, so do
+not run it against real data or networks without that same explicit user
+authorization.
 """
 
 from __future__ import annotations
@@ -40,16 +46,35 @@ REVIEW_STATUS_CODES = {401, 403, 407, 408, 423, 425, 429}
 INVALID_STATUS_CODES = {404, 410, 451}
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="提取旧 vault 的 source_url，并在重新归档前验证有效性。"
+        description=(
+            "旧 Vault URL 审计（仅限获得明确用户授权后的手动运行）。"
+            "此工具不属于默认自动化：读取 Vault 与验证 URL 都需要显式授权；"
+            "URL 验证会访问外部网络。"
+        ),
+        epilog=(
+            "必须显式提供 --vault。请勿在未获用户明确授权时读取真实 Vault "
+            "或发起网络请求。"
+        ),
     )
-    parser.add_argument("--vault", type=Path, default=Path(".data/vault"))
-    parser.add_argument("--output", type=Path, default=Path(".migration/url-audit"))
+    parser.add_argument(
+        "--vault",
+        type=Path,
+        required=True,
+        metavar="VAULT",
+        help="必填：经用户明确授权后才可读取的旧 Vault 目录。",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path(".migration/url-audit"),
+        help="报告输出目录（默认：.migration/url-audit）。",
+    )
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--retries", type=int, default=2)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def canonicalize_url(raw_url: str) -> tuple[str | None, str | None]:
@@ -239,8 +264,8 @@ def write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     vault = args.vault.resolve()
     output = args.output.resolve()
     if not vault.is_dir():

@@ -67,6 +67,9 @@ def _assert_offline_bootstrap() -> dict[str, str]:
     assert os.environ["PKV_RUN_LIVE"] == "0"
     assert os.environ["PKV_TEST_OFFLINE"] == "1"
     assert os.environ["PKV_TEST_LOAD_LOCAL"] == "0"
+    assert Path(os.environ["PKV_DATA_ROOT"]).resolve() == Path(
+        os.environ["DATA_DIR"]
+    ).resolve()
     assert os.environ["PYTHONNOUSERSITE"] == "1"
     assert Path(os.environ["PYTHONPATH"]).resolve() == Path(
         os.environ["PKV_TEST_PROJECT_ROOT"]
@@ -77,6 +80,17 @@ def _assert_offline_bootstrap() -> dict[str, str]:
     for key in ("TEMP", "TMP", "TMPDIR"):
         assert Path(os.environ[key]).resolve() == expected_tmp
     assert Path(tempfile.gettempdir()).resolve() == expected_tmp
+    expected_profile = Path(os.environ["USERPROFILE"]).resolve()
+    assert Path(os.environ["HOME"]).resolve() == expected_profile
+    assert Path.home().resolve() == expected_profile
+    for key in (
+        "APPDATA",
+        "LOCALAPPDATA",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+    ):
+        assert Path(os.environ[key]).resolve().is_relative_to(expected_profile)
 
     assert socket.getaddrinfo is offline_runtime._blocked_network_call
     assert subprocess.Popen.__init__ is offline_runtime._blocked_process_call
@@ -101,11 +115,19 @@ def main() -> int:
             **paths,
             "COVERAGE_FILE": os.environ["COVERAGE_FILE"],
             "PKV_RUN_LIVE": os.environ["PKV_RUN_LIVE"],
+            "PKV_DATA_ROOT": os.environ["PKV_DATA_ROOT"],
             "PKV_TEST_LOAD_LOCAL": os.environ["PKV_TEST_LOAD_LOCAL"],
             "PKV_TEST_OFFLINE": os.environ["PKV_TEST_OFFLINE"],
             "PKV_TEST_PROJECT_ROOT": os.environ["PKV_TEST_PROJECT_ROOT"],
             "PYTHONDONTWRITEBYTECODE": os.environ["PYTHONDONTWRITEBYTECODE"],
             "PYTEST_ADDOPTS": os.environ["PYTEST_ADDOPTS"],
+            "HOME": os.environ["HOME"],
+            "USERPROFILE": os.environ["USERPROFILE"],
+            "APPDATA": os.environ["APPDATA"],
+            "LOCALAPPDATA": os.environ["LOCALAPPDATA"],
+            "XDG_CONFIG_HOME": os.environ["XDG_CONFIG_HOME"],
+            "XDG_CACHE_HOME": os.environ["XDG_CACHE_HOME"],
+            "XDG_DATA_HOME": os.environ["XDG_DATA_HOME"],
             "TEMP": os.environ["TEMP"],
             "TMP": os.environ["TMP"],
             "TMPDIR": os.environ["TMPDIR"],

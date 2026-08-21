@@ -881,8 +881,11 @@ def test_payload_hardlink_is_rejected(tmp_path: Path) -> None:
     except OSError as exc:
         pytest.skip(f"hardlink unavailable: {exc}")
 
-    with pytest.raises(build_release.ReleaseBuildError, match="hardlinks"):
-        build_release.generate_payload_manifest(root, "f" * 64)
+    try:
+        with pytest.raises(build_release.ReleaseBuildError, match="hardlinks"):
+            build_release.generate_payload_manifest(root, "f" * 64)
+    finally:
+        linked.unlink(missing_ok=True)
 
 
 def test_conda_hardlink_threat_is_candidate_only_and_byte_revalidation_detects_drift(
@@ -898,29 +901,34 @@ def test_conda_hardlink_threat_is_candidate_only_and_byte_revalidation_detects_d
     except OSError as exc:
         pytest.skip(f"hardlink unavailable: {exc}")
 
-    baseline = build_release.sha256_file(source)
-    linked.write_bytes(b"drifted-runtime")
-    assert build_release.sha256_file(source) != baseline
-    linked.write_bytes(b"locked-runtime")
-    assert build_release.sha256_file(source) == baseline
-    assert source.stat().st_nlink > 1
-    assert (
-        build_release.BUILD_ENVIRONMENT_CONTRACT["conda_hardlink_threat_model"]
-        == "accepted_for_test_candidate"
-    )
-    assert build_release.BUILD_ENVIRONMENT_CONTRACT[
-        "live_environment_byte_revalidation"
-    ] == [
-        "before-build-a",
-        "after-build-a",
-        "before-build-b",
-        "after-build-b",
-        "before-publication",
-    ]
-    with pytest.raises(
-        build_release.ReleaseBuildError, match="release-eligible environment.*hardlink"
-    ):
-        build_release._assert_copy_only_release_environment(prefix)
+    try:
+        baseline = build_release.sha256_file(source)
+        linked.write_bytes(b"drifted-runtime")
+        assert build_release.sha256_file(source) != baseline
+        linked.write_bytes(b"locked-runtime")
+        assert build_release.sha256_file(source) == baseline
+        assert source.stat().st_nlink > 1
+        assert (
+            build_release.BUILD_ENVIRONMENT_CONTRACT["conda_hardlink_threat_model"]
+            == "accepted_for_test_candidate"
+        )
+        assert build_release.BUILD_ENVIRONMENT_CONTRACT[
+            "live_environment_byte_revalidation"
+        ] == [
+            "before-build-a",
+            "after-build-a",
+            "before-build-b",
+            "after-build-b",
+            "before-publication",
+        ]
+        with pytest.raises(
+            build_release.ReleaseBuildError,
+            match="release-eligible environment.*hardlink",
+        ):
+            build_release._assert_copy_only_release_environment(prefix)
+    finally:
+        linked.unlink(missing_ok=True)
+        source.unlink(missing_ok=True)
 
 
 def test_build_fingerprint_changes_with_any_contract_input() -> None:

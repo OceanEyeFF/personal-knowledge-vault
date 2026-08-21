@@ -17,8 +17,16 @@ scoped Workflow/Processor creation for one validated runtime configuration.
 - Missing vector artifacts are not negatively cached; a long-running process must
   observe an index created later. Successfully opened stores may be cached.
 - Entry points configure the process application only after runtime bootstrap.
-- `reload_application` replaces the application and legacy configuration identity;
-  in-flight operations retain the old captured graph.
+- `reload_application` serializes publication of a new application and legacy
+  configuration identity; each Application exposes an immutable snapshot with a
+  monotonic generation, and in-flight operations retain their old captured graph.
+- `KnowledgeApplication.config` cannot be rebound after composition. A settings
+  change writes first and reloads into a new Application; it never swaps a Store,
+  Provider or VectorStore underneath an existing operation.
+- A normal settings update/reload may not retarget `data_root`. A different
+  `data_root_identity` fails with `data_root_switch_required` before publication;
+  the lifecycle `inspect → plan → confirm → execute` path owns any future root
+  switch, preservation, and rebuild work.
 
 ## Tests
 

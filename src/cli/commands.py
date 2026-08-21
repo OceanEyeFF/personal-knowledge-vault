@@ -2,7 +2,7 @@
 CLI commands for Personal Knowledge Vault (PKV).
 
 实现核心命令：archive / archive-text / search / show / list / tags /
-related / config / stats
+related / config / inspect / setup / repair / stats
 """
 
 from __future__ import annotations
@@ -40,6 +40,16 @@ from src.retrieval.result import (
     is_strict_search_response,
 )
 from src.runtime.errors import ErrorCode, PKVRuntimeError
+from src.runtime.bootstrap import project_bootstrap_error
+from src.runtime.lifecycle import (
+    RuntimeInspection,
+    RuntimePlan,
+    confirm_runtime_plan,
+    execute_runtime_plan,
+    inspect_runtime,
+    plan_runtime,
+)
+from src.runtime.write_lease import write_lease_scope
 from src.runtime.layout import validate_path_components
 from src.storage.markdown_store import Entry
 from src.utils.logger import get_logger
@@ -58,6 +68,7 @@ _ARCHIVE_PUBLIC_STAGES = frozenset(
     {
         "archive_text",
         "archive_url",
+        "audit_trace",
         "completed",
         "compensating",
         "index",
@@ -70,6 +81,7 @@ _ARCHIVE_PUBLIC_STAGES = frozenset(
         "url_preflight",
         "vector_committed",
         "vector_index",
+        "write_lease",
         "workflow",
         "workflow_analyze",
         "workflow_contract",
@@ -187,6 +199,8 @@ _ARCHIVE_PUBLIC_MESSAGES = {
     ErrorCode.STORAGE_VECTOR_FAILED.value: "向量索引写入失败",
     ErrorCode.STORAGE_COMPENSATION_FAILED.value: "存储回滚失败",
     ErrorCode.STORAGE_REPAIR_REQUIRED.value: "核心存储已提交，需要修复",
+    ErrorCode.WRITE_BUSY.value: "另一个应用正在写入知识库，请稍后重试",
+    ErrorCode.AUDIT_COMPLETION_PENDING.value: "归档已提交，但本地审计完成记录待补；请勿直接重试。",
     ErrorCode.WORKFLOW_CONFIG_INVALID.value: "归档工作流配置无效",
     ErrorCode.WORKFLOW_STEP_FAILED.value: "归档步骤未能完成",
     ErrorCode.WORKFLOW_CONDITION_INVALID.value: "归档工作流条件无效",
@@ -272,9 +286,20 @@ def _project_root() -> Path:
 
 
 def _load_config() -> Config:
-    config = Config()
-    config.ensure_dirs()
-    return config
+    """Return the root command's immutable Config snapshot when available.
+
+    Construction of ``Config`` is read-only.  Do not call ``ensure_dirs`` here:
+    config inspection and lifecycle planning are intentionally allowed against a
+    data root that does not exist yet, while normal product entrypoints have
+    already verified READY before dispatching business commands.
+    """
+
+    context = click.get_current_context(silent=True)
+    if context is not None and isinstance(context.obj, dict):
+        configured = context.obj.get("config")
+        if configured is not None:
+            return configured
+    return Config()
 
 
 def _parse_tags(tags: Optional[str]) -> List[str]:
@@ -1405,14 +1430,17 @@ def _set_config_value(config: Config, key: str, value: str) -> None:
     ):
         raise _PublicConfigError(
             "Base URL 不得通过命令行传入认证信息；"
-            "请直接编辑用户数据目录中的 config/local.yaml"
+            "请直接编辑用户目录中的 .pkv/config.yaml"
         )
-    updater = getattr(config, "update_local_config", None)
+    updater = getattr(config, "update_user_config", None)
     if callable(updater):
         updater({key: parsed_value})
     else:
         # Compatibility seam for injected lightweight test/admin configs.
-        set_yaml_config_value(config.local_config_path, key, parsed_value)
+        target_path = getattr(config, "user_config_path", None)
+        if target_path is None:
+            target_path = config.local_config_path
+        set_yaml_config_value(target_path, key, parsed_value)
 
 
 def _resolve_config_value(config: Config, key: str) -> Any:
@@ -1493,11 +1521,11 @@ def _friendly_hint(message: str) -> None:
         console.print("[yellow]提示: 请检查 URL 是否正确，或稍后重试[/yellow]")
     if "openai" in msg or "embedding" in msg:
         console.print(
-            "[yellow]提示: 请检查用户数据目录中 config/local.yaml 的 Embedding 配置[/yellow]"
+            "[yellow]提示: 请检查用户目录中 .pkv/config.yaml 的 Embedding 配置[/yellow]"
         )
     if "deepseek" in msg or "llm" in msg:
         console.print(
-            "[yellow]提示: 请检查用户数据目录中 config/local.yaml 的 LLM 配置[/yellow]"
+            "[yellow]提示: 请检查用户目录中 .pkv/config.yaml 的 LLM 配置[/yellow]"
         )
 
 
@@ -1543,7 +1571,7 @@ def _archive_text_result_payload(
     """Create the machine-readable, sanitized archive-text response."""
 
     entry = data["entry"]
-    return {
+    payload = {
         "terminal": terminal,
         "status": data["status"],
         "knowledge_id": data["knowledge_id"],
@@ -1552,6 +1580,13 @@ def _archive_text_result_payload(
         "file_path": _safe_archive_file_path(data.get("file_path")),
         "issues": _workflow_public_notices(result, error=False),
     }
+    if data.get("audit_completion_pending") is True:
+        # Keep the long-standing normal archive-text JSON shape stable.  This
+        # extra durable-state projection exists only for the exceptional
+        # post-commit audit reconciliation terminal.
+        payload["core_committed"] = data.get("core_committed") is True
+        payload["audit_completion_pending"] = True
+    return payload
 
 
 def _archive_text_error_payload(
@@ -1606,6 +1641,165 @@ def _archive_text_error_payload(
 @click.group()
 def cli() -> None:
     """个人知识库 CLI 工具。"""
+
+
+def _lifecycle_payload(
+    inspection: RuntimeInspection,
+    plan: RuntimePlan,
+    *,
+    execution: object | None = None,
+) -> dict[str, object]:
+    """Build one path- and secret-free lifecycle response envelope."""
+
+    payload: dict[str, object] = {
+        "status": "success",
+        "readiness": inspection.readiness.value,
+        "inspection": inspection.to_dict(),
+        "plan": plan.to_dict(),
+    }
+    if execution is not None:
+        serializer = getattr(execution, "to_dict", None)
+        if callable(serializer):
+            payload["execution"] = serializer()
+    return payload
+
+
+def _emit_lifecycle_payload(payload: dict[str, object], *, error: bool = False) -> None:
+    """Emit deterministic JSON for both interactive and automation callers."""
+
+    click.echo(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        err=error,
+    )
+
+
+def _lifecycle_failure(exc: BaseException) -> None:
+    """Project lifecycle errors without echoing paths, config, or credentials."""
+
+    _emit_lifecycle_payload(
+        project_bootstrap_error(exc, adapter="cli", stage="runtime_lifecycle"),
+        error=True,
+    )
+    raise click.exceptions.Exit(1)
+
+
+def _run_lifecycle_plan(
+    *,
+    action: str,
+    apply: bool = False,
+    confirm: str | None = None,
+    allow_network: bool = False,
+) -> None:
+    """Run the inspect -> plan -> explicit-confirmation adapter sequence."""
+
+    try:
+        config = _load_config()
+        inspection = inspect_runtime(config)
+        plan = plan_runtime(inspection)
+        if action == "inspect":
+            _emit_lifecycle_payload(_lifecycle_payload(inspection, plan))
+            return
+
+        # Setup/repair are deliberately plan-only by default.  Supplying
+        # execution flags without --apply must not become an accidental write
+        # authorization carried through shell history or automation.
+        if not apply:
+            if confirm is not None or allow_network:
+                raise PKVRuntimeError(
+                    ErrorCode.CONFIRMATION_REQUIRED,
+                    "--confirm 和 --allow-network 只能与 --apply 一起使用。",
+                    stage="runtime_lifecycle",
+                    recoverable=True,
+                )
+            _emit_lifecycle_payload(_lifecycle_payload(inspection, plan))
+            return
+
+        if not confirm:
+            raise PKVRuntimeError(
+                ErrorCode.CONFIRMATION_REQUIRED,
+                "执行运行时计划需要 --confirm PLAN_ID。",
+                stage="runtime_lifecycle",
+                recoverable=True,
+            )
+        if confirm != plan.plan_id:
+            raise PKVRuntimeError(
+                ErrorCode.RUNTIME_PLAN_STALE,
+                "确认不属于当前运行时计划。",
+                stage="runtime_lifecycle",
+                recoverable=True,
+            )
+
+        confirmation = confirm_runtime_plan(plan, allow_network=allow_network)
+        execution = execute_runtime_plan(
+            plan,
+            confirmation,
+            # Keep the actual writer boundary explicit at the product adapter;
+            # tests can patch the lifecycle executor and never contact a real
+            # Provider unless the user deliberately supplied --apply.
+            writer_lease_factory=lambda snapshot: write_lease_scope(snapshot.layout),
+        )
+        _emit_lifecycle_payload(
+            _lifecycle_payload(execution.inspection, plan, execution=execution)
+        )
+    except click.exceptions.Exit:
+        raise
+    except PKVRuntimeError as exc:
+        _lifecycle_failure(exc)
+    except Exception as exc:
+        _lifecycle_failure(exc)
+
+
+@cli.command("inspect")
+def inspect() -> None:
+    """无副作用检查运行时状态，并输出后续可执行计划。"""
+
+    _run_lifecycle_plan(action="inspect")
+
+
+def _lifecycle_apply_options(command):
+    """Attach the shared explicit-write options to setup and repair commands."""
+
+    command = click.option(
+        "--allow-network",
+        is_flag=True,
+        help="允许已确认计划执行 Provider 连通性探测（仅 --apply 时有效）。",
+    )(command)
+    command = click.option(
+        "--confirm",
+        metavar="PLAN_ID",
+        help="确认执行刚刚检查得到的计划 ID。",
+    )(command)
+    return click.option(
+        "--apply",
+        is_flag=True,
+        help="执行已确认计划；未提供时仅展示影响与计划。",
+    )(command)
+
+
+@cli.command("setup")
+@_lifecycle_apply_options
+def setup(apply: bool, confirm: str | None, allow_network: bool) -> None:
+    """展示初始化计划；只有显式确认后才执行。"""
+
+    _run_lifecycle_plan(
+        action="setup",
+        apply=apply,
+        confirm=confirm,
+        allow_network=allow_network,
+    )
+
+
+@cli.command("repair")
+@_lifecycle_apply_options
+def repair(apply: bool, confirm: str | None, allow_network: bool) -> None:
+    """展示修复/升级计划；基础层不会隐式修复已有数据。"""
+
+    _run_lifecycle_plan(
+        action="repair",
+        apply=apply,
+        confirm=confirm,
+        allow_network=allow_network,
+    )
 
 
 @cli.command("archive")
@@ -2271,7 +2465,7 @@ def config_set(key: str, value: str) -> None:
         if _config_key_touches_sensitive_value(key):
             raise _PublicConfigError(
                 "该配置路径包含敏感值，不得作为命令行参数传入；"
-                "请直接编辑用户数据目录中的 config/local.yaml"
+                "请直接编辑用户目录中的 .pkv/config.yaml"
             )
         if "." not in key:
             raise _PublicConfigError(
@@ -2280,7 +2474,7 @@ def config_set(key: str, value: str) -> None:
         config = _load_config()
         _set_config_value(config, key, value)
         console.print(
-            f"[green]成功: 已更新 {key} 到用户数据目录中的 local.yaml[/green]"
+            f"[green]成功: 已更新 {key} 到用户目录中的 .pkv/config.yaml[/green]"
         )
 
     except _PublicConfigError as exc:

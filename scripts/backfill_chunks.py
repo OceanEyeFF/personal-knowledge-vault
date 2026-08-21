@@ -1,29 +1,30 @@
 """
-Chunk 回填入口。
+已停用的 Chunk 回填脚本。
 
-支持 dry-run 范围评估与真实 apply 回填。
+保留 ``run_chunk_backfill`` 仅供隔离合成 fixture 使用；裸脚本入口不再
+提供绕过当前 lifecycle / writer lease 的维护写入路径。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Sequence
-
-import hnswlib
-import numpy as np
+from typing import TYPE_CHECKING, Optional, Sequence
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.ai.embedder import Embedder
-from src.storage.sqlite_store import SQLiteStore
-from src.storage.vector_store import VectorStore
-from src.utils.config import Config
-from src.utils.text_utils import split_text_into_chunks
+from scripts._legacy_maintenance import reject_legacy_maintenance_entrypoint
+
+if TYPE_CHECKING:
+    import numpy as np
+
+    from src.ai.embedder import Embedder
+    from src.storage.sqlite_store import SQLiteStore
 
 
 @dataclass
@@ -50,24 +51,26 @@ class ChunkBackfillReport:
 
 
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="PKV Chunk 回填入口")
+    parser = argparse.ArgumentParser(
+        description="已停用的 PKV Chunk 回填入口（所有执行均会被拒绝）"
+    )
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="执行真实 chunk 与向量回填",
+        help="历史参数；入口已停用，不会执行回填",
     )
     parser.add_argument(
         "--knowledge-id",
         action="append",
         type=int,
         dest="knowledge_ids",
-        help="仅处理指定 knowledge_id，可重复传入",
+        help="历史参数；入口已停用",
     )
     parser.add_argument(
         "--db-path",
         type=str,
         default=None,
-        help="覆盖 SQLite 路径（默认读取配置）",
+        help="历史参数；入口已停用",
     )
     return parser.parse_args(argv)
 
@@ -76,6 +79,25 @@ def _normalize_knowledge_ids(knowledge_ids: Optional[Sequence[int]]) -> list[int
     if not knowledge_ids:
         return []
     return list(dict.fromkeys(int(knowledge_id) for knowledge_id in knowledge_ids))
+
+
+def _require_isolated_fixture_paths(*, db_path: Path, vector_index_dir: Path) -> None:
+    """Restrict the retained helper to the wrapper-selected test root."""
+
+    data_root = os.environ.get("DATA_DIR")
+    if os.environ.get("PKV_TEST_OFFLINE") != "1" or not data_root:
+        raise RuntimeError(
+            "run_chunk_backfill 仅可用于 run-test.ps1 选择的隔离合成 fixture"
+        )
+
+    root = Path(data_root).resolve(strict=False)
+    for label, path in (("db_path", db_path), ("vector_index_dir", vector_index_dir)):
+        candidate = Path(path).resolve(strict=False)
+        if not candidate.is_relative_to(root):
+            raise RuntimeError(
+                "run_chunk_backfill 仅可操作本次 DATA_DIR 下的隔离合成 fixture: "
+                f"{label}"
+            )
 
 
 def _load_entry_rows(store: SQLiteStore, knowledge_ids: Sequence[int]) -> list[dict]:
@@ -139,6 +161,8 @@ def _resolve_embedder_dim(embedder: Embedder) -> int:
 
 
 def _load_chunk_vector_indices(index_dir: Path, knowledge_id: int) -> list[int]:
+    import hnswlib
+
     metadata_path = Path(index_dir) / "chunk_vectors_metadata.json"
     index_path = Path(index_dir) / "chunk_vectors.idx"
     if not metadata_path.exists() or not index_path.exists():
@@ -198,6 +222,8 @@ def _normalize_chunk_payload(
     chunk_vectors: np.ndarray,
     chunks: Optional[list[str]],
 ) -> tuple[np.ndarray, list[str]]:
+    import numpy as np
+
     if chunk_vectors is None or chunks is None:
         raise ValueError("embed_chunks 必须同时返回 chunk_vectors 和 chunks")
     if chunk_vectors.ndim != 2:
@@ -232,6 +258,8 @@ def _normalize_expected_chunks(
     if embedder is not None and hasattr(embedder, "split_chunks"):
         raw_chunks = getattr(embedder, "split_chunks")(content)
     else:
+        from src.utils.text_utils import split_text_into_chunks
+
         raw_chunks = split_text_into_chunks(content)
 
     normalized_chunks: list[str] = []
@@ -251,6 +279,20 @@ def run_chunk_backfill(
     embedding_dim: Optional[int] = 1536,
     embedder: Optional[Embedder] = None,
 ) -> ChunkBackfillReport:
+    """Fixture-only compatibility helper for isolated synthetic paths.
+
+    This function is deliberately not exposed through the raw script entrypoint.
+    Product maintenance must use the confirmed runtime lifecycle instead.
+    """
+
+    _require_isolated_fixture_paths(
+        db_path=Path(db_path),
+        vector_index_dir=Path(vector_index_dir),
+    )
+    from src.ai.embedder import Embedder
+    from src.storage.sqlite_store import SQLiteStore
+    from src.storage.vector_store import VectorStore
+
     store = SQLiteStore(Path(db_path))
     active_embedder = embedder or (Embedder() if apply else None)
     target_knowledge_ids = _normalize_knowledge_ids(knowledge_ids)
@@ -397,22 +439,11 @@ def _print_report(report: ChunkBackfillReport) -> None:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = _parse_args(argv)
-    config = Config()
-    db_path = Path(args.db_path) if args.db_path else config.db_path
-
-    report = run_chunk_backfill(
-        db_path=db_path,
-        vector_index_dir=config.vector_index_dir,
-        knowledge_ids=args.knowledge_ids,
-        apply=bool(args.apply),
-        embedding_dim=config.embedding_dim,
-    )
-    _print_report(report)
-
-    if args.apply and (report.blocked_entries or report.failed_entries):
-        return 1
-    return 0
+    # Keep argparse help available, but reject every real invocation before
+    # Config() could select a user data root.  The helper above remains a
+    # fixture seam only; it is not an alternate lifecycle implementation.
+    _parse_args(argv)
+    return reject_legacy_maintenance_entrypoint("scripts/backfill_chunks.py")
 
 
 if __name__ == "__main__":

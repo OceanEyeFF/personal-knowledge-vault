@@ -443,12 +443,15 @@ def test_input_guard_rejects_hardlinked_runtime_fixture(
     except OSError as exc:
         pytest.skip(f"hard links unavailable: {exc}")
 
-    with pytest.raises(RuntimeError, match="硬链接"):
-        _require_isolated_input_path(
-            linked,
-            default_path=DEFAULT_TASKSET,
-            purpose="MCP 评测任务集",
-        )
+    try:
+        with pytest.raises(RuntimeError, match="硬链接"):
+            _require_isolated_input_path(
+                linked,
+                default_path=DEFAULT_TASKSET,
+                purpose="MCP 评测任务集",
+            )
+    finally:
+        linked.unlink(missing_ok=True)
 
 
 def test_input_guard_accepts_regular_runtime_fixture(tmp_path: Path) -> None:

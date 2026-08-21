@@ -45,14 +45,58 @@ def test_version_probe_checks_empty_output_before_trimming() -> None:
     assert "empty version output" in script[candidate:trim]
 
 
-def test_local_and_ci_pytest_cache_paths_are_isolated() -> None:
+def test_success_cleanup_revalidates_and_rejects_unsafe_links() -> None:
+    script = _read_test_conda_script()
+
+    audit_helper = script.index("function Assert-NoUnsafeCleanupLinks")
+    cleanup_helper = script.index("function Assert-SafeTestRunCleanup")
+    cleanup_condition = script.index(
+        "if ($exitCode -eq 0 -and (Test-Path -LiteralPath $testRunPath))"
+    )
+    audit_call = script.index("Assert-SafeTestRunCleanup", cleanup_condition)
+    delete = script.index("Remove-Item `", cleanup_condition)
+    helpers = script[audit_helper:cleanup_condition]
+
+    assert audit_helper < cleanup_helper < cleanup_condition < audit_call < delete
+    assert "[IO.Path]::GetFullPath($DataRoot)" in helpers
+    assert "[IO.Path]::GetFullPath($RunPath)" in helpers
+    assert "if (-not $normalizedRunPath.StartsWith(" in helpers
+    assert "[IO.Path]::GetFileName($normalizedRunPath) -ne $ExpectedLeaf" in helpers
+    assert "[System.IO.FileAttributes]::ReparsePoint" in helpers
+    assert 'PSObject.Properties["LinkType"]' in helpers
+    assert '$item.LinkType -eq "HardLink"' in helpers
+    assert "Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop" in helpers
+    assert "Assert-NoUnsafeCleanupLinks -Path $child.FullName -Recurse" in helpers
+    assert "Assert-NoUnsafeCleanupLinks -Path $normalizedDataRoot" in helpers
+    assert "Assert-NoUnsafeCleanupLinks -Path $normalizedRunPath -Recurse" in helpers
+
+
+def test_test_conda_uses_setup_default_and_delegates_pytest_isolation_to_wrapper() -> None:
     script = _read_test_conda_script()
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 
-    assert script.count("cache_dir=$testRunRoot") == 3
+    assert 'else {\n    "py311-private"\n}' in script
+    assert "pkv-test-py311" not in script
+    assert "--basetemp" not in script
+    assert "cache_dir=" not in script
     assert workflow.count("cache_dir=$TMP_DIR/pytest-cache") == 3
     assert "paths: tests/test_basic_syntax.py tests/unit" in workflow
     assert "paths: tests/test_*.py tests/unit" not in workflow
+
+
+def test_test_conda_offline_selectors_preserve_default_opt_in_exclusions() -> None:
+    script = _read_test_conda_script()
+
+    selector = "not manual and not network and not artifact and not windows_release_env"
+    assert script.count(f'"{selector}",') == 2
+
+
+def test_ci_pins_the_formal_data_root_in_every_isolated_job() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'PKV_TEST_OFFLINE: "1"' in workflow
+    assert workflow.count('echo "PKV_DATA_ROOT=$data_dir"') == 3
+    assert workflow.count('echo "DATA_DIR=$data_dir"') == 3
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")

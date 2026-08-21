@@ -98,7 +98,13 @@ URL processors 不使用 Playwright、requests 或 httpx 作为 runtime 抓取/�
 
 ### 配置项
 
-在 `config/config.yaml` 中:
+仓库中的 `config/config.yaml` 是默认配置模板。个人运行时唯一可编辑的
+配置文件是 `%USERPROFILE%\\.pkv\\config.yaml`；包括
+`processors.zhihu.cookie` 在内的 Cookie 和其他凭据只能写入该文件。
+`<data-root>/config/local.yaml` 是 PKV 管理的无密钥运行快照，不得存放 Cookie
+或其他凭据。
+
+模板中的相关项:
 
 ```yaml
 processors:

@@ -5,12 +5,19 @@ from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from src.mcp import server
 from src.runtime.errors import ErrorCode, PKVRuntimeError
+from src.runtime.lifecycle import (
+    ProviderValidation,
+    RuntimeInspection,
+    RuntimeIssue,
+    RuntimeIssueSeverity,
+    RuntimeReadiness,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -24,6 +31,44 @@ MALICIOUS_LOG_LEVEL = "INFO\r\nFORGED api_key=MCP-CLI-LOG-SECRET C:\\private"
 class _TruthinessBomb:
     def __bool__(self):
         raise AssertionError("malformed config value must not be coerced")
+
+
+def _inspection(
+    readiness: RuntimeReadiness = RuntimeReadiness.READY,
+) -> RuntimeInspection:
+    issues: tuple[RuntimeIssue, ...] = ()
+    if readiness is RuntimeReadiness.SETUP_REQUIRED:
+        issues = (
+            RuntimeIssue(
+                code=ErrorCode.SETUP_REQUIRED.value,
+                severity=RuntimeIssueSeverity.INFO,
+                message="fixture setup required",
+                recoverable=True,
+                next_action="initialize_fresh",
+            ),
+        )
+    return RuntimeInspection(
+        readiness=readiness,
+        revision="fixture-revision",
+        database_state="ready" if readiness is RuntimeReadiness.READY else "fresh",
+        issues=issues,
+        provider_validation=ProviderValidation(
+            llm_structural="valid",
+            embedding_structural="valid",
+            embedding_dimension=1536,
+        ),
+        journal_record_count=0,
+        runtime_snapshot="valid" if readiness is RuntimeReadiness.READY else "missing",
+    )
+
+
+@pytest.fixture(autouse=True)
+def reset_mcp_runtime_state():
+    server._set_runtime_state(config=None, inspection=None, managed=False)
+    try:
+        yield
+    finally:
+        server._set_runtime_state(config=None, inspection=None, managed=False)
 
 
 @pytest.fixture
@@ -73,12 +118,12 @@ def test_main_canonicalizes_untrusted_config_log_level(
     with (
         patch.object(sys, "argv", ["pkv-mcp"]),
         patch.object(server, "get_config", return_value=config),
-        patch.object(server, "bootstrap_runtime") as bootstrap,
+        patch.object(server, "inspect_runtime", return_value=_inspection()) as inspect,
         patch.object(server.mcp, "run") as run_server,
     ):
         server.main()
 
-    bootstrap.assert_called_once_with(config)
+    inspect.assert_called_once_with(config)
     run_server.assert_called_once_with(transport="stdio")
     stderr = capsys.readouterr().err
     assert "log_level=INFO" in stderr
@@ -107,7 +152,7 @@ def test_main_does_not_coerce_malformed_file_logging_flag(
     with (
         patch.object(sys, "argv", ["pkv-mcp"]),
         patch.object(server, "get_config", return_value=config),
-        patch.object(server, "bootstrap_runtime"),
+        patch.object(server, "inspect_runtime", return_value=_inspection()),
         patch.object(server.LoggerSetup, "add_file_handler") as add_file_handler,
         patch.object(server.mcp, "run"),
     ):
@@ -130,18 +175,128 @@ def test_main_accepts_exact_true_file_logging_flag(preserve_root_logger):
     with (
         patch.object(sys, "argv", ["pkv-mcp"]),
         patch.object(server, "get_config", return_value=config),
-        patch.object(server, "bootstrap_runtime"),
+        patch.object(server, "inspect_runtime", return_value=_inspection()),
+        patch.object(server, "has_active_write_lease", return_value=False) as has_lease,
         patch.object(server.LoggerSetup, "add_file_handler") as add_file_handler,
         patch.object(server.mcp, "run"),
     ):
         server.main()
+        guard_result = add_file_handler.call_args.kwargs["emit_guard"]()
 
-    add_file_handler.assert_called_once_with(
-        config.log_dir / "pkv.log",
-        path_validator=path_validator,
-        level=logging.INFO,
-        log_format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    add_file_handler.assert_called_once()
+    args, kwargs = add_file_handler.call_args
+    assert args == (config.log_dir / "pkv.log",)
+    assert kwargs["path_validator"] is path_validator
+    assert kwargs["level"] == logging.INFO
+    assert kwargs["log_format"] == "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+    assert kwargs["delay"] is True
+    assert guard_result is False
+    has_lease.assert_called_once_with(config.layout)
+
+
+def test_main_keeps_stdio_available_but_status_only_when_runtime_unready(
+    preserve_root_logger,
+):
+    config = SimpleNamespace(
+        log_level="INFO",
+        log_dir=Path("isolated") / "logs",
+        layout=SimpleNamespace(writable_user_path=object()),
     )
+    config.get = lambda key, default=None: (
+        True if key == "logging.file.enabled" else default
+    )
+    unready = _inspection(RuntimeReadiness.SETUP_REQUIRED)
+
+    with (
+        patch.object(sys, "argv", ["pkv-mcp"]),
+        patch.object(server, "get_config", return_value=config),
+        patch.object(server, "inspect_runtime", return_value=unready) as inspect,
+        patch.object(server, "configure_application") as configure_application,
+        patch.object(server.LoggerSetup, "add_file_handler") as add_file_handler,
+        patch.object(server.mcp, "run") as run_server,
+    ):
+        server.main()
+        status = server.get_runtime_status_payload()
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            server.get_application()
+
+    assert exc_info.value.code is ErrorCode.SETUP_REQUIRED
+    assert exc_info.value.stage == "runtime_readiness"
+    assert status["status"] == "success"
+    assert status["readiness"] == RuntimeReadiness.SETUP_REQUIRED.value
+    assert status["plan"] is not None
+    assert status["issues"][0]["code"] == ErrorCode.SETUP_REQUIRED.value
+    assert inspect.call_count == 3  # startup, status, then the protected accessor
+    configure_application.assert_not_called()
+    add_file_handler.assert_not_called()
+    run_server.assert_called_once_with(transport="stdio")
+
+
+def test_main_keeps_stdio_available_when_runtime_inspection_fails(
+    preserve_root_logger,
+):
+    with (
+        patch.object(sys, "argv", ["pkv-mcp"]),
+        patch.object(server, "get_config", side_effect=OSError("private path")),
+        patch.object(server, "configure_application") as configure_application,
+        patch.object(server.LoggerSetup, "add_file_handler") as add_file_handler,
+        patch.object(server.mcp, "run") as run_server,
+    ):
+        server.main()
+        status = server.get_runtime_status_payload()
+
+    assert status == {
+        "status": "error",
+        "readiness": RuntimeReadiness.REPAIR_REQUIRED.value,
+        "inspection": None,
+        "plan": None,
+        "issues": [
+            {
+                "code": ErrorCode.REPAIR_REQUIRED.value,
+                "message": "运行时状态无法安全确认，需要先修复。",
+                "stage": "runtime_readiness",
+                "recoverable": True,
+            }
+        ],
+    }
+    configure_application.assert_not_called()
+    add_file_handler.assert_not_called()
+    run_server.assert_called_once_with(transport="stdio")
+
+
+def test_managed_ready_accessors_reuse_one_published_application_snapshot():
+    config = object()
+    ready = _inspection()
+    application = object()
+    server._set_runtime_state(
+        config=config,
+        inspection=ready,
+        managed=True,
+    )
+
+    with (
+        patch.object(server, "inspect_runtime", return_value=ready) as inspect,
+        patch.object(
+            server,
+            "configure_application",
+            return_value=application,
+        ) as configure_application,
+        patch.object(
+            server,
+            "_application_get_application",
+            return_value=application,
+        ) as get_default_application,
+    ):
+        first = server.get_application()
+        second = server.get_application()
+
+    assert first is application
+    assert second is application
+    assert inspect.call_count == 2
+    configure_application.assert_called_once_with(config)
+    # Passing ``config`` here would deliberately create a new explicit graph;
+    # managed MCP requests must use the published process-default snapshot.
+    assert get_default_application.call_args_list == [call(), call()]
 
 
 def test_transport_contract_only_publishes_stdio():

@@ -10,6 +10,7 @@ Zhihu processor unit tests.
 - Cookie 解析与注入
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -153,8 +154,13 @@ class TestLoginWallDetection:
         assert processor._is_login_wall("<p>登录即可查看</p>") is True
 
     @pytest.mark.asyncio
-    async def test_process_raises_on_login_wall_no_cookie(self, login_wall_html: str):
+    async def test_process_raises_on_login_wall_no_cookie(
+        self,
+        login_wall_html: str,
+        caplog: pytest.LogCaptureFixture,
+    ):
         """遇到登录墙且无 Cookie 时抛 ValueError 并提示配置方法。"""
+        caplog.set_level(logging.WARNING, logger="src.processors.zhihu_processor")
         processor = ZhihuProcessor()
         processor._cookie_str = None
 
@@ -162,15 +168,27 @@ class TestLoginWallDetection:
             with pytest.raises(ValueError, match="知乎登录墙"):
                 await processor.process("https://www.zhihu.com/question/123456")
 
+        assert "%USERPROFILE%\\.pkv\\config.yaml" in caplog.text
+        assert "processors.zhihu.cookie" in caplog.text
+        assert "config/local.yaml" not in caplog.text
+
     @pytest.mark.asyncio
-    async def test_process_raises_on_login_wall_with_expired_cookie(self, login_wall_html: str):
+    async def test_process_raises_on_login_wall_with_expired_cookie(
+        self,
+        login_wall_html: str,
+        caplog: pytest.LogCaptureFixture,
+    ):
         """Cookie 过期仍触发登录墙时，提示 Cookie 过期。"""
+        caplog.set_level(logging.WARNING, logger="src.processors.zhihu_processor")
         processor = ZhihuProcessor()
         processor._cookie_str = "_zap=abc; d_c0=xyz"
 
         with patch.object(processor, "_fetch_html", new=AsyncMock(return_value=login_wall_html)):
             with pytest.raises(ValueError, match="知乎登录墙"):
                 await processor.process("https://www.zhihu.com/question/123456")
+
+        assert "%USERPROFILE%\\.pkv\\config.yaml" in caplog.text
+        assert "config/local.yaml" not in caplog.text
 
 
 # ============================================================

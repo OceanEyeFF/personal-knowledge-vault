@@ -120,10 +120,13 @@ def test_existing_database_hardlink_is_rejected_before_open(tmp_path: Path) -> N
     except OSError as exc:
         pytest.skip(f"hard links unavailable: {exc}")
 
-    with pytest.raises(PKVRuntimeError) as exc_info:
-        MigrationManager(linked, MIGRATIONS_DIR).inspect_database()
+    try:
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            MigrationManager(linked, MIGRATIONS_DIR).inspect_database()
 
-    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+        assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+    finally:
+        linked.unlink(missing_ok=True)
 
 
 @pytest.mark.parametrize("version", [None, "not-semver"])

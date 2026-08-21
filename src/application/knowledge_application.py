@@ -9,13 +9,25 @@ operations do not require credentials or a vector index.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+import math
+from threading import RLock
 from typing import Any
 
 from src.retrieval.result import RetrievalIssue, SearchResponse
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.workflow.models import WorkflowResult
+
+
+@dataclass(frozen=True)
+class ApplicationSnapshot:
+    """Immutable identity captured by every operation of one application graph."""
+
+    generation: int
+    config: Any
 
 
 @dataclass
@@ -36,6 +48,9 @@ class KnowledgeApplication:
     workflow_factory: Callable[[], Any] | None = None
     text_processor_factory: Callable[[], Any] | None = None
     chat_provider_factory: Callable[[Any], Any] | None = None
+    write_lease_factory: Callable[[Any], Any] | None = None
+    snapshot_generation: int = field(default=0, kw_only=True)
+    _snapshot: ApplicationSnapshot = field(init=False, repr=False)
     _sqlite_store: Any = field(default=None, init=False, repr=False)
     _markdown_store: Any = field(default=None, init=False, repr=False)
     _vector_store: Any = field(default=None, init=False, repr=False)
@@ -48,6 +63,29 @@ class KnowledgeApplication:
     _relation_query_service: Any = field(default=None, init=False, repr=False)
     _evidence_collection_service: Any = field(default=None, init=False, repr=False)
     _exploration_service: Any = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.snapshot_generation) is not int or self.snapshot_generation < 0:
+            raise ValueError("snapshot_generation 必须是非负整数")
+        self._snapshot = ApplicationSnapshot(
+            generation=self.snapshot_generation,
+            config=self.config,
+        )
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # ``config`` is the root of every lazy dependency below this boundary.
+        # Rebinding it after construction could make one operation observe an
+        # old Store with a new Provider/vector contract.  Reload publishes a
+        # new application instead.
+        if name == "config" and "config" in self.__dict__:
+            raise AttributeError("KnowledgeApplication.config is an immutable snapshot")
+        super().__setattr__(name, value)
+
+    @property
+    def snapshot(self) -> ApplicationSnapshot:
+        """Return this application's immutable config-graph identity."""
+
+        return self._snapshot
 
     @property
     def sqlite_store(self) -> Any:
@@ -144,6 +182,7 @@ class KnowledgeApplication:
                 sqlite_store=self.sqlite_store,
                 markdown_store=self.markdown_store,
                 relation_query_service=self.relation_query_service,
+                runtime_config=self.config,
             )
         return self._evidence_collection_service
 
@@ -159,6 +198,7 @@ class KnowledgeApplication:
                 sqlite_store=self.sqlite_store,
                 relation_query_service=self.relation_query_service,
                 vault_dir=self.markdown_store.vault_dir,
+                runtime_config=self.config,
             )
         return self._exploration_service
 
@@ -236,7 +276,15 @@ class KnowledgeApplication:
         data["url"] = url
         data.setdefault("skip_sharpen", True)
         data.setdefault("skip_review", True)
-        return await self._new_workflow().execute_async("archive-url", data)
+
+        async def operation() -> WorkflowResult:
+            return await self._new_workflow().execute_async("archive-url", data)
+
+        return await self._run_archive_write(
+            "archive_url",
+            {"input": data},
+            operation,
+        )
 
     async def archive_cli_input(self, input_data: dict[str, Any]) -> WorkflowResult:
         """Run the CLI's established URL, literal-text, or granted-file route.
@@ -270,7 +318,15 @@ class KnowledgeApplication:
         data["url"] = source
         data.setdefault("skip_sharpen", True)
         data.setdefault("skip_review", True)
-        return await self._new_workflow().execute_async("archive-url", data)
+
+        async def operation() -> WorkflowResult:
+            return await self._new_workflow().execute_async("archive-url", data)
+
+        return await self._run_archive_write(
+            "archive_cli_input",
+            {"input": data},
+            operation,
+        )
 
     async def archive_text(
         self,
@@ -295,22 +351,267 @@ class KnowledgeApplication:
                 ),
                 stage="text_validation",
             )
-        processor = self._new_text_processor()
-        entry = await processor.process_text(text)
         title_clean = title.strip() if isinstance(title, str) else ""
-        if title_clean:
-            entry.title = title_clean
-        return await self._new_workflow().execute_async(
-            "archive-text",
+
+        async def operation() -> WorkflowResult:
+            # Processor construction is intentionally inside the lease.  A
+            # contending archive must not consume Provider/processor work before
+            # it receives the stable ``write_busy`` outcome.
+            processor = self._new_text_processor()
+            entry = await processor.process_text(text)
+            if title_clean:
+                entry.title = title_clean
+            return await self._new_workflow().execute_async(
+                "archive-text",
+                {
+                    "text": text,
+                    "title": entry.title,
+                    "entry": entry,
+                    "content": entry.content,
+                    "skip_sharpen": bool(skip_sharpen),
+                    "skip_review": bool(skip_review),
+                },
+            )
+
+        return await self._run_archive_write(
+            "archive_text",
             {
-                "text": text,
-                "title": entry.title,
-                "entry": entry,
-                "content": entry.content,
-                "skip_sharpen": bool(skip_sharpen),
-                "skip_review": bool(skip_review),
+                "input": {
+                    "text": text,
+                    "title": title_clean,
+                    "skip_sharpen": bool(skip_sharpen),
+                    "skip_review": bool(skip_review),
+                }
             },
+            operation,
         )
+
+    async def _run_archive_write(
+        self,
+        audit_operation: str,
+        audit_context: Mapping[str, Any],
+        operation: Callable[[], Awaitable[WorkflowResult]],
+    ) -> WorkflowResult:
+        """Run one archive operation under the data-root single-writer lease."""
+
+        async def audited_operation() -> WorkflowResult:
+            # This function is called only after ``_run_write_operation`` owns
+            # the R3 lease, so trace creation cannot make a contending request
+            # create logs or consume processor/provider work.
+            with self._audit_mutation(audit_operation, audit_context) as audit:
+                try:
+                    result = await operation()
+                except PKVRuntimeError as error:
+                    audit.fail_runtime_error(error)
+                    raise
+                return self._finish_workflow_audit(audit, result)
+
+        try:
+            return await self._run_write_operation(audited_operation)
+        except PKVRuntimeError as error:
+            if error.stage != "write_lease":
+                raise
+            return self._workflow_failure(error, stage="write_lease")
+
+    async def _run_write_operation(
+        self,
+        operation: Callable[[], Awaitable[WorkflowResult]],
+    ) -> WorkflowResult:
+        """Keep the owner lease alive until a cancelled workflow has drained.
+
+        The child task owns both the ContextVar lease identity and all default
+        workflow executor calls.  ``shield`` prevents a caller cancellation
+        from abandoning a live StoreStep worker; after it settles, cancellation
+        is re-raised to the caller rather than transformed into a write result.
+        """
+
+        async def owned_operation() -> WorkflowResult:
+            with self._write_lease_scope():
+                return await operation()
+
+        task = asyncio.create_task(owned_operation())
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await self._drain_cancelled_write_operation(task)
+            raise
+
+    @staticmethod
+    async def _drain_cancelled_write_operation(task: "asyncio.Task[Any]") -> None:
+        """Await a shielded owner task even if cancellation is requested again."""
+
+        while True:
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if task.done():
+                    return
+                continue
+            except BaseException:
+                # The cancelled caller receives its original cancellation.  The
+                # child exception was retrieved here, so it cannot become an
+                # unobserved task failure after the durable worker has settled.
+                return
+            return
+
+    def _write_lease_scope(self) -> Any:
+        """Return the operation's data-root writer scope without eager runtime IO."""
+
+        if self.write_lease_factory is not None:
+            return self.write_lease_factory(self.config)
+        from src.runtime.write_lease import write_lease_scope
+
+        return write_lease_scope(self.config.layout)
+
+    async def _run_tracked_write_worker(
+        self,
+        operation: Callable[..., Any],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Run a StoreStep durable worker using the private R3 capability bridge."""
+
+        from src.runtime.write_lease import _run_tracked_write_worker
+
+        return await _run_tracked_write_worker(
+            self.config.layout,
+            operation,
+            *args,
+            **kwargs,
+        )
+
+    @contextmanager
+    def _audit_mutation(
+        self,
+        operation: str,
+        context: Mapping[str, Any],
+    ) -> Iterator[Any]:
+        """Start one local, credential-redacted audit timeline under a write lease."""
+
+        from src.runtime.audit import AuditTrace
+
+        captured_context: dict[str, Any] = {
+            "configuration_generation": self.snapshot.generation,
+            "operation_context": self._audit_safe_value(context),
+        }
+        data_root_identity = getattr(self.config, "data_root_identity", None)
+        if isinstance(data_root_identity, str):
+            captured_context["data_root_identity"] = data_root_identity
+        trace = AuditTrace(
+            self.config.layout,
+            secret_values=self._audit_secret_values(),
+        )
+        with trace.operation(operation, context=captured_context) as timeline:
+            yield timeline
+
+    def _audit_secret_values(self) -> tuple[str, ...]:
+        """Supply all currently supported credential values without logging them."""
+
+        values: list[str] = []
+        for attribute in ("llm_api_key", "embd_api_key", "zhihu_cookie"):
+            try:
+                value = getattr(self.config, attribute, None)
+            except Exception:
+                continue
+            if isinstance(value, str) and value:
+                values.append(value)
+        return tuple(values)
+
+    @classmethod
+    def _audit_safe_value(cls, value: Any) -> Any:
+        """Make adapter input/result JSON-safe without rendering opaque objects."""
+
+        if value is None or isinstance(value, (bool, int, str)):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else "[NONFINITE_VALUE]"
+        if isinstance(value, Mapping):
+            return {
+                key: cls._audit_safe_value(nested)
+                for key, nested in value.items()
+                if isinstance(key, str) and not key.startswith("_")
+            }
+        if isinstance(value, (list, tuple)):
+            return [cls._audit_safe_value(item) for item in value]
+        # Do not call ``str`` or ``repr``: custom adapters/providers can expose
+        # a key there.  The marker records that a value existed without leaking
+        # its implementation or contents.
+        return "[UNSUPPORTED_VALUE]"
+
+    def _finish_workflow_audit(
+        self,
+        audit: Any,
+        result: WorkflowResult,
+    ) -> WorkflowResult:
+        """Finalize an archive timeline without misreporting a committed write.
+
+        A non-error workflow terminal has already completed its durable archive
+        work.  If only the final audit append/fsync fails, it must remain a
+        committed outcome rather than being reflected as an uncommitted
+        exception.  The returned degraded result gives adapters an explicit
+        reconciliation marker; it never exposes the audit sink error itself.
+        """
+
+        payload = {
+            "terminal": result.terminal,
+            "success": result.success,
+            "data": self._audit_safe_value(result.data),
+            "errors": self._audit_safe_value(result.errors),
+            "warnings": self._audit_safe_value(result.warnings),
+            "issues": self._audit_safe_value(result.issues),
+        }
+        if result.terminal == "error":
+            audit.fail(code="workflow_failed", details=payload)
+            return result
+
+        from src.runtime.audit import AuditTraceError
+
+        try:
+            audit.complete(payload)
+        except AuditTraceError:
+            # ``AuditTraceError`` is intentionally generic and does not retain
+            # an unsafe filesystem/OS payload.  Do not broaden this to unknown
+            # exceptions: programming errors in a custom audit seam are not a
+            # committed-storage recovery contract.
+            # ``complete`` sets its terminal flag only after append+fsync.  Its
+            # documented post-commit escape hatch therefore prevents the
+            # context manager from appending a false "failed" event on unwind.
+            audit.mark_completion_pending_after_commit()
+            return self._audit_completion_pending_result(result)
+        return result
+
+    @staticmethod
+    def _audit_completion_pending_result(result: WorkflowResult) -> WorkflowResult:
+        """Project a durable archive whose final local audit record is pending."""
+
+        marker = {
+            "code": ErrorCode.AUDIT_COMPLETION_PENDING.value,
+            "message": "归档已提交，但本地审计完成记录待补；请勿直接重试。",
+            "severity": "warning",
+            "stage": "audit_trace",
+            "recoverable": True,
+        }
+        return WorkflowResult(
+            success=True,
+            data={
+                **result.data,
+                # A durable archive must never be blindly repeated merely
+                # because its independent audit completion record is pending.
+                "do_not_retry": True,
+                "audit_completion_pending": True,
+            },
+            errors=[],
+            logs=list(result.logs),
+            warnings=[*result.warnings, marker["message"]],
+            issues=[*result.issues, marker],
+            terminal="degraded",
+        )
+
+    def _finish_mutation_audit(self, audit: Any, result: Any) -> None:
+        """Record a completed Kernel mutation without assuming a Store return type."""
+
+        audit.complete({"result": self._audit_safe_value(result)})
 
     def chat_settings(self) -> Any:
         """Return a validated immutable chat Provider settings snapshot."""
@@ -375,6 +676,7 @@ class KnowledgeApplication:
                 storage_coordinator=self.storage_coordinator,
                 embedder_factory=self._create_embedder,
                 vector_store_factory=self._create_writer_vector_store,
+                write_worker_runner=self._run_tracked_write_worker,
             )
         if issubclass(step_class, ReviewStep):
             return step_class(
@@ -442,13 +744,16 @@ class KnowledgeApplication:
     def _default_sqlite_store(config: Any) -> Any:
         from src.storage.sqlite_store import SQLiteStore
 
-        return SQLiteStore(config.db_path)
+        return SQLiteStore(config.db_path, runtime_config=config)
 
     @staticmethod
     def _default_markdown_store(config: Any) -> Any:
         from src.storage.markdown_store import MarkdownStore
 
-        return MarkdownStore(config.vault_dir)
+        # Application composition is also used by read-only Kernel paths.  The
+        # lifecycle/bootstrap writer creates the Vault explicitly; a read must
+        # never turn an uninitialized root into a non-empty repair candidate.
+        return MarkdownStore(config.vault_dir, create=False)
 
     @staticmethod
     def _default_vector_store(config: Any) -> Any | None:
@@ -479,7 +784,7 @@ class KnowledgeApplication:
     def _default_bm25_retriever(config: Any) -> Any:
         from src.retrieval.bm25_retriever import BM25Retriever
 
-        return BM25Retriever(config.db_path)
+        return BM25Retriever(config.db_path, runtime_config=config)
 
     @staticmethod
     def _default_query_router(config: Any, token_threshold: int) -> Any:
@@ -522,6 +827,39 @@ class KnowledgeApplication:
 
 
 _default_application: KnowledgeApplication | None = None
+_application_generation = 0
+_application_lock = RLock()
+
+
+def _publish_application(config: Any, *, replace_legacy_config: bool) -> KnowledgeApplication:
+    """Create and atomically publish the next process application snapshot.
+
+    ``_application_lock`` is held by every caller.  When the legacy Config
+    identity changes too, take its re-entrant lock for the tiny publication
+    window so a newly obtained ``get_config()`` can never be paired with the
+    old default application graph.
+    """
+
+    global _default_application, _application_generation
+    if not replace_legacy_config:
+        _application_generation += 1
+        _default_application = KnowledgeApplication(
+            config,
+            snapshot_generation=_application_generation,
+        )
+        return _default_application
+
+    import src.utils.config as config_module
+
+    with config_module._CONFIG_INSTANCE_LOCK:
+        _application_generation += 1
+        application = KnowledgeApplication(
+            config,
+            snapshot_generation=_application_generation,
+        )
+        config_module.replace_config_instance(config)
+        _default_application = application
+        return application
 
 
 def configure_application(config: Any) -> KnowledgeApplication:
@@ -532,9 +870,10 @@ def configure_application(config: Any) -> KnowledgeApplication:
     normal product processes configure it exactly once.
     """
 
-    global _default_application
-    _default_application = KnowledgeApplication(config)
-    return _default_application
+    with _application_lock:
+        # This config is becoming the process default, so compatibility callers
+        # of get_config() must see the same identity as default workflows.
+        return _publish_application(config, replace_legacy_config=True)
 
 
 def get_application(config: Any | None = None) -> KnowledgeApplication:
@@ -548,12 +887,15 @@ def get_application(config: Any | None = None) -> KnowledgeApplication:
 
     global _default_application
     if config is not None:
+        # Explicit config is deliberately isolated: its operation graph must
+        # retain B even while process legacy config remains A or is reloaded.
         return KnowledgeApplication(config)
-    if _default_application is None:
-        from src.utils.config import get_config
+    with _application_lock:
+        if _default_application is None:
+            from src.utils.config import get_config
 
-        _default_application = KnowledgeApplication(get_config())
-    return _default_application
+            return _publish_application(get_config(), replace_legacy_config=False)
+        return _default_application
 
 
 def reload_application() -> KnowledgeApplication:
@@ -566,17 +908,28 @@ def reload_application() -> KnowledgeApplication:
 
     import src.utils.config as config_module
 
-    config = config_module.Config()
-    # Keep one process-wide configuration identity.  Workflow/processor code
-    # now receives the Kernel config explicitly, while legacy callers of
-    # ``get_config`` must observe the same refreshed snapshot rather than the
-    # pre-settings singleton.
-    config_module._config_instance = config
-    return configure_application(config)
+    with _application_lock:
+        # Rebuild from the same immutable source snapshot whenever possible.
+        # A different data root is a lifecycle operation (impact/backup/explicit
+        # confirmation), not an ordinary setting reload.  Existing operations
+        # retain their old application object either way.
+        current_config = (
+            _default_application.config
+            if _default_application is not None
+            else config_module.get_config()
+        )
+        reload_snapshot = getattr(current_config, "reload_snapshot", None)
+        config = (
+            reload_snapshot()
+            if callable(reload_snapshot)
+            else config_module.Config()
+        )
+        return _publish_application(config, replace_legacy_config=True)
 
 
 def reset_application() -> None:
     """Clear the default application singleton for isolated tests."""
 
     global _default_application
-    _default_application = None
+    with _application_lock:
+        _default_application = None

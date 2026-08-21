@@ -2691,21 +2691,147 @@ def test_stats_malformed_table_exists_fails_closed(
 # ---------------------------------------------------------------------------
 
 
-def test_archive_text_json_uses_literal_processor_seam_and_workflow(
+def test_archive_commands_preserve_write_busy_lease_issue(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    """Archive adapters must retain the retryable single-writer outcome."""
+
+    busy_result = WorkflowResult(
+        success=False,
+        terminal="error",
+        issues=[
+            {
+                "code": ErrorCode.WRITE_BUSY,
+                "severity": "error",
+                "stage": "write_lease",
+                "recoverable": True,
+            }
+        ],
+    )
+    application = mocker.MagicMock()
+    application.archive_cli_input = mocker.AsyncMock(return_value=busy_result)
+    application.archive_text = mocker.AsyncMock(return_value=busy_result)
+    mocker.patch.object(commands, "get_application", return_value=application)
+
+    archive_response = runner.invoke(
+        commands.cli,
+        ["archive", "https://example.com/write-busy", "--quiet"],
+    )
+
+    assert archive_response.exit_code != 0
+    archive_output = "\n".join(_printed_strings(console_spy)) + archive_response.output
+    assert ErrorCode.WRITE_BUSY.value in archive_output
+    assert "stage=write_lease" in archive_output
+    assert "recoverable=true" in archive_output
+    assert ErrorCode.WORKFLOW_STEP_FAILED.value not in archive_output
+
+    text_response = runner.invoke(
+        commands.cli,
+        ["archive-text", "literal write-busy test", "--format", "json"],
+    )
+
+    assert text_response.exit_code != 0
+    assert json.loads(text_response.output) == {
+        "terminal": "error",
+        "status": "error",
+        "knowledge_id": None,
+        "title": "",
+        "tags": [],
+        "file_path": "",
+        "issues": [
+            {
+                "code": ErrorCode.WRITE_BUSY.value,
+                "message": "另一个应用正在写入知识库，请稍后重试",
+                "severity": "error",
+                "stage": "write_lease",
+                "recoverable": True,
+            }
+        ],
+    }
+    application.archive_cli_input.assert_awaited_once()
+    application.archive_text.assert_awaited_once_with(
+        "literal write-busy test",
+        title="",
+        skip_review=True,
+        skip_sharpen=True,
+    )
+
+
+def test_archive_text_json_preserves_committed_audit_completion_pending(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    """A failed audit final append is a committed degraded archive, never an error."""
+
+    entry = _make_entry(title="审计待补", source_url=None, tags=["audit"])
+    pending_result = WorkflowResult(
+        success=True,
+        terminal="degraded",
+        data={
+            "knowledge_id": 72,
+            "status": "ready",
+            "core_committed": True,
+            "do_not_retry": True,
+            "audit_completion_pending": True,
+            "file_path": "vault/audit-pending.md",
+            "entry": entry,
+        },
+        errors=[],
+        warnings=["api_key=CLI-AUDIT-COMPLETION-SECRET"],
+        issues=[
+            {
+                "code": ErrorCode.AUDIT_COMPLETION_PENDING.value,
+                "stage": "audit_trace",
+                "recoverable": True,
+                "severity": "warning",
+            }
+        ],
+    )
+    application = mocker.MagicMock()
+    application.archive_text = mocker.AsyncMock(return_value=pending_result)
+    mocker.patch.object(commands, "get_application", return_value=application)
+
+    response = runner.invoke(
+        commands.cli,
+        ["archive-text", "already committed", "--format", "json"],
+    )
+
+    assert response.exit_code == 0
+    payload = json.loads(response.output)
+    assert payload["terminal"] == "degraded"
+    assert payload["status"] == "ready"
+    assert payload["knowledge_id"] == 72
+    assert payload["core_committed"] is True
+    assert payload["audit_completion_pending"] is True
+    assert payload["issues"] == [
+        {
+            "code": ErrorCode.AUDIT_COMPLETION_PENDING.value,
+            "message": "归档已提交，但本地审计完成记录待补；请勿直接重试。",
+            "severity": "warning",
+            "stage": "audit_trace",
+            "recoverable": True,
+        }
+    ]
+    assert "CLI-AUDIT-COMPLETION-SECRET" not in response.output
+
+
+def test_archive_text_json_uses_literal_application_seam(
     runner: CliRunner,
     mocker: pytest.MockFixture,
     load_config_stub,
     tmp_path: Path,
 ) -> None:
-    """archive-text must treat path-shaped input as text and inject its Entry."""
+    """archive-text must pass path-shaped input literally to Application."""
 
     path_shaped_text = str(tmp_path / "PRIVATE-TEXT-SOURCE-CANARY.txt")
-    entry = _make_entry(title="自动标题", source_url=None, tags=["text", "note"])
+    entry = _make_entry(title="人工标题", source_url=None, tags=["text", "note"])
     entry.content = path_shaped_text
-    processor = mocker.MagicMock()
-    processor.process_text = mocker.AsyncMock(return_value=entry)
-    engine = mocker.MagicMock()
-    engine.execute_async = mocker.AsyncMock(
+    application = mocker.MagicMock()
+    application.archive_text = mocker.AsyncMock(
         return_value=WorkflowResult(
             success=True,
             terminal="success",
@@ -2721,17 +2847,15 @@ def test_archive_text_json_uses_literal_processor_seam_and_workflow(
             issues=[],
         )
     )
-    mocker.patch.object(commands, "TextFallbackProcessor", return_value=processor)
-    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
-    path_exists = mocker.patch.object(
-        Path,
-        "exists",
-        side_effect=AssertionError("archive-text must not probe path-shaped text"),
+    application_factory = mocker.patch.object(
+        commands,
+        "get_application",
+        return_value=application,
     )
-    path_read = mocker.patch.object(
-        Path,
-        "read_text",
-        side_effect=AssertionError("archive-text must not read path-shaped text"),
+    local_file_capability = mocker.patch.object(
+        commands,
+        "_local_file_import_candidate",
+        side_effect=AssertionError("archive-text must not probe path-shaped text"),
     )
 
     response = runner.invoke(
@@ -2747,19 +2871,18 @@ def test_archive_text_json_uses_literal_processor_seam_and_workflow(
     )
 
     assert response.exit_code == 0
-    processor.process_text.assert_awaited_once_with(path_shaped_text)
-    path_exists.assert_not_called()
-    path_read.assert_not_called()
-    engine.execute_async.assert_awaited_once()
-    workflow_name, workflow_input = engine.execute_async.await_args.args
-    assert workflow_name == "archive-text"
-    assert workflow_input["text"] == path_shaped_text
-    assert workflow_input["title"] == "人工标题"
-    assert workflow_input["entry"] is entry
-    assert workflow_input["content"] == path_shaped_text
-    assert workflow_input["skip_review"] is True
-    assert workflow_input["skip_sharpen"] is True
-    assert entry.title == "人工标题"
+    application_factory.assert_called_once()
+    application.archive_text.assert_awaited_once_with(
+        path_shaped_text,
+        title="人工标题",
+        skip_review=True,
+        skip_sharpen=True,
+    )
+    # The only published local-file capability is the CLI ``archive`` route;
+    # literal ``archive-text`` must never even ask whether its text is a path.
+    # Mock that narrow seam rather than globally patching ``Path.exists``: the
+    # latter corrupts pytest/reporting if this assertion intentionally fails.
+    local_file_capability.assert_not_called()
 
     payload = json.loads(response.output)
     assert payload == {
@@ -2778,13 +2901,11 @@ def test_archive_text_invalid_completed_terminal_fails_closed_in_json(
     mocker: pytest.MockFixture,
     load_config_stub,
 ) -> None:
-    """A contradictory workflow terminal must never be rendered as archive success."""
+    """A contradictory Application result must never render as archive success."""
 
     entry = _make_entry(title="安全标题", source_url=None)
-    processor = mocker.MagicMock()
-    processor.process_text = mocker.AsyncMock(return_value=entry)
-    engine = mocker.MagicMock()
-    engine.execute_async = mocker.AsyncMock(
+    application = mocker.MagicMock()
+    application.archive_text = mocker.AsyncMock(
         return_value=SimpleNamespace(
             terminal="success",
             success=False,
@@ -2799,8 +2920,7 @@ def test_archive_text_invalid_completed_terminal_fails_closed_in_json(
             issues=[],
         )
     )
-    mocker.patch.object(commands, "TextFallbackProcessor", return_value=processor)
-    mocker.patch.object(commands, "WorkflowEngine", return_value=engine)
+    mocker.patch.object(commands, "get_application", return_value=application)
 
     response = runner.invoke(
         commands.cli,
@@ -2814,6 +2934,12 @@ def test_archive_text_invalid_completed_terminal_fails_closed_in_json(
     assert payload["knowledge_id"] is None
     assert payload["issues"][0]["code"] == ErrorCode.WORKFLOW_STEP_FAILED.value
     assert "安全标题" not in response.output
+    application.archive_text.assert_awaited_once_with(
+        "普通文本",
+        title="",
+        skip_review=True,
+        skip_sharpen=True,
+    )
 
 
 @pytest.mark.parametrize("unsafe_title", ["../other", r"..\\other", "bad\nterminal"])
@@ -2825,8 +2951,7 @@ def test_archive_text_rejects_path_shaped_or_control_titles_before_processing(
 ) -> None:
     """A display title must not become a filename/path or terminal-control channel."""
 
-    processor_type = mocker.patch.object(commands, "TextFallbackProcessor")
-    engine_type = mocker.patch.object(commands, "WorkflowEngine")
+    application_factory = mocker.patch.object(commands, "get_application")
 
     response = runner.invoke(
         commands.cli,
@@ -2835,8 +2960,7 @@ def test_archive_text_rejects_path_shaped_or_control_titles_before_processing(
 
     assert response.exit_code != 0
     assert json.loads(response.output)["status"] == "error"
-    processor_type.assert_not_called()
-    engine_type.assert_not_called()
+    application_factory.assert_not_called()
 
 
 def test_tags_json_projects_store_rows(

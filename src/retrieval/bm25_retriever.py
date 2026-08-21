@@ -6,6 +6,7 @@ BM25 关键词检索器
 
 from pathlib import Path
 import sqlite3
+from typing import Any
 
 from src.storage.sqlite_store import FTS_TABLE_NAME, SQLiteStore
 from src.runtime.errors import ErrorCode
@@ -23,15 +24,29 @@ class BM25Retriever:
     使用 SQLite FTS5 进行全文检索，适合精确关键词匹配
     """
 
-    def __init__(self, db_path: Path):
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        runtime_config: Any = None,
+        text_processor: TextProcessor | None = None,
+    ):
         """
         初始化 BM25 检索器
 
         Args:
             db_path: 数据库文件路径
+            runtime_config: 所属 Application 的 Config snapshot。
+            text_processor: 可复用的 snapshot-bound tokenizer 测试 seam。
         """
-        self.store = SQLiteStore(db_path)
-        self.text_processor = TextProcessor()
+        self.text_processor = text_processor or TextProcessor(
+            runtime_config=runtime_config
+        )
+        self.store = SQLiteStore(
+            db_path,
+            runtime_config=runtime_config,
+            text_processor=self.text_processor,
+        )
 
     def search(self, query: str, limit: int = 10) -> SearchResponse:
         """

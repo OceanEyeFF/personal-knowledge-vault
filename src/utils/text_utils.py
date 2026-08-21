@@ -4,29 +4,150 @@
 提供 jieba 分词、文本清洗等功能
 """
 
+import marshal
 import re
 import unicodedata
-import jieba
-from typing import List, Optional, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Iterator, List, Optional, Sequence
+
+import jieba
+
+from src.runtime.errors import ErrorCode, PKVRuntimeError
+
+
+_MISSING = object()
+
+
+@dataclass
+class _JiebaRuntimeState:
+    """A restorable snapshot of the mutable jieba process-global tokenizer.
+
+    ``jieba`` exposes module-level functions bound to one ``dt`` tokenizer.
+    A temporary Config root therefore cannot get an independent tokenizer by
+    merely changing ``dt.tmp_dir``: initialization and ``load_userdict`` also
+    mutate its dictionary.  Short-lived verification/test workspaces use this
+    snapshot to leave the surrounding process exactly as they found it.
+    """
+
+    tokenizer: Any
+    scalar_values: dict[str, Any]
+    mapping_values: dict[str, tuple[Any, dict[Any, Any]]]
+    force_split_words: tuple[Any, Any, set[Any]] | None
+
+    @classmethod
+    def capture(cls, module: Any) -> "_JiebaRuntimeState":
+        tokenizer = module.dt
+        scalar_values = {
+            name: getattr(tokenizer, name, _MISSING)
+            for name in ("initialized", "tmp_dir", "cache_file", "dictionary", "total")
+        }
+        mapping_values: dict[str, tuple[Any, dict[Any, Any]]] = {}
+        for name in ("FREQ", "user_word_tag_tab"):
+            value = getattr(tokenizer, name, _MISSING)
+            if isinstance(value, dict):
+                mapping_values[name] = (value, dict(value))
+            else:
+                scalar_values[name] = value
+
+        finalseg = getattr(module, "finalseg", None)
+        force_split = getattr(finalseg, "Force_Split_Words", _MISSING)
+        force_split_words = (
+            (finalseg, force_split, set(force_split))
+            if isinstance(force_split, set)
+            else None
+        )
+        return cls(
+            tokenizer=tokenizer,
+            scalar_values=scalar_values,
+            mapping_values=mapping_values,
+            force_split_words=force_split_words,
+        )
+
+    @staticmethod
+    def _restore_attribute(target: Any, name: str, value: Any) -> None:
+        if value is _MISSING:
+            try:
+                delattr(target, name)
+            except AttributeError:
+                pass
+            return
+        setattr(target, name, value)
+
+    def restore(self) -> None:
+        # Restore mapping *objects* in place before rebinding the tokenizer.
+        # Jieba publishes ``user_word_tag_tab`` as another module-level alias,
+        # so assigning a fresh dict would leave callers with stale mutations.
+        for name, (original, values) in self.mapping_values.items():
+            original.clear()
+            original.update(values)
+            setattr(self.tokenizer, name, original)
+        for name, value in self.scalar_values.items():
+            self._restore_attribute(self.tokenizer, name, value)
+
+        if self.force_split_words is not None:
+            finalseg, original, values = self.force_split_words
+            original.clear()
+            original.update(values)
+            setattr(finalseg, "Force_Split_Words", original)
+
+
+@contextmanager
+def preserve_jieba_global_state() -> Iterator[None]:
+    """Restore jieba after a short-lived, isolated runtime workspace.
+
+    This is deliberately a test/verification lifecycle seam, not a normal
+    Application operation.  It neither initializes jieba nor writes a cache;
+    callers still must use :class:`TextProcessor` with an explicit Config and
+    a writer lease for any cache-producing work.
+    """
+
+    state = _JiebaRuntimeState.capture(jieba)
+    try:
+        yield
+    finally:
+        state.restore()
 
 
 class TextProcessor:
     """文本处理器"""
 
-    def __init__(self, custom_dict_path: Optional[str] = None):
+    def __init__(
+        self,
+        custom_dict_path: Optional[str] = None,
+        *,
+        runtime_config: Any | None = None,
+        initialize_cache: bool = False,
+    ):
         """
         初始化文本处理器
 
         Args:
             custom_dict_path: jieba 自定义词典路径
+            runtime_config: Application 捕获的 Config snapshot。产品路径必须
+                显式传入，避免 Config B 回退到全局 Config A。
+            initialize_cache: 仅 runtime bootstrap 在持有数据根 writer lease
+                时传入；普通读取不得借分词静默创建 jieba cache。
         """
         # 产品默认资源必须通过 RuntimeLayout 解析；显式路径仅保留为测试/
         # 运维注入 seam，不能影响产品的 bundled-resource 根。
+        self._runtime_config = runtime_config
         if custom_dict_path is None:
-            from src.utils.config import get_config
+            legacy_global_config = runtime_config is None
+            if runtime_config is None:
+                # Historical direct utility/test compatibility.  Product
+                # Application composition always injects its captured Config.
+                from src.utils.config import get_config
 
-            layout = get_config().layout
+                runtime_config = get_config()
+            self._runtime_config = runtime_config
+            layout = runtime_config.layout
+            self._bind_runtime_cache(
+                layout,
+                initialize_cache=initialize_cache or legacy_global_config,
+                require_writer_lease=not legacy_global_config,
+            )
             dict_path = layout.validate_bundled_path(
                 layout.custom_dict_path,
                 label="jieba 自定义词典",
@@ -35,6 +156,129 @@ class TextProcessor:
             dict_path = Path(custom_dict_path)
         if dict_path.exists():
             jieba.load_userdict(str(dict_path))
+
+    @staticmethod
+    def _bind_runtime_cache(
+        layout: Any,
+        *,
+        initialize_cache: bool,
+        require_writer_lease: bool = False,
+    ) -> None:
+        """Bind jieba to one Config snapshot without allowing read-time writes.
+
+        Jieba owns one process-global tokenizer.  Bootstrap initializes that
+        tokenizer while holding the data-root lease.  Later Application readers
+        must verify *their own* snapshot cache even if another Config has
+        already initialized jieba in this process; they fail closed rather than
+        recreating it from a read/search path.
+
+        ``runtime_config=None`` remains the historical utility compatibility
+        path.  Only an explicitly injected product Config requires a live
+        writer lease when initialization/publishing is requested.
+        """
+
+        cache_path = layout.validate_user_file(
+            Path(layout.tmp_dir) / "jieba.cache",
+            label="jieba 运行态缓存",
+            allow_missing=True,
+        )
+        cache_exists = cache_path.is_file()
+        if jieba.dt.initialized:
+            if cache_exists:
+                # ``initialize`` is a no-op after the first process-wide
+                # tokenizer bootstrap, but ``tmp_dir`` remains a mutable
+                # third-party global.  Rebind it to the explicit snapshot only
+                # after that snapshot's durable cache has been verified.  This
+                # is metadata-only (no initialization or write) and prevents a
+                # Config B reader from inheriting Config A's cache location.
+                jieba.dt.tmp_dir = str(layout.tmp_dir)
+                return
+            if not initialize_cache:
+                TextProcessor._raise_missing_runtime_cache()
+            TextProcessor._require_cache_writer_lease(
+                layout,
+                required=require_writer_lease,
+            )
+            # A confirmed B bootstrap may materialize B's cache from the
+            # already-loaded global dictionary.  Keep the global cache target
+            # aligned with the snapshot that owns that writer operation.
+            jieba.dt.tmp_dir = str(layout.tmp_dir)
+            if require_writer_lease:
+                TextProcessor._publish_initialized_runtime_cache(layout, cache_path)
+            return
+        if not initialize_cache:
+            if not cache_exists:
+                TextProcessor._raise_missing_runtime_cache()
+            # ``jieba.cut`` will lazily load this existing cache.  Do not call
+            # initialize here: a read path must not be the code path that could
+            # regenerate a missing/corrupt cache.
+            jieba.dt.tmp_dir = str(layout.tmp_dir)
+            return
+        TextProcessor._require_cache_writer_lease(
+            layout,
+            required=require_writer_lease,
+        )
+        jieba.dt.tmp_dir = str(layout.tmp_dir)
+        jieba.initialize()
+        # Jieba intentionally suppresses some cache-write failures.  PKV's
+        # bootstrap contract cannot: a later fresh reader needs a durable cache
+        # and must never repair it from a read operation.
+        validated_cache = layout.validate_user_file(
+            cache_path,
+            label="jieba 运行态缓存",
+            allow_missing=True,
+        )
+        if require_writer_lease and not validated_cache.is_file():
+            TextProcessor._raise_missing_runtime_cache()
+
+    @staticmethod
+    def _raise_missing_runtime_cache() -> None:
+        raise PKVRuntimeError(
+            ErrorCode.REPAIR_REQUIRED,
+            "jieba 运行态缓存缺失；请先通过确认的运行时初始化或修复流程恢复。",
+            stage="tokenizer_cache",
+            recoverable=True,
+        )
+
+    @staticmethod
+    def _require_cache_writer_lease(layout: Any, *, required: bool) -> None:
+        if not required:
+            return
+        from src.runtime.write_lease import has_active_write_lease
+
+        if not has_active_write_lease(layout):
+            raise PKVRuntimeError(
+                ErrorCode.REPAIR_REQUIRED,
+                "jieba 运行态缓存只能由已确认的运行时初始化或修复写入。",
+                stage="tokenizer_cache",
+                recoverable=True,
+            )
+
+    @staticmethod
+    def _publish_initialized_runtime_cache(layout: Any, cache_path: Path) -> None:
+        """Materialize this snapshot's cache from an already-global tokenizer.
+
+        The third-party tokenizer is process-global, so a second Config cannot
+        ask ``jieba.initialize()`` to create another file after the first
+        Config has initialized it.  Persisting the already-loaded dictionary
+        through RuntimeLayout keeps the per-data-root bootstrap contract without
+        retargeting or reinitializing the live tokenizer.
+        """
+
+        try:
+            payload = marshal.dumps((jieba.dt.FREQ, jieba.dt.total))
+        except (AttributeError, TypeError, ValueError) as error:
+            raise PKVRuntimeError(
+                ErrorCode.REPAIR_REQUIRED,
+                "jieba 运行态缓存无法从当前分词器安全建立。",
+                stage="tokenizer_cache",
+                recoverable=True,
+            ) from error
+        layout.atomic_publish_user_file(
+            cache_path,
+            label="jieba 运行态缓存",
+            data=payload,
+        )
 
     @staticmethod
     def tokenize_chinese(text: str) -> str:

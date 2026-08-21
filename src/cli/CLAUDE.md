@@ -4,20 +4,27 @@
 
 ## 模块职责
 
-`src/cli/` 提供基于 Click 与 Rich 的命令行适配层。运行入口是 `src.main`；`LazyCLIGroup` 按需加载 `archive`、`archive-text`、`search`、`show`、`list`、`tags`、`related`、`config` 与 `stats`，避免 `--version` 导入重依赖。
+`src/cli/` 提供基于 Click 与 Rich 的命令行适配层。运行入口是 `src.main`；`LazyCLIGroup` 按需加载 `archive`、`archive-text`、`search`、`show`、`list`、`tags`、`related`、`config`、`inspect`、`setup`、`repair` 与 `stats`，避免 `--version` 导入重依赖。
 
 当前实现的关键调用关系：
 
-- 每次入口先经 runtime bootstrap，再取得同一 validated config 的
-  `KnowledgeApplication`；CLI 只负责参数/本地文件能力校验与渲染，不自行装配
-  Store、Workflow、Retriever 或 Provider。
+- `--help`、`--version` 与 Click 参数校验不会读取或检查 runtime。业务命令在成功
+  解析后才检查同一 immutable Config snapshot：`archive` / `archive-text` 必须
+  `READY`；`search`、`show`、`list`、`tags`、`related`、`stats` 可在 `DEGRADED`
+  状态读取已提交数据，但不会隐式初始化、迁移、恢复、探测 Provider 或打开文件日志。
+  `setup_required`、`repair_required`、`upgrade_required` 仍返回稳定 readiness 错误。
+- `inspect` 永远只读地输出 runtime inspection 与 plan；`setup` / `repair` 默认
+  同样只输出计划，执行必须同时提供 `--apply --confirm PLAN_ID`，涉及 Provider
+  探测时还必须显式 `--allow-network`。CLI 只负责这些确认边界、参数/本地文件能力
+  校验与渲染，不自行装配 Store、Workflow、Retriever 或 Provider。
 - `archive` 调用 `application.archive_cli_input()`；`archive-text` 始终按字面
   纯文本调用 `application.archive_text()`，路径形状文本不会触发本地文件读取。
 - `search` 调用 `application.search()`，并原样消费五态 `SearchResponse`；BM25
   路径不提前创建 Provider。
 - `show`、`list`、`tags`、`stats` 与 `related` 都通过 application 的领域操作；
   `related` 使用严格只读向量入口，索引或条目向量缺失时明确返回 `degraded`。
-- `config show/get` 读取配置并遮罩敏感值；`config set` 会写 `config/local.yaml`。
+- `config show/get` 读取配置并遮罩敏感值；`config set` 会写唯一用户配置
+  `%USERPROFILE%\.pkv\config.yaml`，而非 data root 内的 runtime snapshot。
 
 ## 安全运行边界
 
@@ -26,19 +33,15 @@
 ```powershell
 .\scripts\run-test.ps1 --help
 .\scripts\run-test.ps1 --version
-.\scripts\run-test.ps1 --verbose stats
-.\scripts\run-test.ps1 search "synthetic query" --strategy bm25 --format json
-.\scripts\run-test.ps1 list --limit 10
-.\scripts\run-test.ps1 archive-text "synthetic offline note" --title "Synthetic note" --format json
-.\scripts\run-test.ps1 tags --format json
-.\scripts\run-test.ps1 related 1 --format json
+.\scripts\run-test.ps1 inspect
+.\scripts\run-test.ps1 setup
 .\scripts\run-test.ps1 config show
-.\scripts\run-test.ps1 config get storage.vault_dir
+.\scripts\run-test.ps1 config get storage.data_root
 ```
 
 包装器把非 `-Direct` 命令接到 `tests/offline_entrypoint.py cli`，只加载 base config，并把产品运行路径限制在本次 `.data-test` 根内。默认离线入口安装 Python 进程内 socket guard，阻断 DNS 与非 loopback 连接，但允许 loopback/AF_UNIX，且不等价于 OS 网络沙箱；因此真实 URL 归档不属于这些示例。
 
-`config set` 会修改真实本机配置，测试包装器会在创建运行时目录前拒绝。只有用户明确授权时才由用户直接编辑 Git 忽略的 `config/local.yaml`；AI 和默认测试不执行该写入。生产 Vault 查询、真实 URL、真实 Provider 与费用也不属于默认 TestCase lane。
+`config set` 会修改真实本机用户配置，测试包装器会在创建运行时目录前拒绝。只有用户明确授权时才由用户直接编辑 Git 忽略的 `%USERPROFILE%\.pkv\config.yaml`；AI 和默认测试不执行该写入。生产 Vault 查询、真实 URL、真实 Provider 与费用也不属于默认 TestCase lane。
 
 ## 当前公开命令合同
 
@@ -51,8 +54,10 @@
 | `list` | `--tag`、`--sort time\|title\|id`、`--desc`、`--limit` | 从 SQLite 查询并以 Rich 表格输出；排序/tie 与非法 limit 仍需目标合同 |
 | `tags` | `--limit 1..200`、`--format table\|json` | 有上界的只读 SQLite 标签计数；当前不提供跨 Markdown/SQLite 的标签写入 |
 | `related KNOWLEDGE_ID` | `--limit 1..20`、`--format table\|json` | 已有文档向量索引的近邻查询；通过严格只读索引入口，不构造 Provider，索引/向量缺失显式 `degraded` |
+| `inspect` | 无 | 只读输出 runtime inspection 与 plan；任何 readiness 都可用 |
+| `setup` / `repair` | `--apply`、`--confirm PLAN_ID`、`--allow-network` | 默认仅展示计划；只有精确确认的计划才可执行，网络探测另需明确许可 |
 | `config show/get` | `get KEY` | 读取并遮罩敏感配置；默认自动化只允许只读子命令 |
-| `config set KEY VALUE` | YAML 点号键 | 写 local config；不属于自动化/AI 运行边界 |
+| `config set KEY VALUE` | YAML 点号键 | 写唯一用户配置；不属于自动化/AI 运行边界 |
 | `stats` | 无 | 汇总条目、来源、标签与存储大小 |
 
 全局选项由 `src/main.py` 定义：`--verbose`、`--debug`、`--version`。
@@ -66,7 +71,8 @@
 - `search()`：调用 application 搜索、输出 table/JSON/Markdown。
 - `show()` / `list_entries()` / `tags()` / `related()` / `stats()`：调用 application
   领域操作并渲染可观察结果。
-- `config_show()` / `config_get()` / `config_set()`：配置读写与敏感值遮罩。
+- `inspect()` / `setup()` / `repair()`：inspect → plan → explicit-confirmation 生命周期适配。
+- `config_show()` / `config_get()` / `config_set()`：唯一用户配置读写与敏感值遮罩。
 - `_render_search_table()`、`_render_list_table()`、`_render_entry_panel()`：命令内 Rich 渲染辅助函数。
 
 ### `ui.py`
@@ -123,7 +129,7 @@
 - `archive` 的真实网页、真实 Provider 和费用不进入默认回归；离线 integration 只能计为 adapter seam，不能冒充真实工作流 E2E。
 - `archive-text`、`tags` 和 `related` 必须有真实离线子进程覆盖：至少验证 `archive-text → tags` 串联、无向量索引的明确降级、固定本地向量的自排除近邻结果，以及 `related` 前后向量树零改写。
 - `config set`、生产数据查询和开发 Vault 重建不作为 pytest fixture 或完成定义。
-- CLI help/stats/search 在 unit/integration/blackbox 有重复，后续按“行为 owner + 高层协议 sentinel”收敛。
+- CLI help/Click validation 与生命周期命令必须在未 READY 根仍可执行；stats/search 等业务命令的黑盒 fixture 必须先写入匹配的无密钥 runtime snapshot，不能以隐式 bootstrap 绕过门禁。若归档已留下 `DEGRADED` journal，黑盒应验证读取仍可用、后续写入仍被 readiness 门禁拒绝。
 
 ## 相关文档
 

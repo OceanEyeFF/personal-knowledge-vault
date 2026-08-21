@@ -3,8 +3,9 @@
 在隔离的测试数据目录中运行 PKV CLI 或显式的直接测试命令。
 
 .DESCRIPTION
-生产数据的备份/恢复与数据库迁移脚本不能通过此包装器运行。迁移脚本尚未接入
-base-only 配置入口，仅隔离 DATA_DIR 不能阻止读取 config/local.yaml。
+生产数据的备份/恢复、迁移与已停用的原始维护写脚本不能通过此包装器运行。
+它们不是当前的 inspect → plan → confirm → execute lifecycle；仅隔离 DATA_DIR
+也不能把它们变成受支持的写入入口。
 
 .EXAMPLE
 .\scripts\run-test.ps1 stats
@@ -408,6 +409,140 @@ if (
 }
 
 $normalizedCommand = @($Command | Where-Object { $_ -ne "--" })
+
+# Direct Python is a deliberately narrow offline-test seam, not a general
+# repository script runner.  Keep the supported targets here as an auditable
+# allowlist so a newly added maintenance/build helper cannot obtain FT7 merely
+# by living under the checkout.  Script paths are compared lexically before
+# any test-runtime directory is created; do not resolve or probe caller input.
+$directPythonModuleAllowlist = @(
+    "src.cli.commands",
+    "src.mcp.server",
+    "src.utils.verify_setup",
+    # The fixed MCP quality evaluation is an offline test lane.  Its own
+    # parser separately constrains task/proposal inputs and output to runtime
+    # isolated roots.
+    "evals.mcp_quality"
+)
+$directPythonScriptAllowlist = @(
+    @(
+        "scripts/setup-test-db.py",
+        "scripts/rebuild-dev-vault.py",
+        "scripts/check_chunk_index_consistency.py",
+        "src/utils/verify_setup.py",
+        # Test-only probe used by this wrapper's behavioral contract tests.
+        # This is intentionally not a wildcard for arbitrary tests/ scripts.
+        "tests/fixtures/offline_direct_probe.py"
+    ) | ForEach-Object {
+        Get-NormalizedFullPath (Join-Path $ProjectRoot $_)
+    }
+)
+
+function Test-DirectPythonTargetIsAllowlisted {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    # The caller has already established the invocation is Python and that a
+    # target follows -m when applicable.  Module spelling is an exact Python
+    # import contract; scripts use the lexical project-root form above so
+    # equivalent relative/absolute spellings remain supported without probing
+    # or following the target path.
+    if ($Arguments[1] -eq "-m") {
+        foreach ($allowedModule in $directPythonModuleAllowlist) {
+            if ($Arguments[2] -ceq $allowedModule) {
+                return $true
+            }
+        }
+        return $false
+    }
+
+    try {
+        $candidate = if ([System.IO.Path]::IsPathRooted($Arguments[1])) {
+            Get-NormalizedFullPath $Arguments[1]
+        } else {
+            Get-NormalizedFullPath (Join-Path $ProjectRoot $Arguments[1])
+        }
+    } catch {
+        return $false
+    }
+    foreach ($allowedScript in $directPythonScriptAllowlist) {
+        if ($candidate.Equals($allowedScript, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Test-PathWithinRequestedTestRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [switch]$AllowStdout
+    )
+
+    if ($AllowStdout -and $Value -eq "-") {
+        return $true
+    }
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+    try {
+        $candidate = if ([System.IO.Path]::IsPathRooted($Value)) {
+            Get-NormalizedFullPath $Value
+        } else {
+            Get-NormalizedFullPath (Join-Path $ProjectRoot $Value)
+        }
+    } catch {
+        return $false
+    }
+    $prefix = $RequestedDataRoot + [System.IO.Path]::DirectorySeparatorChar
+    return (
+        $candidate -eq $RequestedDataRoot -or
+        $candidate.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+    )
+}
+
+function Test-ChunkConsistencyInvocationIsContained {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $pathOptions = @("--db-path", "--vector-dir", "--report-json")
+    # argparse accepts unambiguous long-option abbreviations by default.  The
+    # wrapper must not accept one that it cannot prove is contained: otherwise
+    # ``--db-p C:\\real\\vault.db`` reaches the script as ``--db-path`` after
+    # this preflight and can read outside the selected test root.
+    $abbreviationPrefixes = [ordered]@{
+        "--db"     = "--db-path"
+        "--vector" = "--vector-dir"
+        "--report" = "--report-json"
+    }
+    for ($index = 0; $index -lt $Arguments.Count; $index++) {
+        $argument = $Arguments[$index]
+        foreach ($prefix in $abbreviationPrefixes.Keys) {
+            $option = $abbreviationPrefixes[$prefix]
+            if (
+                $argument.StartsWith($prefix, [System.StringComparison]::Ordinal) -and
+                $argument -ne $option -and
+                -not $argument.StartsWith($option + "=", [System.StringComparison]::Ordinal)
+            ) {
+                return $false
+            }
+        }
+        foreach ($option in $pathOptions) {
+            $value = $null
+            if ($argument -eq $option) {
+                if ($index + 1 -ge $Arguments.Count) {
+                    return $false
+                }
+                $value = $Arguments[$index + 1]
+            } elseif ($argument.StartsWith($option + "=", [System.StringComparison]::Ordinal)) {
+                $value = $argument.Substring($option.Length + 1)
+            }
+            if ($null -ne $value -and -not (Test-PathWithinRequestedTestRoot -Value $value -AllowStdout:($option -eq "--report-json"))) {
+                return $false
+            }
+        }
+    }
+    return $true
+}
+
 $isConfigSet = $false
 for ($index = 0; $index -lt ($normalizedCommand.Count - 1); $index++) {
     if (
@@ -421,7 +556,7 @@ for ($index = 0; $index -lt ($normalizedCommand.Count - 1); $index++) {
 if ($isConfigSet) {
     [Console]::Error.WriteLine(
         "测试包装器禁止 config set：该命令会修改真实的本机配置，" +
-        "请直接编辑已被 Git 忽略的 config/local.yaml"
+        "请由用户直接编辑 %USERPROFILE%\\.pkv\\config.yaml"
     )
     exit 2
 }
@@ -434,6 +569,47 @@ foreach ($scriptName in $blockedProductionScripts) {
         )
         exit 2
     }
+}
+
+# Historical raw maintenance entrypoints are not test helpers.  Their module
+# level fixture seams may still be imported by pytest, but a direct script
+# invocation must fail before this wrapper creates an isolated runtime layout.
+$blockedLegacyMaintenanceEntrypoints = @(
+    "backfill_chunks.py",
+    "scripts.backfill_chunks",
+    "backfill_relations.py",
+    "scripts.backfill_relations",
+    "init_db.py",
+    "scripts.init_db",
+    # These historical audit/check scripts accept caller-selected Vault/SQLite
+    # paths.  Even under the offline entrypoint they could read outside this
+    # run's data root before any test assertion executes.
+    "audit_rearchive_urls.py",
+    "scripts.audit_rearchive_urls"
+)
+foreach ($entrypoint in $blockedLegacyMaintenanceEntrypoints) {
+    if ($Direct -and (Test-CommandMentionsText -Arguments $normalizedCommand -Text $entrypoint)) {
+        [Console]::Error.WriteLine(
+            "测试包装器禁止已停用的 legacy maintenance 入口: $entrypoint"
+        )
+        exit 2
+    }
+}
+
+$isChunkConsistencyCommand = (
+    Test-CommandMentionsText -Arguments $normalizedCommand -Text "check_chunk_index_consistency.py"
+) -or (
+    Test-CommandMentionsText -Arguments $normalizedCommand -Text "scripts.check_chunk_index_consistency"
+)
+if (
+    $Direct -and
+    $isChunkConsistencyCommand -and
+    -not (Test-ChunkConsistencyInvocationIsContained -Arguments $normalizedCommand)
+) {
+    [Console]::Error.WriteLine(
+        "测试包装器拒绝 consistency checker 的外部路径；仅允许当前 DataRoot 内的输入/报告或 stdout"
+    )
+    exit 2
 }
 
 $isMigrationCommand = (
@@ -473,6 +649,12 @@ if ($isDirectPython -and -not $isDirectPytest) {
     }
     if ($directPythonMode -eq "-m" -and $normalizedCommand.Count -lt 3) {
         [Console]::Error.WriteLine("错误: Direct Python -m 必须提供模块名")
+        exit 2
+    }
+    if (-not (Test-DirectPythonTargetIsAllowlisted -Arguments $normalizedCommand)) {
+        [Console]::Error.WriteLine(
+            "错误: Direct Python 目标不在显式离线测试白名单中"
+        )
         exit 2
     }
 }
@@ -520,6 +702,16 @@ $runtimePaths = [ordered]@{
     LOG_DIR    = Join-Path $RequestedDataRoot "logs"
     TMP_DIR    = Join-Path $RequestedDataRoot "tmp"
 }
+$profileRoot = Join-Path $RequestedDataRoot "profile"
+$profilePaths = [ordered]@{
+    HOME           = $profileRoot
+    USERPROFILE    = $profileRoot
+    APPDATA        = Join-Path $profileRoot "AppData\Roaming"
+    LOCALAPPDATA   = Join-Path $profileRoot "AppData\Local"
+    XDG_CONFIG_HOME = Join-Path $profileRoot ".config"
+    XDG_CACHE_HOME  = Join-Path $profileRoot ".cache"
+    XDG_DATA_HOME   = Join-Path $profileRoot ".local\share"
+}
 $managedEnvironment = [ordered]@{}
 foreach ($key in $runtimePaths.Keys) {
     $managedEnvironment[$key] = $runtimePaths[$key]
@@ -528,6 +720,9 @@ $managedEnvironment["COVERAGE_FILE"] = Join-Path $RequestedDataRoot "reports\.co
 $managedEnvironment["TEMP"] = $runtimePaths.TMP_DIR
 $managedEnvironment["TMP"] = $runtimePaths.TMP_DIR
 $managedEnvironment["TMPDIR"] = $runtimePaths.TMP_DIR
+foreach ($key in $profilePaths.Keys) {
+    $managedEnvironment[$key] = $profilePaths[$key]
+}
 $managedEnvironment["PYTHONDONTWRITEBYTECODE"] = "1"
 $managedEnvironment["PYTHONNOUSERSITE"] = "1"
 $managedEnvironment["PYTEST_ADDOPTS"] = "--strict-markers"
@@ -537,6 +732,11 @@ $managedEnvironment["PKV_RUN_LIVE"] = "0"
 $managedEnvironment["PKV_TEST_OFFLINE"] = "1"
 $managedEnvironment["PKV_TEST_LOAD_LOCAL"] = "0"
 $managedEnvironment["PKV_TEST_PROJECT_ROOT"] = $ProjectRoot
+# ``PKV_DATA_ROOT`` is a formal product override, so merely setting legacy
+# ``DATA_DIR`` is insufficient: an inherited user value would otherwise win
+# while Config is constructed before the child can assert its isolated paths.
+# Bind it to this exact accepted .data-test root before starting any Python.
+$managedEnvironment["PKV_DATA_ROOT"] = $RequestedDataRoot
 
 # Python can execute .pth/sitecustom and coverage startup hooks before the
 # offline entrypoint gets control.  Remove every inherited path/config knob
@@ -581,6 +781,12 @@ try {
         $runtimePaths.VECTOR_DIR,
         $runtimePaths.LOG_DIR,
         $runtimePaths.TMP_DIR,
+        $profilePaths.HOME,
+        $profilePaths.APPDATA,
+        $profilePaths.LOCALAPPDATA,
+        $profilePaths.XDG_CONFIG_HOME,
+        $profilePaths.XDG_CACHE_HOME,
+        $profilePaths.XDG_DATA_HOME,
         (Join-Path $RequestedDataRoot "reports")
     )) {
         [void][System.IO.Directory]::CreateDirectory($path)

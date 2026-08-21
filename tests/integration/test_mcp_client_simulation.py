@@ -31,11 +31,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.application import configure_application, reset_application  # noqa: E402
 from src.mcp.server import mcp  # noqa: E402
+from src.runtime.write_lease import write_lease_scope  # noqa: E402
 from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
 from src.storage.sqlite_store import SQLiteStore  # noqa: E402
 from src.storage.vector_store import VectorStore  # noqa: E402
 from src.workflow.models import WorkflowResult  # noqa: E402
 import src.utils.config as config_module  # noqa: E402
+from src.utils.text_utils import TextProcessor, preserve_jieba_global_state  # noqa: E402
 
 
 # ============================================================
@@ -250,54 +252,64 @@ def _build_sample_entries() -> List[Entry]:
 
 
 @pytest.fixture
-def test_env(monkeypatch, tmp_path: Path) -> Dict[str, Path]:
-    base_dir = tmp_path / "mcp_client_sim"
-    db_path = base_dir / "db" / "knowledge_vault.db"
-    vault_dir = base_dir / "vault"
-    vector_dir = base_dir / "vectors"
+def test_env(monkeypatch, tmp_path: Path) -> Dict[str, Any]:
+    # Each in-process MCP scenario creates and then deletes its own root.  Do
+    # not leave jieba's single process-global tokenizer pointing at that root.
+    with preserve_jieba_global_state():
+        base_dir = tmp_path / "mcp_client_sim"
+        db_path = base_dir / "db" / "knowledge_vault.db"
+        vault_dir = base_dir / "vault"
+        vector_dir = base_dir / "vectors"
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    vault_dir.mkdir(parents=True, exist_ok=True)
-    vector_dir.mkdir(parents=True, exist_ok=True)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        vault_dir.mkdir(parents=True, exist_ok=True)
+        vector_dir.mkdir(parents=True, exist_ok=True)
 
-    runtime_paths = {
-        "DATA_DIR": base_dir,
-        "DB_PATH": db_path,
-        "VAULT_DIR": vault_dir,
-        "VECTOR_DIR": vector_dir,
-        "LOG_DIR": base_dir / "logs",
-        "TMP_DIR": base_dir / "tmp",
-    }
-    for key, path in runtime_paths.items():
-        monkeypatch.setenv(key, str(path))
-    monkeypatch.setenv("LOG_LEVEL", "WARNING")
-
-    # Configure the shared application service with this test's isolated
-    # runtime snapshot.  MCP no longer owns Store/Retriever singleton caches.
-    config = config_module.Config(str(PROJECT_ROOT / "config" / "config.yaml"))
-    config._config.setdefault("storage", {})
-    config._config["storage"]["vector_index_dir"] = str(vector_dir)
-    config._config["storage"]["vault_dir"] = str(vault_dir)
-    config._config.setdefault("ai", {}).setdefault("embedding", {})["dim"] = (
-        TEST_EMBEDDING_DIM
-    )
-    monkeypatch.setattr(config_module, "_config_instance", config)
-    configure_application(config)
-
-    try:
-        yield {
-            "base_dir": base_dir,
-            "db_path": db_path,
-            "vault_dir": vault_dir,
-            "vector_dir": vector_dir,
+        runtime_paths = {
+            "DATA_DIR": base_dir,
+            "DB_PATH": db_path,
+            "VAULT_DIR": vault_dir,
+            "VECTOR_DIR": vector_dir,
+            "LOG_DIR": base_dir / "logs",
+            "TMP_DIR": base_dir / "tmp",
         }
-    finally:
-        reset_application()
+        for key, path in runtime_paths.items():
+            monkeypatch.setenv(key, str(path))
+        monkeypatch.setenv("LOG_LEVEL", "WARNING")
+
+        # Configure the shared application service with this test's isolated
+        # runtime snapshot.  MCP no longer owns Store/Retriever singleton caches.
+        config = config_module.Config(str(PROJECT_ROOT / "config" / "config.yaml"))
+        config._config.setdefault("storage", {})
+        config._config["storage"]["vector_index_dir"] = str(vector_dir)
+        config._config["storage"]["vault_dir"] = str(vault_dir)
+        config._config.setdefault("ai", {}).setdefault("embedding", {})["dim"] = (
+            TEST_EMBEDDING_DIM
+        )
+        config.ensure_dirs()
+        # The application owns an explicit Config snapshot.  Seed that snapshot's
+        # tokenizer cache under the same root write lease a confirmed setup would
+        # hold; BM25 readers must not create or repair it themselves.
+        with write_lease_scope(config.layout):
+            TextProcessor(runtime_config=config, initialize_cache=True)
+        monkeypatch.setattr(config_module, "_config_instance", config)
+        configure_application(config)
+
+        try:
+            yield {
+                "base_dir": base_dir,
+                "config": config,
+                "db_path": db_path,
+                "vault_dir": vault_dir,
+                "vector_dir": vector_dir,
+            }
+        finally:
+            reset_application()
 
 
 @pytest.fixture
 def populated_env(test_env) -> Dict[str, Any]:
-    store = SQLiteStore(test_env["db_path"])
+    store = SQLiteStore(test_env["db_path"], runtime_config=test_env["config"])
     store.initialize()
     md_store = MarkdownStore(test_env["vault_dir"])
 

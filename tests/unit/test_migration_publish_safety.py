@@ -529,10 +529,13 @@ def test_validate_rejects_hardlink_db(tmp_path: Path) -> None:
     except OSError as exc:
         pytest.skip(f"hard links unavailable: {exc}")
 
-    with pytest.raises(PKVRuntimeError) as exc_info:
-        sc.validate_existing_sqlite_file(hard)
+    try:
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            sc.validate_existing_sqlite_file(hard)
 
-    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+        assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+    finally:
+        hard.unlink(missing_ok=True)
 
 
 def test_validate_rejects_file_replaced_before_open_and_closes_handle(

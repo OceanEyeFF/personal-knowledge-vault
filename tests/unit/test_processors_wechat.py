@@ -141,14 +141,20 @@ def test_wechat_image_write_rejects_hardlinked_target(tmp_path: Path):
     outside.write_bytes(b"attacker")
     target.write_bytes(b"original")
     target.unlink()
-    os.link(outside, target)
+    try:
+        os.link(outside, target)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
 
-    with pytest.raises(PKVRuntimeError) as exc_info:
-        processor._write_image_file(target, b"new-content")
+    try:
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            processor._write_image_file(target, b"new-content")
 
-    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
-    assert outside.read_bytes() == b"attacker"
-    assert target.read_bytes() == b"attacker"
+        assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+        assert outside.read_bytes() == b"attacker"
+        assert target.read_bytes() == b"attacker"
+    finally:
+        target.unlink(missing_ok=True)
 
 
 def test_wechat_image_write_rejects_symlinked_target(tmp_path: Path):

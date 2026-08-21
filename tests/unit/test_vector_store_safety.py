@@ -2596,16 +2596,22 @@ def test_vector_store_init_rejects_hardlinked_metadata_leaf(tmp_path: Path):
     outside.write_bytes(b"attacker-controlled")
     metadata_path = vector_dir / "doc_vectors_metadata.json"
     metadata_path.unlink()
-    _make_hardlink(outside, metadata_path)
+    hardlink_created = False
+    try:
+        _make_hardlink(outside, metadata_path)
+        hardlink_created = True
 
-    with patch("src.storage.vector_store.get_config", return_value=config):
-        with pytest.raises(RuntimeError, match="安全迁移失败") as exc_info:
-            VectorStore(vector_dir, dim=4)
+        with patch("src.storage.vector_store.get_config", return_value=config):
+            with pytest.raises(RuntimeError, match="安全迁移失败") as exc_info:
+                VectorStore(vector_dir, dim=4)
 
-    assert "attacker-controlled" not in str(exc_info.value)
-    assert outside.read_bytes() == b"attacker-controlled"
-    # 硬链接未被改写为迁移后的 metadata
-    assert metadata_path.read_bytes() == b"attacker-controlled"
+        assert "attacker-controlled" not in str(exc_info.value)
+        assert outside.read_bytes() == b"attacker-controlled"
+        # 硬链接未被改写为迁移后的 metadata
+        assert metadata_path.read_bytes() == b"attacker-controlled"
+    finally:
+        if hardlink_created:
+            metadata_path.unlink(missing_ok=True)
 
 
 def test_vector_store_write_rejects_hardlinked_lock_sidecar(tmp_path: Path):
@@ -2619,13 +2625,19 @@ def test_vector_store_write_rejects_hardlinked_lock_sidecar(tmp_path: Path):
     outside.write_bytes(b"attacker")
     lock_path = vector_dir / ".doc_vectors.idx.lock"
     lock_path.unlink()
-    _make_hardlink(outside, lock_path)
+    hardlink_created = False
+    try:
+        _make_hardlink(outside, lock_path)
+        hardlink_created = True
 
-    with pytest.raises(PKVRuntimeError) as exc_info:
-        store.add_doc_vector(1, np.ones(4, dtype=np.float32))
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            store.add_doc_vector(1, np.ones(4, dtype=np.float32))
 
-    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
-    assert outside.read_bytes() == b"attacker"
+        assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+        assert outside.read_bytes() == b"attacker"
+    finally:
+        if hardlink_created:
+            lock_path.unlink(missing_ok=True)
 
 
 def test_vector_store_rejects_symlinked_index_dir(tmp_path: Path):
@@ -2694,6 +2706,7 @@ def test_vector_store_atomic_write_rejects_link_swap_before_replace(
     target = layout.vector_index_dir / "probe.json"
     target.write_bytes(b"original")
     real_publish = vector_store_module._contract_publish
+    hardlink_created = False
 
     def evil_publish(
         contract,
@@ -2704,11 +2717,16 @@ def test_vector_store_atomic_write_rejects_link_swap_before_replace(
         data=None,
         pre_replace=None,
     ):
+        nonlocal hardlink_created
+
         def evil(temp_path):
+            nonlocal hardlink_created
+
             if writer is not None:
                 writer(temp_path)
             target.unlink()
             _make_hardlink(outside, target)
+            hardlink_created = True
 
         return real_publish(
             contract,
@@ -2719,21 +2737,25 @@ def test_vector_store_atomic_write_rejects_link_swap_before_replace(
             pre_replace=pre_replace,
         )
 
-    with patch(
-        "src.storage.vector_store._contract_publish",
-        side_effect=evil_publish,
-    ):
-        with pytest.raises(PKVRuntimeError) as exc_info:
-            store._atomic_write_json(
-                target,
-                {"generation": 1},
-                contract=store._contract,
-            )
+    try:
+        with patch(
+            "src.storage.vector_store._contract_publish",
+            side_effect=evil_publish,
+        ):
+            with pytest.raises(PKVRuntimeError) as exc_info:
+                store._atomic_write_json(
+                    target,
+                    {"generation": 1},
+                    contract=store._contract,
+                )
 
-    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
-    assert outside.read_bytes() == b"attacker"
-    assert target.read_bytes() == b"attacker"
-    assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
+        assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+        assert outside.read_bytes() == b"attacker"
+        assert target.read_bytes() == b"attacker"
+        assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
+    finally:
+        if hardlink_created:
+            target.unlink(missing_ok=True)
 
 
 def test_vector_store_atomic_write_post_replace_swap_detected(
@@ -2747,24 +2769,32 @@ def test_vector_store_atomic_write_post_replace_swap_detected(
     outside = tmp_path / "outside.bin"
     outside.write_bytes(b"attacker")
     real_replace = os.replace
+    hardlink_created = False
 
     def swap_after_replace(source, destination):
+        nonlocal hardlink_created
+
         result = real_replace(source, destination)
         target.unlink()
         _make_hardlink(outside, target)
+        hardlink_created = True
         return result
 
-    with patch("src.runtime.layout.os.replace", side_effect=swap_after_replace):
-        with pytest.raises(PKVRuntimeError) as exc_info:
-            layout.atomic_publish_user_file(
-                target,
-                label="探测文件",
-                data=b"new",
-            )
+    try:
+        with patch("src.runtime.layout.os.replace", side_effect=swap_after_replace):
+            with pytest.raises(PKVRuntimeError) as exc_info:
+                layout.atomic_publish_user_file(
+                    target,
+                    label="探测文件",
+                    data=b"new",
+                )
 
-    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
-    assert outside.read_bytes() == b"attacker"
-    assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
+        assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+        assert outside.read_bytes() == b"attacker"
+        assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
+    finally:
+        if hardlink_created:
+            target.unlink(missing_ok=True)
 
 
 def test_vector_store_rollback_guard_rejects_replaced_target(tmp_path: Path):
@@ -2776,20 +2806,28 @@ def test_vector_store_rollback_guard_rejects_replaced_target(tmp_path: Path):
     outside = tmp_path / "outside.bin"
     outside.write_bytes(b"attacker")
     index_path = vector_dir / "doc_vectors.idx"
+    hardlink_created = False
 
     def corrupt_save_then_swap(name: str) -> None:
+        nonlocal hardlink_created
+
         # 触发回滚后把目标替换为硬链接，让恢复前核验失败
         index_path.unlink()
         _make_hardlink(outside, index_path)
+        hardlink_created = True
         raise OSError("injected save failure")
 
-    with patch.object(store, "_save_index", side_effect=corrupt_save_then_swap):
-        with pytest.raises(RuntimeError, match="回滚失败"):
-            store.add_doc_vector(2, np.ones(4, dtype=np.float32))
+    try:
+        with patch.object(store, "_save_index", side_effect=corrupt_save_then_swap):
+            with pytest.raises(RuntimeError, match="回滚失败"):
+                store.add_doc_vector(2, np.ones(4, dtype=np.float32))
 
-    assert outside.read_bytes() == b"attacker"
-    # 回滚副本保留（restore 因链接核验失败而放弃覆盖）
-    assert list(vector_dir.glob(".doc_vectors.idx.*.rollback")) != []
+        assert outside.read_bytes() == b"attacker"
+        # 回滚副本保留（restore 因链接核验失败而放弃覆盖）
+        assert list(vector_dir.glob(".doc_vectors.idx.*.rollback")) != []
+    finally:
+        if hardlink_created:
+            index_path.unlink(missing_ok=True)
 
 
 def test_vector_store_open_identity_check_detects_replaced_leaf(

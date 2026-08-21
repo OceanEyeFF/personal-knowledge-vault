@@ -714,6 +714,7 @@ def test_smoke_child_environment_is_explicit_and_credential_free() -> None:
     assert "PATHEXT" in block
     assert "PATH" in block
     assert "TMPDIR" in block
+    assert "$info.EnvironmentVariables['TMP_DIR'] = $tempRoot" not in block
 
     for forbidden in (
         "HOME",
@@ -726,6 +727,30 @@ def test_smoke_child_environment_is_explicit_and_credential_free() -> None:
         "_PYI_APPLICATION_HOME_DIR",
     ):
         assert f"$info.EnvironmentVariables['{forbidden}']" not in block
+
+
+def test_smoke_reuses_runtime_tmp_and_creates_only_a_synthetic_profile_config() -> None:
+    source = SMOKE_SCRIPT_PATH.read_text(encoding="utf-8-sig")
+    start = source.index("function Initialize-InternalSmokeProfile")
+    end = source.index("\nfunction New-IsolatedProcessStartInfo", start)
+    block = source[start:end]
+
+    injected_start = source.index("function Get-InternalSmokeInjectedProfileRoot")
+    injected_end = source.index("\nfunction Initialize-InternalSmokeProfile", injected_start)
+    injected_block = source[injected_start:injected_end]
+
+    assert "Get-InternalSmokeInjectedProfileRoot" in block
+    assert "tmp\\internal-package-home" in source
+    assert "Split-Path -Path $canonicalDataRoot -Parent" in injected_block
+    assert "Split-Path -Path $canonicalDataRoot -Leaf" in injected_block
+    assert "('.pkv-' + $leaf)" in injected_block
+    assert "RuntimeLayout resolves the Config" in block
+    assert "config.yaml" in block
+    assert "api_key: internal-smoke-placeholder" in block
+    assert "[System.IO.FileMode]::CreateNew" in block
+    assert "must be fresh" in block
+    assert "PKV_DATA_ROOT" not in block
+    assert "AWS_ACCESS_KEY_ID" not in block
 
 
 def test_workspace_cleanup_is_no_follow_and_fail_closed() -> None:

@@ -20,7 +20,7 @@
 
 - 默认自动化只经 `scripts/run-test.ps1` 启动。本地 pytest 作为其 Direct 子命令运行，包装器把调用路由到 `tests/offline_entrypoint.py pytest`，并把继承的 `PYTEST_ADDOPTS` 收敛为 `--strict-markers`；bootstrap 在 pytest/plugin 导入前建立 G0，根 `tests/conftest.py` 再维持逐用例隔离。`--noconftest`、`--confcutdir`、`-c`、`--rootdir`、外部 collection target 和前置 plugin 都会被拒绝。
 - CLI/MCP 离线子进程由 `tests/offline_entrypoint.py` 启动。
-- Direct Python（FT7）只允许仓库 `python -m <module>` 或仓库 `.py`，拒绝 `-c`、stdin 与解释器 flags；入口用同进程 `runpy`，在产品导入前清理 live/secret/proxy、安装 base-only Config、网络 guard 与子进程 guard。
+- Direct Python（FT7）只允许显式 test-safe target：pytest、`setup-test-db.py`、`rebuild-dev-vault.py`、受控 consistency checker、`src.cli.commands`、`src.mcp.server`、`src.utils.verify_setup` 和固定 MCP 评测；其他仓库脚本/模块（含 build helper）会在创建 DataRoot 前拒绝，`-c`、stdin 与解释器 flags 同样拒绝。入口用同进程 `runpy`，在产品导入前清理 live/secret/proxy、安装 base-only Config、网络 guard 与子进程 guard。
 - FT7 是 Python 进程内 guard，不是 OS sandbox。非 Python Direct 仍须经过 wrapper，但不属于 Python G0、也不保证离线，必须单独审查。
 - `scripts/setup-test-db.py` 只能经 FT7 运行，输出必须精确位于本次所选 `DATA_DIR`（默认 `DB_PATH`）。
 - `scripts/rebuild-dev-vault.py` 同样要求 FT7 runtime attestation，且 `--root` 必须位于本次所选 `DATA_DIR`；裸启动在产品 import 前 fail-closed。
@@ -120,7 +120,7 @@
 
 **MCP 黑盒测试**: 仅经 `tests/offline_entrypoint.py mcp` 启动 base-only 子进程，并由 MCP SDK 经 JSON-RPC over stdio 端到端验证；不得直接启动默认配置入口。验证:
 - 服务启动与协议初始化(MCP 握手)
-- 功能发现（当前 manifest：`list_tools=14`、`list_prompts=3`、2 个静态 Resource、7 个 Resource Template；后两者分别由 `list_resources` / `list_resource_templates` 发现）
+- 功能发现（当前 manifest：`list_tools=15`，其中 13 个只读、2 个写入；`list_prompts=3`、2 个静态 Resource、7 个 Resource Template；后两者分别由 `list_resources` / `list_resource_templates` 发现）
 - 只读 Tool 端到端调用 (含分页/过滤)
 - 写入 Tool 安全拦截 (SSRF/空文本/超长文本)
 - Prompt 端到端调用

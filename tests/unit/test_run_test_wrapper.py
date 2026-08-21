@@ -119,6 +119,7 @@ pytestmark = pytest.mark.skipif(
 
 def test_wrapper_exposes_only_isolated_runtime_paths(
     wrapper_data_root: Path,
+    tmp_path: Path,
 ) -> None:
     keys = (
         "DATA_DIR",
@@ -131,8 +132,16 @@ def test_wrapper_exposes_only_isolated_runtime_paths(
         "TEMP",
         "TMP",
         "TMPDIR",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
         "PYTHONDONTWRITEBYTECODE",
         "PYTEST_ADDOPTS",
+        "PKV_DATA_ROOT",
         "PKV_RUN_LIVE",
         "PKV_TEST_OFFLINE",
         "PKV_TEST_LOAD_LOCAL",
@@ -145,55 +154,96 @@ def test_wrapper_exposes_only_isolated_runtime_paths(
     hostile_parent_env["PKV_E2E_ARCHIVE_URL"] = "https://live.example/sentinel"
     hostile_parent_env["OPENAI_API_KEY"] = "provider-secret-sentinel"
     hostile_parent_env["https_proxy"] = "http://proxy.example/sentinel"
-    result = _invoke_wrapper(
-        wrapper_data_root,
-        [
-            "python",
-            "tests/fixtures/offline_direct_probe.py",
-            "--print-env",
-        ],
-        env=hostile_parent_env,
-    )
+    hostile_parent_env["HOME"] = str(tmp_path / "hostile-home")
+    hostile_parent_env["USERPROFILE"] = str(tmp_path / "hostile-userprofile")
+    hostile_parent_env["APPDATA"] = str(tmp_path / "hostile-appdata")
+    hostile_parent_env["LOCALAPPDATA"] = str(tmp_path / "hostile-localappdata")
+    # A Config constructor reads the runtime embedding cache before the child
+    # probe can compare final paths.  Make an inherited product root fail
+    # closed if it is even considered: the hard-linked cache leaf is rejected
+    # by RuntimeLayout.  A successful wrapper invocation therefore proves the
+    # wrapper replaced the hostile product override before Python imported PKV.
+    inherited_root = tmp_path / "inherited-pkv-data-root"
+    inherited_runtime = inherited_root / "runtime"
+    inherited_runtime.mkdir(parents=True)
+    sentinel_source = tmp_path / "inherited-pkv-sentinel-source.json"
+    sentinel_source.write_text("{}", encoding="utf-8")
+    inherited_cache = inherited_runtime / "embedding_dim.json"
+    os.link(sentinel_source, inherited_cache)
+    try:
+        assert not inherited_root.resolve().is_relative_to(wrapper_data_root.resolve())
+        hostile_parent_env["PKV_DATA_ROOT"] = str(inherited_root)
+        result = _invoke_wrapper(
+            wrapper_data_root,
+            [
+                "python",
+                "tests/fixtures/offline_direct_probe.py",
+                "--print-env",
+            ],
+            env=hostile_parent_env,
+        )
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    line = next(
-        item
-        for item in result.stdout.splitlines()
-        if item.startswith("PKV_ENV_JSON=")
-    )
-    payload = json.loads(line.removeprefix("PKV_ENV_JSON="))
-    expected_paths = {
-        "DATA_DIR": wrapper_data_root,
-        "DB_PATH": wrapper_data_root / "db" / "knowledge_vault.db",
-        "VAULT_DIR": wrapper_data_root / "vault",
-        "VECTOR_DIR": wrapper_data_root / "vectors",
-        "LOG_DIR": wrapper_data_root / "logs",
-        "TMP_DIR": wrapper_data_root / "tmp",
-        "COVERAGE_FILE": wrapper_data_root / "reports" / ".coverage",
-        "TEMP": wrapper_data_root / "tmp",
-        "TMP": wrapper_data_root / "tmp",
-        "TMPDIR": wrapper_data_root / "tmp",
-    }
-    assert set(payload) == set(keys)
-    for key, expected_path in expected_paths.items():
-        actual_path = Path(payload[key]).resolve()
-        assert actual_path == expected_path.resolve()
-        assert actual_path.is_relative_to(ALLOWED_TEST_ROOT.resolve())
-    assert payload["PYTHONDONTWRITEBYTECODE"] == "1"
-    assert payload["PYTEST_ADDOPTS"] == "--strict-markers"
-    assert payload["PKV_RUN_LIVE"] == "0"
-    assert payload["PKV_TEST_OFFLINE"] == "1"
-    assert payload["PKV_TEST_LOAD_LOCAL"] == "0"
-    assert Path(payload["PKV_TEST_PROJECT_ROOT"]).resolve() == PROJECT_ROOT.resolve()
-    assert Path(payload["DB_PATH"]).parent.is_dir()
-    for key in ("VAULT_DIR", "VECTOR_DIR", "LOG_DIR", "TMP_DIR"):
-        assert Path(payload[key]).is_dir()
-    assert Path(payload["COVERAGE_FILE"]).parent.is_dir()
-    invocation_line = next(
-        line for line in result.stdout.splitlines() if line.startswith("[执行命令]")
-    )
-    assert "python tests/offline_entrypoint.py python" in invocation_line
-    assert "tests/fixtures/offline_direct_probe.py" in invocation_line
+        assert result.returncode == 0, result.stdout + result.stderr
+        line = next(
+            item
+            for item in result.stdout.splitlines()
+            if item.startswith("PKV_ENV_JSON=")
+        )
+        payload = json.loads(line.removeprefix("PKV_ENV_JSON="))
+        expected_paths = {
+            "DATA_DIR": wrapper_data_root,
+            "DB_PATH": wrapper_data_root / "db" / "knowledge_vault.db",
+            "VAULT_DIR": wrapper_data_root / "vault",
+            "VECTOR_DIR": wrapper_data_root / "vectors",
+            "LOG_DIR": wrapper_data_root / "logs",
+            "TMP_DIR": wrapper_data_root / "tmp",
+            "COVERAGE_FILE": wrapper_data_root / "reports" / ".coverage",
+            "TEMP": wrapper_data_root / "tmp",
+            "TMP": wrapper_data_root / "tmp",
+            "TMPDIR": wrapper_data_root / "tmp",
+            "PKV_DATA_ROOT": wrapper_data_root,
+            "HOME": wrapper_data_root / "profile",
+            "USERPROFILE": wrapper_data_root / "profile",
+            "APPDATA": wrapper_data_root / "profile" / "AppData" / "Roaming",
+            "LOCALAPPDATA": wrapper_data_root / "profile" / "AppData" / "Local",
+            "XDG_CONFIG_HOME": wrapper_data_root / "profile" / ".config",
+            "XDG_CACHE_HOME": wrapper_data_root / "profile" / ".cache",
+            "XDG_DATA_HOME": wrapper_data_root / "profile" / ".local" / "share",
+        }
+        assert set(payload) == set(keys)
+        for key, expected_path in expected_paths.items():
+            actual_path = Path(payload[key]).resolve()
+            assert actual_path == expected_path.resolve()
+            assert actual_path.is_relative_to(ALLOWED_TEST_ROOT.resolve())
+        assert payload["PYTHONDONTWRITEBYTECODE"] == "1"
+        assert payload["PYTEST_ADDOPTS"] == "--strict-markers"
+        assert Path(payload["PKV_DATA_ROOT"]).resolve() == wrapper_data_root.resolve()
+        assert payload["PKV_RUN_LIVE"] == "0"
+        assert payload["PKV_TEST_OFFLINE"] == "1"
+        assert payload["PKV_TEST_LOAD_LOCAL"] == "0"
+        assert Path(payload["PKV_TEST_PROJECT_ROOT"]).resolve() == PROJECT_ROOT.resolve()
+        assert Path(payload["DB_PATH"]).parent.is_dir()
+        for key in (
+            "VAULT_DIR",
+            "VECTOR_DIR",
+            "LOG_DIR",
+            "TMP_DIR",
+            "HOME",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_DATA_HOME",
+        ):
+            assert Path(payload[key]).is_dir()
+        assert Path(payload["COVERAGE_FILE"]).parent.is_dir()
+        invocation_line = next(
+            line for line in result.stdout.splitlines() if line.startswith("[执行命令]")
+        )
+        assert "python tests/offline_entrypoint.py python" in invocation_line
+        assert "tests/fixtures/offline_direct_probe.py" in invocation_line
+    finally:
+        inherited_cache.unlink(missing_ok=True)
 
 
 def test_wrapper_default_cli_uses_base_only_entrypoint(
@@ -356,8 +406,7 @@ def test_pytest_bootstrap_rejects_collection_and_report_escape(
 def test_wrapper_rejects_data_root_outside_repository_test_area(
 ) -> None:
     outside_root = (
-        Path(os.environ["LOCALAPPDATA"])
-        / "Temp"
+        PROJECT_ROOT.parent
         / "pkv-wrapper-outside"
         / f"case-{uuid4().hex}"
     )
@@ -398,6 +447,75 @@ def test_wrapper_rejects_data_root_outside_repository_test_area(
         (
             ["python", "scripts/migrate.py", "--version"],
             "base-only",
+        ),
+        (
+            ["python", "scripts/backfill_chunks.py", "--apply"],
+            "legacy maintenance",
+        ),
+        (
+            ["python", "-m", "scripts.backfill_relations", "--apply"],
+            "legacy maintenance",
+        ),
+        (
+            ["python", "scripts/init_db.py"],
+            "legacy maintenance",
+        ),
+        (
+            [
+                "python",
+                "scripts/audit_rearchive_urls.py",
+                "--vault",
+                "E:\\not-a-test-vault",
+            ],
+            "legacy maintenance",
+        ),
+        (
+            [
+                "python",
+                "-m",
+                "scripts.check_chunk_index_consistency",
+                "--db-path",
+                "E:\\not-a-test-vault\\knowledge_vault.db",
+            ],
+            "外部路径",
+        ),
+        (
+            [
+                "python",
+                "scripts/run_conda_command.py",
+                "--args-file",
+                "E:\\not-a-test-args.json",
+            ],
+            "显式离线测试白名单",
+        ),
+        (
+            [
+                "python",
+                "-m",
+                "scripts.run_conda_command",
+                "--args-file",
+                "E:\\not-a-test-args.json",
+            ],
+            "显式离线测试白名单",
+        ),
+        (
+            [
+                "python",
+                "scripts/prepare_docker_test_context.py",
+                "--project-root",
+                "E:\\not-a-test-project",
+            ],
+            "显式离线测试白名单",
+        ),
+        (
+            [
+                "python",
+                "-m",
+                "scripts.prepare_docker_test_context",
+                "--project-root",
+                "E:\\not-a-test-project",
+            ],
+            "显式离线测试白名单",
         ),
         (
             ["python", "-m", "pytest", "tests/unit", "--noconftest"],
@@ -460,6 +578,54 @@ def test_wrapper_blocks_unsafe_commands_before_creating_runtime_paths(
     assert not wrapper_data_root.exists()
 
 
+def test_consistency_checker_missing_database_fails_closed_without_creating_it(
+    wrapper_data_root: Path,
+) -> None:
+    """The diagnostic script uses SQLite mode=ro rather than auto-creating DB."""
+
+    db_path = wrapper_data_root / "db" / "missing.db"
+    result = _invoke_wrapper(
+        wrapper_data_root,
+        [
+            "python",
+            "scripts/check_chunk_index_consistency.py",
+            "--db-path",
+            str(db_path),
+            "--vector-dir",
+            str(wrapper_data_root / "vectors"),
+        ],
+    )
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "安全只读" in result.stdout + result.stderr
+    assert not db_path.exists()
+
+
+@pytest.mark.parametrize("option", ("--db-p", "--vector-d", "--report-j"))
+def test_wrapper_rejects_abbreviated_consistency_checker_path_options(
+    wrapper_data_root: Path,
+    tmp_path: Path,
+    option: str,
+) -> None:
+    """Argparse aliases must not bypass the wrapper's path containment gate."""
+
+    outside_path = tmp_path / "outside" / "user-owned-input-or-output"
+    result = _invoke_wrapper(
+        wrapper_data_root,
+        [
+            "python",
+            "scripts/check_chunk_index_consistency.py",
+            option,
+            str(outside_path),
+        ],
+    )
+
+    assert result.returncode == 2
+    assert "consistency checker" in result.stdout + result.stderr
+    assert not wrapper_data_root.exists()
+    assert not outside_path.exists()
+
+
 def test_wrapper_redacts_sensitive_arguments_and_propagates_exit_code(
     wrapper_data_root: Path,
 ) -> None:
@@ -506,6 +672,31 @@ def test_wrapper_routes_repository_modules_and_scripts_through_ft7(
     assert "python tests/offline_entrypoint.py python" in invocation_line
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["python", "scripts/rebuild-dev-vault.py", "--help"],
+        ["python", "-m", "src.cli.commands", "--help"],
+        ["python", "-m", "src.mcp.server", "--help"],
+        ["python", "-m", "src.utils.verify_setup"],
+        ["python", "scripts/check_chunk_index_consistency.py", "--help"],
+    ],
+)
+def test_wrapper_routes_each_supported_product_direct_python_target_through_ft7(
+    wrapper_data_root: Path,
+    command: list[str],
+) -> None:
+    """The wrapper's explicit target allowlist retains each public test seam."""
+
+    result = _invoke_wrapper(wrapper_data_root, command)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    invocation_line = next(
+        line for line in result.stdout.splitlines() if line.startswith("[执行命令]")
+    )
+    assert "python tests/offline_entrypoint.py python" in invocation_line
+
+
 def test_wrapper_rejects_outside_python_script_without_executing_it(
     wrapper_data_root: Path,
 ) -> None:
@@ -536,7 +727,7 @@ def test_wrapper_rejects_non_repository_python_module(
     )
 
     assert result.returncode != 0
-    assert "repository target" in result.stdout + result.stderr
+    assert "显式离线测试白名单" in result.stdout + result.stderr
 
 
 def test_rebuild_rejects_sibling_data_root_before_creating_it(

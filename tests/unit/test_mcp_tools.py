@@ -1556,13 +1556,12 @@ class TestArchiveUrl:
         )
 
         from unittest.mock import AsyncMock
-        with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            MockEngine.return_value.execute_async = AsyncMock(
-                return_value=malformed_result
-            )
-            from src.mcp.tools import archive_url
+        from src.mcp import tools
 
-            result = await archive_url(url="https://example.com/article")
+        application = MagicMock()
+        application.archive_url = AsyncMock(return_value=malformed_result)
+        with patch.object(tools, "get_application", return_value=application):
+            result = await tools.archive_url(url="https://example.com/article")
 
         assert result["success"] is False
         assert result["terminal"] == "error"
@@ -1597,13 +1596,12 @@ class TestArchiveUrl:
         )
 
         from unittest.mock import AsyncMock
-        with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            MockEngine.return_value.execute_async = AsyncMock(
-                return_value=malformed_result
-            )
-            from src.mcp.tools import archive_url
+        from src.mcp import tools
 
-            result = await archive_url(url="https://example.com/article")
+        application = MagicMock()
+        application.archive_url = AsyncMock(return_value=malformed_result)
+        with patch.object(tools, "get_application", return_value=application):
+            result = await tools.archive_url(url="https://example.com/article")
 
         assert result["terminal"] == "error"
         assert result["issues"][0]["stage"] == "workflow_result"
@@ -1651,13 +1649,12 @@ class TestArchiveUrl:
         )
 
         from unittest.mock import AsyncMock
-        with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            MockEngine.return_value.execute_async = AsyncMock(
-                return_value=malformed_result
-            )
-            from src.mcp.tools import archive_url
+        from src.mcp import tools
 
-            result = await archive_url(url="https://example.com/article")
+        application = MagicMock()
+        application.archive_url = AsyncMock(return_value=malformed_result)
+        with patch.object(tools, "get_application", return_value=application):
+            result = await tools.archive_url(url="https://example.com/article")
 
         assert result["terminal"] == "error"
         assert result["issues"][0]["stage"] == "workflow_result"
@@ -2009,18 +2006,12 @@ class TestArchiveText:
         )
 
         from unittest.mock import AsyncMock
-        with patch(
-            "src.processors.text_fallback_processor.TextFallbackProcessor"
-        ) as MockProcessor, patch(
-            "src.workflow.engine.WorkflowEngine"
-        ) as MockEngine:
-            MockProcessor.return_value.process_text = AsyncMock(return_value=mock_entry)
-            MockEngine.return_value.execute_async = AsyncMock(
-                return_value=malformed_result
-            )
-            from src.mcp.tools import archive_text
+        from src.mcp import tools
 
-            result = await archive_text(text="需要归档的内容")
+        application = MagicMock()
+        application.archive_text = AsyncMock(return_value=malformed_result)
+        with patch.object(tools, "get_application", return_value=application):
+            result = await tools.archive_text(text="需要归档的内容")
 
         assert result["success"] is False
         assert result["terminal"] == "error"

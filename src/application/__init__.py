@@ -6,6 +6,7 @@ can remain responsible for protocol/UI concerns only.
 """
 
 from src.application.knowledge_application import (
+    ApplicationSnapshot,
     KnowledgeApplication,
     configure_application,
     get_application,
@@ -15,6 +16,7 @@ from src.application.knowledge_application import (
 
 __all__ = [
     "KnowledgeApplication",
+    "ApplicationSnapshot",
     "configure_application",
     "get_application",
     "reload_application",

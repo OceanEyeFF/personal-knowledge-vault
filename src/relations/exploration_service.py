@@ -40,7 +40,7 @@ from src.relations.models import (
 )
 from src.retrieval.result import is_strict_search_response
 from src.runtime.errors import ErrorCode, PKVRuntimeError
-from src.utils.text_utils import get_text_processor
+from src.utils.text_utils import TextProcessor, get_text_processor
 
 
 class ExplorationService:
@@ -55,12 +55,21 @@ class ExplorationService:
         sqlite_store: Any,
         relation_query_service: Any,
         vault_dir: Path | None = None,
+        *,
+        runtime_config: Any | None = None,
+        text_processor: TextProcessor | None = None,
     ) -> None:
         self.query_router = query_router
         self.sqlite_store = sqlite_store
         self.relation_query_service = relation_query_service
         self.vault_dir = Path(vault_dir) if vault_dir is not None else None
-        self.text_processor = get_text_processor()
+        # Explicit Application composition must never fall back to the global
+        # singleton (which would capture ambient Config A).
+        self.text_processor = text_processor or (
+            TextProcessor(runtime_config=runtime_config)
+            if runtime_config is not None
+            else get_text_processor()
+        )
 
     def find_bridges(
         self,

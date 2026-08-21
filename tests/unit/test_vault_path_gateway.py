@@ -82,10 +82,13 @@ def test_gateway_rejects_hardlink_file(tmp_path: Path) -> None:
     except OSError as exc:
         pytest.skip(f"hard links unavailable: {exc}")
 
-    with pytest.raises(PKVRuntimeError) as exc_info:
-        gateway.read_text(hardlink)
+    try:
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            gateway.read_text(hardlink)
 
-    assert exc_info.value.code is ErrorCode.PATH_LINK_UNSAFE
+        assert exc_info.value.code is ErrorCode.PATH_LINK_UNSAFE
+    finally:
+        hardlink.unlink(missing_ok=True)
 
 
 def test_gateway_rejects_link_replacement_in_parent_chain(tmp_path: Path) -> None:

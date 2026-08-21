@@ -21,18 +21,22 @@ M13 当前只支持 `archive-url.yaml` 与 `archive-text.yaml`。`search.yaml` �
 
 ## 入口与启动
 
+`WorkflowEngine` 是 Core 内部编排组件，不是 `pkv_kernel` 的公开 Wrapper
+接口。CLI、MCP 和外部 Wrapper 不得自行构造 Engine、Store、Provider 或 Step；它们
+分别经 Application 组合边界或 `pkv_kernel` 的稳定公开接口进入归档流程。这样一次
+操作始终绑定到同一份不可变 Config snapshot，并由外层统一处理 lifecycle、writer
+lease 与审计。
+
 ### 快速使用
 
 ```python
-from src.workflow import WorkflowEngine
+from pkv_kernel import get_kernel
 
-engine = WorkflowEngine()
+# 外部 Wrapper：只在 runtime lifecycle 已报告 READY 后取得公开 Kernel。
+kernel = get_kernel()
 
-# 执行工作流
-result = await engine.execute_async(
-    workflow_name="archive-url",
-    input_data={"url": "https://mp.weixin.qq.com/xxx"}
-)
+# 归档会在 Application 边界内选择并执行 archive-url workflow。
+result = await kernel.archive_url({"url": "https://mp.weixin.qq.com/xxx"})
 
 if result.terminal in {"success", "degraded"}:
     print("成功:", result.data)
@@ -508,16 +512,19 @@ class Step2(BaseStep):
 
 ### Q5: MCP 写入 Tool 如何调用工作流?
 
-MCP `archive_url` 和 `archive_text` Tool 直接调用 `WorkflowEngine.execute_async()`:
+MCP `archive_url` 和 `archive_text` Tool 调用共享的 `KnowledgeApplication`；只有
+Application 才在同一 Config snapshot 下组合 `WorkflowEngine`、steps、Provider 和
+Store。它会在 Processor/Provider 工作前取得 data-root writer lease，竞争时将
+`write_busy` 投影给 MCP，而不是让 Tool 直接创建 Engine：
 
 ```python
 # archive_url Tool (简化示意)
-engine = WorkflowEngine()
-result = await engine.execute_async("archive-url", {"url": url})
+application = get_application()
+result = await application.archive_url({"url": url})
 
 # archive_text Tool (简化示意)
-engine = WorkflowEngine()
-result = await engine.execute_async("archive-text", {"entry": entry})
+application = get_application()
+result = await application.archive_text(text, title=title)
 ```
 
 ---
@@ -563,6 +570,11 @@ result = await engine.execute_async("archive-text", {"entry": entry})
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-08-21 (K2/R3)
+- 明确 WorkflowEngine 仅由 Core Application 组合；外部 Wrapper 仅使用
+  `pkv_kernel`，CLI/MCP 不再直接创建 Engine。
+- 补充归档流程的 Config snapshot、writer lease 与 `write_busy` 边界说明。
 
 ### 2026-02-19 00:58 (M9)
 - 新增 `archive-text` 工作流配置 (MCP archive_text Tool 专用)

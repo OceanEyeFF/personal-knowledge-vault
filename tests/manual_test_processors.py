@@ -293,7 +293,9 @@ async def main():
         print("\n[!] 注意:")
         print("  1. 当前使用默认测试链接（示例链接将被跳过）")
         print("  2. 使用 --use-config 参数从 tests/fixtures/test_urls.json 读取真实链接")
-        print("  3. 确保 config/local.yaml 中已配置 LLM 和 Embedding 服务")
+        print(
+            "  3. 确保 %USERPROFILE%\\.pkv\\config.yaml 中已配置 LLM 和 Embedding 服务"
+        )
         print("  4. 确保已安装 Playwright 浏览器: python -m playwright install chromium")
         print("\n当前仅运行聊天记录处理器测试（使用测试 Fixtures）\n")
 

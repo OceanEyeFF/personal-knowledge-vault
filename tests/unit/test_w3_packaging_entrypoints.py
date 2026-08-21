@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import logging
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -212,16 +213,16 @@ def test_cli_routes_console_logging_to_stderr() -> None:
         layout=SimpleNamespace(writable_user_path=object()),
     )
     with (
-        patch.object(cli_main, "get_config", return_value=config),
-        patch.object(cli_main, "bootstrap_runtime"),
         patch.object(cli_main.LoggerSetup, "setup") as setup,
     ):
-        cli_main._configure_logging("WARNING")
+        cli_main._configure_logging(config, "WARNING")
 
     assert setup.call_args.kwargs["console_stream"] is sys.stderr
 
 
-def test_mcp_bootstrap_failure_uses_stderr_machine_projection_only(capsys) -> None:
+def test_mcp_inspection_failure_starts_stdio_status_only_without_bootstrap(
+    capsys,
+) -> None:
     from src.mcp import server
 
     failure = PKVRuntimeError(
@@ -230,54 +231,79 @@ def test_mcp_bootstrap_failure_uses_stderr_machine_projection_only(capsys) -> No
         stage="database_preflight",
         recoverable=False,
     )
-    with (
-        patch.object(sys, "argv", ["pkv-mcp"]),
-        patch.object(server, "get_config", return_value=object()),
-        patch.object(server, "bootstrap_runtime", side_effect=failure),
-        patch.object(server.mcp, "run") as run_server,
-        pytest.raises(SystemExit) as raised,
-    ):
-        server.main()
+    try:
+        with (
+            patch.object(sys, "argv", ["pkv-mcp"]),
+            patch.object(server, "get_config", return_value=object()),
+            patch.object(server, "inspect_runtime", side_effect=failure),
+            patch.object(server, "configure_application") as configure_application,
+            patch.object(server.LoggerSetup, "add_file_handler") as add_file_handler,
+            patch.object(server.mcp, "run") as run_server,
+        ):
+            server.main()
 
-    captured = capsys.readouterr()
-    assert raised.value.code == 1
-    assert captured.out == ""
-    assert json.loads(captured.err) == {
-        "adapter": "mcp",
-        "code": "database_schema_drift",
-        "recoverable": False,
-        "stage": "database_preflight",
-        "status": "error",
-    }
-    assert "private" not in captured.err
-    run_server.assert_not_called()
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "private" not in captured.err
+        run_server.assert_called_once_with(transport="stdio")
+        configure_application.assert_not_called()
+        add_file_handler.assert_not_called()
+        assert server.get_runtime_status_payload() == {
+            "status": "error",
+            "readiness": "repair_required",
+            "inspection": None,
+            "plan": None,
+            "issues": [
+                {
+                    "code": "database_schema_drift",
+                    "message": "运行时状态无法安全确认，需要先修复。",
+                    "stage": "runtime_readiness",
+                    "recoverable": False,
+                }
+            ],
+        }
+    finally:
+        server._set_runtime_state(
+            config=None,
+            inspection=None,
+            managed=False,
+        )
+        # ``server.main`` owns a stdio handler for the process lifetime.  This
+        # unit test invokes it without a real process boundary, so do not leave
+        # a handler pointing at pytest's soon-to-close capture stream behind.
+        logging.getLogger().handlers.clear()
 
 
-def test_mcp_malformed_configuration_has_stable_cold_entry_failure(capsys) -> None:
+def test_mcp_malformed_configuration_starts_stdio_status_only(capsys) -> None:
     from src.mcp import server
 
     secret = "C:/private/local.yaml api_key=MCP-STARTUP-SECRET"
-    with (
-        patch.object(sys, "argv", ["pkv-mcp"]),
-        patch.object(server, "get_config", side_effect=ValueError(secret)),
-        patch.object(server.mcp, "run") as run_server,
-        pytest.raises(SystemExit) as raised,
-    ):
-        server.main()
+    try:
+        with (
+            patch.object(sys, "argv", ["pkv-mcp"]),
+            patch.object(server, "get_config", side_effect=ValueError(secret)),
+            patch.object(server, "configure_application") as configure_application,
+            patch.object(server.mcp, "run") as run_server,
+        ):
+            server.main()
 
-    captured = capsys.readouterr()
-    assert raised.value.code == 1
-    assert captured.out == ""
-    assert json.loads(captured.err) == {
-        "adapter": "mcp",
-        "code": "runtime_startup_failed",
-        "recoverable": False,
-        "stage": "runtime_configuration",
-        "status": "error",
-    }
-    assert secret not in captured.err
-    assert "Traceback" not in captured.err
-    run_server.assert_not_called()
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert secret not in captured.err
+        assert "Traceback" not in captured.err
+        run_server.assert_called_once_with(transport="stdio")
+        configure_application.assert_not_called()
+        status = server.get_runtime_status_payload()
+        assert status["status"] == "error"
+        assert status["readiness"] == "repair_required"
+        assert secret not in repr(status)
+    finally:
+        server._set_runtime_state(
+            config=None,
+            inspection=None,
+            managed=False,
+        )
+        logging.getLogger().handlers.clear()
 
 
 @pytest.mark.parametrize("exception_type", [KeyboardInterrupt, SystemExit])
@@ -289,7 +315,7 @@ def test_adapter_startup_boundaries_do_not_swallow_base_exceptions(
 
     with patch.object(cli_main, "get_config", side_effect=exception_type()):
         with pytest.raises(exception_type):
-            cli_main._configure_logging("WARNING")
+            cli_main._prepare_cli_runtime()
 
     with (
         patch.object(sys, "argv", ["pkv-mcp"]),

@@ -1,8 +1,8 @@
 """
 MCP Tool handler 实现
 
-提供 14 个 Tool:
-- 只读: search_knowledge, get_entry, list_tags, list_entries, get_stats,
+提供 15 个 Tool:
+- 只读: get_runtime_status, search_knowledge, get_entry, list_tags, list_entries, get_stats,
   get_related, query_subgraph, explain_relation, collect_evidence, find_bridges,
   timeline_of, contrast
 - 写入: archive_url, archive_text
@@ -26,6 +26,7 @@ from src.mcp.server import (
     get_application,
     get_evidence_collection_service,
     get_exploration_service,
+    get_runtime_status_payload,
     get_sqlite_store,
     get_markdown_store,
     get_relation_query_service,
@@ -131,6 +132,11 @@ _PUBLIC_RUNTIME_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.STORAGE_VECTOR_FAILED: "向量索引写入失败",
     ErrorCode.STORAGE_COMPENSATION_FAILED: "存储回滚失败",
     ErrorCode.STORAGE_REPAIR_REQUIRED: "存储需要修复",
+    ErrorCode.SETUP_REQUIRED: "知识库尚未完成显式初始化",
+    ErrorCode.REPAIR_REQUIRED: "知识库需要先完成显式修复",
+    ErrorCode.DATABASE_UPGRADE_REQUIRED: "知识库需要先完成显式升级",
+    ErrorCode.WRITE_BUSY: "另一个应用正在写入知识库，请稍后重试",
+    ErrorCode.AUDIT_COMPLETION_PENDING: "归档已提交，但本地审计完成记录待补；请勿直接重试。",
 }
 _ERROR_CODE_VALUES = frozenset(item.value for item in ErrorCode)
 _ARCHIVE_STEP_IDS = frozenset(
@@ -164,6 +170,8 @@ _PUBLIC_WORKFLOW_STAGES = frozenset(
         "workflow_review_editor",
         "workflow_local_file_capability",
         "workflow_processor_selection",
+        "write_lease",
+        "audit_trace",
         "archive_url",
         "archive_text",
         "url_validation",
@@ -233,6 +241,7 @@ _PUBLIC_RETRIEVAL_STAGES = frozenset(
         "find_bridges_retrieval",
         "timeline_retrieval",
         "contrast_retrieval",
+        "runtime_readiness",
         "contrast_topic_a_retrieval",
         "contrast_topic_b_retrieval",
         "evidence_document_retrieval",
@@ -376,13 +385,20 @@ def _runtime_failure_payload(
         fallback_stage=stage,
         fallback_recoverable=isinstance(exc, PKVRuntimeError) and exc.recoverable,
     )
-    return sanitize_public_evidence({
+    payload: dict[str, object] = {
         "success": False,
         "terminal": "error",
         "error": error_label or public_issue["message"],
         "warnings": [],
         "issues": [public_issue],
-    })
+    }
+    # A rejected cross-process write is explicitly safe to retry.  Keep this
+    # top-level projection narrow so existing archive error contracts remain
+    # stable while MCP callers can reliably distinguish write contention.
+    if public_issue["code"] == ErrorCode.WRITE_BUSY.value:
+        payload["error_code"] = ErrorCode.WRITE_BUSY.value
+        payload["retryable"] = bool(public_issue["recoverable"])
+    return sanitize_public_evidence(payload)
 
 
 def _search_error_response(
@@ -3111,6 +3127,7 @@ def _workflow_result_payload(
             "title",
             "tags",
             "summary_one_sentence",
+            "audit_completion_pending",
         ):
             if key in raw_data:
                 data[key] = raw_data[key]
@@ -3156,6 +3173,25 @@ def _workflow_result_payload(
             or (terminal == "degraded" and storage_status not in {"ready", "degraded"})
         ):
             return _invalid_result("incoherent workflow storage terminal")
+
+        audit_completion_pending = raw_data.get("audit_completion_pending", False)
+        if type(audit_completion_pending) is not bool:
+            return _invalid_result("invalid audit completion marker")
+        if audit_completion_pending:
+            has_pending_issue = any(
+                issue.get("code") == ErrorCode.AUDIT_COMPLETION_PENDING.value
+                and issue.get("stage") == "audit_trace"
+                and issue.get("recoverable") is True
+                and issue.get("severity") == "warning"
+                for issue in raw_completed_issues
+            )
+            if (
+                terminal != "degraded"
+                or storage_status not in _COMPLETED_STORAGE_STATUSES
+                or raw_data.get("core_committed") is not True
+                or not has_pending_issue
+            ):
+                return _invalid_result("incoherent audit completion marker")
 
     if storage_status in _FATAL_STORAGE_STATUSES:
         do_not_retry = (
@@ -3234,6 +3270,13 @@ def _workflow_result_payload(
     }
     if terminal == "error":
         payload["error"] = "归档失败"
+        if any(issue.get("code") == ErrorCode.WRITE_BUSY.value for issue in issues):
+            payload["error_code"] = ErrorCode.WRITE_BUSY.value
+            payload["retryable"] = any(
+                issue.get("code") == ErrorCode.WRITE_BUSY.value
+                and issue.get("recoverable") is True
+                for issue in issues
+            )
 
     if terminal != "error":
         payload["knowledge_id"] = data["knowledge_id"]
@@ -3312,11 +3355,30 @@ def _public_storage_terminal(data: object) -> dict:
                 "核心存储可能已提交或需先修复，请勿盲目重试归档；"
                 "请按 repair_actions 处理"
             )
+    audit_completion_pending = data.get("audit_completion_pending")
+    if type(audit_completion_pending) is bool:
+        payload["audit_completion_pending"] = audit_completion_pending
     return payload
 
 
 # ============================================================
-# Tool 1: search_knowledge — 搜索知识库
+# Tool 1: get_runtime_status — inspect-only lifecycle status
+# ============================================================
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def get_runtime_status() -> dict:
+    """检查 PKV 运行时状态和下一步计划，不写入数据也不访问 Provider。
+
+    这是未初始化、待修复或待升级的数据根唯一允许的 MCP Tool。返回值中的
+    plan 仅供用户在 CLI 中显式确认执行；MCP 不会因为状态查询自动初始化、
+    迁移、恢复或探测网络。
+    """
+
+    return await anyio.to_thread.run_sync(get_runtime_status_payload)
+
+
+# ============================================================
+# Tool 2: search_knowledge — 搜索知识库
 # ============================================================
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))

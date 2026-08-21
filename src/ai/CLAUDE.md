@@ -13,9 +13,15 @@
 - **服务隔离**: 每个 AI 服务独立封装，便于替换和测试
 - **成本可控**: 智能缓存和策略优化，节省 API 成本
 - **错误处理**: 自动重试和降级策略
-- **配置驱动**: API Key 和参数通过 YAML 管理，生产调用通过统一 Provider factory 构造
+- **配置驱动**: API Key 和参数来自不可变 `Config` snapshot；生产调用通过统一 Provider factory 构造
 
 W2 新增 `provider_factory.py` 与 `chat_provider.py`：Embedding 和 Chat 都从显式、不可变的配置快照构造，固定使用 `openai_compatible`，并传递 model/endpoint/timeout/retry/dimensions 等关键字段。Retrieval 的语义分支使用 lazy `embedder_factory`，BM25 或参数拒绝路径不会提前构造 Provider。默认自动化只注入 doubles，不连接真实 Provider、不读取真实 key 或真实 Vault；release 中不存在内置 fake/test mode。
+
+内部组合使用 bundled `config/config.yaml` 与唯一可编辑的
+`%USERPROFILE%\\.pkv\\config.yaml` 构造 `Config`。`PKV_DATA_ROOT` 只选择
+数据根；`<data-root>/config/local.yaml` 只保存 PKV 管理的无密钥 runtime snapshot，
+不是 Provider 配置来源。外部 Wrapper 只使用 `pkv_kernel`，不得导入本目录的 `src.*`
+实现。
 
 ---
 
@@ -25,11 +31,10 @@ W2 新增 `provider_factory.py` 与 `chat_provider.py`：Embedding 和 Chat 都�
 
 ```python
 from src.ai.deepseek_client import DeepSeekClient
+from src.utils.config import Config
 
-# 初始化客户端（从 config/local.yaml 合并配置读取）
-deepseek = DeepSeekClient()
-
-# Kernel/Application 路径传入其精确配置身份
+# Application / Kernel 在操作开始时捕获 snapshot，并显式传给 Provider。
+runtime_config = Config()
 deepseek = DeepSeekClient(config=runtime_config)
 
 # 生成摘要
@@ -52,10 +57,12 @@ keywords = await deepseek.extract_keywords(content="文章内容...")
 ### OpenAI Embedding 服务
 
 ```python
-from src.ai.embedder import Embedder
+from src.ai.provider_factory import create_embedder
+from src.utils.config import Config
 
-# 初始化
-embedder = Embedder()
+# 同一操作须复用已捕获的 Config snapshot；不要让 Embedder 重新读取全局配置。
+runtime_config = Config()
+embedder = create_embedder(runtime_config)
 
 # 单个文本向量化
 vector = await embedder.embed("查询文本")
@@ -229,7 +236,9 @@ class Embedder:
 
 ### 配置文件
 
-默认值位于 `config/config.yaml`，本机服务地址、模型和密钥写入 Git 忽略的 `config/local.yaml`：
+bundled 默认值位于 `config/config.yaml`；唯一可编辑的用户业务配置（含 Provider
+密钥）位于 `%USERPROFILE%\\.pkv\\config.yaml`。它们被合并为一个不可变 `Config`
+snapshot；以下是该用户配置可覆盖的业务键：
 
 ```yaml
 ai:
@@ -259,7 +268,11 @@ ai:
     model: "whisper-1"
 ```
 
-项目不加载 `.env`，旧的 Provider 环境变量不会覆盖这些 YAML 值。
+项目不加载 `.env`，旧的 Provider 环境变量不会覆盖这些 YAML 值。正式产品环境覆盖
+仅有 `PKV_DATA_ROOT` 和 `PKV_LOG_LEVEL`：前者选择一个数据根，后者覆盖日志
+级别。Vault、向量、日志等子路径均由 snapshot 的 `RuntimeLayout` 从同一有效根派生；
+`<data-root>/config/local.yaml` 是 PKV 写入的无密钥 runtime snapshot，不可作为
+业务配置编辑。
 
 ---
 
@@ -267,7 +280,9 @@ ai:
 
 ### Prompt 文件位置
 
-`src/ai/prompts/`
+内部由 `Config.layout.prompts_dir` 定位 bundled Prompt 资源；在 source checkout 中该
+目录是 `src/ai/prompts/`，但已安装的 `pkv_kernel` / 外部 Wrapper 不得依赖该
+源码树相对路径。
 
 ```
 src/ai/prompts/
@@ -474,7 +489,8 @@ embedder = Embedder(model="text-embedding-3-large")
 embedder = Embedder(model="text-embedding-ada-002")
 ```
 
-注意: 更改维度需要重建向量索引。
+注意：模型、端点或维度变更后，必须经 inspect → plan → 展示影响/备份 → 用户确认的
+生命周期重建向量索引；不要编辑 `<data-root>/config/local.yaml` 试图绕过该合同。
 
 ### Q3: 如何处理超长文本？
 
@@ -569,6 +585,6 @@ summary = await deepseek.summarize(content)
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-02-16 01:53:22
+**最后更新**: 2026-08-21
 
 *本文档由 Claude Code 自动生成*

@@ -148,17 +148,38 @@ class SQLiteStore:
     ALLOWED_SORT_FIELDS = {"archived_at", "title", "knowledge_id", "word_count", "source_type"}
     ALLOWED_SORT_ORDERS = {"asc", "desc"}
 
-    def __init__(self, db_path: Path):
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        runtime_config: Any = None,
+        text_processor: TextProcessor | None = None,
+    ):
         """
         初始化 SQLite 存储
 
         Args:
             db_path: 数据库文件路径
+            runtime_config: 所属 Application 的不可变 Config snapshot；产品路径
+                显式传入，避免分词器回退全局 Config。
+            text_processor: 已绑定同一 snapshot 的可复用分词器测试 seam。
         """
         self.db_path = Path(db_path)
         self._conn: sqlite3.Connection | None = None
-        self.text_processor = TextProcessor()  # 用于 FTS5 分词
+        self._runtime_config = runtime_config
+        # Do not construct jieba during a SQLite read-only operation.  FTS
+        # writes resolve this lazily; Application production factories inject
+        # their captured Config so TextProcessor cannot fall back to global A.
+        self._text_processor = text_processor
         logger.info("SQLite 存储初始化完成")
+
+    @property
+    def text_processor(self) -> TextProcessor:
+        """Lazily resolve the FTS tokenizer only for a real FTS mutation."""
+
+        if self._text_processor is None:
+            self._text_processor = TextProcessor(runtime_config=self._runtime_config)
+        return self._text_processor
 
     @contextmanager
     def get_connection(self):

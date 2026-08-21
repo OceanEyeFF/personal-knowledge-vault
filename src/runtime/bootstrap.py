@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
 from src.runtime.errors import ErrorCode, PKVRuntimeError, StorageStage
 from src.storage.migration_manager import (
@@ -12,7 +12,6 @@ from src.storage.migration_manager import (
     DatabaseState,
     MigrationManager,
 )
-
 
 _BOOTSTRAP_ADAPTERS = frozenset({"cli", "mcp", "wrapper"})
 _MACHINE_STAGE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
@@ -75,18 +74,24 @@ def project_bootstrap_error(
     }
 
 
-def _configure_jieba_cache(tmp_dir: object) -> None:
-    """Keep jieba's generated cache inside the declared user-data root."""
+def _configure_jieba_cache(tmp_dir: object, config: Any) -> None:
+    """Initialize the Config-bound jieba cache while the writer lease is held."""
 
-    import jieba
+    # ``TextProcessor`` owns the exact cache/no-read-write contract.  Calling it
+    # here makes fresh R2 setup and legacy bootstrap publish the cache before a
+    # later BM25/query reader can use it; a read path must never create it.
+    from src.utils.text_utils import TextProcessor
 
-    jieba.dt.tmp_dir = str(tmp_dir)
+    if config.layout.tmp_dir != tmp_dir:
+        raise ValueError("jieba cache path must come from the captured Config layout")
+    TextProcessor(runtime_config=config, initialize_cache=True)
 
 
 def bootstrap_runtime(
-    config: Optional[Any] = None,
+    config: Any | None = None,
     *,
     initialize_fresh: bool = True,
+    recover_interrupted: bool = True,
 ) -> RuntimeContext:
     """Validate resources/layout and establish a READY fresh-install database.
 
@@ -102,57 +107,67 @@ def bootstrap_runtime(
 
     layout = config.layout
     layout.validate_bundled_resources()
-    layout.ensure_user_directories()
-    _configure_jieba_cache(layout.tmp_dir)
-    config.sanitize_runtime_state()
+    # Bootstrap is a durable operation (directories, database initialization,
+    # interrupted-operation recovery).  It shares the same data-root lease as
+    # archive/delete/config writes while still remaining an explicit API: merely
+    # constructing Config or getting a Kernel stays lazy and read-only.
+    from src.runtime.write_lease import write_lease_scope
 
-    manager = MigrationManager(
-        layout.db_path,
-        layout.migrations_dir,
-        backup_dir=layout.backup_dir,
-    )
-    inspection = manager.require_ready()
-    if inspection.state is DatabaseState.FRESH:
-        if not initialize_fresh:
+    with write_lease_scope(layout):
+        layout.ensure_user_directories()
+        _configure_jieba_cache(layout.tmp_dir, config)
+        config.sanitize_runtime_state()
+
+        manager = MigrationManager(
+            layout.db_path,
+            layout.migrations_dir,
+            backup_dir=layout.backup_dir,
+        )
+        inspection = manager.require_ready()
+        if inspection.state is DatabaseState.FRESH:
+            if not initialize_fresh:
+                raise PKVRuntimeError(
+                    ErrorCode.DATABASE_MISSING,
+                    f"数据库尚未初始化: {layout.db_path}",
+                )
+            inspection = manager.initialize_fresh()
+        if inspection.state is not DatabaseState.READY:
             raise PKVRuntimeError(
-                ErrorCode.DATABASE_MISSING,
-                f"数据库尚未初始化: {layout.db_path}",
+                ErrorCode.DATABASE_SCHEMA_DRIFT,
+                f"启动后数据库未达到 READY: {inspection.state.value}",
             )
-        inspection = manager.initialize_fresh()
-    if inspection.state is not DatabaseState.READY:
-        raise PKVRuntimeError(
-            ErrorCode.DATABASE_SCHEMA_DRIFT,
-            f"启动后数据库未达到 READY: {inspection.state.value}",
-        )
-    from src.storage.coordinator import (
-        StorageOperationJournal,
-        recover_interrupted_operations,
-    )
-    from src.storage.markdown_store import MarkdownStore
-    from src.storage.sqlite_store import SQLiteStore
+        usable_records: tuple[dict[str, Any], ...] = ()
+        if recover_interrupted:
+            from src.storage.coordinator import (
+                StorageOperationJournal,
+                recover_interrupted_operations,
+            )
+            from src.storage.markdown_store import MarkdownStore
+            from src.storage.sqlite_store import SQLiteStore
 
-    journal = StorageOperationJournal(layout.runtime_state_dir / "operations")
-    markdown_store = MarkdownStore(layout.vault_dir)
-    sqlite_store = SQLiteStore(layout.db_path)
-    usable_records, blocking_records = recover_interrupted_operations(
-        journal,
-        markdown_store,
-        sqlite_store,
-    )
-    if blocking_records:
-        details = ", ".join(
-            f"{record.get('operation_id', '?')}"
-            f"({record.get('action', '?')}@{record.get('stage', '?')})"
-            for record in blocking_records
-        )
-        raise PKVRuntimeError(
-            ErrorCode.STORAGE_REPAIR_REQUIRED,
-            f"启动检测到无法自动恢复的存储操作，需要人工修复: {details}",
-            stage=StorageStage.PREPARING.value,
-            recoverable=True,
-        )
+            journal = StorageOperationJournal(layout.runtime_state_dir / "operations")
+            markdown_store = MarkdownStore(layout.vault_dir)
+            sqlite_store = SQLiteStore(layout.db_path, runtime_config=config)
+            recovered_records, blocking_records = recover_interrupted_operations(
+                journal,
+                markdown_store,
+                sqlite_store,
+            )
+            usable_records = tuple(recovered_records)
+            if blocking_records:
+                details = ", ".join(
+                    f"{record.get('operation_id', '?')}"
+                    f"({record.get('action', '?')}@{record.get('stage', '?')})"
+                    for record in blocking_records
+                )
+                raise PKVRuntimeError(
+                    ErrorCode.STORAGE_REPAIR_REQUIRED,
+                    f"启动检测到无法自动恢复的存储操作，需要人工修复: {details}",
+                    stage=StorageStage.PREPARING.value,
+                    recoverable=True,
+                )
     return RuntimeContext(
         config=config,
         database=inspection,
-        repair_records=tuple(usable_records),
+        repair_records=usable_records,
     )

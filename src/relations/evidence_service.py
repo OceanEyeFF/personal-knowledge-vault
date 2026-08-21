@@ -22,7 +22,7 @@ from src.relations.citations import (
 from src.relations.models import CollectedEvidenceItem, CollectedEvidenceResult
 from src.retrieval.result import SearchResponse, is_strict_search_response
 from src.runtime.errors import ErrorCode, PKVRuntimeError
-from src.utils.text_utils import get_text_processor
+from src.utils.text_utils import TextProcessor, get_text_processor
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +46,23 @@ class EvidenceCollectionService:
         markdown_store: Any,
         relation_query_service: Any,
         chunk_searcher: Optional[Any] = None,
+        *,
+        runtime_config: Any | None = None,
+        text_processor: TextProcessor | None = None,
     ) -> None:
         self.query_router = query_router
         self.sqlite_store = sqlite_store
         self.markdown_store = markdown_store
         self.relation_query_service = relation_query_service
         self.chunk_searcher = chunk_searcher
-        self.text_processor = get_text_processor()
+        # Application composition injects its captured Config B.  Keep the
+        # historical singleton only for direct legacy callers that supplied no
+        # Config at all.
+        self.text_processor = text_processor or (
+            TextProcessor(runtime_config=runtime_config)
+            if runtime_config is not None
+            else get_text_processor()
+        )
 
     def collect_evidence(
         self,

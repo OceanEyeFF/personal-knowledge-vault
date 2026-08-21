@@ -112,14 +112,17 @@ class PlannedVaultWrite:
 class MarkdownStore:
     """Markdown 文件存储管理器"""
 
-    def __init__(self, vault_dir: Path):
+    def __init__(self, vault_dir: Path, *, create: bool = True):
         """
         初始化 Markdown 存储
 
         Args:
             vault_dir: Markdown Vault 目录
+            create: 仅受已取得 writer lease 的 bootstrap / mutation 路径可为
+                ``True``。公开读取应传 ``False``，缺失 Vault 必须显式失败，
+                不能把一次 read 伪装成 fresh runtime 初始化。
         """
-        self.gateway = VaultPathGateway(vault_dir)
+        self.gateway = VaultPathGateway(vault_dir, create=create)
         self.vault_dir = self.gateway.vault_dir
         logger.info("Markdown 存储初始化完成")
 

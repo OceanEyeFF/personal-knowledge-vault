@@ -9,8 +9,11 @@ import uuid
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.offline_runtime import RUNTIME_PATH_ENV_KEYS, prepare_offline_child_env
+from src.runtime.lifecycle import RuntimeReadiness, inspect_runtime
+from src.utils.config import Config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -109,6 +112,98 @@ def test_setup_test_db_creates_database_and_records(tmp_path: Path) -> None:
     assert file_path
     assert Path(file_path).exists()
     assert Path(file_path).read_text(encoding="utf-8").strip()
+
+
+def test_setup_test_db_runtime_ready_publishes_matching_secret_free_fixture(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "runtime-ready"
+    db_path = data_root / "db" / "knowledge_vault.db"
+    result = _run_script(
+        [
+            "--seed",
+            "123",
+            "--count",
+            "2",
+            "--wechat-count",
+            "0",
+            "--zhihu-count",
+            "0",
+            "--runtime-ready",
+        ],
+        data_root=data_root,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    runtime_snapshot_path = data_root / "config" / "local.yaml"
+    snapshot = yaml.safe_load(runtime_snapshot_path.read_text(encoding="utf-8"))
+    assert snapshot["schema_version"] == 1
+    assert snapshot["database"]["schema_version"]
+    assert snapshot["embedding"]["provider"] == "openai_compatible"
+    assert "api_key" not in runtime_snapshot_path.read_text(encoding="utf-8")
+    assert (data_root / "tmp" / "jieba.cache").is_file()
+
+    environment = {
+        "PKV_TEST_OFFLINE": "1",
+        "DATA_DIR": str(data_root),
+        "DB_PATH": str(db_path),
+        "VAULT_DIR": str(data_root / "vault"),
+        "VECTOR_DIR": str(data_root / "vectors"),
+        "LOG_DIR": str(data_root / "logs"),
+        "TMP_DIR": str(data_root / "tmp"),
+    }
+    config = Config(
+        str(PROJECT_ROOT / "config" / "config.yaml"),
+        environment=environment,
+        _user_config_updates={
+            "ai.llm.api_key": "offline-test-placeholder",
+            "ai.embedding.api_key": "offline-test-placeholder",
+        },
+    )
+    assert inspect_runtime(config).readiness is RuntimeReadiness.READY
+
+
+def test_setup_test_db_without_runtime_ready_does_not_publish_runtime_snapshot(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "ordinary-fixture"
+    result = _run_script(
+        [
+            "--count",
+            "1",
+            "--wechat-count",
+            "0",
+            "--zhihu-count",
+            "0",
+        ],
+        data_root=data_root,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (data_root / "config" / "local.yaml").exists()
+
+
+def test_setup_test_db_runtime_ready_rejects_non_runtime_output(tmp_path: Path) -> None:
+    data_root = tmp_path / "runtime-ready-nondefault-output"
+    other_output = data_root / "other" / "fixture.sqlite"
+    result = _run_script(
+        [
+            "--count",
+            "1",
+            "--wechat-count",
+            "0",
+            "--zhihu-count",
+            "0",
+            "--output",
+            str(other_output),
+            "--runtime-ready",
+        ],
+        data_root=data_root,
+    )
+
+    assert result.returncode == 1
+    assert "--runtime-ready" in result.stdout
+    assert not (data_root / "config" / "local.yaml").exists()
 
 
 def test_setup_test_db_rejects_output_outside_selected_data_root() -> None:

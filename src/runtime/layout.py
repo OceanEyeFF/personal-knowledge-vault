@@ -446,17 +446,64 @@ def _default_resource_root() -> Path:
     frozen_root = getattr(sys, "_MEIPASS", None)
     if frozen_root:
         return Path(frozen_root)
-    return Path(__file__).resolve().parents[2]
+
+    # In a source checkout the implementation package is rooted at the
+    # repository.  A K1b wheel instead embeds the immutable resource tree next
+    # to ``pkv_kernel`` so an external Wrapper never needs a neighbouring
+    # checkout or a ``src.*`` path.  Prefer that explicit installed layout only
+    # when its required base config exists; development keeps its existing root.
+    implementation_root = Path(__file__).resolve().parents[2]
+    wheel_resources = implementation_root / "pkv_kernel" / "_resources"
+    if (wheel_resources / "config" / "config.yaml").is_file():
+        return wheel_resources
+    return implementation_root
 
 
-def _default_user_data_root(environment: Mapping[str, str]) -> Path:
-    if os.name == "nt":
-        local_app_data = environment.get("LOCALAPPDATA")
-        base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
-        return base / "PersonalKnowledgeVault"
-    xdg_data_home = environment.get("XDG_DATA_HOME")
-    base = Path(xdg_data_home) if xdg_data_home else Path.home() / ".local" / "share"
-    return base / "personal-knowledge-vault"
+def _is_test_offline(environment: Mapping[str, str]) -> bool:
+    """Return whether legacy test-only runtime injection is explicitly enabled."""
+
+    return environment.get("PKV_TEST_OFFLINE") == "1"
+
+
+def _default_profile_root(environment: Mapping[str, str]) -> Path:
+    """Resolve the one user-owned PKV profile directory.
+
+    Product policy deliberately does not use ``LOCALAPPDATA``: a user's
+    editable configuration and the default data root are both rooted below
+    ``%USERPROFILE%\\.pkv``.  ``USERPROFILE`` is consulted on every platform so
+    deterministic tests can inject a fake Windows profile without patching
+    ``Path.home()``.
+    """
+
+    user_home = environment.get("USERPROFILE") or environment.get("HOME")
+    if user_home:
+        return Path(user_home) / ".pkv"
+    # Test isolation must never probe the real account home merely to discover
+    # an unused user-config path.  The wrapper normally supplies DATA_DIR; this
+    # deterministic fallback also covers direct/offline unit seams.
+    if _is_test_offline(environment):
+        return Path.cwd() / ".data-test" / "offline-profile"
+    return Path.home() / ".pkv"
+
+
+def _default_user_data_root(profile_root: Path) -> Path:
+    """Return the default mutable data root below the user profile."""
+
+    return profile_root / "data"
+
+
+def _injected_profile_root(data_root: PathLike) -> Path:
+    """Derive an isolated profile for an explicit test/admin data-root seam.
+
+    The normal product path never calls this helper: it begins with one real
+    ``%USERPROFILE%/.pkv`` profile.  An explicit ``user_data_root`` is used by
+    isolated tests and admin composition; deriving a sibling keyed by its leaf
+    prevents two injected roots from accidentally sharing one editable config.
+    """
+
+    root = Path(data_root)
+    leaf = root.name or "data"
+    return root.parent / f".pkv-{leaf}"
 
 
 @dataclass(frozen=True)
@@ -464,12 +511,18 @@ class RuntimeLayout:
     """Resolved immutable resource paths and contained mutable paths."""
 
     resources_root: Path
+    profile_root: Path
     user_data_root: Path
     base_config_path: Path
     workflows_dir: Path
     migrations_dir: Path
     prompts_dir: Path
     custom_dict_path: Path
+    user_config_path: Path
+    runtime_config_path: Path
+    # Compatibility for runtime-internal callers that still refer to the
+    # historical data-root snapshot location.  Product settings must use
+    # ``user_config_path`` instead.
     local_config_path: Path
     db_path: Path
     vault_dir: Path
@@ -486,6 +539,9 @@ class RuntimeLayout:
         resources_root: Path | None = None,
         user_data_root: Path | None = None,
         base_config_path: Path | None = None,
+        profile_root: Path | None = None,
+        user_config_path: Path | None = None,
+        runtime_config_path: Path | None = None,
         local_config_path: Path | None = None,
         storage_config: Mapping[str, Any] | None = None,
         environment: Mapping[str, str] | None = None,
@@ -509,15 +565,40 @@ class RuntimeLayout:
                 f"bundled resources 根不是目录: {resolved_resources}",
             )
 
+        # The profile/config location is intentionally independent of the data
+        # root.  Explicit data-root injection is a test/admin seam and derives
+        # a sibling profile instead of consulting the real user home.  A formal
+        # PKV_DATA_ROOT override, by contrast, still uses the real profile
+        # config as its business-configuration source.
+        if profile_root is not None:
+            raw_profile_root: PathLike = profile_root
+        elif user_config_path is not None:
+            raw_profile_root = Path(user_config_path).parent
+        elif user_data_root is not None:
+            raw_profile_root = _injected_profile_root(user_data_root)
+        elif _is_test_offline(env) and env.get("DATA_DIR"):
+            raw_profile_root = _injected_profile_root(env["DATA_DIR"])
+        else:
+            raw_profile_root = _default_profile_root(env)
+        resolved_profile_root = _lexical_absolute(
+            raw_profile_root,
+            anchor=resolved_resources,
+        )
+
         raw_data_root: PathLike
         if user_data_root is not None:
             raw_data_root = user_data_root
+        # ``DATA_DIR`` is an internal, test-only injection seam.  In a marked
+        # offline test process it must win over a formal product override so a
+        # fixture can narrow its own isolated root without inheriting the
+        # wrapper's root (or a caller's real PKV_DATA_ROOT).  Production keeps
+        # the documented PKV_DATA_ROOT -> config -> default precedence.
+        elif _is_test_offline(env) and env.get("DATA_DIR"):
+            raw_data_root = env["DATA_DIR"]
         elif env.get("PKV_DATA_ROOT"):
             raw_data_root = env["PKV_DATA_ROOT"]
-        elif env.get("DATA_DIR"):
-            raw_data_root = env["DATA_DIR"]
         else:
-            raw_data_root = _default_user_data_root(env)
+            raw_data_root = _default_user_data_root(resolved_profile_root)
         data_root = _lexical_absolute(raw_data_root, anchor=resolved_resources)
 
         storage = dict(storage_config or {})
@@ -526,10 +607,11 @@ class RuntimeLayout:
             configured_key = _STORAGE_CONFIG_KEYS[env_key]
             configured_value = storage.get(configured_key)
             if configured_value is None:
-                raw_child: PathLike = env.get(env_key) or (data_root / default_suffix)
+                env_child = env.get(env_key) if _is_test_offline(env) else None
+                raw_child: PathLike = env_child or (data_root / default_suffix)
             else:
                 raw_child = _coerce_pathlike(configured_value, env_key=env_key)
-                env_child = env.get(env_key)
+                env_child = env.get(env_key) if _is_test_offline(env) else None
                 if env_child:
                     raw_child = env_child
             child = _lexical_absolute(raw_child, anchor=resolved_resources)
@@ -540,12 +622,31 @@ class RuntimeLayout:
                 )
             resolved_children[attribute] = child
 
-        raw_local = local_config_path or data_root / "config" / "local.yaml"
-        local_path = _lexical_absolute(raw_local, anchor=resolved_resources)
-        if not _is_lexically_within(local_path, data_root):
+        if runtime_config_path is not None and local_config_path is not None:
+            if Path(runtime_config_path) != Path(local_config_path):
+                raise ValueError("runtime_config_path 与 local_config_path 不一致")
+        raw_runtime_config = (
+            runtime_config_path or local_config_path or data_root / "config" / "local.yaml"
+        )
+        resolved_runtime_config = _lexical_absolute(
+            raw_runtime_config,
+            anchor=resolved_resources,
+        )
+        if not _is_lexically_within(resolved_runtime_config, data_root):
             raise PKVRuntimeError(
                 ErrorCode.DATA_ROOT_UNSAFE,
-                f"local config 必须位于用户数据根内: {local_path}",
+                f"runtime config 必须位于用户数据根内: {resolved_runtime_config}",
+            )
+
+        raw_user_config = user_config_path or resolved_profile_root / "config.yaml"
+        resolved_user_config = _lexical_absolute(
+            raw_user_config,
+            anchor=resolved_resources,
+        )
+        if not _is_lexically_within(resolved_user_config, resolved_profile_root):
+            raise PKVRuntimeError(
+                ErrorCode.DATA_ROOT_UNSAFE,
+                f"用户配置必须位于用户 profile 根内: {resolved_user_config}",
             )
 
         raw_base = base_config_path or resolved_resources / "config" / "config.yaml"
@@ -553,13 +654,16 @@ class RuntimeLayout:
 
         return cls(
             resources_root=resolved_resources,
+            profile_root=resolved_profile_root,
             user_data_root=data_root,
             base_config_path=base_path,
             workflows_dir=resolved_resources / "config" / "workflows",
             migrations_dir=resolved_resources / "scripts" / "migrations",
             prompts_dir=resolved_resources / "src" / "ai" / "prompts",
             custom_dict_path=resolved_resources / "config" / "custom_dict.txt",
-            local_config_path=local_path,
+            user_config_path=resolved_user_config,
+            runtime_config_path=resolved_runtime_config,
+            local_config_path=resolved_runtime_config,
             db_path=resolved_children["db_path"],
             vault_dir=resolved_children["vault_dir"],
             vector_index_dir=resolved_children["vector_index_dir"],
@@ -690,6 +794,88 @@ class RuntimeLayout:
             )
         return candidate
 
+    def validate_user_config_file(
+        self,
+        path: Path | None = None,
+        *,
+        label: str = "用户配置",
+        allow_missing: bool = True,
+    ) -> Path:
+        """Validate the editable profile config without data-root containment.
+
+        ``%USERPROFILE%\\.pkv\\config.yaml`` is intentionally outside a custom
+        ``PKV_DATA_ROOT``.  It therefore must not pass through
+        :meth:`validate_user_file`, whose containment boundary is the mutable
+        data root.  The same no-link/no-hardlink checks apply at the independent
+        profile boundary.
+        """
+
+        candidate = _lexical_absolute(
+            path or self.user_config_path,
+            anchor=self.profile_root,
+        )
+        if not _is_lexically_within(candidate, self.profile_root):
+            raise PKVRuntimeError(
+                ErrorCode.DATA_ROOT_UNSAFE,
+                f"{label}越过用户 profile 根: {candidate}",
+            )
+        if os.path.lexists(self.profile_root):
+            _require_safe_existing_path(self.profile_root, label="用户 profile 根")
+            if not self.profile_root.is_dir():
+                raise PKVRuntimeError(
+                    ErrorCode.DATA_ROOT_UNSAFE,
+                    f"用户 profile 根不是目录: {self.profile_root}",
+                )
+        cursor = self.profile_root
+        relative = candidate.relative_to(self.profile_root)
+        for index, part in enumerate(relative.parts):
+            cursor = cursor / part
+            if not os.path.lexists(cursor):
+                if allow_missing:
+                    return candidate
+                raise PKVRuntimeError(
+                    ErrorCode.PATH_STATE_UNDETERMINED,
+                    f"{label}不存在: {candidate}",
+                )
+            _require_safe_existing_path(cursor, label=label)
+            try:
+                info = os.lstat(cursor)
+            except OSError as exc:
+                raise PKVRuntimeError(
+                    ErrorCode.PATH_STATE_UNDETERMINED,
+                    f"无法判定{label}状态: {cursor}",
+                ) from exc
+            if index < len(relative.parts) - 1 and not stat.S_ISDIR(info.st_mode):
+                raise PKVRuntimeError(
+                    ErrorCode.DATA_ROOT_UNSAFE,
+                    f"{label}父路径不是目录: {cursor}",
+                )
+        if not candidate.is_file():
+            raise PKVRuntimeError(
+                ErrorCode.DATA_ROOT_UNSAFE,
+                f"{label}不是普通文件: {candidate}",
+            )
+        return candidate
+
+    def ensure_user_config_directory(self) -> None:
+        """Create only the editable profile-config parent, never the data root."""
+
+        config_parent = self.user_config_path.parent
+        if not _is_lexically_within(config_parent, self.profile_root, allow_equal=True):
+            raise PKVRuntimeError(
+                ErrorCode.DATA_ROOT_UNSAFE,
+                f"用户配置目录越过用户 profile 根: {config_parent}",
+            )
+        _create_directory_chain(self.profile_root)
+        _require_safe_existing_path(self.profile_root, label="用户 profile 根")
+        if not self.profile_root.is_dir():
+            raise PKVRuntimeError(
+                ErrorCode.DATA_ROOT_UNSAFE,
+                f"用户 profile 根不是目录: {self.profile_root}",
+            )
+        _create_directory_chain(config_parent, trusted_parent=self.profile_root)
+        _require_safe_existing_path(config_parent, label="用户配置目录")
+
     def ensure_user_directories(self) -> None:
         """Create only the declared mutable directory tree, fail-closed on links."""
 
@@ -702,7 +888,7 @@ class RuntimeLayout:
             )
 
         directories = (
-            self.local_config_path.parent,
+            self.runtime_config_path.parent,
             self.db_path.parent,
             self.vault_dir,
             self.vector_index_dir,
@@ -844,8 +1030,11 @@ class RuntimeLayout:
     def as_dict(self) -> dict[str, Path]:
         return {
             "resources_root": self.resources_root,
+            "profile_root": self.profile_root,
             "user_data_root": self.user_data_root,
             "base_config_path": self.base_config_path,
+            "user_config_path": self.user_config_path,
+            "runtime_config_path": self.runtime_config_path,
             "local_config_path": self.local_config_path,
             "db_path": self.db_path,
             "vault_dir": self.vault_dir,

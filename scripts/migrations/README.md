@@ -78,33 +78,17 @@ VALUES ('{版本号}', '{变更描述}');
 
 ---
 
-## 使用方法
+## 当前操作边界
 
-未设置路径覆盖时，以下裸命令会读取或修改生产 `.data/`，仅供用户明确授权后的生产维护；AI 不执行。这些命令只说明 `migrate.py` 的人工维护接口，不是可复制的 Agent/默认自动化流程。
+`scripts/migrate.py` 是已停用的原始维护入口。无论裸跑还是经
+`run-test.ps1` 的 Direct Python 调用，它都会在读取 Config 或数据库之前以 exit 2 拒绝。
+因此当前没有可执行的真实/人工迁移命令，也不能把本目录的 SQL 文件当作直接运行的
+产品操作接口。
 
-> **当前自动化边界**：`run-test.ps1` 会显式拒绝 `scripts/migrate.py` 并以 exit 2 结束；FT7 的 Direct Python 入口只覆盖仓库内 `-m`/`.py` 的 CAT-0 离线任务，不会绕过这条迁移 denylist，也不构成真实数据授权。默认自动化迁移验证仅运行使用临时 SQLite 的单元/集成测试。真实快照迁移尚未执行，仍需先完成 FT5，并同时满足 U1/G8 与用户明确授权；届时只能迁移一次性可写 clone，原始快照始终只读。
+真实快照迁移尚未执行，仍需先完成 FT5，并同时满足 U1/G8 与用户明确授权；届时只能由
+独立 lifecycle plan 展示影响、备份和确认后迁移一次性可写 clone，原始快照始终只读。
 
-### 1. 检查待迁移脚本
-
-```powershell
-# 人工 API 示例（非 Agent/默认自动化流程）：查看当前数据库版本和待迁移脚本
-.\scripts\run-windows.ps1 python scripts/migrate.py --dry-run
-```
-
-### 2. 执行迁移
-
-```powershell
-# 人工 API 示例：交互式迁移
-.\scripts\run-windows.ps1 python scripts/migrate.py
-
-# 人工 API 示例：无交互生产迁移（仅限完成门禁并获授权的用户维护流程）
-.\scripts\run-windows.ps1 python scripts/migrate.py --auto
-
-# 人工 API 示例：健康检查（只读）
-.\scripts\run-windows.ps1 python scripts/migrate.py --health-check
-```
-
-### 3. 在测试环境验证
+### 在测试环境验证
 
 ```powershell
 # 默认自动化只运行由 pytest 创建并回收临时 SQLite 的迁移测试。

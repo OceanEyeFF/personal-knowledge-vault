@@ -58,6 +58,122 @@ def test_resolve_is_pure_and_derives_every_mutable_path_from_one_root(
     assert layout.backup_dir == data_root / "backups"
 
 
+def test_profile_config_and_default_data_root_are_pure_and_injectable(
+    resource_root: Path,
+    tmp_path: Path,
+) -> None:
+    fake_user_profile = tmp_path / "fake-user"
+
+    layout = RuntimeLayout.resolve(
+        resources_root=resource_root,
+        environment={"USERPROFILE": str(fake_user_profile)},
+    )
+
+    expected_profile = fake_user_profile / ".pkv"
+    assert layout.profile_root == expected_profile
+    assert layout.user_config_path == expected_profile / "config.yaml"
+    assert layout.user_data_root == expected_profile / "data"
+    assert layout.runtime_config_path == expected_profile / "data" / "config" / "local.yaml"
+    # RuntimeLayout.local_config_path remains the data-root snapshot alias for
+    # existing runtime internals; it is never the editable user config path.
+    assert layout.local_config_path == layout.runtime_config_path
+    assert not expected_profile.exists()
+
+
+def test_product_environment_ignores_legacy_data_and_child_overrides(
+    resource_root: Path,
+    tmp_path: Path,
+) -> None:
+    fake_user_profile = tmp_path / "fake-user"
+    legacy_root = tmp_path / "legacy-root"
+    legacy_db = tmp_path / "outside" / "legacy.db"
+
+    layout = RuntimeLayout.resolve(
+        resources_root=resource_root,
+        environment={
+            "USERPROFILE": str(fake_user_profile),
+            "DATA_DIR": str(legacy_root),
+            "DB_PATH": str(legacy_db),
+            "VAULT_DIR": str(tmp_path / "outside-vault"),
+        },
+    )
+
+    assert layout.user_data_root == fake_user_profile / ".pkv" / "data"
+    assert layout.db_path == layout.user_data_root / "db" / "knowledge_vault.db"
+    assert layout.vault_dir == layout.user_data_root / "vault"
+    assert not legacy_root.exists()
+
+
+def test_offline_legacy_environment_remains_contained_test_injection(
+    resource_root: Path,
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "isolated-root"
+    custom_db = data_root / "custom" / "knowledge.db"
+
+    layout = RuntimeLayout.resolve(
+        resources_root=resource_root,
+        environment={
+            "PKV_TEST_OFFLINE": "1",
+            "PKV_DATA_ROOT": str(tmp_path / "formal-root"),
+            "DATA_DIR": str(data_root),
+            "DB_PATH": str(custom_db),
+        },
+    )
+
+    assert layout.user_data_root == data_root
+    assert layout.db_path == custom_db
+    assert layout.vault_dir == data_root / "vault"
+    assert not data_root.exists()
+
+
+def test_explicit_layout_reload_ignores_ambient_root_but_honors_injected_env(
+    resource_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_root = tmp_path / "captured-root"
+    ambient_root = tmp_path / "ambient-root"
+    layout = RuntimeLayout.resolve(
+        resources_root=resource_root,
+        user_data_root=captured_root,
+        environment={},
+    )
+    monkeypatch.setenv("PKV_DATA_ROOT", str(ambient_root))
+
+    ambient_config = Config(layout=layout)
+    assert ambient_config.reload_snapshot().data_root == captured_root
+
+    explicit_environment_config = Config(
+        layout=layout,
+        environment={"PKV_DATA_ROOT": str(ambient_root)},
+    )
+    with pytest.raises(PKVRuntimeError) as captured:
+        explicit_environment_config.reload_snapshot()
+
+    assert captured.value.code is ErrorCode.DATA_ROOT_SWITCH_REQUIRED
+    assert not captured_root.exists()
+    assert not ambient_root.exists()
+
+
+def test_offline_resolution_never_reads_host_home_without_injected_root(
+    resource_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_home(cls):
+        raise AssertionError("offline resolution must not read Path.home()")
+
+    monkeypatch.setattr(Path, "home", classmethod(fail_home))
+
+    layout = RuntimeLayout.resolve(
+        resources_root=resource_root,
+        environment={"PKV_TEST_OFFLINE": "1"},
+    )
+
+    assert layout.profile_root == Path.cwd() / ".data-test" / "offline-profile"
+    assert layout.user_data_root == layout.profile_root / "data"
+
+
 def test_ensure_user_directories_creates_only_declared_tree(
     resource_root: Path,
     tmp_path: Path,
@@ -97,7 +213,10 @@ def test_child_override_outside_data_root_fails_before_write(
         RuntimeLayout.resolve(
             resources_root=resource_root,
             user_data_root=data_root,
-            environment={"DB_PATH": str(outside)},
+            environment={
+                "PKV_TEST_OFFLINE": "1",
+                "DB_PATH": str(outside),
+            },
         )
 
     assert captured.value.code is ErrorCode.DATA_ROOT_UNSAFE
@@ -318,11 +437,17 @@ def test_writable_user_path_rejects_hardlinked_leaf(
     target.unlink()
     _make_hardlink(outside, target)
 
-    with pytest.raises(PKVRuntimeError) as captured:
-        layout.writable_user_path(target, label="测试文件")
+    try:
+        with pytest.raises(PKVRuntimeError) as captured:
+            layout.writable_user_path(target, label="测试文件")
 
-    assert captured.value.code is ErrorCode.DATA_ROOT_UNSAFE
-    assert outside.read_bytes() == b"attacker"
+        assert captured.value.code is ErrorCode.DATA_ROOT_UNSAFE
+        assert outside.read_bytes() == b"attacker"
+    finally:
+        # Do not leave the deliberately injected hard-link directory entry for
+        # the runner cleanup audit to remove recursively.  This only unlinks
+        # the test-owned name; ``outside`` remains intact.
+        target.unlink(missing_ok=True)
 
 
 def test_open_user_file_rejects_hardlinked_leaf(
@@ -338,12 +463,15 @@ def test_open_user_file_rejects_hardlinked_leaf(
     target.unlink()
     _make_hardlink(outside, target)
 
-    with pytest.raises(PKVRuntimeError) as captured:
-        with layout.open_user_file(target, "wb", label="测试文件") as f:
-            f.write(b"overwrite")
+    try:
+        with pytest.raises(PKVRuntimeError) as captured:
+            with layout.open_user_file(target, "wb", label="测试文件") as f:
+                f.write(b"overwrite")
 
-    assert captured.value.code is ErrorCode.DATA_ROOT_UNSAFE
-    assert outside.read_bytes() == b"attacker"
+        assert captured.value.code is ErrorCode.DATA_ROOT_UNSAFE
+        assert outside.read_bytes() == b"attacker"
+    finally:
+        target.unlink(missing_ok=True)
 
 
 def test_open_user_file_write_race_rejects_before_truncating_hardlink(
@@ -370,12 +498,15 @@ def test_open_user_file_write_race_rejects_before_truncating_hardlink(
 
     monkeypatch.setattr("src.runtime.layout.os.open", racing_open)
 
-    with pytest.raises(PKVRuntimeError) as captured:
-        with layout.open_user_file(target, "wb", label="测试文件") as stream:
-            stream.write(b"overwrite")
+    try:
+        with pytest.raises(PKVRuntimeError) as captured:
+            with layout.open_user_file(target, "wb", label="测试文件") as stream:
+                stream.write(b"overwrite")
 
-    assert captured.value.code is ErrorCode.DATA_ROOT_UNSAFE
-    assert outside.read_bytes() == b"attacker"
+        assert captured.value.code is ErrorCode.DATA_ROOT_UNSAFE
+        assert outside.read_bytes() == b"attacker"
+    finally:
+        target.unlink(missing_ok=True)
 
 
 def test_open_user_file_rejects_symlink_leaf(
@@ -498,17 +629,20 @@ def test_atomic_publish_rejects_hardlinked_target_before_replace(
         target.unlink()
         _make_hardlink(outside, target)
 
-    with pytest.raises(PKVRuntimeError) as captured:
-        layout.atomic_publish_user_file(
-            target,
-            label="测试文件",
-            writer=evil_writer,
-        )
+    try:
+        with pytest.raises(PKVRuntimeError) as captured:
+            layout.atomic_publish_user_file(
+                target,
+                label="测试文件",
+                writer=evil_writer,
+            )
 
-    assert captured.value.code is ErrorCode.DATA_ROOT_UNSAFE
-    assert outside.read_bytes() == b"attacker"
-    assert target.read_bytes() == b"attacker"
-    assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
+        assert captured.value.code is ErrorCode.DATA_ROOT_UNSAFE
+        assert outside.read_bytes() == b"attacker"
+        assert target.read_bytes() == b"attacker"
+        assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
+    finally:
+        target.unlink(missing_ok=True)
 
 
 def test_atomic_publish_post_replace_swap_detected(
@@ -535,16 +669,24 @@ def test_atomic_publish_post_replace_swap_detected(
         swap_after_replace,
     )
 
-    with pytest.raises(PKVRuntimeError) as captured:
-        layout.atomic_publish_user_file(
-            target,
-            label="测试文件",
-            data=b"new",
-        )
+    try:
+        with pytest.raises(PKVRuntimeError) as captured:
+            layout.atomic_publish_user_file(
+                target,
+                label="测试文件",
+                data=b"new",
+            )
 
-    assert captured.value.code is ErrorCode.DATA_ROOT_UNSAFE
-    assert outside.read_bytes() == b"attacker"
-    assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
+        assert captured.value.code is ErrorCode.DATA_ROOT_UNSAFE
+        assert outside.read_bytes() == b"attacker"
+        assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
+    finally:
+        # This test deliberately leaves ``target`` as a hard link to prove the
+        # post-replace check is fail-closed.  Remove only that test-created
+        # directory entry so the Windows P0 runner can retain its equally
+        # fail-closed "never recursively delete a hard link" cleanup contract.
+        # Unlinking a hard-link name cannot delete ``outside``.
+        target.unlink(missing_ok=True)
 
 
 def test_atomic_publish_failure_preserves_target_and_cleans_temp(

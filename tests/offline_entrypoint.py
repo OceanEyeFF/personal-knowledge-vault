@@ -28,7 +28,8 @@ from tests.offline_runtime import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASE_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
-LOCAL_CONFIG_PATH = PROJECT_ROOT / "config" / "local.yaml"
+_SYNTHETIC_READY_RUNTIME_SENTINEL = "PKV_TEST_SYNTHETIC_RUNTIME_READY"
+_ABSENT_DATA_ROOT_SENTINEL = "PKV_TEST_ABSENT_DATA_ROOT"
 
 
 def _live_mode_enabled() -> bool:
@@ -40,6 +41,14 @@ def _live_mode_enabled() -> bool:
     if not load_local and not run_live and offline:
         return False
     raise RuntimeError("child environment live/offline sentinels are inconsistent")
+
+
+def _live_user_config_path() -> Path:
+    """Return the user-owned config source allowed for an opted-in live child."""
+
+    user_home = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+    profile_root = Path(user_home) if user_home else Path.home()
+    return profile_root / ".pkv" / "config.yaml"
 
 
 def _validate_child_environment() -> None:
@@ -71,23 +80,67 @@ def _validate_child_environment() -> None:
         runtime_overrides=runtime_overrides,
     )
     os.environ.update(canonical)
+    # This formal product override has higher precedence than legacy DATA_DIR.
+    # Pin it to the already validated child root before importing Config so an
+    # equivalent direct/CI launcher cannot leak an inherited user data root.
+    os.environ["PKV_DATA_ROOT"] = canonical["DATA_DIR"]
 
 
-def _install_test_config(*, load_local: bool) -> Callable[..., object]:
+def _install_test_config(
+    *,
+    load_local: bool,
+    leave_data_root_absent: bool = False,
+) -> Callable[..., object]:
     """Install Config before importing either product entrypoint."""
 
     from src.utils import config as config_module
 
+    synthetic_ready_runtime = (
+        os.environ.get(_SYNTHETIC_READY_RUNTIME_SENTINEL) == "1"
+    )
+    user_config_path = str(_live_user_config_path()) if load_local else None
+
     def new_config(*_args, **_kwargs):
-        local_path = str(LOCAL_CONFIG_PATH) if load_local else None
-        return config_module.Config(str(BASE_CONFIG_PATH), local_path)
+        if not synthetic_ready_runtime:
+            return config_module.Config(
+                str(BASE_CONFIG_PATH),
+                user_config_path=user_config_path,
+            )
+        # This is an explicit child-fixture seam, never a product configuration
+        # source.  The placeholder values only make structural lifecycle
+        # validation deterministic; offline guards still prohibit Provider I/O.
+        return config_module.Config(
+            str(BASE_CONFIG_PATH),
+            user_config_path=user_config_path,
+            _user_config_updates={
+                "ai.llm.api_key": "offline-test-placeholder",
+                "ai.embedding.api_key": "offline-test-placeholder",
+            },
+        )
 
     config = new_config()
     assert_config_runtime_paths(
         config,
         {key: os.environ[key] for key in RUNTIME_PATH_ENV_KEYS},
     )
-    config.ensure_dirs()
+    if synthetic_ready_runtime and leave_data_root_absent:
+        raise RuntimeError(
+            "an absent-data-root child cannot also request a synthetic READY runtime"
+        )
+    if leave_data_root_absent:
+        # This is deliberately a test-entrypoint-only seam for L3 status-only
+        # evidence.  A normal offline child still uses ``ensure_dirs`` below;
+        # callers opting in here must prove the selected root did not already
+        # exist before any product entrypoint is imported.
+        if os.path.lexists(config.layout.user_data_root):
+            raise RuntimeError("absent-data-root child requires a nonexistent DATA_DIR")
+    elif synthetic_ready_runtime:
+        # The child-only READY seam owns the one setup write it may need.  Do
+        # not call ``ensure_dirs`` first: it takes the product writer lease,
+        # which would make every fresh read-only subprocess look like a writer.
+        _seed_synthetic_ready_runtime_snapshot(config)
+    else:
+        config.ensure_dirs()
     config_module._config_instance = config
 
     def validated_config_factory(*_args, **_kwargs):
@@ -96,14 +149,119 @@ def _install_test_config(*, load_local: bool) -> Callable[..., object]:
     return validated_config_factory
 
 
+def _consume_absent_data_root_request() -> bool:
+    """Read the narrowly scoped L3 absent-root harness switch once.
+
+    It is intentionally removed from the child environment before product code
+    starts, so it cannot become a de-facto runtime configuration input.
+    """
+
+    value = os.environ.pop(_ABSENT_DATA_ROOT_SENTINEL, None)
+    if value is None:
+        return False
+    if value != "1":
+        raise RuntimeError("invalid absent-data-root child request")
+    return True
+
+
+def _seed_synthetic_ready_runtime_snapshot(config: object) -> None:
+    """Publish a secret-free snapshot for an explicitly seeded offline fixture.
+
+    The helper neither initializes nor migrates a database.  It only recognizes
+    an already-initialized isolated SQLite fixture and, when the snapshot is
+    absent, writes the same small runtime record that a confirmed lifecycle
+    action would publish.  It never refreshes, repairs, or overwrites an
+    existing snapshot: a new child must observe degradation/drift left by an
+    earlier operation exactly as production would.  A fresh root stays unready,
+    which lets lifecycle/status-only tests exercise the product path without a
+    test-specific bypass.
+    """
+
+    from src.runtime.errors import PKVRuntimeError
+    from src.storage.migration_manager import DatabaseState, MigrationManager
+
+    layout = config.layout
+    database = MigrationManager(
+        layout.db_path,
+        layout.migrations_dir,
+        read_only=True,
+        backup_dir=layout.backup_dir,
+    ).inspect_database()
+    if database.state is not DatabaseState.READY:
+        return
+
+    reader = getattr(config, "read_runtime_config_snapshot", None)
+    if callable(reader):
+        try:
+            if reader() is not None:
+                return
+        except (OSError, TypeError, ValueError, PKVRuntimeError):
+            # A malformed or unsafe fixture snapshot is intentional state for
+            # the lifecycle gate to report.  Never hide it by publishing a
+            # synthetic replacement from a child-process test seam.
+            return
+
+    dimension = config.embedding_dim
+    if type(dimension) is not int or dimension < 1:
+        raise RuntimeError("synthetic ready fixture requires a declared embedding dimension")
+
+    # This branch is reached only when this child is the one that publishes the
+    # absent synthetic runtime snapshot.  Keep the cache prewarm in that same
+    # root writer scope: a later read-only child observes the durable fixture
+    # state without acquiring a lease, while a pre-existing snapshot/cache is
+    # never refreshed or silently repaired by the harness.
+    from src.runtime.write_lease import write_lease_scope
+    from src.utils.text_utils import TextProcessor
+
+    with write_lease_scope(layout):
+        config.write_runtime_config_snapshot(
+            {
+                "schema_version": 1,
+                "database": {"schema_version": database.current_version},
+                "embedding": {
+                    "provider": config.embd_provider,
+                    "fingerprint": config.embedding_index_fingerprint(dimension),
+                },
+            }
+        )
+        TextProcessor(runtime_config=config, initialize_cache=True)
+
+
 def _bind_test_config_factory(config_factory: Callable[..., object]) -> None:
     """Make later direct ``Config()`` imports return the validated singleton."""
 
     from src.utils import config as config_module
 
+    original_config_class = config_module.Config
+
+    class _ValidatedConfigMeta(type(original_config_class)):
+        def __call__(cls, *args, **kwargs):
+            # ``Config()`` is the legacy process-default seam. Explicit
+            # constructor arguments are used by reload/configuration code to
+            # build a candidate immutable snapshot and must retain their real
+            # semantics instead of silently returning the current singleton.
+            if args or kwargs:
+                return original_config_class(*args, **kwargs)
+            return config_factory()
+
+        def __instancecheck__(cls, instance: object) -> bool:
+            return isinstance(instance, original_config_class)
+
+    class ValidatedConfig(original_config_class, metaclass=_ValidatedConfigMeta):
+        """Child-local constructor facade retaining Config's class API.
+
+        Replacing ``Config`` with a bare function used to work for simple
+        command tests, but it breaks class/static methods whose implementation
+        resolves ``Config`` from the module namespace (for example runtime
+        snapshot validation).  A narrow type facade keeps those APIs and
+        ``isinstance`` checks intact while directing fresh construction to the
+        already-validated, isolated singleton.
+        """
+
     # This mutation is process-local. The dedicated child exits after the
-    # requested target, so no production process observes the test factory.
-    config_module.Config = config_factory
+    # requested target, so no production process observes the constructor
+    # facade or its validated singleton.
+    config_module.Config = ValidatedConfig
 
 
 def _run_cli(config_factory: Callable[..., object]) -> None:
@@ -577,8 +735,13 @@ def main() -> None:
     if target not in {"cli", "mcp", "pytest", "python"}:
         raise SystemExit(f"unsupported test child target: {target}")
 
+    leave_data_root_absent = _consume_absent_data_root_request()
     _validate_child_environment()
     load_local = _live_mode_enabled()
+    if leave_data_root_absent and (load_local or target not in {"cli", "mcp"}):
+        raise RuntimeError(
+            "absent-data-root child is available only for offline CLI/MCP tests"
+        )
     if target in {"pytest", "python"} and load_local:
         raise RuntimeError("generic Direct Python/pytest is available only in offline mode")
     scrub_child_process_env(os.environ)
@@ -602,7 +765,10 @@ def main() -> None:
             install_offline_process_guard()
 
     sys.argv = [sys.argv[0], *sys.argv[2:]]
-    config_factory = _install_test_config(load_local=load_local)
+    config_factory = _install_test_config(
+        load_local=load_local,
+        leave_data_root_absent=leave_data_root_absent,
+    )
     # pytest must retain the real Config class: configuration tests explicitly
     # construct alternate base/local pairs.  Parent plugin injection and
     # explicit pre-collection plugins are rejected; installed autoload plugins

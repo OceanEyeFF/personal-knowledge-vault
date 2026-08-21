@@ -55,6 +55,13 @@ def _write_config(
     )
 
 
+def _clear_runtime_root_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let an explicit test YAML root drive this one Config construction."""
+
+    monkeypatch.delenv("PKV_DATA_ROOT", raising=False)
+    monkeypatch.delenv("DATA_DIR", raising=False)
+
+
 def test_local_yaml_recursively_overrides_base_config(tmp_path: Path) -> None:
     base_path = tmp_path / "config.yaml"
     local_path = tmp_path / "local.yaml"
@@ -110,7 +117,8 @@ def test_local_data_dir_rebases_copied_default_storage_paths(
         yaml.safe_dump(copied_config, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
-    for key in ("DATA_DIR", "DB_PATH", "VAULT_DIR", "VECTOR_DIR", "LOG_DIR", "TMP_DIR"):
+    _clear_runtime_root_overrides(monkeypatch)
+    for key in ("DB_PATH", "VAULT_DIR", "VECTOR_DIR", "LOG_DIR", "TMP_DIR"):
         monkeypatch.delenv(key, raising=False)
 
     config = Config(str(base_path), str(local_path))
@@ -148,7 +156,8 @@ def test_local_data_dir_rejects_explicit_storage_path_escape(
         ),
         encoding="utf-8",
     )
-    for key in ("DATA_DIR", "DB_PATH", "VAULT_DIR", "VECTOR_DIR", "LOG_DIR", "TMP_DIR"):
+    _clear_runtime_root_overrides(monkeypatch)
+    for key in ("DB_PATH", "VAULT_DIR", "VECTOR_DIR", "LOG_DIR", "TMP_DIR"):
         monkeypatch.delenv(key, raising=False)
 
     with pytest.raises(PKVRuntimeError) as exc_info:
@@ -308,29 +317,32 @@ def test_set_yaml_config_value_replace_failure_preserves_original(
     assert list(tmp_path.iterdir()) == [local_path]
 
 
-def test_product_local_config_update_rejects_hardlink(
+def test_product_user_config_update_rejects_hardlink(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    monkeypatch.delenv("DATA_DIR", raising=False)
+    _clear_runtime_root_overrides(monkeypatch)
     base_path = tmp_path / "config.yaml"
     data_dir = tmp_path / "data"
     _write_config(base_path, data_dir)
     config = Config(str(base_path))
-    config.ensure_dirs()
+    config.layout.ensure_user_config_directory()
 
-    outside = tmp_path / "outside-local.yaml"
+    outside = tmp_path / "outside-user-config.yaml"
     outside.write_text("service:\n  mode: outside\n", encoding="utf-8")
     try:
-        os.link(outside, config.local_config_path)
+        os.link(outside, config.user_config_path)
     except OSError as exc:
         pytest.skip(f"hard links unavailable: {exc}")
 
-    with pytest.raises(PKVRuntimeError) as exc_info:
-        config.update_local_config({"service.mode": "changed"})
+    try:
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            config.update_user_config({"service.mode": "changed"})
 
-    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
-    assert "outside" in outside.read_text(encoding="utf-8")
+        assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+        assert "outside" in outside.read_text(encoding="utf-8")
+    finally:
+        config.user_config_path.unlink(missing_ok=True)
 
 
 def test_set_yaml_config_values_uses_one_atomic_replace(
@@ -440,7 +452,7 @@ def test_config_treats_empty_yaml_as_empty_mapping(tmp_path: Path) -> None:
 
 
 def test_config_persists_runtime_embedding_dim(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("DATA_DIR", raising=False)
+    _clear_runtime_root_overrides(monkeypatch)
     base_path = tmp_path / "config.yaml"
     data_dir = tmp_path / "data"
     _write_config(base_path, data_dir, embd_dim="auto")
@@ -462,7 +474,7 @@ def test_config_rejects_hardlinked_runtime_embedding_cache(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    monkeypatch.delenv("DATA_DIR", raising=False)
+    _clear_runtime_root_overrides(monkeypatch)
     base_path = tmp_path / "config.yaml"
     data_dir = tmp_path / "data"
     _write_config(base_path, data_dir, embd_dim="auto")
@@ -476,17 +488,20 @@ def test_config_rejects_hardlinked_runtime_embedding_cache(
     except OSError as exc:
         pytest.skip(f"hard links unavailable: {exc}")
 
-    with pytest.raises(PKVRuntimeError) as exc_info:
-        Config(str(base_path))
+    try:
+        with pytest.raises(PKVRuntimeError) as exc_info:
+            Config(str(base_path))
 
-    assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+        assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
+    finally:
+        config.runtime_embedding_dim_path.unlink(missing_ok=True)
 
 
 def test_embedding_fingerprints_hash_credential_bearing_base_url(
     tmp_path: Path, monkeypatch
 ) -> None:
     """运行缓存与索引指纹都不得持久化 endpoint 原文。"""
-    monkeypatch.delenv("DATA_DIR", raising=False)
+    _clear_runtime_root_overrides(monkeypatch)
     base_path = tmp_path / "config.yaml"
     local_path = tmp_path / "local.yaml"
     data_dir = tmp_path / "data"
@@ -637,7 +652,7 @@ def test_legacy_plaintext_runtime_fingerprint_is_safely_invalidated(
     tmp_path: Path, monkeypatch
 ) -> None:
     """旧 base_url 明文指纹不作兼容读取，只按失效缓存处理。"""
-    monkeypatch.delenv("DATA_DIR", raising=False)
+    _clear_runtime_root_overrides(monkeypatch)
     base_path = tmp_path / "config.yaml"
     data_dir = tmp_path / "data"
     _write_config(base_path, data_dir, embd_dim="auto")
@@ -677,7 +692,7 @@ def test_non_object_runtime_embedding_cache_is_safely_invalidated(
     tmp_path: Path, monkeypatch, content: str
 ) -> None:
     """embedding_dim.json 是合法 JSON 但非 object 时按失效缓存处理，绝不崩溃。"""
-    monkeypatch.delenv("DATA_DIR", raising=False)
+    _clear_runtime_root_overrides(monkeypatch)
     base_path = tmp_path / "config.yaml"
     data_dir = tmp_path / "data"
     _write_config(base_path, data_dir, embd_dim="auto")
@@ -710,7 +725,7 @@ def test_matching_runtime_cache_rejects_non_exact_or_out_of_range_dimension(
     monkeypatch,
     invalid_dim,
 ) -> None:
-    monkeypatch.delenv("DATA_DIR", raising=False)
+    _clear_runtime_root_overrides(monkeypatch)
     base_path = tmp_path / "config.yaml"
     data_dir = tmp_path / "data"
     _write_config(base_path, data_dir, embd_dim="auto")
@@ -736,7 +751,7 @@ def test_matching_runtime_cache_rejects_non_exact_or_out_of_range_dimension(
 def test_config_invalidates_runtime_dim_when_model_changes(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.delenv("DATA_DIR", raising=False)
+    _clear_runtime_root_overrides(monkeypatch)
     base_path = tmp_path / "config.yaml"
     data_dir = tmp_path / "data"
     _write_config(base_path, data_dir, embd_model="model-a", embd_dim="auto")
@@ -751,7 +766,7 @@ def test_config_invalidates_runtime_dim_when_model_changes(
 def test_config_invalidates_runtime_dim_when_base_url_changes(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.delenv("DATA_DIR", raising=False)
+    _clear_runtime_root_overrides(monkeypatch)
     base_path = tmp_path / "config.yaml"
     local_path = tmp_path / "local.yaml"
     data_dir = tmp_path / "data"

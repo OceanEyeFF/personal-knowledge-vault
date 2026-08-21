@@ -1,7 +1,8 @@
-"""Public headless Kernel API.
+"""Internal headless facade implementation for :mod:`pkv_kernel`.
 
-External wrappers import only this package.  The Kernel may depend on
-application/domain infrastructure; wrappers never become Kernel dependencies.
+External wrappers import only :mod:`pkv_kernel`.  This ``src.*`` module may
+compose application/domain infrastructure, but remains implementation-private
+and is not an external integration surface.
 """
 
 from src.ai.chat_provider import (

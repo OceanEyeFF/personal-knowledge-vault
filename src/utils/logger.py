@@ -26,10 +26,12 @@ class _ValidatedRotatingFileHandler(RotatingFileHandler):
         filename,
         *,
         path_validator: Optional[Callable[..., Path]] = None,
+        emit_guard: Optional[Callable[[], bool]] = None,
         label: str = "日志文件",
         **kwargs,
     ):
         self._pkv_path_validator = path_validator
+        self._pkv_emit_guard = emit_guard
         self._pkv_label = label
         if path_validator is not None:
             path_validator(Path(filename), label=label)
@@ -74,6 +76,18 @@ class _ValidatedRotatingFileHandler(RotatingFileHandler):
             )
         super().doRollover()
 
+    def emit(self, record: logging.LogRecord) -> None:
+        """Persist only records owned by an already-active data mutation lease.
+
+        Console handlers still receive every record.  This guard is used only
+        for the product ``pkv.log`` handler so read paths never create, rotate
+        or append a data-root file merely by logging a query.
+        """
+
+        if self._pkv_emit_guard is not None and not self._pkv_emit_guard():
+            return
+        super().emit(record)
+
 
 class LoggerSetup:
     """日志配置管理器"""
@@ -92,6 +106,9 @@ class LoggerSetup:
         *,
         path_validator: Optional[Callable[..., Path]] = None,
         console_stream: Optional[TextIO] = None,
+        delay: bool = False,
+        create_parent: bool = True,
+        emit_guard: Optional[Callable[[], bool]] = None,
     ):
         """
         设置全局日志配置
@@ -103,6 +120,9 @@ class LoggerSetup:
             date_format: 时间格式
             path_validator: 可写叶子验证器（由 adapter 注入 layout 合同）
             console_stream: 控制台日志目标；默认保持 stdout 兼容
+            delay: 延迟打开文件；用于不允许启动阶段写入的适配器。
+            create_parent: 是否允许 Logger 自行创建日志父目录。
+            emit_guard: 返回 ``True`` 才允许一条记录触发文件写入。
         """
         if cls._initialized:
             return
@@ -140,14 +160,17 @@ class LoggerSetup:
             if path_validator is not None:
                 path_validator(log_file, label="日志文件")
 
-            log_file.parent.mkdir(parents=True, exist_ok=True)
+            if create_parent:
+                log_file.parent.mkdir(parents=True, exist_ok=True)
 
             file_handler = _ValidatedRotatingFileHandler(
                 log_file,
                 maxBytes=10 * 1024 * 1024,  # 10 MB
                 backupCount=5,
                 encoding="utf-8",
+                delay=delay,
                 path_validator=path_validator,
+                emit_guard=emit_guard,
                 label="日志文件",
             )
             file_handler.setLevel(log_level)
@@ -166,6 +189,7 @@ class LoggerSetup:
         log_format: Optional[str] = None,
         date_format: Optional[str] = None,
         delay: bool = False,
+        emit_guard: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """向根 logger 追加一个已验证的滚动文件 handler（按路径幂等）。
 
@@ -191,6 +215,7 @@ class LoggerSetup:
             encoding="utf-8",
             delay=delay,
             path_validator=path_validator,
+            emit_guard=emit_guard,
             label="日志文件",
         )
         file_handler.setLevel(level if level is not None else logging.INFO)

@@ -204,18 +204,18 @@ class TestToolRegistration:
     """验证 Tool 注册机制是否正确。"""
 
     @pytest.mark.asyncio
-    async def test_list_tools_returns_all_14(self):
-        """list_tools() 应返回 14 个已注册的 Tool。"""
+    async def test_list_tools_returns_all_15(self):
+        """list_tools() 应返回 15 个已注册的 Tool。"""
         tools = await mcp.list_tools()
-        assert len(tools) == 14, f"期望 14 个 Tool，实际: {len(tools)}"
+        assert len(tools) == 15, f"期望 15 个 Tool，实际: {len(tools)}"
 
     @pytest.mark.asyncio
     async def test_tool_names(self):
-        """14 个 Tool 名称应正确。"""
+        """15 个 Tool 名称应正确。"""
         tools = await mcp.list_tools()
         names = {t.name for t in tools}
         expected = {
-            "search_knowledge", "get_entry", "list_tags", "list_entries",
+            "get_runtime_status", "search_knowledge", "get_entry", "list_tags", "list_entries",
             "get_stats", "archive_url", "archive_text", "get_related",
             "query_subgraph", "explain_relation", "collect_evidence",
             "find_bridges", "timeline_of", "contrast",
@@ -227,7 +227,7 @@ class TestToolRegistration:
         """只读 Tool 应标注 readOnlyHint=True。"""
         tools = await mcp.list_tools()
         readonly_names = {
-            "search_knowledge", "get_entry", "list_tags", "list_entries",
+            "get_runtime_status", "search_knowledge", "get_entry", "list_tags", "list_entries",
             "get_stats", "get_related", "query_subgraph", "explain_relation",
             "collect_evidence", "find_bridges", "timeline_of", "contrast",
         }
@@ -471,6 +471,21 @@ class TestResourceRegistration:
 
 class TestToolCallReadonly:
     """通过 FastMCP.call_tool() 测试只读 Tool 调用。"""
+
+    @pytest.mark.asyncio
+    async def test_call_get_runtime_status(self):
+        """get_runtime_status delegates only to the lifecycle status projection."""
+        expected = {
+            "status": "success",
+            "readiness": "ready",
+            "inspection": {"readiness": "ready"},
+            "plan": {"plan_id": "fixture-plan"},
+            "issues": [],
+        }
+        with patch("src.mcp.tools.get_runtime_status_payload", return_value=expected):
+            raw = await mcp.call_tool("get_runtime_status", {})
+
+        assert parse_tool_result(raw) == expected
 
     @pytest.mark.asyncio
     async def test_call_list_tags(self, populated_db):

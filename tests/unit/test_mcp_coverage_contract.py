@@ -31,6 +31,7 @@ from src.relations.citations import build_entry_locator
 from src.retrieval.result import RetrievalIssue, SearchResponse, SearchResult
 from src.runtime.errors import ErrorCode
 from src.runtime.errors import PKVRuntimeError
+from src.runtime.lifecycle import RuntimeReadiness
 from src.workflow.models import WorkflowResult
 
 
@@ -80,6 +81,15 @@ def preserve_root_logger():
         root_logger.setLevel(previous_level)
 
 
+@pytest.fixture(autouse=True)
+def reset_mcp_runtime_state():
+    server._set_runtime_state(config=None, inspection=None, managed=False)
+    try:
+        yield
+    finally:
+        server._set_runtime_state(config=None, inspection=None, managed=False)
+
+
 def test_relation_query_service_delegates_to_application():
     relation_service = object()
     application = MagicMock()
@@ -124,7 +134,7 @@ def test_server_main_rejects_unpublished_http_before_bootstrap(capsys):
             ],
         ),
         patch.object(server, "get_config") as get_config,
-        patch.object(server, "bootstrap_runtime") as bootstrap,
+        patch.object(server, "inspect_runtime") as inspect,
         patch.object(server.mcp, "run") as run_server,
     ):
         with pytest.raises(SystemExit) as exc_info:
@@ -133,7 +143,7 @@ def test_server_main_rejects_unpublished_http_before_bootstrap(capsys):
     assert exc_info.value.code == 2
     assert "transport_unsupported" in capsys.readouterr().err
     get_config.assert_not_called()
-    bootstrap.assert_not_called()
+    inspect.assert_not_called()
     run_server.assert_not_called()
 
 
@@ -151,7 +161,11 @@ def test_server_main_degrades_when_file_logging_cannot_start(
     with (
         patch.object(sys, "argv", ["pkv-mcp", "--log-level", "WARNING"]),
         patch.object(server, "get_config", return_value=config),
-        patch.object(server, "bootstrap_runtime") as bootstrap,
+        patch.object(
+            server,
+            "inspect_runtime",
+            return_value=SimpleNamespace(readiness=RuntimeReadiness.READY),
+        ) as inspect,
         patch(
             "src.utils.logger.LoggerSetup.add_file_handler",
             side_effect=OSError(f"{secret}: {tmp_path}"),
@@ -160,7 +174,7 @@ def test_server_main_degrades_when_file_logging_cannot_start(
     ):
         server.main()
 
-    bootstrap.assert_called_once_with(config)
+    inspect.assert_called_once_with(config)
     run_server.assert_called_once_with(transport="stdio")
     stderr = capsys.readouterr().err
     assert "cause_type=OSError" in stderr
@@ -181,7 +195,11 @@ def test_server_main_registers_validated_file_logger(
     with (
         patch.object(sys, "argv", ["pkv-mcp", "--log-level", "ERROR"]),
         patch.object(server, "get_config", return_value=config),
-        patch.object(server, "bootstrap_runtime"),
+        patch.object(
+            server,
+            "inspect_runtime",
+            return_value=SimpleNamespace(readiness=RuntimeReadiness.READY),
+        ),
         patch(
             "src.utils.logger.LoggerSetup.add_file_handler"
         ) as add_file_handler,
@@ -640,9 +658,9 @@ async def test_archive_issue_identifiers_are_allowlisted_direct_and_fastmcp():
             }
         ],
     )
-    engine = MagicMock()
-    engine.execute_async = AsyncMock(return_value=result)
-    with patch("src.workflow.engine.WorkflowEngine", return_value=engine):
+    application = MagicMock()
+    application.archive_url = AsyncMock(return_value=result)
+    with patch.object(tools, "get_application", return_value=application):
         direct = await tools.archive_url("https://example.com/article")
         fastmcp_raw = await server.mcp.call_tool(
             "archive_url",
@@ -677,10 +695,9 @@ async def test_archive_issue_identifiers_are_allowlisted_direct_and_fastmcp():
 
 @pytest.mark.asyncio
 async def test_archive_url_degrades_on_workflow_exception():
-    with patch(
-        "src.workflow.engine.WorkflowEngine",
-        side_effect=RuntimeError("workflow unavailable"),
-    ):
+    application = MagicMock()
+    application.archive_url = AsyncMock(side_effect=RuntimeError("workflow unavailable"))
+    with patch.object(tools, "get_application", return_value=application):
         result = await tools.archive_url("https://example.com/offline")
 
     assert result == {
@@ -853,6 +870,82 @@ def test_tool_contract_helpers_fail_closed_and_cover_legacy_inputs():
 
     assert tools._public_entry_locator("not-an-id") == ""
     assert tools._public_storage_terminal(None) == {}
+
+
+def test_workflow_write_busy_projects_the_retryable_mcp_terminal():
+    payload = tools._workflow_result_payload(
+        WorkflowResult(
+            success=False,
+            issues=[
+                {
+                    "code": ErrorCode.WRITE_BUSY.value,
+                    "stage": "write_lease",
+                    "recoverable": True,
+                }
+            ],
+            terminal="error",
+        )
+    )
+
+    assert payload["success"] is False
+    assert payload["terminal"] == "error"
+    assert payload["error_code"] == ErrorCode.WRITE_BUSY.value
+    assert payload["retryable"] is True
+    assert payload["issues"] == [
+        {
+            "code": ErrorCode.WRITE_BUSY.value,
+            "message": "另一个应用正在写入知识库，请稍后重试",
+            "stage": "write_lease",
+            "recoverable": True,
+            "severity": "error",
+        }
+    ]
+
+
+def test_workflow_audit_completion_pending_preserves_committed_mcp_terminal():
+    """A completed archive remains committed when only its audit finalization failed."""
+
+    payload = tools._workflow_result_payload(
+        WorkflowResult(
+            success=True,
+            terminal="degraded",
+            data={
+                "knowledge_id": 23,
+                "status": "ready",
+                "core_committed": True,
+                "do_not_retry": True,
+                "audit_completion_pending": True,
+            },
+            warnings=["backend text must not be exposed"],
+            issues=[
+                {
+                    "code": ErrorCode.AUDIT_COMPLETION_PENDING.value,
+                    "stage": "audit_trace",
+                    "recoverable": True,
+                    "severity": "warning",
+                }
+            ],
+        )
+    )
+
+    assert payload["success"] is True
+    assert payload["terminal"] == "degraded"
+    assert payload["knowledge_id"] == 23
+    assert payload["core_committed"] is True
+    assert payload["do_not_retry"] is True
+    assert payload["audit_completion_pending"] is True
+    assert payload["warnings"] == [
+        "归档已提交，但本地审计完成记录待补；请勿直接重试。"
+    ]
+    assert payload["issues"] == [
+        {
+            "code": ErrorCode.AUDIT_COMPLETION_PENDING.value,
+            "message": "归档已提交，但本地审计完成记录待补；请勿直接重试。",
+            "stage": "audit_trace",
+            "recoverable": True,
+            "severity": "warning",
+        }
+    ]
 
 
 def test_public_issue_preserves_only_allowlisted_string_fields():
@@ -1279,11 +1372,11 @@ async def test_archive_url_diagnostic_property_failure_is_stable_direct_and_fast
                 raise RuntimeError(secret)
             return []
 
-    engine = MagicMock()
-    engine.execute_async = AsyncMock(return_value=DiagnosticPropertyBomb())
+    application = MagicMock()
+    application.archive_url = AsyncMock(return_value=DiagnosticPropertyBomb())
     with (
         patch.object(tools, "validate_url_security_result", return_value=None),
-        patch("src.workflow.engine.WorkflowEngine", return_value=engine),
+        patch.object(tools, "get_application", return_value=application),
     ):
         direct = await tools.archive_url("https://example.com/article")
         fastmcp_raw = await server.mcp.call_tool(

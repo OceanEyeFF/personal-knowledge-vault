@@ -79,7 +79,8 @@ try {
         $dataRoot = ".data-test\internal-package-$([string]$result.package_id)"
         $runTest = Join-Path $PSScriptRoot 'run-test.ps1'
         & $runTest -Direct -DataRoot $dataRoot -Command @(
-            'python', 'scripts/setup-test-db.py', '--seed', [string]$Seed, '--count', '6'
+            'python', 'scripts/setup-test-db.py', '--seed', [string]$Seed, '--count', '6',
+            '--runtime-ready'
         )
         if ($LASTEXITCODE -ne 0) {
             exit [int]$LASTEXITCODE

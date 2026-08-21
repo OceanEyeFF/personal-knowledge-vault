@@ -1,17 +1,22 @@
 """
 配置加载器
 
-从 config.yaml 和本机 local.yaml 加载配置
+从 bundled `config/config.yaml` 与唯一用户 profile 配置
+`%USERPROFILE%\\.pkv\\config.yaml` 加载业务配置。`PKV_DATA_ROOT` 优先于
+用户配置的 `storage.data_root` 选择 data root；data-root 内
+`config/local.yaml` 仅是独立、无敏感字段的运行时快照。
 """
 
 import copy
 import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import warnings
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 from typing import Any, Callable, Dict, Mapping, Optional
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
@@ -29,7 +34,32 @@ from src.runtime.errors import ErrorCode, PKVRuntimeError
 
 
 _RUNTIME_EMBEDDING_DIM_LOCK = Lock()
+_CONFIG_INSTANCE_LOCK = RLock()
+_LOCAL_CONFIG_UPDATE_LOCK = RLock()
 _MAX_RUNTIME_EMBEDDING_DIM = 65_536
+_RUNTIME_SNAPSHOT_SCHEMA_VERSION = 1
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+_POSITIVE_DECIMAL_RE = re.compile(r"[1-9][0-9]*")
+_SEMVER_RE = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
+# A lifecycle plan is process-bound.  Its user-config revision must notice an
+# external edit without becoming an oracle for the contents of config.yaml
+# (which can include provider credentials).  This key is deliberately neither
+# persisted nor exported.
+_USER_CONFIG_SOURCE_REVISION_KEY = os.urandom(32)
+
+
+def _select_runtime_data_root(environment: Mapping[str, str]) -> Optional[str]:
+    """Select the process root without widening legacy environment support.
+
+    ``PKV_DATA_ROOT`` is the only product root override.  ``DATA_DIR`` remains
+    an internal isolation seam and may supersede it only in a process that the
+    offline launcher explicitly marked.  This matches :class:`RuntimeLayout`
+    and lets a unit fixture narrow the wrapper root without inheriting it.
+    """
+
+    if environment.get("PKV_TEST_OFFLINE") == "1":
+        return environment.get("DATA_DIR") or environment.get("PKV_DATA_ROOT")
+    return environment.get("PKV_DATA_ROOT")
 
 
 class _UniqueKeySafeLoader(yaml.SafeLoader):
@@ -424,7 +454,34 @@ def set_yaml_config_values(
     if config_path.exists():
         data = _load_yaml_mapping(config_path, "配置文件")
 
+    _apply_yaml_config_updates(data, updates)
+
+    if not updates:
+        return
+
+    serialized = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    atomic_publish_file(
+        config_path,
+        label="配置文件",
+        data=serialized.encode("utf-8"),
+    )
+
+
+def _apply_yaml_config_updates(
+    data: Dict[str, Any],
+    updates: Mapping[str, Any],
+) -> None:
+    """Apply dot-path settings to an in-memory YAML mapping.
+
+    ``Config`` uses this same operation to validate a prospective immutable
+    snapshot before it publishes a user setting.  Keeping one implementation
+    prevents a preflight from approving a different tree than the writer would
+    actually persist.
+    """
+
     for key, value in updates.items():
+        if not isinstance(key, str):
+            raise ValueError("无效配置键")
         parts = key.split(".")
         if any(not part for part in parts):
             raise ValueError(f"无效配置键: {key}")
@@ -438,41 +495,61 @@ def set_yaml_config_values(
             if not isinstance(child, dict):
                 raise ValueError(f"配置路径不是映射: {part}")
             cursor = child
-        cursor[parts[-1]] = value
-
-    if not updates:
-        return
-
-    serialized = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
-    atomic_publish_file(
-        config_path,
-        label="配置文件",
-        data=serialized.encode("utf-8"),
-    )
+        cursor[parts[-1]] = copy.deepcopy(value)
 
 
 class Config:
-    """配置管理器"""
+    """业务配置与 RuntimeLayout 的不可变 snapshot 管理器。"""
 
     def __init__(
         self,
         config_path: Optional[str] = None,
         local_config_path: Optional[str] = None,
         *,
+        user_config_path: Optional[str] = None,
+        profile_root: Optional[str] = None,
         layout: Optional[RuntimeLayout] = None,
+        environment: Optional[Mapping[str, str]] = None,
+        resources_root: Optional[str] = None,
+        _user_config_updates: Optional[Mapping[str, Any]] = None,
+        _fallback_data_root: Optional[str] = None,
     ):
         """
         初始化配置管理器
 
         Args:
             config_path: 基础配置文件路径，默认为 config/config.yaml
-            local_config_path: 本机配置文件路径，默认使用用户数据根/config/local.yaml；
-                显式指定 config_path 时默认不加载本机配置
+            local_config_path: ``user_config_path`` 的弃用兼容别名。它始终
+                表示用户可编辑的配置，而非数据根内 runtime snapshot。
+            user_config_path: 用户可编辑配置路径；默认
+                ``%USERPROFILE%\\.pkv\\config.yaml``。
+            profile_root: 用户 profile 注入 seam；不传时从 USERPROFILE/HOME
+                解析。测试应传入假路径或使用隔离 RuntimeLayout。
+            layout: 已冻结的资源/数据根布局；显式传入时不因 YAML 悄然换根。
+            environment: 纯解析测试的环境注入 seam；不传时读取当前进程环境。
+            resources_root: 从既有 snapshot 重建时固定 bundled resources
+                身份的内部 seam；产品默认不传。
+            _user_config_updates: 写入前构造候选快照的内部 seam；绝不落盘。
+            _fallback_data_root: 显式布局 snapshot 重建时的原数据根；
+                仅在 user config/环境没有选择根时使用，绝不覆盖其选择。
         """
+        if local_config_path is not None:
+            if user_config_path is not None:
+                raise ValueError("local_config_path 与 user_config_path 不能同时指定")
+            warnings.warn(
+                "local_config_path 已弃用；请改用 user_config_path",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            user_config_path = local_config_path
+
         # ``RuntimeLayout`` 是资源与用户数据路径的唯一来源。显式
         # config_path 仍作为测试/运维注入 seam，但其 storage 路径同样必须
         # 收敛到一个 data root 内。
+        environment_was_supplied = environment is not None
+        runtime_environment = dict(os.environ if environment is None else environment)
         use_default_config = config_path is None
+        layout_was_supplied = layout is not None
         if layout is not None and config_path is not None:
             requested = Path(config_path).resolve(strict=False)
             expected = layout.base_config_path.resolve(strict=False)
@@ -480,9 +557,31 @@ class Config:
                 raise ValueError(
                     f"config_path 与 RuntimeLayout 不一致: {requested} != {expected}"
                 )
+        if layout is not None and resources_root is not None:
+            requested_resources = Path(resources_root).resolve(strict=False)
+            expected_resources = layout.resources_root.resolve(strict=False)
+            if requested_resources != expected_resources:
+                raise ValueError(
+                    "resources_root 与 RuntimeLayout 不一致: "
+                    f"{requested_resources} != {expected_resources}"
+                )
 
         if layout is None and use_default_config:
-            layout = RuntimeLayout.resolve()
+            layout = RuntimeLayout.resolve(
+                resources_root=(
+                    Path(resources_root) if resources_root is not None else None
+                ),
+                user_data_root=(
+                    Path(_fallback_data_root)
+                    if _fallback_data_root is not None
+                    else None
+                ),
+                profile_root=Path(profile_root) if profile_root is not None else None,
+                user_config_path=(
+                    Path(user_config_path) if user_config_path is not None else None
+                ),
+                environment=runtime_environment,
+            )
 
         if config_path is None:
             assert layout is not None
@@ -504,37 +603,53 @@ class Config:
         base_config = _load_yaml_mapping(config_path, "配置文件")
 
         self._config: Dict[str, Any] = copy.deepcopy(base_config)
-        local_config: Dict[str, Any] = {}
-        loaded_local_config_path: Optional[Path]
-        if local_config_path is not None:
-            # Explicit local config is a trusted test/admin read seam. Product
-            # writes always target layout.local_config_path.
-            loaded_local_config_path = Path(local_config_path)
+        user_config: Dict[str, Any] = {}
+        loaded_user_config_path: Optional[Path]
+        if user_config_path is not None:
+            # Explicit user config is an intentional test/admin seam.  If the
+            # caller also supplied a RuntimeLayout, enforce its independent
+            # profile boundary before reading it.
+            loaded_user_config_path = Path(user_config_path)
+            if layout is not None:
+                layout.validate_user_config_file(
+                    loaded_user_config_path,
+                    label="用户配置",
+                    allow_missing=True,
+                )
         elif use_default_config:
             assert layout is not None
-            loaded_local_config_path = layout.local_config_path
-            layout.validate_user_file(
-                loaded_local_config_path,
-                label="本机配置",
+            loaded_user_config_path = layout.user_config_path
+            layout.validate_user_config_file(
+                loaded_user_config_path,
+                label="用户配置",
                 allow_missing=True,
             )
         else:
-            loaded_local_config_path = None
+            loaded_user_config_path = None
 
-        if loaded_local_config_path and loaded_local_config_path.exists():
-            local_config = _load_yaml_mapping(loaded_local_config_path, "本机配置文件")
-            self._deep_merge(self._config, local_config)
-            self._rebase_inherited_storage_paths(base_config, local_config)
+        if loaded_user_config_path and loaded_user_config_path.exists():
+            user_config = _load_yaml_mapping(loaded_user_config_path, "本机配置文件")
+        if _user_config_updates is not None:
+            _apply_yaml_config_updates(user_config, _user_config_updates)
+        self._deep_merge(self._config, user_config)
+        # The historical explicit-config seam supports copied storage trees.
+        # Product Config() always derives child paths from one final root.
+        if loaded_user_config_path is not None and not use_default_config:
+            self._rebase_inherited_storage_paths(base_config, user_config)
 
         if layout is None:
             storage = self._config.get("storage")
             storage_mapping = storage if isinstance(storage, dict) else {}
-            runtime_data_root = os.getenv("PKV_DATA_ROOT") or os.getenv("DATA_DIR")
+            runtime_data_root = _select_runtime_data_root(runtime_environment)
             raw_data_root = runtime_data_root
             if not raw_data_root:
-                raw_data_root = storage_mapping.get("data_dir")
+                raw_data_root = storage_mapping.get("data_root") or storage_mapping.get(
+                    "data_dir"
+                )
             if not raw_data_root:
-                raise ValueError("显式配置缺少 storage.data_dir")
+                raw_data_root = _fallback_data_root
+            if not raw_data_root:
+                raise ValueError("显式配置缺少 storage.data_root")
 
             if config_path.parent.name.casefold() == "config":
                 resources_root = config_path.parent.parent
@@ -544,9 +659,9 @@ class Config:
             # A standalone explicit config is a complete test/admin input.  Do
             # not let unrelated child-path variables inherited from a parent
             # process silently replace paths in that config.  Fine-grained
-            # variables are meaningful only together with an explicit runtime
-            # data root, where RuntimeLayout can validate their containment.
-            layout_environment = dict(os.environ)
+            # variables are meaningful only in explicit offline isolation,
+            # where RuntimeLayout still validates their containment.
+            layout_environment = dict(runtime_environment)
             if not runtime_data_root:
                 for key in (
                     "DB_PATH",
@@ -560,25 +675,85 @@ class Config:
                 resources_root=resources_root,
                 user_data_root=Path(str(raw_data_root)),
                 base_config_path=config_path,
+                profile_root=Path(profile_root) if profile_root is not None else None,
+                user_config_path=loaded_user_config_path,
                 # A process-level root override deliberately rebases all
-                # non-explicit child paths. Fine-grained environment overrides
-                # are still validated by RuntimeLayout.
+                # non-explicit child paths. Fine-grained legacy paths are only
+                # accepted by RuntimeLayout under PKV_TEST_OFFLINE=1.
                 storage_config={} if runtime_data_root else storage_mapping,
                 environment=layout_environment,
             )
+        # Stage 2: after bundled defaults + the user config have been merged,
+        # choose one final data root.  Runtime local.yaml is never read or
+        # merged here.  An explicitly supplied RuntimeLayout is a frozen
+        # snapshot and is deliberately not retargeted by reload/config parsing.
+        if use_default_config and not layout_was_supplied:
+            assert layout is not None
+            storage_from_user = user_config.get("storage")
+            user_storage = (
+                storage_from_user if isinstance(storage_from_user, dict) else {}
+            )
+            selected_root = _select_runtime_data_root(runtime_environment)
+            selected_from_user_config = False
+            if not selected_root:
+                selected_root = user_storage.get("data_root")
+                selected_from_user_config = bool(selected_root)
+            if not selected_root and user_storage.get("data_dir"):
+                warnings.warn(
+                    "storage.data_dir 已弃用；请改用 storage.data_root",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                selected_root = user_storage["data_dir"]
+                selected_from_user_config = True
+            if selected_root and selected_from_user_config:
+                selected_path = Path(str(selected_root))
+                if not selected_path.is_absolute():
+                    selected_root = layout.profile_root / selected_path
+            layout = RuntimeLayout.resolve(
+                resources_root=layout.resources_root,
+                user_data_root=(
+                    Path(str(selected_root))
+                    if selected_root
+                    else layout.user_data_root
+                ),
+                base_config_path=Path(config_path),
+                profile_root=layout.profile_root,
+                user_config_path=layout.user_config_path,
+                # Children are always derived from the one final root in the
+                # product path; user-config child paths are not a second layout.
+                storage_config={},
+                environment=runtime_environment,
+            )
 
+        assert layout is not None
         self._layout = layout
-        # Backward-compatible inspection seam: this records what was actually
-        # loaded, while ``local_config_path`` remains the sole writable target.
-        self._local_config_path = loaded_local_config_path
-        self._loaded_local_config_path = loaded_local_config_path
+        # A process-level root override must not hide a pending change to the
+        # user-config source.  Keep that source intent separate from the
+        # effective RuntimeLayout root so update/reload can reject a dormant
+        # switch before it is persisted or published.
+        self._user_config_data_root_intent_identity = (
+            self._resolve_user_config_data_root_intent_identity(
+                user_config,
+                profile_root=layout.profile_root,
+            )
+        )
+        self._environment = dict(runtime_environment)
+        self._environment_was_supplied = environment_was_supplied
+        self._uses_default_config = use_default_config
+        self._layout_was_supplied = layout_was_supplied
+        # Backward-compatible inspection seams retain their historical names,
+        # but their value is now the optional user configuration source.
+        self._local_config_path = loaded_user_config_path
+        self._loaded_local_config_path = loaded_user_config_path
+        self._loaded_user_config_path = loaded_user_config_path
         self._project_root = layout.resources_root
         self._legacy_runtime_cache_requires_cleanup = False
         self._resolved_embedding_dim = self._load_persisted_embedding_dim()
 
     @staticmethod
     def _deep_merge(target: Dict[str, Any], overrides: Dict[str, Any]) -> None:
-        """将本机配置递归合并到基础配置。"""
+        """将用户配置递归合并到 bundled 基础配置。"""
         for key, value in overrides.items():
             if (
                 key in target
@@ -594,7 +769,11 @@ class Config:
         base_config: Dict[str, Any],
         local_config: Dict[str, Any],
     ) -> None:
-        """当本机数据根变化时，将未修改的存储子路径迁移到新根目录。"""
+        """历史显式配置 seam：为复制的测试/运维树重设继承子路径。
+
+        产品 `Config()` 始终只从最终 `RuntimeLayout` data root 派生子路径；
+        此兼容逻辑不读取或写入 data-root runtime snapshot。
+        """
         base_storage = base_config.get("storage")
         local_storage = local_config.get("storage")
         merged_storage = self._config.get("storage")
@@ -627,7 +806,8 @@ class Config:
             base_value = base_storage.get(key, base_root / default_suffix)
             local_value = local_storage.get(key, missing)
 
-            # local.yaml 中与基础配置不同的值是显式覆盖，必须原样保留。
+            # 旧 `local_config_path` 兼容 seam 所加载的用户配置若显式覆盖，
+            # 则必须原样保留；这不是 data-root runtime snapshot。
             if local_value is not missing and local_value != base_value:
                 continue
 
@@ -638,12 +818,188 @@ class Config:
                 continue
             merged_storage[key] = str(local_root / suffix)
 
+    @staticmethod
+    def _same_lexical_path(left: Path, right: Path) -> bool:
+        """Compare paths without touching the filesystem or following links."""
+
+        return os.path.normcase(
+            os.path.abspath(os.path.normpath(os.fspath(left)))
+        ) == os.path.normcase(os.path.abspath(os.path.normpath(os.fspath(right))))
+
+    @staticmethod
+    def _resolve_user_config_data_root_intent_identity(
+        user_config: Mapping[str, Any],
+        *,
+        profile_root: Path,
+    ) -> str:
+        """Return the unmasked user-config root selection as a lexical identity.
+
+        ``PKV_DATA_ROOT`` may override a process's effective layout, but it must
+        not let an update or reload store a different ``storage.data_root`` for
+        a later process.  This mirrors the user-config portion of stage-two root
+        selection without consulting the environment or touching the filesystem.
+        """
+
+        storage = user_config.get("storage")
+        user_storage = storage if isinstance(storage, dict) else {}
+        selected_root = user_storage.get("data_root") or user_storage.get(
+            "data_dir"
+        )
+        if selected_root:
+            root = Path(str(selected_root))
+            if not root.is_absolute():
+                root = profile_root / root
+        else:
+            root = profile_root / "data"
+        return os.path.normcase(
+            os.path.abspath(os.path.normpath(os.fspath(root)))
+        )
+
+    def _build_reloaded_snapshot(
+        self,
+        *,
+        user_config_updates: Mapping[str, Any] | None = None,
+    ) -> "Config":
+        """Reparse this snapshot's exact sources without publishing it.
+
+        A reload must construct a *new* layout from the same bundled resources,
+        profile and frozen environment.  Reusing ``self.layout`` would make a
+        newly parsed ``storage.data_root`` disagree with paths held by the
+        returned Config.  The caller compares the fresh candidate before it can
+        become a live Application/Kernel graph.
+        """
+
+        include_user_config = (
+            self._loaded_user_config_path is not None
+            or user_config_updates is not None
+        )
+        user_config_path = (
+            str(self.user_config_path) if include_user_config else None
+        )
+        base_config_path = self.layout.base_config_path
+        default_base_config_path = self.layout.resources_root / "config" / "config.yaml"
+        reload_environment = dict(self._environment)
+        if self._layout_was_supplied and not self._environment_was_supplied:
+            # An explicit layout is already the authoritative offline/test
+            # injection.  Replaying ambient root/child variables against a
+            # fresh layout would point DB/Vault/vector paths at the wrapper's
+            # DataRoot instead of this Config's captured root.  An explicitly
+            # supplied environment remains part of the caller's snapshot and
+            # is intentionally preserved for the normal root-switch gate.
+            for key in (
+                "PKV_DATA_ROOT",
+                "DATA_DIR",
+                "DB_PATH",
+                "VAULT_DIR",
+                "VECTOR_DIR",
+                "LOG_DIR",
+                "TMP_DIR",
+            ):
+                reload_environment.pop(key, None)
+        common = {
+            "user_config_path": user_config_path,
+            "profile_root": str(self.layout.profile_root),
+            "environment": reload_environment,
+            "_user_config_updates": user_config_updates,
+            "_fallback_data_root": (
+                str(self.data_root) if self._layout_was_supplied else None
+            ),
+        }
+        if self._uses_default_config and self._same_lexical_path(
+            base_config_path,
+            default_base_config_path,
+        ):
+            return Config(
+                resources_root=str(self.layout.resources_root),
+                **common,
+            )
+        return Config(
+            config_path=str(base_config_path),
+            **common,
+        )
+
+    def _require_same_data_root(
+        self,
+        candidate: "Config",
+        *,
+        stage: str,
+    ) -> None:
+        """Reject a silent root switch before any Config graph is published."""
+
+        if (
+            self.has_same_data_root(candidate)
+            and self._user_config_data_root_intent_identity
+            == candidate._user_config_data_root_intent_identity
+        ):
+            return
+        raise PKVRuntimeError(
+            ErrorCode.DATA_ROOT_SWITCH_REQUIRED,
+            "数据根变更需要经 inspect、plan、confirm、execute 生命周期确认",
+            stage=stage,
+            recoverable=True,
+        )
+
+    def reload_snapshot(self) -> "Config":
+        """Build a coherent successor Config while forbidding root retargeting.
+
+        The lifecycle owns a real data-root switch because it must explain
+        impact, retain/backup old data and wait for explicit confirmation.  A
+        settings reload may change values within one root only.
+        """
+
+        candidate = self._build_reloaded_snapshot()
+        self._require_same_data_root(candidate, stage="config_reload")
+        return candidate
+
+    def user_config_source_revision(self) -> str:
+        """Return an opaque, process-private revision of this snapshot's source.
+
+        This is intentionally narrower than :meth:`reload_snapshot`: it reads
+        only the raw editable user-config source and never parses, merges, or
+        publishes it.  Runtime lifecycle plans use it to reject an external
+        config/key edit between inspect and execute, while ordinary in-flight
+        workflows continue to use their captured immutable ``Config`` object.
+
+        The value is an HMAC rather than a plain content hash, so it is safe to
+        retain inside a process-bound plan without revealing a path, setting or
+        credential.  A Config constructed without a user-config source returns
+        a stable opaque sentinel; it does not begin watching an unrelated
+        profile file that was never part of its snapshot.
+        """
+
+        marker = hmac.new(
+            _USER_CONFIG_SOURCE_REVISION_KEY,
+            digestmod=hashlib.sha256,
+        )
+        source_path = self._loaded_user_config_path
+        if source_path is None:
+            marker.update(b"pkv:user-config-source-revision:v1:unconfigured")
+        else:
+            target_path = self._layout.validate_user_config_file(
+                source_path,
+                label="用户配置",
+                allow_missing=True,
+            )
+            try:
+                with open_user_file_nofollow(
+                    target_path,
+                    "rb",
+                    label="用户配置",
+                ) as handle:
+                    marker.update(b"pkv:user-config-source-revision:v1:present\0")
+                    while chunk := handle.read(64 * 1024):
+                        marker.update(chunk)
+            except FileNotFoundError:
+                marker.update(b"pkv:user-config-source-revision:v1:missing")
+        return marker.hexdigest()
+
     def get(self, key: str, default: Any = None) -> Any:
         """
         获取配置值 (支持点号分隔的多级 key)
 
         Args:
-            key: 配置 key，支持 "storage.vault_dir" 格式
+            key: 配置 key，支持 "ai.embedding.model" 等点号路径；存储子路径
+                应读取 vault_dir / db_path 等 RuntimeLayout 属性
             default: 默认值
 
         Returns:
@@ -651,8 +1007,8 @@ class Config:
 
         Example:
             >>> config = Config()
-            >>> config.get("storage.vault_dir")
-            ".data/vault"
+            >>> config.get("ai.embedding.model")
+            'text-embedding-3-small'
         """
         keys = key.split(".")
         value = self._config
@@ -661,9 +1017,14 @@ class Config:
             if isinstance(value, dict) and k in value:
                 value = value[k]
             else:
-                return default
+                return copy.deepcopy(default)
 
-        return value
+        # ``Config`` is an immutable snapshot boundary.  Returning a nested
+        # YAML mapping/list by reference lets a caller mutate the dependency
+        # graph underneath already-running workflows and bypasses reload
+        # generations.  Scalars are copied cheaply too, so callers receive one
+        # consistent defensive contract for every key.
+        return copy.deepcopy(value)
 
     def get_workflow_config(self, workflow_name: str) -> Dict[str, Any]:
         """
@@ -705,8 +1066,13 @@ class Config:
     def _get_runtime_override(
         self, key: str, default: Optional[str] = None
     ) -> Optional[str]:
-        """读取进程级运行覆盖，不把环境变量作为应用配置源。"""
-        return os.getenv(key, default)
+        """Read the small product runtime-env whitelist from this snapshot."""
+
+        if key in {"PKV_DATA_ROOT", "PKV_LOG_LEVEL"}:
+            return self._environment.get(key, default)
+        if self._environment.get("PKV_TEST_OFFLINE") == "1":
+            return self._environment.get(key, default)
+        return default
 
     @property
     def layout(self) -> RuntimeLayout:
@@ -715,8 +1081,26 @@ class Config:
 
     @property
     def local_config_path(self) -> Path:
-        """产品唯一允许写入的本机配置路径。"""
-        return self._layout.local_config_path
+        """Deprecated alias for the one editable user config path."""
+
+        warnings.warn(
+            "local_config_path 已弃用；请改用 user_config_path",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._layout.user_config_path
+
+    @property
+    def user_config_path(self) -> Path:
+        """The only editable business-config path (may contain credentials)."""
+
+        return self._layout.user_config_path
+
+    @property
+    def runtime_config_path(self) -> Path:
+        """Internal data-root runtime snapshot; never a business config source."""
+
+        return self._layout.runtime_config_path
 
     @property
     def vault_dir(self) -> Path:
@@ -727,6 +1111,29 @@ class Config:
     def data_dir(self) -> Path:
         """数据根目录。"""
         return self._layout.user_data_root
+
+    @property
+    def data_root(self) -> Path:
+        """Stable spelling of the immutable snapshot's one data root."""
+
+        return self._layout.user_data_root
+
+    @property
+    def data_root_identity(self) -> str:
+        """Comparable lexical identity for reload/lifecycle guards.
+
+        This intentionally does not create or resolve a path; callers compare
+        captured Config snapshots rather than silently re-reading mutable state.
+        """
+
+        return os.path.normcase(
+            os.path.abspath(os.path.normpath(os.fspath(self._layout.user_data_root)))
+        )
+
+    def has_same_data_root(self, other: "Config") -> bool:
+        """Return whether two immutable Config snapshots target one root."""
+
+        return isinstance(other, Config) and self.data_root_identity == other.data_root_identity
 
     @property
     def db_path(self) -> Path:
@@ -875,30 +1282,37 @@ class Config:
                 stage="embedding_protocol",
                 recoverable=True,
             )
-        resolved_dim = dim
-        with _RUNTIME_EMBEDDING_DIM_LOCK:
-            durable_dim = self._load_persisted_embedding_dim()
-            existing_dim = (
-                durable_dim if durable_dim is not None else self._resolved_embedding_dim
-            )
-            if existing_dim is not None:
-                if existing_dim != resolved_dim:
-                    raise PKVRuntimeError(
-                        ErrorCode.PROVIDER_PROTOCOL_FAILED,
-                        "Embedding Provider 响应非法",
-                        stage="embedding_protocol",
-                        recoverable=True,
-                    )
-                if durable_dim is not None:
-                    self._resolved_embedding_dim = durable_dim
-                    return
+        # A normal Application archive reaches this from StoreStep's explicit
+        # tracked worker bridge.  Direct Config callers take the same root-wide
+        # lease themselves; an unregistered inherited thread is still rejected
+        # rather than silently bypassing the single-writer contract.
+        from src.runtime.write_lease import write_lease_scope
 
-            payload = {
-                "embedding_dim": resolved_dim,
-                "fingerprint": self.embedding_runtime_fingerprint,
-            }
-            self._write_runtime_embedding_payload(payload)
-            self._resolved_embedding_dim = resolved_dim
+        resolved_dim = dim
+        with write_lease_scope(self._layout):
+            with _RUNTIME_EMBEDDING_DIM_LOCK:
+                durable_dim = self._load_persisted_embedding_dim()
+                existing_dim = (
+                    durable_dim if durable_dim is not None else self._resolved_embedding_dim
+                )
+                if existing_dim is not None:
+                    if existing_dim != resolved_dim:
+                        raise PKVRuntimeError(
+                            ErrorCode.PROVIDER_PROTOCOL_FAILED,
+                            "Embedding Provider 响应非法",
+                            stage="embedding_protocol",
+                            recoverable=True,
+                        )
+                    if durable_dim is not None:
+                        self._resolved_embedding_dim = durable_dim
+                        return
+
+                payload = {
+                    "embedding_dim": resolved_dim,
+                    "fingerprint": self.embedding_runtime_fingerprint,
+                }
+                self._write_runtime_embedding_payload(payload)
+                self._resolved_embedding_dim = resolved_dim
 
     def _write_runtime_embedding_payload(self, payload: Mapping[str, Any]) -> None:
         """Atomically write the runtime cache after revalidating its data root."""
@@ -965,24 +1379,31 @@ class Config:
         if not self._legacy_runtime_cache_requires_cleanup:
             return
 
-        target_path = self.runtime_embedding_dim_path
-        self._layout.validate_user_file(
-            target_path,
-            label="Embedding 运行缓存",
-            allow_missing=False,
-        )
-        try:
-            target_path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
+        from src.runtime.write_lease import write_lease_scope
+
+        with write_lease_scope(self._layout):
+            # The flag can be cleared by a preceding nested bootstrap/config
+            # call while waiting for this root's writer turn.
+            if not self._legacy_runtime_cache_requires_cleanup:
+                return
+            target_path = self.runtime_embedding_dim_path
+            self._layout.validate_user_file(
+                target_path,
+                label="Embedding 运行缓存",
+                allow_missing=False,
+            )
             try:
-                self._write_runtime_embedding_payload({})
+                target_path.unlink()
+            except FileNotFoundError:
+                pass
             except OSError:
-                raise RuntimeError(
-                    f"无法清理旧 Embedding 维度缓存: {target_path}"
-                ) from None
-        self._legacy_runtime_cache_requires_cleanup = False
+                try:
+                    self._write_runtime_embedding_payload({})
+                except OSError:
+                    raise RuntimeError(
+                        f"无法清理旧 Embedding 维度缓存: {target_path}"
+                    ) from None
+            self._legacy_runtime_cache_requires_cleanup = False
 
     def _runtime_embedding_fingerprint_matches(self, payload: Any) -> bool:
         """检查运行期维度缓存是否仍然对应当前 Embedding 配置。"""
@@ -994,6 +1415,140 @@ class Config:
             str(payload.get(key, "")) == value for key, value in expected.items()
         )
 
+    @staticmethod
+    def _runtime_snapshot_has_sensitive_field(value: Any) -> bool:
+        """Reject credential-shaped keys anywhere in an internal snapshot."""
+
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                if isinstance(key, str) and _is_display_credential_parameter(key):
+                    return True
+                if Config._runtime_snapshot_has_sensitive_field(child):
+                    return True
+            return False
+        if isinstance(value, (list, tuple)):
+            return any(Config._runtime_snapshot_has_sensitive_field(item) for item in value)
+        return False
+
+    @staticmethod
+    def _runtime_snapshot_has_valid_v1_schema(snapshot: Mapping[str, Any]) -> bool:
+        """Validate the secret-free, versioned runtime-snapshot contract.
+
+        This stays intentionally generic: Config validates an on-disk runtime
+        record, while lifecycle owns readiness interpretation and provider
+        probing.  A mapping that merely happens not to contain a credential is
+        not evidence that it describes the database/index it sits beside.
+        """
+
+        if snapshot.get("schema_version") != _RUNTIME_SNAPSHOT_SCHEMA_VERSION:
+            return False
+
+        database = snapshot.get("database")
+        if not isinstance(database, Mapping):
+            return False
+        database_schema_version = database.get("schema_version")
+        if not isinstance(database_schema_version, str) or not _SEMVER_RE.fullmatch(
+            database_schema_version
+        ):
+            return False
+
+        embedding = snapshot.get("embedding")
+        if not isinstance(embedding, Mapping):
+            return False
+        provider = embedding.get("provider")
+        if not isinstance(provider, str) or not provider.strip():
+            return False
+
+        fingerprint = embedding.get("fingerprint")
+        if not isinstance(fingerprint, Mapping):
+            return False
+        base_url_sha256 = fingerprint.get("base_url_sha256")
+        embedding_model = fingerprint.get("embedding_model")
+        embedding_dim = fingerprint.get("embedding_dim")
+        return (
+            isinstance(base_url_sha256, str)
+            and _SHA256_HEX_RE.fullmatch(base_url_sha256) is not None
+            and isinstance(embedding_model, str)
+            and bool(embedding_model.strip())
+            and isinstance(embedding_dim, str)
+            and _POSITIVE_DECIMAL_RE.fullmatch(embedding_dim) is not None
+        )
+
+    def validate_runtime_config_snapshot(self) -> Dict[str, Any] | None:
+        """Read and validate the internal, secret-free runtime snapshot.
+
+        The snapshot is intentionally *not* merged into application config.  A
+        credential-shaped field fails closed before any value is returned or
+        included in an error message.
+        """
+
+        target_path = self._layout.validate_user_file(
+            self.runtime_config_path,
+            label="运行时配置快照",
+            allow_missing=True,
+        )
+        if not target_path.exists():
+            return None
+        snapshot = _load_yaml_mapping(target_path, "运行时配置快照")
+        if self._runtime_snapshot_has_sensitive_field(snapshot):
+            raise ValueError("运行时配置快照包含敏感字段，拒绝读取")
+        if not self._runtime_snapshot_has_valid_v1_schema(snapshot):
+            raise ValueError("运行时配置快照结构无效")
+        return copy.deepcopy(snapshot)
+
+    def read_runtime_config_snapshot(self) -> Dict[str, Any] | None:
+        """Compatibility-friendly spelling for validated runtime snapshot reads."""
+
+        return self.validate_runtime_config_snapshot()
+
+    def write_runtime_config_snapshot(self, payload: Mapping[str, Any]) -> None:
+        """Merge and atomically publish one secret-free data-runtime snapshot.
+
+        This file is internal runtime state, not a business configuration input:
+        it is never merged into ``self._config``.  Multiple runtime features own
+        distinct facts in the same document (for example R2 readiness and an
+        R4 active-vector-generation pointer), so this compatibility writer must
+        preserve extensions it does not own instead of replacing the whole YAML
+        file.  Callers must already have reached an explicit lifecycle write
+        boundary; the nested R3 lease keeps direct callers safe as well.
+        """
+
+        if not isinstance(payload, Mapping):
+            raise ValueError("运行时配置快照必须是映射对象")
+        try:
+            snapshot = copy.deepcopy(dict(payload))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("运行时配置快照无法安全复制") from exc
+        if self._runtime_snapshot_has_sensitive_field(snapshot):
+            raise ValueError("运行时配置快照不得包含敏感字段")
+        if not self._runtime_snapshot_has_valid_v1_schema(snapshot):
+            raise ValueError("运行时配置快照结构无效")
+        # Delayed imports avoid a module-level Config/runtime import cycle.  The
+        # store supplies the raw-byte compare-and-swap and semantic merge needed
+        # to preserve other secret-free feature extensions in the data-root
+        # runtime snapshot (`<data-root>/config/local.yaml`).
+        from src.runtime.runtime_snapshot import RuntimeSnapshotStore
+        from src.runtime.write_lease import write_lease_scope
+
+        with write_lease_scope(self._layout):
+            store = RuntimeSnapshotStore(self._layout)
+            observed = store.read()
+            if observed.exists and not self._runtime_snapshot_has_valid_v1_schema(
+                observed.payload
+            ):
+                raise ValueError("运行时配置快照结构无效")
+            merged = observed.merged(snapshot)
+            if not self._runtime_snapshot_has_valid_v1_schema(merged):
+                raise ValueError("运行时配置快照结构无效")
+            published = store.publish(observed, merged)
+            if published.payload != merged:
+                raise PKVRuntimeError(
+                    ErrorCode.REPAIR_REQUIRED,
+                    "运行时配置快照发布后不可读取",
+                    stage="runtime_snapshot",
+                    recoverable=True,
+                )
+
     @property
     def zhihu_cookie(self) -> Optional[str]:
         """知乎 Cookie（可选，用于绕过登录墙获取完整内容）"""
@@ -1002,29 +1557,70 @@ class Config:
     @property
     def log_level(self) -> str:
         """日志级别"""
-        return self._get_runtime_override("LOG_LEVEL") or self.get(
-            "logging.level", "INFO"
+        return (
+            self._get_runtime_override("PKV_LOG_LEVEL")
+            or self._get_runtime_override("LOG_LEVEL")
+            or self.get("logging.level", "INFO")
         )
 
     def ensure_dirs(self):
         """确保所有必要的目录存在"""
-        self._layout.ensure_user_directories()
+        from src.runtime.write_lease import write_lease_scope
+
+        with write_lease_scope(self._layout):
+            self._layout.ensure_user_directories()
+
+    def update_user_config(self, updates: Mapping[str, Any]) -> None:
+        """Persist business settings to the independently validated user config.
+
+        This is the write half of the Kernel reload contract.  Serializing the
+        read/merge/publish sequence prevents two in-process settings writers
+        from losing each other's dot-path update before the next immutable
+        application snapshot is published.
+        """
+
+        # User configuration is profile-local and intentionally exists before a
+        # data root is initialized.  Do not acquire the data-root writer lease
+        # here: doing so would create ``<data-root>/runtime/write.lease`` merely
+        # to edit ``~/.pkv/config.yaml``.  The profile-local lock and atomic
+        # publish retain the existing Config writer contract; shared data-root
+        # mutations acquire R3 at their Application/Kernel boundaries instead.
+        with _LOCAL_CONFIG_UPDATE_LOCK:
+            # Preflight against the exact same merge/parser used for a reload.
+            # This runs before directory creation or YAML publication, so a
+            # disallowed root switch cannot leave an inactive-but-confusing
+            # user configuration behind.
+            candidate = self._build_reloaded_snapshot(
+                user_config_updates=updates,
+            )
+            self._require_same_data_root(candidate, stage="config_update")
+            self._layout.ensure_user_config_directory()
+            target_path = self._layout.validate_user_config_file(
+                self.user_config_path,
+                label="用户配置",
+                allow_missing=True,
+            )
+            set_yaml_config_values(target_path, updates)
+            self._layout.validate_user_config_file(
+                target_path,
+                label="用户配置",
+                allow_missing=False,
+            )
 
     def update_local_config(self, updates: Mapping[str, Any]) -> None:
-        """Persist product settings only to the validated user-data config."""
+        """Deprecated alias for :meth:`update_user_config`.
 
-        self._layout.ensure_user_directories()
-        target_path = self._layout.validate_user_file(
-            self.local_config_path,
-            label="本机配置",
-            allow_missing=True,
+        The historical name is retained for API-major compatibility, but it no
+        longer writes ``<data-root>/config/local.yaml``.  That file is solely an
+        internal, secret-free runtime snapshot.
+        """
+
+        warnings.warn(
+            "update_local_config 已弃用；请改用 update_user_config",
+            DeprecationWarning,
+            stacklevel=2,
         )
-        set_yaml_config_values(target_path, updates)
-        self._layout.validate_user_file(
-            target_path,
-            label="本机配置",
-            allow_missing=False,
-        )
+        self.update_user_config(updates)
 
 
 # 全局配置实例 (单例模式)
@@ -1039,9 +1635,24 @@ def get_config() -> Config:
         Config 实例
     """
     global _config_instance
-    if _config_instance is None:
-        _config_instance = Config()
-    return _config_instance
+    with _CONFIG_INSTANCE_LOCK:
+        if _config_instance is None:
+            _config_instance = Config()
+        return _config_instance
+
+
+def replace_config_instance(config: Config) -> Config:
+    """Atomically publish the legacy Config identity used by compatibility code.
+
+    Kernel/Application owns when this is called.  Explicit isolated
+    ``KnowledgeApplication(config)`` instances intentionally do not call this
+    helper, so Config A can coexist with an operation-scoped Config B.
+    """
+
+    global _config_instance
+    with _CONFIG_INSTANCE_LOCK:
+        _config_instance = config
+        return config
 
 
 def get_workflow_config(workflow_name: str) -> Dict[str, Any]:

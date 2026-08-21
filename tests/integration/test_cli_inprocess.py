@@ -24,10 +24,12 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import src.cli.commands as commands  # noqa: E402
+from src.runtime.write_lease import write_lease_scope  # noqa: E402
 from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
 from src.storage.sqlite_store import SQLiteStore  # noqa: E402
 from src.utils import config as config_module  # noqa: E402
 from src.utils.config import Config  # noqa: E402
+from src.utils.text_utils import TextProcessor, preserve_jieba_global_state  # noqa: E402
 
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -76,6 +78,10 @@ def _configure_temp_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> C
     storage["tmp_dir"] = str(tmp_path / "tmp")
 
     config.ensure_dirs()
+    # BM25 reads must consume a cache produced by the writer-side runtime setup
+    # path.  Do not let a Click in-process search implicitly repair it.
+    with write_lease_scope(config.layout):
+        TextProcessor(runtime_config=config, initialize_cache=True)
     return config
 
 
@@ -124,11 +130,15 @@ def runner() -> CliRunner:
 @pytest.fixture
 def temp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Set up a temporary database and storage paths for CLI tests."""
-    config = _configure_temp_config(tmp_path, monkeypatch)
-    sqlite_store = SQLiteStore(config.db_path)
-    sqlite_store.initialize()
-    markdown_store = MarkdownStore(config.vault_dir)
-    return config, sqlite_store, markdown_store, tmp_path
+    # The fixture's Config root is removed immediately after each test.  Jieba
+    # is process-global, so restore its cache target and custom dictionary
+    # before pytest tears down ``tmp_path``.
+    with preserve_jieba_global_state():
+        config = _configure_temp_config(tmp_path, monkeypatch)
+        sqlite_store = SQLiteStore(config.db_path, runtime_config=config)
+        sqlite_store.initialize()
+        markdown_store = MarkdownStore(config.vault_dir)
+        yield config, sqlite_store, markdown_store, tmp_path
 
 
 def test_search_inprocess(
@@ -249,7 +259,7 @@ def test_config_inprocess(
     )
     assert set_result.exit_code == 0, set_result.output
 
-    local_config_path = tmp_path / "config" / "local.yaml"
-    assert local_config_path.exists()
-    local_config = yaml.safe_load(local_config_path.read_text(encoding="utf-8"))
-    assert local_config["ai"]["llm"]["model"] == "test-model"
+    user_config_path = config.user_config_path
+    assert user_config_path.exists()
+    user_config = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
+    assert user_config["ai"]["llm"]["model"] == "test-model"

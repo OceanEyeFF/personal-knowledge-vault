@@ -35,6 +35,7 @@ TEST_RUNTIME_ENV_KEYS = (
     "TMP_DIR",
     "LOG_LEVEL",
     "PYTHONDONTWRITEBYTECODE",
+    "PKV_DATA_ROOT",
     "PKV_RUN_LIVE",
     OFFLINE_SENTINEL,
     LOAD_LOCAL_SENTINEL,
@@ -61,6 +62,14 @@ class TestEnv:
     log_dir: Path
     tmp_dir: Path
     env: Dict[str, str]
+
+
+def _live_user_config_path() -> Path:
+    """Return the user-owned config source allowed for an opted-in live fixture."""
+
+    user_home = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+    profile_root = Path(user_home) if user_home else Path.home()
+    return profile_root / ".pkv" / "config.yaml"
 
 
 def build_test_env(
@@ -123,7 +132,7 @@ def temporary_test_config(
     *,
     load_local: bool = False,
 ) -> Iterator[Config]:
-    """Expose isolated paths with an explicit base-only or selected live config."""
+    """Expose isolated paths with an explicit base-only or live user config."""
     runtime_overrides = {
         key: test_env.env[key]
         for key in RUNTIME_PATH_ENV_KEYS
@@ -149,6 +158,10 @@ def temporary_test_config(
 
     safe_env = dict(test_env.env)
     safe_env.update(canonical)
+    # The formal override is a fixture-owned mirror of the already validated
+    # legacy root, never a caller-provided runtime path.  Scope it with the
+    # other process state so an ambient wrapper/user root cannot leak in.
+    safe_env["PKV_DATA_ROOT"] = canonical["DATA_DIR"]
     expected_mode = {
         "PKV_RUN_LIVE": "1" if load_local else "0",
         OFFLINE_SENTINEL: "0" if load_local else "1",
@@ -176,14 +189,10 @@ def temporary_test_config(
             }
         )
         base_config_path = PROJECT_ROOT / "config" / "config.yaml"
-        local_config_path = (
-            PROJECT_ROOT / "config" / "local.yaml"
-            if load_local
-            else None
-        )
+        user_config_path = str(_live_user_config_path()) if load_local else None
         config = Config(
             str(base_config_path),
-            str(local_config_path) if local_config_path is not None else None,
+            user_config_path=user_config_path,
         )
         assert_config_runtime_paths(config, expected_paths)
         config.ensure_dirs()

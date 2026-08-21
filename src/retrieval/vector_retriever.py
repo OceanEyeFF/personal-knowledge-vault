@@ -39,7 +39,10 @@ class VectorRetriever:
         if embedder is not None and embedder_factory is not None:
             raise ValueError("embedder 与 embedder_factory 只能提供一个")
 
-        self.store = SQLiteStore(db_path)
+        # Mapping vector hits to entries is read-only and must not create a
+        # tokenizer/cache or inherit global Config A when this retriever belongs
+        # to an explicit Application Config B.
+        self.store = SQLiteStore(db_path, runtime_config=runtime_config)
         self.vector_index_dir = Path(vector_index_dir)
         self.embedder = embedder
         self._embedder_factory = embedder_factory
@@ -198,11 +201,15 @@ class VectorRetriever:
             )
 
         try:
-            self.vector_store = VectorStore(
+            # ``allow_index_creation=False`` still follows the legacy writer
+            # path: it may recover pair transactions, migrate metadata, or
+            # recreate lock sidecars.  Semantic retrieval is a reader, so it
+            # must use the strict opener and leave an unavailable/legacy index
+            # for the explicit maintenance lifecycle to handle.
+            self.vector_store = VectorStore.open_readonly(
                 self.vector_index_dir,
                 dim=self._embedder_dim,
                 runtime_config=self._runtime_config,
-                allow_index_creation=False,
             )
             return self.vector_store
         except Exception as exc:

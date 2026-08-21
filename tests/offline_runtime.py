@@ -312,6 +312,11 @@ def prepare_offline_child_env(
     env.update(
         {
             "PKV_RUN_LIVE": "0",
+            # ``PKV_DATA_ROOT`` is a formal product override.  A black-box
+            # child can have a narrower DATA_DIR than its pytest parent, so it
+            # must not inherit the parent's (or a user's) root before Config is
+            # constructed.
+            "PKV_DATA_ROOT": safe_overrides["DATA_DIR"],
             OFFLINE_SENTINEL: "1",
             LOAD_LOCAL_SENTINEL: "0",
             PROJECT_ROOT_SENTINEL: str(root),
@@ -333,7 +338,8 @@ def prepare_live_child_env(
     This helper is intentionally strict: callers cannot accidentally construct a
     live child unless the parent process was itself launched with
     ``PKV_RUN_LIVE=1``.  Provider/auth secrets from the shell are still removed;
-    the selected live fixture must load ``config/local.yaml`` explicitly.
+    the selected live fixture may load ``%USERPROFILE%\\.pkv\\config.yaml``
+    explicitly.
     """
 
     root = project_root.resolve()
@@ -351,6 +357,9 @@ def prepare_live_child_env(
     env.update(
         {
             "PKV_RUN_LIVE": "1",
+            # Live is still an isolated test child.  Its explicit local-config
+            # seam must not reactivate an inherited user/product data root.
+            "PKV_DATA_ROOT": safe_overrides["DATA_DIR"],
             OFFLINE_SENTINEL: "0",
             LOAD_LOCAL_SENTINEL: "1",
             PROJECT_ROOT_SENTINEL: str(root),

@@ -29,6 +29,7 @@ from tests.offline_runtime import (
     require_offline_runtime_ready,
     validate_test_runtime_paths,
 )
+from src.runtime.layout import RuntimeLayout
 
 
 def test_offline_child_env_scrubs_live_secret_provider_and_proxy_sentinels(
@@ -48,6 +49,7 @@ def test_offline_child_env_scrubs_live_secret_provider_and_proxy_sentinels(
         "HTTPS_PROXY": "http://proxy.example/sentinel",
         "http_proxy": "http://lowercase-proxy.example/sentinel",
         "PYTHONPATH": "inherited-pythonpath-sentinel",
+        "PKV_DATA_ROOT": "C:/user-product-root-sentinel",
     }
     runtime = {
         "DATA_DIR": test_data,
@@ -67,6 +69,7 @@ def test_offline_child_env_scrubs_live_secret_provider_and_proxy_sentinels(
     assert child[LOAD_LOCAL_SENTINEL] == "0"
     assert child["PYTHONPATH"] == str(project_root.resolve())
     assert child["DATA_DIR"] == str(runtime["DATA_DIR"])
+    assert child["PKV_DATA_ROOT"] == str(runtime["DATA_DIR"])
     assert child["DB_PATH"] == str(runtime["DB_PATH"])
     for key in (
         "PKV_E2E_ARCHIVE_URL",
@@ -77,6 +80,26 @@ def test_offline_child_env_scrubs_live_secret_provider_and_proxy_sentinels(
         "http_proxy",
     ):
         assert key not in child
+
+
+def test_offline_data_dir_wins_over_inherited_product_root(tmp_path: Path) -> None:
+    """The wrapper may pin PKV_DATA_ROOT, but nested fixtures own DATA_DIR."""
+
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    selected_root = tmp_path / "project" / ".data-test" / "nested-case"
+    inherited_root = tmp_path / "user-product-root-sentinel"
+
+    layout = RuntimeLayout.resolve(
+        resources_root=resources,
+        environment={
+            "PKV_TEST_OFFLINE": "1",
+            "DATA_DIR": str(selected_root),
+            "PKV_DATA_ROOT": str(inherited_root),
+        },
+    )
+
+    assert layout.user_data_root == selected_root.resolve()
 
 
 @pytest.mark.parametrize(
@@ -237,6 +260,7 @@ def test_entrypoint_writes_canonical_runtime_paths_back_to_env(
     monkeypatch.setenv(PROJECT_ROOT_SENTINEL, str(project_root))
     monkeypatch.setenv("DATA_DIR", ".data-test/entrypoint-canonical")
     monkeypatch.setenv("DB_PATH", ".data-test/entrypoint-canonical/db/test.db")
+    monkeypatch.setenv("PKV_DATA_ROOT", "C:/user-product-root-sentinel")
     for key in ("VAULT_DIR", "VECTOR_DIR", "LOG_DIR", "TMP_DIR"):
         monkeypatch.delenv(key, raising=False)
 
@@ -248,6 +272,7 @@ def test_entrypoint_writes_canonical_runtime_paths_back_to_env(
     assert os.environ["DB_PATH"] == str(
         (project_root / ".data-test" / "entrypoint-canonical" / "db" / "test.db").resolve()
     )
+    assert os.environ["PKV_DATA_ROOT"] == os.environ["DATA_DIR"]
 
 
 def test_entrypoint_rejects_unknown_target_before_config_install(
@@ -332,7 +357,7 @@ def test_pytest_entrypoint_preserves_real_config_class(
     run_pytest.assert_called_once_with()
 
 
-def test_entrypoint_base_config_does_not_load_local(
+def test_entrypoint_base_config_does_not_load_user_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.utils import config as config_module
@@ -352,12 +377,147 @@ def test_entrypoint_base_config_does_not_load_local(
 
     factory.assert_called_once_with(
         str(offline_entrypoint.BASE_CONFIG_PATH),
-        None,
+        user_config_path=None,
     )
     config.ensure_dirs.assert_called_once_with()
     assert config_module._config_instance is config
     assert installed_factory() is config
     factory.assert_called_once()
+
+
+def test_entrypoint_live_config_uses_user_profile_and_keeps_isolated_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live config remains opt-in and cannot retarget the validated data root."""
+
+    from src.utils import config as config_module
+
+    config = MagicMock()
+    config.data_dir = Path(os.environ["DATA_DIR"])
+    config.db_path = Path(os.environ["DB_PATH"])
+    config.vault_dir = Path(os.environ["VAULT_DIR"])
+    config.vector_index_dir = Path(os.environ["VECTOR_DIR"])
+    config.log_dir = Path(os.environ["LOG_DIR"])
+    config.tmp_dir = Path(os.environ["TMP_DIR"])
+    user_profile = tmp_path / "mock-user-profile"
+    isolated_root = Path(os.environ["DATA_DIR"])
+    factory = MagicMock(return_value=config)
+    monkeypatch.setenv("USERPROFILE", str(user_profile))
+    monkeypatch.setenv("PKV_DATA_ROOT", str(isolated_root))
+    monkeypatch.setattr(config_module, "Config", factory)
+    monkeypatch.setattr(config_module, "_config_instance", None)
+
+    offline_entrypoint._install_test_config(load_local=True)
+
+    factory.assert_called_once_with(
+        str(offline_entrypoint.BASE_CONFIG_PATH),
+        user_config_path=str(user_profile / ".pkv" / "config.yaml"),
+    )
+    assert os.environ["PKV_DATA_ROOT"] == str(isolated_root)
+    config.ensure_dirs.assert_called_once_with()
+
+
+def test_synthetic_ready_child_does_not_take_a_setup_lease_before_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The synthetic READY seam may seed once, but must not pre-write every child."""
+
+    from src.utils import config as config_module
+
+    config = MagicMock()
+    config.data_dir = Path(os.environ["DATA_DIR"])
+    config.db_path = Path(os.environ["DB_PATH"])
+    config.vault_dir = Path(os.environ["VAULT_DIR"])
+    config.vector_index_dir = Path(os.environ["VECTOR_DIR"])
+    config.log_dir = Path(os.environ["LOG_DIR"])
+    config.tmp_dir = Path(os.environ["TMP_DIR"])
+    seed = MagicMock()
+    monkeypatch.setenv("PKV_TEST_SYNTHETIC_RUNTIME_READY", "1")
+    monkeypatch.setattr(config_module, "Config", MagicMock(return_value=config))
+    monkeypatch.setattr(config_module, "_config_instance", None)
+    monkeypatch.setattr(offline_entrypoint, "_seed_synthetic_ready_runtime_snapshot", seed)
+
+    offline_entrypoint._install_test_config(load_local=False)
+
+    config.ensure_dirs.assert_not_called()
+    seed.assert_called_once_with(config)
+
+
+def test_synthetic_ready_seed_preserves_existing_runtime_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh offline child must observe existing drift/degradation unchanged."""
+
+    from src.storage import migration_manager
+    from src.storage.migration_manager import DatabaseState
+
+    manager = MagicMock(
+        return_value=SimpleNamespace(
+            inspect_database=MagicMock(
+                return_value=SimpleNamespace(state=DatabaseState.READY)
+            )
+        )
+    )
+    existing_snapshot = {
+        "schema_version": 1,
+        "database": {"schema_version": "1.2.4"},
+        "embedding": {"provider": "offline", "fingerprint": {}},
+    }
+    config = SimpleNamespace(
+        layout=SimpleNamespace(
+            db_path=Path("isolated") / "knowledge_vault.db",
+            migrations_dir=Path("resources") / "migrations",
+            backup_dir=Path("isolated") / "backups",
+        ),
+        read_runtime_config_snapshot=MagicMock(return_value=existing_snapshot),
+        write_runtime_config_snapshot=MagicMock(),
+    )
+    monkeypatch.setattr(migration_manager, "MigrationManager", manager)
+
+    offline_entrypoint._seed_synthetic_ready_runtime_snapshot(config)
+
+    config.read_runtime_config_snapshot.assert_called_once_with()
+    config.write_runtime_config_snapshot.assert_not_called()
+
+
+def test_synthetic_ready_seed_prewarms_cache_only_with_new_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The child-only fixture gives its first writer a complete read contract."""
+
+    from src.runtime.write_lease import has_active_write_lease
+    from src.storage.migration_manager import MigrationManager
+    from src.utils import text_utils
+    from src.utils.config import Config
+
+    layout = RuntimeLayout.resolve(
+        resources_root=offline_entrypoint.PROJECT_ROOT,
+        user_data_root=tmp_path / "ready-data",
+        profile_root=tmp_path / "profile",
+        environment={},
+    )
+    config = Config(layout=layout)
+    layout.ensure_user_directories()
+    MigrationManager(layout.db_path, layout.migrations_dir).initialize_fresh()
+    observed_lease_states: list[bool] = []
+
+    class _PrewarmTextProcessor:
+        def __init__(self, *, runtime_config: Config, initialize_cache: bool) -> None:
+            assert runtime_config is config
+            assert initialize_cache is True
+            observed_lease_states.append(has_active_write_lease(config.layout))
+            (config.layout.tmp_dir / "jieba.cache").write_bytes(b"fixture-cache")
+
+    monkeypatch.setattr(text_utils, "TextProcessor", _PrewarmTextProcessor)
+
+    offline_entrypoint._seed_synthetic_ready_runtime_snapshot(config)
+    offline_entrypoint._seed_synthetic_ready_runtime_snapshot(config)
+
+    assert observed_lease_states == [True]
+    assert layout.runtime_config_path.is_file()
+    assert (layout.tmp_dir / "jieba.cache").read_bytes() == b"fixture-cache"
 
 
 def test_entrypoint_binds_direct_config_imports_to_validated_factory(
@@ -366,11 +526,22 @@ def test_entrypoint_binds_direct_config_imports_to_validated_factory(
     from src.utils import config as config_module
 
     factory = MagicMock(name="validated_config_factory")
-    monkeypatch.setattr(config_module, "Config", MagicMock(name="original_config"))
+    original_config_class = config_module.Config
 
+    # ``_bind_test_config_factory`` intentionally mutates the module for a
+    # short-lived child process.  This unit test shares a pytest process with
+    # later in-process CLI tests, so register the original before exercising
+    # that mutation.
+    monkeypatch.setattr(config_module, "Config", original_config_class)
     offline_entrypoint._bind_test_config_factory(factory)
 
-    assert config_module.Config is factory
+    assert config_module.Config is not original_config_class
+    assert config_module.Config() is factory.return_value
+    # The child constructor facade must retain Config's static/class surface;
+    # runtime snapshot validation recursively resolves ``Config`` by name.
+    assert config_module.Config._runtime_snapshot_has_sensitive_field(
+        {"nested": {"api_key": "fixture"}}
+    ) is True
 
 
 def test_direct_python_module_forwards_arguments_without_new_interpreter(
@@ -523,10 +694,14 @@ def test_direct_script_rejects_hardlink_to_prohibited_root(
         os.link(protected, candidate)
     except OSError as exc:
         pytest.skip(f"hard links unavailable: {exc}")
-    monkeypatch.setattr(offline_entrypoint, "PROJECT_ROOT", project_root)
 
-    with pytest.raises(SystemExit, match="hard-linked"):
-        offline_entrypoint._validated_direct_script(str(candidate))
+    try:
+        monkeypatch.setattr(offline_entrypoint, "PROJECT_ROOT", project_root)
+
+        with pytest.raises(SystemExit, match="hard-linked"):
+            offline_entrypoint._validated_direct_script(str(candidate))
+    finally:
+        candidate.unlink(missing_ok=True)
 
 
 @pytest.mark.parametrize(

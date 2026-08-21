@@ -13,6 +13,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +47,129 @@ def _remove_vector_writer_lock_sidecars(vector_dir: Path) -> None:
 
     for sidecar in vector_dir.rglob(".*.lock"):
         sidecar.unlink()
+
+
+_WRITE_LEASE_HOLDER_SCRIPT = """
+from pathlib import Path
+import sys
+
+from src.runtime.layout import RuntimeLayout
+from src.runtime.write_lease import VaultWriteLease
+
+layout = RuntimeLayout.resolve(
+    resources_root=Path(sys.argv[1]),
+    user_data_root=Path(sys.argv[2]),
+    environment={},
+)
+ready_path = Path(sys.argv[3])
+lease = VaultWriteLease(layout)
+try:
+    lease.acquire()
+    ready_path.write_text("LEASE_HELD", encoding="utf-8")
+    print("LEASE_HELD", flush=True)
+    sys.stdin.readline()
+finally:
+    lease.release()
+"""
+
+
+def _persistent_file_state(root: Path) -> dict[str, tuple[str, int]]:
+    """Capture every durable artifact except the expected lease anchor."""
+
+    state: dict[str, tuple[str, int]] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative == "runtime/write.lease":
+            continue
+        stat_result = path.stat()
+        state[relative] = (
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+            stat_result.st_mtime_ns,
+        )
+    return state
+
+
+def _holder_output(holder: subprocess.Popen[str]) -> str:
+    """Collect diagnostics without leaving a failed holder process alive."""
+
+    try:
+        stdout, stderr = holder.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        holder.kill()
+        stdout, stderr = holder.communicate(timeout=10)
+    return f"stdout={stdout!r}; stderr={stderr!r}"
+
+
+def _start_external_write_lease_holder(tester: "CLIBlackboxTester") -> subprocess.Popen[str]:
+    """Acquire the real OS lease in a scrubbed, independently spawned child."""
+
+    ready_path = tester.test_dir / "cli-write-lease-ready"
+    assert not ready_path.exists()
+    environment = prepare_offline_child_env(
+        project_root=PROJECT_ROOT,
+        runtime_overrides={
+            "DATA_DIR": tester.data_dir,
+            "DB_PATH": tester.db_path,
+            "VAULT_DIR": tester.vault_dir,
+            "VECTOR_DIR": tester.vector_dir,
+            "LOG_DIR": tester.log_dir,
+            "TMP_DIR": tester.tmp_dir,
+        },
+    )
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _WRITE_LEASE_HOLDER_SCRIPT,
+            str(PROJECT_ROOT),
+            str(tester.data_dir),
+            str(ready_path),
+        ],
+        cwd=PROJECT_ROOT,
+        env=environment,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if ready_path.is_file():
+            if ready_path.read_text(encoding="utf-8") == "LEASE_HELD":
+                return holder
+            if holder.poll() is None:
+                holder.terminate()
+            raise AssertionError(
+                "external CLI write-lease holder published an invalid readiness token: "
+                + _holder_output(holder)
+            )
+        if holder.poll() is not None:
+            raise AssertionError(
+                "external CLI write-lease holder exited before readiness: "
+                + _holder_output(holder)
+            )
+        time.sleep(0.05)
+
+    if holder.poll() is None:
+        holder.terminate()
+    raise AssertionError(
+        "external CLI write-lease holder timed out before readiness: "
+        + _holder_output(holder)
+    )
+
+
+def _release_external_write_lease_holder(holder: subprocess.Popen[str]) -> None:
+    """Release the holder deterministically and surface diagnostics on failure."""
+
+    if holder.poll() is None:
+        assert holder.stdin is not None
+        holder.stdin.write("\n")
+        holder.stdin.flush()
+    output = _holder_output(holder)
+    assert holder.returncode == 0, output
 
 
 
@@ -108,6 +232,9 @@ class CLIBlackboxTester:
                 "TMP_DIR": self.tmp_dir,
             },
         )
+        # The fixture database was initialized directly and needs the matching
+        # synthetic runtime snapshot before a business command may use it.
+        env["PKV_TEST_SYNTHETIC_RUNTIME_READY"] = "1"
 
         result = subprocess.run(
             cmd,
@@ -337,7 +464,12 @@ def test_config_show_command(cli_tester: CLIBlackboxTester):
     ):
         assert key in result.stdout
     assert "ai.llm.api_key" in result.stdout
-    assert "未设置" in result.stdout
+    # This shared fixture deliberately requests a synthetic READY runtime, so
+    # both Provider keys are structurally populated.  The subprocess contract
+    # is that their values remain redacted, not that this fixture resembles an
+    # unconfigured user profile.
+    assert "已设置" in result.stdout
+    assert "offline-test-placeholder" not in result.stdout
 
 
 def test_config_get_command(cli_tester: CLIBlackboxTester):
@@ -357,10 +489,70 @@ def test_stats_command(cli_tester: CLIBlackboxTester):
     assert "Python (1)" in result.stdout
 
 
+def test_cli_archive_text_returns_write_busy_while_reads_remain_available(
+    cli_tester: CLIBlackboxTester,
+) -> None:
+    """A real CLI process must preserve single-writer and concurrent-read semantics."""
+
+    # Seed the isolated fixture before an independent process owns its writer
+    # lease.  This avoids mistaking child setup for a write attempted by stats.
+    seeded_stats = cli_tester.run_cli("stats")
+    assert seeded_stats.returncode == 0
+    assert "总条目数: 3" in seeded_stats.stdout
+    before = _persistent_file_state(cli_tester.data_dir)
+
+    holder = _start_external_write_lease_holder(cli_tester)
+    try:
+        # A separate CLI child may still read the same READY root while another
+        # application holds the real OS writer lease.
+        stats = cli_tester.run_cli("stats")
+        assert stats.returncode == 0
+        assert "总条目数: 3" in stats.stdout
+        assert _persistent_file_state(cli_tester.data_dir) == before
+
+        archive = cli_tester.run_cli(
+            "archive-text",
+            "busy archive must not persist; api_key=cli-write-busy-secret",
+            "--title",
+            "must not persist",
+            "--format",
+            "json",
+            check=False,
+        )
+        assert archive.returncode == 1
+        payload = json.loads(archive.stdout)
+        assert payload == {
+            "terminal": "error",
+            "status": "error",
+            "knowledge_id": None,
+            "title": "",
+            "tags": [],
+            "file_path": "",
+            "issues": [
+                {
+                    "code": "write_busy",
+                    "message": "另一个应用正在写入知识库，请稍后重试",
+                    "severity": "error",
+                    "stage": "write_lease",
+                    "recoverable": True,
+                }
+            ],
+        }
+        assert "cli-write-busy-secret" not in archive.stdout
+        # The busy request must stop before Processor/Provider, journaling, or
+        # any Markdown/SQLite/vector mutation.  The lease anchor is intentionally
+        # excluded because the external holder owns it.
+        assert _persistent_file_state(cli_tester.data_dir) == before
+    finally:
+        _release_external_write_lease_holder(holder)
+
+    assert _persistent_file_state(cli_tester.data_dir) == before
+
+
 def test_archive_text_then_tags_json_via_offline_cli(
     cli_tester: CLIBlackboxTester,
 ):
-    """真实离线 CLI 应能归档文本，并在同一数据根读取标签统计。"""
+    """A degraded archive keeps committed reads available but blocks new writes."""
     title = "CLI 文本归档链路"
     archive_result = cli_tester.run_cli(
         "archive-text",
@@ -373,8 +565,11 @@ def test_archive_text_then_tags_json_via_offline_cli(
 
     assert archive_result.returncode == 0
     archive_payload = json.loads(archive_result.stdout)
-    assert archive_payload["terminal"] in {"success", "degraded"}
-    assert archive_payload["status"] in {"success", "degraded"}
+    # The offline fixture deliberately blocks the Provider-backed vector phase.
+    # Core storage still commits and records a degraded journal, which a fresh
+    # CLI child must expose to reads without silently repairing it.
+    assert archive_payload["terminal"] == "degraded"
+    assert archive_payload["status"] == "degraded"
     assert isinstance(archive_payload["knowledge_id"], int)
     assert archive_payload["knowledge_id"] > 0
     assert archive_payload["title"] == title
@@ -383,6 +578,25 @@ def test_archive_text_then_tags_json_via_offline_cli(
     assert isinstance(archive_payload["file_path"], str)
     assert archive_payload["file_path"]
     assert isinstance(archive_payload["issues"], list)
+
+    journal_dir = cli_tester.data_dir / "runtime" / "operations"
+    journal_before_reads = {
+        path.name: path.read_bytes()
+        for path in sorted(journal_dir.glob("*.json"))
+    }
+    assert journal_before_reads
+    read_sidecars = (
+        cli_tester.data_dir / "logs" / "pkv.log",
+        cli_tester.data_dir / "runtime" / "write.lease",
+    )
+    sidecars_before_reads = {
+        path.relative_to(cli_tester.data_dir).as_posix(): (
+            path.read_bytes(),
+            path.stat().st_mtime_ns,
+        )
+        for path in read_sidecars
+    }
+    assert len(sidecars_before_reads) == len(read_sidecars)
 
     show_result = cli_tester.run_cli("show", str(archive_payload["knowledge_id"]))
     assert show_result.returncode == 0
@@ -396,6 +610,36 @@ def test_archive_text_then_tags_json_via_offline_cli(
     assert tags_payload["total"] > 0
     tag_names = {item["name"] for item in tags_payload["tags"]}
     assert tag_names.intersection(archive_payload["tags"])
+
+    # A degraded journal means no second mutation is admitted until the user
+    # reviews a lifecycle repair plan.  The allowed reads above must not repair
+    # or rewrite that record as a side effect.
+    blocked_write = cli_tester.run_cli(
+        "archive-text",
+        "第二次写入必须被降级运行态门禁拒绝。",
+        "--format",
+        "json",
+        check=False,
+    )
+    assert blocked_write.returncode == 1
+    assert json.loads(blocked_write.stderr) == {
+        "adapter": "cli",
+        "code": "repair_required",
+        "recoverable": True,
+        "stage": "runtime_readiness",
+        "status": "error",
+    }
+    assert {
+        path.name: path.read_bytes()
+        for path in sorted(journal_dir.glob("*.json"))
+    } == journal_before_reads
+    assert {
+        path.relative_to(cli_tester.data_dir).as_posix(): (
+            path.read_bytes(),
+            path.stat().st_mtime_ns,
+        )
+        for path in read_sidecars
+    } == sidecars_before_reads
 
 
 def test_related_command_degrades_without_vector_index(

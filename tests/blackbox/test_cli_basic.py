@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -95,7 +96,56 @@ def cli(tmp_path: Path) -> CLITester:
         project_root=Path(__file__).resolve().parents[2],
         runtime_overrides=runtime_paths,
     )
+    # Business commands now correctly require a READY runtime.  This fixture
+    # deliberately seeds an already initialized, isolated database and asks
+    # the child-only harness to add its matching secret-free runtime snapshot.
+    env["PKV_TEST_SYNTHETIC_RUNTIME_READY"] = "1"
     return CLITester(env=env)
+
+
+@pytest.fixture
+def unready_cli(tmp_path: Path) -> CLITester:
+    """A deliberately uninitialized isolated root for parse-order contracts."""
+    data_dir = tmp_path / "unready-data"
+    runtime_paths = {
+        "DATA_DIR": data_dir,
+        "DB_PATH": data_dir / "db" / "knowledge_vault.db",
+        "VAULT_DIR": data_dir / "vault",
+        "VECTOR_DIR": data_dir / "vectors",
+        "LOG_DIR": data_dir / "logs",
+        "TMP_DIR": data_dir / "tmp",
+    }
+    env = prepare_offline_child_env(
+        project_root=Path(__file__).resolve().parents[2],
+        runtime_overrides=runtime_paths,
+    )
+    return CLITester(env=env)
+
+
+@pytest.fixture
+def absent_root_cli(tmp_path: Path) -> tuple[CLITester, Path]:
+    """Build an L3 child whose selected data root does not exist at all."""
+
+    data_dir = tmp_path / "absent-data-root"
+    runtime_paths = {
+        "DATA_DIR": data_dir,
+        "DB_PATH": data_dir / "db" / "knowledge_vault.db",
+        "VAULT_DIR": data_dir / "vault",
+        "VECTOR_DIR": data_dir / "vectors",
+        "LOG_DIR": data_dir / "logs",
+        "TMP_DIR": data_dir / "tmp",
+    }
+    assert not os.path.lexists(data_dir)
+    env = prepare_offline_child_env(
+        project_root=Path(__file__).resolve().parents[2],
+        runtime_overrides=runtime_paths,
+    )
+    # The test-only entrypoint switch preserves the otherwise nonexistent root
+    # instead of running its normal Config.ensure_dirs() setup step.
+    env.pop("PKV_TEST_SYNTHETIC_RUNTIME_READY", None)
+    env["PKV_TEST_ABSENT_DATA_ROOT"] = "1"
+    assert not os.path.lexists(data_dir)
+    return CLITester(env=env), data_dir
 
 
 # ========== 基础命令测试 ==========
@@ -204,6 +254,50 @@ def test_search_missing_query(cli: CLITester):
     result = cli.run_cli("search", check=False)
     assert result.returncode == 2
     assert "Missing argument 'QUERY'" in result.stderr
+
+
+def test_unready_runtime_does_not_block_help_or_click_validation(
+    unready_cli: CLITester,
+):
+    """Click must finish eager help/required-argument handling before READY gate."""
+    help_result = unready_cli.run_cli("archive", "--help", check=False)
+    version_result = unready_cli.run_cli("--version", check=False)
+    validation_result = unready_cli.run_cli("search", check=False)
+
+    assert help_result.returncode == 0
+    assert "URL_OR_PATH" in help_result.stdout
+    assert version_result.returncode == 0
+    assert "0.8.1" in version_result.stdout
+    assert validation_result.returncode == 2
+    assert "Missing argument 'QUERY'" in validation_result.stderr
+    assert "runtime_readiness" not in validation_result.stderr
+
+
+def test_absent_data_root_cli_is_status_only_without_mutation(
+    absent_root_cli: tuple[CLITester, Path],
+):
+    """A real CLI child must inspect an absent root without materializing it."""
+
+    cli, data_root = absent_root_cli
+    inspect_result = cli.run_cli("inspect")
+
+    inspection = json.loads(inspect_result.stdout)
+    assert inspection["status"] == "success"
+    assert inspection["readiness"] == "setup_required"
+    assert inspection["inspection"]["readiness"] == "setup_required"
+    assert inspection["plan"] is not None
+    assert not os.path.lexists(data_root)
+
+    rejected = cli.run_cli("stats", check=False)
+    assert rejected.returncode == 1
+    assert json.loads(rejected.stderr) == {
+        "adapter": "cli",
+        "code": "setup_required",
+        "recoverable": True,
+        "stage": "runtime_readiness",
+        "status": "error",
+    }
+    assert not os.path.lexists(data_root)
 
 
 def test_show_missing_id(cli: CLITester):

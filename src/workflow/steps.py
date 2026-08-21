@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -613,6 +613,7 @@ class StoreStep(BaseStep):
         storage_coordinator: StorageCoordinator | None = None,
         embedder_factory: Callable[[], Embedder] | None = None,
         vector_store_factory: Callable[[int | None], VectorStore] | None = None,
+        write_worker_runner: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         """
         初始化存储步骤。
@@ -634,6 +635,11 @@ class StoreStep(BaseStep):
         self._storage_coordinator = storage_coordinator
         self._embedder_factory = embedder_factory
         self._vector_store_factory = vector_store_factory
+        # Direct StoreStep tests and standalone developer workflows retain the
+        # historical executor seam.  Application-created archive workflows
+        # explicitly inject the R3 tracked runner, which carries the outer
+        # data-root write lease through durable worker completion.
+        self._write_worker_runner = write_worker_runner or asyncio.to_thread
 
     async def execute(self, context: WorkflowContext) -> Dict[str, Any]:
         """
@@ -693,7 +699,10 @@ class StoreStep(BaseStep):
             }
 
         markdown_store = self._markdown_store or MarkdownStore(config.vault_dir)
-        sqlite_store = self._sqlite_store or SQLiteStore(config.db_path)
+        sqlite_store = self._sqlite_store or SQLiteStore(
+            config.db_path,
+            runtime_config=config,
+        )
         coordinator = self._storage_coordinator or StorageCoordinator(
             markdown_store,
             sqlite_store,
@@ -738,7 +747,7 @@ class StoreStep(BaseStep):
                     chunk_vectors,
                     chunks,
                     vector_store,
-                ) = await asyncio.to_thread(prepare_vectors)
+                ) = await self._write_worker_runner(prepare_vectors)
 
                 def write_vectors(knowledge_id: int) -> None:
                     vector_store.add_doc_vector(knowledge_id, doc_vector)
@@ -757,7 +766,7 @@ class StoreStep(BaseStep):
             except Exception as exc:
                 vector_error = exc
 
-        operation = await asyncio.to_thread(
+        operation = await self._write_worker_runner(
             coordinator.archive,
             entry,
             chunks=chunks,

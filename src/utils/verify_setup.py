@@ -19,7 +19,8 @@ sys.path.insert(0, str(project_root))
 import src.utils.config as config_module
 from src.utils.config import get_config
 from src.utils.logger import LoggerSetup, get_logger
-from src.utils.text_utils import TextProcessor
+from src.utils.text_utils import TextProcessor, preserve_jieba_global_state
+from src.runtime.write_lease import write_lease_scope
 from src.storage.markdown_store import MarkdownStore, Entry
 from src.storage.sqlite_store import SQLiteStore
 from src.storage.vector_store import VectorStore
@@ -27,6 +28,7 @@ import numpy as np
 
 
 _RUNTIME_PATH_ENV_KEYS = (
+    "PKV_DATA_ROOT",
     "DATA_DIR",
     "DB_PATH",
     "VAULT_DIR",
@@ -63,10 +65,13 @@ def test_logger(log_file: Path | None = None, log_level: str | None = None):
     print("  ✅ 日志系统正常")
 
 
-def test_text_processor():
+def test_text_processor(*, initialize_runtime_cache: bool = False):
     """测试文本处理"""
     print("\n🔤 测试文本处理...")
-    processor = TextProcessor()
+    processor = TextProcessor(
+        runtime_config=get_config(),
+        initialize_cache=initialize_runtime_cache,
+    )
 
     # 测试分词
     text = "人工智能的未来发展趋势"
@@ -121,7 +126,10 @@ def test_sqlite_store(db_path: Path | None = None):
     """测试 SQLite 存储"""
     print("\n🗄️  测试 SQLite 存储...")
     config = get_config()
-    store = SQLiteStore(db_path=db_path or config.db_path)
+    store = SQLiteStore(
+        db_path=db_path or config.db_path,
+        runtime_config=config,
+    )
 
     # 初始化数据库
     store.initialize()
@@ -206,6 +214,10 @@ def _build_verify_workspace(root: Path) -> dict[str, Path]:
 def _runtime_path_overrides(workspace: dict[str, Path]) -> dict[str, str]:
     """生成验证期间的六个运行期路径覆盖。"""
     return {
+        # Verification is an explicit temporary-workspace seam.  Use the formal
+        # product override as well as legacy child variables so it cannot read
+        # or write an inherited data root outside an offline test launcher.
+        "PKV_DATA_ROOT": str(workspace["data_dir"]),
         "DATA_DIR": str(workspace["data_dir"]),
         "DB_PATH": str(workspace["db_path"]),
         "VAULT_DIR": str(workspace["vault_dir"]),
@@ -235,37 +247,49 @@ def main():
 
     try:
         with tempfile.TemporaryDirectory(prefix="pkv-verify-") as temp_dir:
-            workspace = _build_verify_workspace(Path(temp_dir).resolve())
-            try:
-                for key, value in _runtime_path_overrides(workspace).items():
-                    os.environ[key] = value
-
-                # 必须在运行期路径完成隔离后再构造 Config；auto 维度缓存因此
-                # 只会读取/写入 TemporaryDirectory 下的 runtime 目录。
-                config_module._config_instance = None
-                config = get_config()
-
-                test_config()
-                print(f"\n🧪 状态性验证将在隔离目录执行: {Path(temp_dir)}")
-                test_logger(
-                    log_file=config.log_dir / "verify.log",
-                    log_level=config.log_level,
-                )
-                test_text_processor()
-                test_markdown_store(vault_dir=config.vault_dir)
-                test_sqlite_store(db_path=config.db_path)
-                test_vector_store(
-                    index_dir=config.vector_index_dir,
-                    dim=config.embedding_dim,
-                )
-            finally:
-                # Windows 不允许删除仍被 logging handler 占用的临时日志文件。
+            # Jieba has one mutable tokenizer for the entire Python process.
+            # Restore it before TemporaryDirectory removes this workspace so a
+            # later caller cannot inherit a dangling ``tmp_dir`` or its custom
+            # dictionary mutations.
+            with preserve_jieba_global_state():
+                workspace = _build_verify_workspace(Path(temp_dir).resolve())
                 try:
-                    logging.shutdown()
+                    for key, value in _runtime_path_overrides(workspace).items():
+                        os.environ[key] = value
+
+                    # 必须在运行期路径完成隔离后再构造 Config；auto 维度缓存因此
+                    # 只会读取/写入 TemporaryDirectory 下的 runtime 目录。
+                    config_module._config_instance = None
+                    config = get_config()
+
+                    test_config()
+                    print(f"\n🧪 状态性验证将在隔离目录执行: {Path(temp_dir)}")
+                    # This verifier deliberately performs durable smoke writes, but
+                    # only inside its TemporaryDirectory.  Establish the root-wide
+                    # lease before creating user directories or initializing the
+                    # Config-bound jieba cache; subsequent read use of the
+                    # TextProcessor stays on the ordinary fail-closed path.
+                    with write_lease_scope(config.layout):
+                        config.layout.ensure_user_directories()
+                        test_logger(
+                            log_file=config.log_dir / "verify.log",
+                            log_level=config.log_level,
+                        )
+                        test_text_processor(initialize_runtime_cache=True)
+                        test_markdown_store(vault_dir=config.vault_dir)
+                        test_sqlite_store(db_path=config.db_path)
+                        test_vector_store(
+                            index_dir=config.vector_index_dir,
+                            dim=config.embedding_dim,
+                        )
                 finally:
-                    LoggerSetup._initialized = False
-                    config_module._config_instance = previous_config
-                    _restore_runtime_paths(previous_env)
+                    # Windows 不允许删除仍被 logging handler 占用的临时日志文件。
+                    try:
+                        logging.shutdown()
+                    finally:
+                        LoggerSetup._initialized = False
+                        config_module._config_instance = previous_config
+                        _restore_runtime_paths(previous_env)
 
         print("\n" + "=" * 60)
         print("✅ 所有测试通过！系统安装正确！")

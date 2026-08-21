@@ -60,6 +60,7 @@ jobs:
           data_dir="$GITHUB_WORKSPACE/.data-test/ci/contract"
           report_dir="$RUNNER_TEMP/pkv-reports/contract"
           {
+            echo "PKV_DATA_ROOT=$data_dir"
             echo "DATA_DIR=$data_dir"
             echo "DB_PATH=$data_dir/db/knowledge_vault.db"
             echo "VAULT_DIR=$data_dir/vault"
@@ -136,6 +137,7 @@ jobs:
           data_dir="$GITHUB_WORKSPACE/.data-test/ci/${{ matrix.suite }}"
           report_dir="$RUNNER_TEMP/pkv-reports/${{ matrix.suite }}"
           {
+            echo "PKV_DATA_ROOT=$data_dir"
             echo "DATA_DIR=$data_dir"
             echo "DB_PATH=$data_dir/db/knowledge_vault.db"
             echo "VAULT_DIR=$data_dir/vault"
@@ -197,6 +199,7 @@ jobs:
           data_dir="$GITHUB_WORKSPACE/.data-test/ci/mcp-coverage"
           report_dir="$RUNNER_TEMP/pkv-reports/mcp-coverage"
           {
+            echo "PKV_DATA_ROOT=$data_dir"
             echo "DATA_DIR=$data_dir"
             echo "DB_PATH=$data_dir/db/knowledge_vault.db"
             echo "VAULT_DIR=$data_dir/vault"

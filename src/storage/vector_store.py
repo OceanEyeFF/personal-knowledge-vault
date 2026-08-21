@@ -2975,6 +2975,59 @@ class VectorStore:
         labels, distances = neighbors
         return [(int(label), float(dist)) for label, dist in zip(labels[0], distances[0])]
 
+    @contextmanager
+    def _chunk_search_snapshot(self):
+        """Yield one validated chunk index/metadata snapshot without changing it.
+
+        Writer mode keeps the existing pair lock around the entire validation
+        and query.  Strict readers instead take two read-only snapshots and
+        reject any observed drift; they must never enter the writer-lock or
+        metadata-migration path merely to answer a query.
+        """
+
+        if self._read_only:
+            try:
+                index = self._load_read_only_index("chunk_vectors")
+                self.chunk_index = index
+                index_path = self.index_dir / "chunk_vectors.idx"
+                index_state = self._index_file_state(index_path)
+                metadata, metadata_bytes = self._read_only_metadata_snapshot(
+                    "chunk_vectors"
+                )
+                if self._index_file_state(index_path) != index_state:
+                    raise PKVRuntimeError(
+                        ErrorCode.PATH_STATE_UNDETERMINED,
+                        "chunk 索引在严格只读快照期间发生变化",
+                        stage="chunk_index_metadata",
+                        recoverable=True,
+                    )
+                _, final_metadata_bytes = self._read_only_metadata_snapshot(
+                    "chunk_vectors"
+                )
+                if final_metadata_bytes != metadata_bytes:
+                    raise PKVRuntimeError(
+                        ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                        "chunk metadata 在严格只读快照期间发生变化",
+                        stage="chunk_index_metadata",
+                        recoverable=True,
+                    )
+                self._require_complete_index_pair_read_only("chunk_vectors")
+                yield index, index_state, metadata, metadata_bytes
+            except Exception:
+                self._validated_chunk_pair_key = None
+                raise
+            return
+
+        with self._index_pair_lock("chunk_vectors"):
+            try:
+                yield self._reload_index_for_update_locked(
+                    "chunk_vectors",
+                    include_file_state=True,
+                )
+            except Exception:
+                self._validated_chunk_pair_key = None
+                raise
+
     def search_chunk(self, query_vector: np.ndarray, k: int = 10) -> List[Tuple[int, int, float]]:
         """
         搜索分块级向量
@@ -2988,17 +3041,12 @@ class VectorStore:
         """
         query_vector = self._preflight_vector_query(query_vector)
 
-        with self._index_pair_lock("chunk_vectors"):
-            try:
-                index, index_state, metadata, metadata_bytes = (
-                    self._reload_index_for_update_locked(
-                        "chunk_vectors",
-                        include_file_state=True,
-                    )
-                )
-            except Exception:
-                self._validated_chunk_pair_key = None
-                raise
+        with self._chunk_search_snapshot() as (
+            index,
+            index_state,
+            metadata,
+            metadata_bytes,
+        ):
             validation_key = self._chunk_pair_validation_key(
                 index_state,
                 metadata_bytes,

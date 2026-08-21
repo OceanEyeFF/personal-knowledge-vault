@@ -166,7 +166,8 @@ for ($index = 0; $index -lt ($normalizedCommand.Count - 2); $index++) {
         if (Test-ConfigKeyTouchesSensitiveValue $configKey) {
             $message = (
                 "敏感配置不得作为命令行参数传入；" +
-                "请直接编辑已被 Git 忽略的 config/local.yaml"
+                "请直接编辑 %USERPROFILE%\.pkv\config.yaml；" +
+                "<data-root>\config\local.yaml 是 PKV 管理的无密钥运行时快照，不能作为用户配置。"
             )
             Write-Utf8ErrorAndExit -Message $message -ExitCode 2
         }

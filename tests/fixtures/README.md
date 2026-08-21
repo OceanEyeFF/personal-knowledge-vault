@@ -114,7 +114,8 @@ code tests/fixtures/test_urls.json
 
 #### 使用配置文件模式（真实服务，当前阻塞）
 
-`--use-config` 会加载本机 Provider 配置并可能抓取真实 URL，不属于 CAT-0
+`--use-config` 会加载唯一用户配置 `%USERPROFILE%\\.pkv\\config.yaml` 中的本机 Provider
+设置，并可能抓取真实 URL，不属于 CAT-0
 离线自动化。当前不得通过 wrapper 或裸 Python 执行；必须等待 U1/G8 user-only
 launcher、明确授权和脱敏证据流程后，由用户在 disposable 场景中手动运行。
 
@@ -284,7 +285,7 @@ Warning: AI summary generation failed
 ```
 
 **解决方案**：
-- 检查 `config/local.yaml` 中的 LLM 配置是否正确
+- 检查 `%USERPROFILE%\\.pkv\\config.yaml` 中的 LLM 配置是否正确
 - 检查网络连接
 - 此错误不会导致测试失败，会使用降级策略
 

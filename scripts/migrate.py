@@ -1,214 +1,41 @@
 """
-数据库 Schema 迁移工具
+已停用的数据库 Schema 迁移入口。
 
-用法:
-    python scripts/migrate.py              # 交互式升级
-    python scripts/migrate.py --auto       # 自动升级
-    python scripts/migrate.py --dry-run    # 仅检查，不执行
-    python scripts/migrate.py --version    # 查看当前版本
-    python scripts/migrate.py --health-check  # 迁移链健康检查
+真实旧库/生产迁移仍受 user-only gate 阻塞。这个原始脚本不能作为当前
+产品 lifecycle 的旁路：除 ``--help`` 外，它在读取 Config 或数据库前
+都将 fail-closed。
 """
 
 import sys
 import argparse
 from pathlib import Path
+from typing import Optional, Sequence
 
-# 添加项目根目录到 sys.path（确保能导入 src 模块）
+# Add the project root only to import the standard-library-only rejection
+# helper when this file is invoked as ``python scripts/migrate.py``.
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.storage.migration_manager import MigrationManager
-from src.utils.config import Config
+from scripts._legacy_maintenance import reject_legacy_maintenance_entrypoint
 
 
-def main():
+def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="PKV 数据库 Schema 迁移工具",
+        description="已停用的 PKV 数据库 Schema 迁移入口（所有执行均会被拒绝）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-示例:
-  python scripts/migrate.py                # 交互式升级
-  python scripts/migrate.py --auto         # 自动升级
-  python scripts/migrate.py --dry-run      # 仅检查
-  python scripts/migrate.py --version      # 查看版本
-  python scripts/migrate.py --health-check # 健康检查
-        """
+        epilog="所有非 --help 调用都会在读取 Config 或数据库前返回 exit 2。",
     )
-    parser.add_argument("--auto", action="store_true", help="自动执行所有迁移（无需确认）")
-    parser.add_argument("--dry-run", action="store_true", help="仅检查待迁移脚本，不执行")
-    parser.add_argument("--version", action="store_true", help="显示当前数据库版本")
-    parser.add_argument("--health-check", action="store_true", help="检查迁移链和数据库版本记录是否健康")
-    parser.add_argument("--no-backup", action="store_true", help="跳过自动备份（不推荐）")
+    parser.add_argument("--auto", action="store_true", help="历史参数；入口已停用")
+    parser.add_argument("--dry-run", action="store_true", help="历史参数；入口已停用")
+    parser.add_argument("--version", action="store_true", help="历史参数；入口已停用")
+    parser.add_argument("--health-check", action="store_true", help="历史参数；入口已停用")
+    parser.add_argument("--no-backup", action="store_true", help="历史参数；入口已停用")
 
-    args = parser.parse_args()
+    parser.parse_args(argv)
 
-    # 初始化配置
-    try:
-        config = Config()
-    except Exception as e:
-        print(f"错误: 无法加载配置 - {e}")
-        return 1
-
-    db_path = config.db_path
-    migrations_dir = project_root / "scripts" / "migrations"
-
-    print("=" * 70)
-    print(" PKV 数据库迁移工具")
-    print("=" * 70)
-    print("")
-    print(f"数据库路径: {db_path}")
-    print(f"迁移脚本目录: {migrations_dir}")
-    print("")
-
-    # 创建迁移管理器
-    manager = MigrationManager(db_path, migrations_dir)
-
-    # 如果仅查看版本
-    if args.version:
-        current_version = manager.get_current_version()
-        print(f"当前数据库版本: {current_version}")
-        print("")
-        return 0
-
-    if args.health_check:
-        report = manager.run_health_check()
-        print("迁移链健康检查:")
-        print("")
-
-        print("脚本链:")
-        for item in report["scripts"]:
-            status = "OK" if item["has_standard_headers"] else "MISSING_HEADERS"
-            version = item["version"] or "(缺失)"
-            description = item["description"] or "(缺失)"
-            print(f"  • {item['file']} [{status}]")
-            print(f"    版本: v{version}")
-            print(f"    说明: {description}")
-
-        print("")
-        print("数据库:")
-        db_info = report["database"]
-        print(f"  数据库文件存在: {'是' if db_info['db_exists'] else '否'}")
-        print(f"  schema_version 存在: {'是' if db_info['schema_version_exists'] else '否'}")
-        print(f"  当前版本: {db_info['current_version']}")
-
-        applied_versions = db_info["applied_versions"]
-        if applied_versions:
-            print(f"  已记录版本: {', '.join(applied_versions)}")
-        else:
-            print("  已记录版本: (空)")
-
-        pending = db_info["pending_migrations"]
-        if not db_info["db_exists"]:
-            print("  待执行迁移: (数据库未初始化，未计算)")
-        elif pending:
-            print("  待执行迁移:")
-            for item in pending:
-                print(f"    - {item['file']} (v{item['version']})")
-        else:
-            print("  待执行迁移: (无)")
-
-        print("")
-        if report["healthy"]:
-            print("✓ 迁移链健康检查通过")
-            print("")
-            return 0
-
-        print("✗ 迁移链健康检查发现问题")
-        print("")
-        for issue in report["issues"]:
-            print(f"  - {issue}")
-        print("")
-        return 1
-
-    # 获取当前版本
-    current_version = manager.get_current_version()
-    print(f"当前版本: {current_version}")
-    print("")
-
-    # 获取待执行的迁移
-    pending = manager.get_pending_migrations()
-
-    if not pending:
-        print("✓ 数据库已是最新版本，无需迁移")
-        print("")
-        return 0
-
-    print(f"待执行的迁移: {len(pending)}")
-    print("")
-
-    for version, migration_file in pending:
-        description = manager._get_migration_description(migration_file)
-        print(f"  • {migration_file.name}")
-        print(f"    版本: v{version}")
-        if description:
-            print(f"    说明: {description}")
-        print("")
-
-    # Dry-run 模式
-    if args.dry_run:
-        print("Dry-run 模式，已退出（未执行迁移）")
-        print("")
-        return 0
-
-    # 确认执行
-    if not args.auto:
-        print("=" * 70)
-        print(" ⚠️  警告：数据库迁移操作")
-        print("=" * 70)
-        print("")
-        print("  即将执行数据库 Schema 变更！")
-        if not args.no_backup:
-            print("  每个迁移前会自动备份到 .data-backup/")
-        print("")
-
-        confirm = input("是否继续执行迁移？(输入 YES 继续，其他任意键取消): ")
-
-        if confirm != "YES":
-            print("")
-            print("已取消迁移")
-            print("")
-            return 0
-
-    # 执行迁移
-    print("")
-    print("=" * 70)
-    print(" 开始迁移")
-    print("=" * 70)
-    print("")
-
-    try:
-        success_count = manager.apply_all_pending(auto_backup=not args.no_backup)
-
-        print("")
-        print("=" * 70)
-        print(" 迁移完成 ✓")
-        print("=" * 70)
-        print("")
-        print(f"成功执行 {success_count} 个迁移脚本")
-        print("")
-        print("建议: 运行以下命令验证数据完整性")
-        print("  python -m src.main stats")
-        print("  python -m src.main list --limit 10")
-        print("")
-
-        return 0
-
-    except Exception as e:
-        print("")
-        print("=" * 70)
-        print(" 迁移失败 ✗")
-        print("=" * 70)
-        print("")
-        print(f"错误: {e}")
-        print("")
-
-        if not args.no_backup:
-            print("建议: 从备份恢复数据")
-            print("  .\\scripts\\restore-data.ps1")
-            print("")
-
-        return 1
-
+    # ``run-test.ps1`` already blocks this script.  Keep the same protection
+    # for a bare invocation, before Config() could select a real data root.
+    return reject_legacy_maintenance_entrypoint("scripts/migrate.py")
 
 if __name__ == "__main__":
     exit_code = main()

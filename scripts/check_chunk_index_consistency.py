@@ -15,6 +15,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.utils.config import Config
+from src.storage.sqlite_connection import connect_existing_sqlite
 
 
 def _parse_args() -> argparse.Namespace:
@@ -62,9 +63,9 @@ def _load_vector_mappings(vector_dir: Path) -> set[tuple[int, int]]:
 
 
 def _load_db_chunks(db_path: Path) -> set[tuple[int, int]]:
-    import sqlite3
+    """Read an existing database without allowing SQLite to create one."""
 
-    conn = sqlite3.connect(db_path)
+    conn = connect_existing_sqlite(Path(db_path), read_only=True)
     try:
         cursor = conn.execute(
             """
@@ -84,8 +85,16 @@ def main() -> int:
     db_path = Path(args.db_path) if args.db_path else config.db_path
     vector_dir = Path(args.vector_dir) if args.vector_dir else config.vector_index_dir
 
-    db_chunks = _load_db_chunks(db_path)
-    vector_chunks = _load_vector_mappings(vector_dir)
+    try:
+        db_chunks = _load_db_chunks(db_path)
+        vector_chunks = _load_vector_mappings(vector_dir)
+    except Exception:
+        print(
+            "一致性检查被拒绝：数据库必须已存在且能以安全只读方式打开；"
+            "本次未创建数据库或索引文件。",
+            file=sys.stderr,
+        )
+        return 2
 
     missing_in_vector = sorted(db_chunks - vector_chunks)
     missing_in_sqlite = sorted(vector_chunks - db_chunks)

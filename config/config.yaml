@@ -5,32 +5,20 @@
 # ===========================
 # 数据存储配置
 # ===========================
-storage:
-  # 数据根目录
-  data_dir: ".data"
-
-  # Markdown Vault 目录
-  vault_dir: ".data/vault"
-
-  # SQLite 数据库路径
-  db_path: ".data/db/knowledge_vault.db"
-
-  # 向量索引目录
-  vector_index_dir: ".data/vectors"
-
-  # 日志目录
-  log_dir: ".data/logs"
-
-  # 临时文件目录
-  tmp_dir: ".data/tmp"
+# 产品只解析一个数据根。默认是 %USERPROFILE%/.pkv/data；可在用户配置
+# %USERPROFILE%/.pkv/config.yaml 中设置 storage.data_root，或由
+# PKV_DATA_ROOT 临时覆盖。db/vault/vectors/logs/tmp 均由该根派生，
+# 不再接受分别配置的业务路径。
+storage: {}
 
 # ===========================
 # AI 服务配置
-# 说明：这里是项目默认值；本机私有值放入 Git 忽略的 config/local.yaml。
+# 说明：这里是项目默认值；用户私有值（可含 Key）只放入
+# %USERPROFILE%/.pkv/config.yaml，绝不放入 data-root/config/local.yaml。
 # ===========================
 ai:
   # OpenAI-compatible LLM 配置（摘要、标签、对话分析）
-  # API Key 请写入 config/local.yaml，不要提交到版本库。
+  # API Key 请写入 %USERPROFILE%/.pkv/config.yaml，不要提交到版本库。
   llm:
     provider: "openai_compatible"
     api_key: ""
@@ -42,7 +30,7 @@ ai:
     max_retries: 2
 
   # OpenAI-compatible Embedding 配置
-  # API Key 请写入 config/local.yaml，不要提交到版本库。
+  # API Key 请写入 %USERPROFILE%/.pkv/config.yaml，不要提交到版本库。
   # 注意：Embedding 端点/模型/维度是向量索引契约，不是普通偏好项。
   # 更换端点、模型或维度后，必须重建向量索引并重新生成文档/分块 Embedding。
   embedding:
@@ -96,7 +84,7 @@ processors:
   zhihu:
     timeout: 30
     user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    # 登录 Cookie 属于本机敏感配置，仅在 config/local.yaml 中填写。
+    # 登录 Cookie 属于本机敏感配置，仅在 %USERPROFILE%/.pkv/config.yaml 中填写。
     cookie: ""
 
   # 通用网页
@@ -132,7 +120,7 @@ logging:
   # 文件日志
   file:
     enabled: true
-    path: ".data/logs/pkv.log"
+    # 路径由唯一数据根派生为 <data-root>/logs/pkv.log。
     max_bytes: 10485760    # 10 MB
     backup_count: 5
 

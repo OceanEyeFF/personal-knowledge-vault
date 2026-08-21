@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from src.runtime import ErrorCode, PKVRuntimeError, RuntimeLayout, bootstrap_runtime
+from src.runtime.write_lease import VaultWriteLease
 from src.storage.coordinator import StorageOperationJournal
 from src.storage.markdown_store import Entry, MarkdownStore
 from src.storage.migration_manager import DatabaseState, MigrationManager
@@ -103,6 +104,24 @@ def test_bootstrap_is_idempotent_for_ready_fresh_install(tmp_path: Path) -> None
     assert first.database.current_version == second.database.current_version
     assert second.database.state is DatabaseState.READY
     assert layout.db_path.stat().st_size == before.st_size
+
+
+def test_bootstrap_rejects_busy_before_initializing_database_or_recovery(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    config = Config(layout=layout)
+
+    with VaultWriteLease(layout):
+        with pytest.raises(PKVRuntimeError) as captured:
+            bootstrap_runtime(config)
+
+    assert captured.value.code is ErrorCode.WRITE_BUSY
+    assert captured.value.stage == "write_lease"
+    assert captured.value.recoverable is True
+    assert not layout.db_path.exists()
+    assert not layout.vault_dir.exists()
+    assert not (layout.runtime_state_dir / "operations").exists()
 
 
 def test_bootstrap_rejects_old_database_without_auto_upgrade_or_mutation(

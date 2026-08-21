@@ -25,7 +25,10 @@ MCP 协议级 stdio 黑盒测试 (Layer 3)
     但更慢、更难调试。两层互补。
 """
 
+import hashlib
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -59,6 +62,9 @@ def get_server_params(
     db_path: str,
     log_level: str = "WARNING",
     extra_env: Optional[Dict[str, str]] = None,
+    *,
+    ready_fixture: bool = True,
+    absent_data_root: bool = False,
 ) -> StdioServerParameters:
     """构建 StdioServerParameters 用于启动 MCP Server 子进程。
 
@@ -66,6 +72,11 @@ def get_server_params(
         db_path: 临时数据库路径
         log_level: 日志级别（默认 WARNING 减少 stderr 干扰）
         extra_env: 额外环境变量
+        ready_fixture: 为已初始化的离线 SQLite fixture 写入匹配的无密钥
+            runtime snapshot。设为 False 可验证 fresh/unready 的 status-only
+            MCP 启动路径。
+        absent_data_root: 保持 selected data root 完全不存在，以验证 L3
+            status-only 行为不会由测试 harness 的 ``ensure_dirs`` 掩盖。
 
     Returns:
         StdioServerParameters 实例
@@ -86,6 +97,13 @@ def get_server_params(
         project_root=PROJECT_ROOT,
         runtime_overrides=runtime_overrides,
     )
+    if absent_data_root and ready_fixture:
+        raise ValueError("an absent data-root fixture cannot be synthetic-ready")
+    if absent_data_root:
+        env.pop("PKV_TEST_SYNTHETIC_RUNTIME_READY", None)
+        env["PKV_TEST_ABSENT_DATA_ROOT"] = "1"
+    elif ready_fixture:
+        env["PKV_TEST_SYNTHETIC_RUNTIME_READY"] = "1"
 
     return StdioServerParameters(
         command=sys.executable,
@@ -116,6 +134,85 @@ def parse_tool_content(result) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"call_tool JSON 必须为 object: {type(payload).__name__}")
     return payload
+
+
+_WRITE_LEASE_HOLDER_SCRIPT = """
+from pathlib import Path
+import sys
+
+from src.runtime.layout import RuntimeLayout
+from src.runtime.write_lease import VaultWriteLease
+
+layout = RuntimeLayout.resolve(
+    resources_root=Path(sys.argv[1]),
+    user_data_root=Path(sys.argv[2]),
+    environment={},
+)
+lease = VaultWriteLease(layout)
+try:
+    lease.acquire()
+    print("LEASE_HELD", flush=True)
+    sys.stdin.readline()
+finally:
+    lease.release()
+"""
+
+
+def _start_external_write_lease_holder(data_root: Path) -> subprocess.Popen[str]:
+    """Hold the real OS advisory lease from a process outside the MCP server."""
+
+    environment = os.environ.copy()
+    existing_pythonpath = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = str(PROJECT_ROOT) + (
+        os.pathsep + existing_pythonpath if existing_pythonpath else ""
+    )
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _WRITE_LEASE_HOLDER_SCRIPT,
+            str(PROJECT_ROOT),
+            str(data_root),
+        ],
+        cwd=PROJECT_ROOT,
+        env=environment,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+    )
+    assert holder.stdout is not None
+    readiness = holder.stdout.readline().strip()
+    if readiness != "LEASE_HELD":
+        output, _ = holder.communicate(timeout=10)
+        raise AssertionError(
+            f"external write lease holder did not become ready: {readiness!r}\\n{output}"
+        )
+    return holder
+
+
+def _release_external_write_lease_holder(holder: subprocess.Popen[str]) -> None:
+    if holder.poll() is None:
+        assert holder.stdin is not None
+        holder.stdin.write("\\n")
+        holder.stdin.flush()
+    output, _ = holder.communicate(timeout=10)
+    assert holder.returncode == 0, output
+
+
+def _persistent_file_state(root: Path) -> Dict[str, str]:
+    """Return a stable isolated-root snapshot, excluding the expected lease anchor."""
+
+    state: Dict[str, str] = {}
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative == "runtime/write.lease":
+            continue
+        state[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return state
 
 
 def assert_stats_payload(
@@ -276,8 +373,8 @@ class TestServerStartup:
                 assert caps is not None
 
     @pytest.mark.asyncio
-    async def test_list_tools_returns_14(self, empty_db_path):
-        """list_tools 应返回 14 个 Tool。"""
+    async def test_list_tools_returns_15(self, empty_db_path):
+        """list_tools 应返回 15 个 Tool。"""
         params = get_server_params(empty_db_path)
 
         async with stdio_client(params) as (read, write):
@@ -286,14 +383,79 @@ class TestServerStartup:
                 tools_result = await session.list_tools()
                 tool_names = {t.name for t in tools_result.tools}
 
-                assert len(tool_names) == 14, f"期望 14 个 Tool，实际: {tool_names}"
+                assert len(tool_names) == 15, f"期望 15 个 Tool，实际: {tool_names}"
                 expected = {
-                    "search_knowledge", "get_entry", "list_tags", "list_entries",
+                    "get_runtime_status", "search_knowledge", "get_entry", "list_tags", "list_entries",
                     "get_stats", "archive_url", "archive_text", "get_related",
                     "query_subgraph", "explain_relation", "collect_evidence",
                     "find_bridges", "timeline_of", "contrast",
                 }
                 assert tool_names == expected
+
+    @pytest.mark.asyncio
+    async def test_unready_runtime_starts_status_only_without_mutation(self, tmp_db):
+        """Fresh roots publish status but cannot lazily create a product runtime."""
+        data_root = tmp_db.parent.parent
+        params = get_server_params(str(tmp_db), ready_fixture=False)
+
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools_result = await session.list_tools()
+                status_result = await session.call_tool("get_runtime_status", {})
+                stats_result = await session.call_tool("get_stats", {})
+
+        tool_names = {tool.name for tool in tools_result.tools}
+        status = parse_tool_content(status_result)
+        stats = parse_tool_content(stats_result)
+        assert len(tool_names) == 15
+        assert "get_runtime_status" in tool_names
+        assert status["status"] == "success"
+        # The generic offline child creates declared directories before it
+        # imports the MCP adapter.  That makes this intentionally partial root
+        # repair-required rather than a completely absent setup-required root;
+        # either state must still stay status-only at the real stdio boundary.
+        assert status["readiness"] == "repair_required"
+        assert status["inspection"]["readiness"] == "repair_required"
+        assert status["plan"] is not None
+        assert stats["status"] == "error"
+        assert stats["issues"][0]["code"] == "repair_required"
+        # ``offline_entrypoint`` creates declared directories before importing
+        # the server. The MCP adapter itself must not create a database,
+        # runtime snapshot, or file logger while only status is available.
+        assert not tmp_db.exists()
+        assert not (data_root / "config" / "local.yaml").exists()
+        assert not (data_root / "logs" / "pkv.log").exists()
+
+    @pytest.mark.asyncio
+    async def test_absent_data_root_starts_status_only_without_mutation(self, tmp_path):
+        """A real stdio child preserves a wholly absent root while serving status."""
+
+        data_root = tmp_path / "absent-data-root"
+        db_path = data_root / "db" / "knowledge_vault.db"
+        assert not os.path.lexists(data_root)
+        params = get_server_params(
+            str(db_path),
+            ready_fixture=False,
+            absent_data_root=True,
+        )
+        assert not os.path.lexists(data_root)
+
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                status_result = await session.call_tool("get_runtime_status", {})
+                stats_result = await session.call_tool("get_stats", {})
+
+        status = parse_tool_content(status_result)
+        stats = parse_tool_content(stats_result)
+        assert status["status"] == "success"
+        assert status["readiness"] == "setup_required"
+        assert status["inspection"]["readiness"] == "setup_required"
+        assert status["plan"] is not None
+        assert stats["status"] == "error"
+        assert stats["issues"][0]["code"] == "setup_required"
+        assert not os.path.lexists(data_root)
 
     @pytest.mark.asyncio
     async def test_list_prompts_returns_3(self, empty_db_path):
@@ -346,6 +508,24 @@ class TestServerStartup:
 
 class TestReadonlyTools:
     """只读 Tool 端到端调用（经 stdio JSON-RPC 协议）。"""
+
+    @pytest.mark.asyncio
+    async def test_get_runtime_status(self, empty_db_path):
+        """The lifecycle status Tool is read-only and exposes no config secrets."""
+        params = get_server_params(empty_db_path)
+
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool("get_runtime_status", {})
+
+        data = parse_tool_content(result)
+        assert data["status"] == "success"
+        assert data["readiness"] == "ready"
+        assert data["inspection"]["runtime_snapshot"] == "valid"
+        serialized = json.dumps(data, ensure_ascii=False).lower()
+        assert "api_key" not in serialized
+        assert "offline-test-placeholder" not in serialized
 
     @pytest.mark.asyncio
     async def test_list_entries(self, populated_db_path):
@@ -688,6 +868,79 @@ class TestWriteToolSecurity:
         assert data["issues"][0]["stage"] == "text_validation"
 
     @pytest.mark.asyncio
+    async def test_archive_text_returns_write_busy_from_external_holder_without_side_effects(
+        self,
+        populated_db_path,
+    ):
+        """Real stdio archive returns normal busy JSON while reads remain available."""
+
+        data_root = Path(populated_db_path).resolve().parent.parent
+        params = get_server_params(populated_db_path)
+
+        # The synthetic READY child publishes its fixture snapshot before the
+        # independent holder is started.  A later server can therefore inspect
+        # the same ready root without trying to initialize it under the holder.
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                seeded_status = parse_tool_content(
+                    await session.call_tool("get_runtime_status", {})
+                )
+        assert seeded_status["readiness"] == "ready"
+        assert (data_root / "config" / "local.yaml").is_file()
+
+        holder = _start_external_write_lease_holder(data_root)
+        try:
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+
+                    # A normal database read is allowed while a different
+                    # application owns the writer lease.  Run it before the
+                    # snapshot so harmless reader setup cannot mask a write.
+                    stats = parse_tool_content(await session.call_tool("get_stats", {}))
+                    assert stats["status"] == "success"
+                    assert stats["total_entries"] == 3
+                    before = _persistent_file_state(data_root)
+
+                    result = await session.call_tool(
+                        "archive_text",
+                        {
+                            "text": "busy archive must not invoke a Provider; "
+                            "api_key=blackbox-write-busy-secret",
+                            "title": "must not persist",
+                        },
+                    )
+                    payload = parse_tool_content(result)
+                    after = _persistent_file_state(data_root)
+        finally:
+            _release_external_write_lease_holder(holder)
+
+        # ``parse_tool_content`` also asserts ``isError is False`` and the
+        # single TextContent envelope, so this is protocol-level—not a direct
+        # Python handler—evidence of the public retry contract.
+        assert payload["success"] is False
+        assert payload["terminal"] == "error"
+        assert payload["error_code"] == "write_busy"
+        assert payload["retryable"] is True
+        assert payload["issues"] == [
+            {
+                "code": "write_busy",
+                "message": "另一个应用正在写入知识库，请稍后重试",
+                "stage": "write_lease",
+                "recoverable": True,
+                "severity": "error",
+            }
+        ]
+        assert "blackbox-write-busy-secret" not in json.dumps(payload, ensure_ascii=False)
+        # The only permitted holder mutation is its stable lease anchor.  The
+        # busy archive itself cannot construct a Processor/Provider, audit
+        # trace, journal, Markdown, SQLite or vector write.
+        assert after == before
+        assert not (data_root / "logs" / "audit.jsonl").exists()
+        assert not (data_root / "runtime" / "operations").exists()
+
+    @pytest.mark.asyncio
     async def test_get_related_invalid_id(self, empty_db_path):
         """get_related 应拒绝非数字 ID。"""
         params = get_server_params(empty_db_path)
@@ -958,7 +1211,7 @@ class TestEndToEnd:
                 tool_names = {t.name for t in tools_result.tools}
 
                 readonly_names = {case["name"] for case in READONLY_TOOL_MATRIX}
-                assert len(readonly_names) == 12
+                assert len(readonly_names) == 13
                 assert readonly_names == tool_names - {"archive_url", "archive_text"}
 
                 # 版本化 fixture 为每个只读 Tool 提供有效、离线且确定性的参数。

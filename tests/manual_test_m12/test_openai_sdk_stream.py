@@ -12,7 +12,7 @@ M12 手动测试：OpenAI SDK + DeepSeek API 流式验证
 
 环境要求：
     - openai>=1.0.0 已安装
-    - config/local.yaml 已配置 LLM 服务
+    - %USERPROFILE%\\.pkv\\config.yaml 已配置 LLM 服务
 """
 
 # ruff: noqa: E402
@@ -60,7 +60,7 @@ async def test_basic_stream():
 
     api_key, base_url, model = _llm_settings()
     if not api_key:
-        print("[错误] config/local.yaml 未配置 LLM API Key")
+        print("[错误] %USERPROFILE%\\.pkv\\config.yaml 未配置 LLM API Key")
         return
 
     print("[配置] LLM API Key 已配置")
@@ -124,7 +124,7 @@ async def test_stream_with_usage():
 
     api_key, base_url, model = _llm_settings()
     if not api_key:
-        print("[错误] config/local.yaml 未配置 LLM API Key")
+        print("[错误] %USERPROFILE%\\.pkv\\config.yaml 未配置 LLM API Key")
         return
 
     try:
@@ -225,7 +225,7 @@ async def test_long_conversation():
 
     api_key, base_url, model = _llm_settings()
     if not api_key:
-        print("[错误] config/local.yaml 未配置 LLM API Key")
+        print("[错误] %USERPROFILE%\\.pkv\\config.yaml 未配置 LLM API Key")
         return
 
     try:
@@ -338,7 +338,7 @@ async def test_max_tokens_limit():
 
     api_key, base_url, model = _llm_settings()
     if not api_key:
-        print("[错误] config/local.yaml 未配置 LLM API Key")
+        print("[错误] %USERPROFILE%\\.pkv\\config.yaml 未配置 LLM API Key")
         return
 
     try:

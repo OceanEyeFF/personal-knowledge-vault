@@ -51,6 +51,17 @@ TAGS_POOL = {
     "text": ["笔记", "随笔", "知识库", "测试", "纯文本", "样本"],
 }
 
+
+# This pair is deliberately a fixture-only structural value.  It is never
+# persisted to a user profile or the data-runtime snapshot, and the offline
+# guard still prevents Provider I/O.  ``--runtime-ready`` uses it solely to
+# make the synthetic fixture satisfy the same structural readiness contract as
+# the externally launched internal-package smoke process.
+_SYNTHETIC_RUNTIME_READY_CONFIG_UPDATES = {
+    "ai.llm.api_key": "offline-test-placeholder",
+    "ai.embedding.api_key": "offline-test-placeholder",
+}
+
 KEYWORDS_POOL = [
     "AI",
     "知识库",
@@ -102,6 +113,15 @@ def _parse_args() -> argparse.Namespace:
             "Dimension for the optional random vector index. "
             "When omitted, no vector index is created and no Provider/config "
             "is accessed."
+        ),
+    )
+    parser.add_argument(
+        "--runtime-ready",
+        action="store_true",
+        help=(
+            "Prepare the selected default test DB for an offline READY fixture. "
+            "FT7-only; writes only the secret-free runtime snapshot and tokenizer "
+            "cache, and never probes a Provider."
         ),
     )
     return parser.parse_args()
@@ -560,6 +580,44 @@ def build_database(
     return db_path
 
 
+def _prepare_runtime_ready_fixture(db_path: Path) -> None:
+    """Publish test-only readiness state for the selected synthetic DB.
+
+    This option intentionally has a narrow meaning: the generated database
+    must be the current Direct Python ``DB_PATH``.  A runtime snapshot describes
+    the actual application data root, so letting it certify an arbitrary
+    side-database would create a misleading fixture.  The existing offline
+    entrypoint helper owns the no-Provider snapshot/cache mechanics; this
+    script only invokes it *after* its deterministic SQLite fixture exists.
+    """
+
+    selected_db_path = _resolve_output_path(os.environ["DB_PATH"])
+    if db_path != selected_db_path:
+        raise ValueError("--runtime-ready 只能用于当前 Direct Python DB_PATH")
+
+    from src.utils.config import Config
+    from tests.offline_entrypoint import _seed_synthetic_ready_runtime_snapshot
+
+    # Explicit constructor arguments retain their normal Config semantics even
+    # when offline_entrypoint has installed its process-local Config facade.
+    # The two non-empty placeholders are structural test data only; Config's
+    # runtime snapshot deliberately excludes credentials and the offline guard
+    # continues to prohibit any outbound Provider call.
+    config = Config(
+        str(PROJECT_ROOT / "config" / "config.yaml"),
+        _user_config_updates=_SYNTHETIC_RUNTIME_READY_CONFIG_UPDATES,
+    )
+    if config.layout.db_path != db_path:
+        raise RuntimeError("runtime-ready Config 未绑定当前合成数据库")
+
+    _seed_synthetic_ready_runtime_snapshot(config)
+
+    if config.read_runtime_config_snapshot() is None:
+        raise RuntimeError("runtime-ready fixture 未发布运行态配置快照")
+    if not (config.layout.tmp_dir / "jieba.cache").is_file():
+        raise RuntimeError("runtime-ready fixture 未生成 jieba 运行态缓存")
+
+
 def main() -> int:
     args = _parse_args()
     try:
@@ -571,6 +629,8 @@ def main() -> int:
             zhihu_count=args.zhihu_count,
             embedding_dim=args.embedding_dim,
         )
+        if args.runtime_ready:
+            _prepare_runtime_ready_fixture(db_path)
     except Exception as exc:
         print(f"[error] {exc}")
         return 1

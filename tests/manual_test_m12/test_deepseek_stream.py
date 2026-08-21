@@ -10,7 +10,7 @@ M12 手动测试：DeepSeek API 流式调用验证
     python tests/manual_test_m12/test_deepseek_stream.py
 
 环境要求：
-    - config/local.yaml 已配置 LLM 服务
+    - %USERPROFILE%\\.pkv\\config.yaml 已配置 LLM 服务
     - httpx 已安装（pip install httpx）
 """
 
@@ -49,7 +49,7 @@ async def test_basic_stream():
 
     api_key, base_url, model = _llm_settings()
     if not api_key:
-        print("[错误] config/local.yaml 未配置 LLM API Key")
+        print("[错误] %USERPROFILE%\\.pkv\\config.yaml 未配置 LLM API Key")
         return
 
     url = f"{base_url}/chat/completions"
@@ -145,7 +145,9 @@ async def test_long_response():
 
     api_key, base_url, model = _llm_settings()
     if not api_key:
-        print("[错误] config/local.yaml 未配置 LLM API Key，跳过此测试")
+        print(
+            "[错误] %USERPROFILE%\\.pkv\\config.yaml 未配置 LLM API Key，跳过此测试"
+        )
         return
 
     url = f"{base_url}/chat/completions"

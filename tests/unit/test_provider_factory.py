@@ -529,8 +529,13 @@ def test_concurrent_auto_clients_use_durable_dimension_cas(
     assert len(failures) == 1
     failure = failures[0]
     assert isinstance(failure, PKVRuntimeError)
-    assert failure.code is ErrorCode.PROVIDER_PROTOCOL_FAILED
-    assert failure.stage == "embedding_protocol"
+    # Auto-dimension persistence is a data-root write.  Concurrent clients may
+    # both finish their Provider response, but only one may publish the durable
+    # dimension; the other must be rejected by the R3 single-writer lease
+    # rather than racing into a conflicting CAS attempt.
+    assert failure.code is ErrorCode.WRITE_BUSY
+    assert failure.stage == "write_lease"
+    assert failure.recoverable is True
 
     winner_dim = int(successes[0].shape[0])
     assert winner_dim in {3, 4}

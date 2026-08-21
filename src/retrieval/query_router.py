@@ -39,7 +39,15 @@ class QueryRouter:
         if token_threshold <= 0:
             raise ValueError("token_threshold 必须是正整数")
 
-        self.bm25_retriever = BM25Retriever(db_path)
+        # The router, its BM25 retriever and FTS store must all use one captured
+        # Config snapshot.  Falling back to TextProcessor()->get_config() here
+        # would let an explicit Config B graph observe global Config A.
+        self.text_processor = TextProcessor(runtime_config=runtime_config)
+        self.bm25_retriever = BM25Retriever(
+            db_path,
+            runtime_config=runtime_config,
+            text_processor=self.text_processor,
+        )
         self.hybrid_retriever = HybridRetriever(
             db_path,
             vector_index_dir,
@@ -47,7 +55,6 @@ class QueryRouter:
             embedder_factory=embedder_factory,
             runtime_config=runtime_config,
         )
-        self.text_processor = TextProcessor()
         self.token_threshold = token_threshold
 
     def search(self, query: str, limit: int = 10) -> SearchResponse:

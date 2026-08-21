@@ -291,12 +291,18 @@ async def main():
     embd_key = config.embd_api_key
 
     if not llm_key:
-        print("[WARN] config/local.yaml 未配置 LLM API Key，AI 分析可能失败")
+        print(
+            "[WARN] %USERPROFILE%\\.pkv\\config.yaml 未配置 LLM API Key，"
+            "AI 分析可能失败"
+        )
     else:
         print("[OK] LLM API Key 已配置")
 
     if not embd_key:
-        print("[WARN] config/local.yaml 未配置 Embedding API Key，向量存储可能失败")
+        print(
+            "[WARN] %USERPROFILE%\\.pkv\\config.yaml 未配置 Embedding API Key，"
+            "向量存储可能失败"
+        )
     else:
         print("[OK] Embedding API Key 已配置")
     print()

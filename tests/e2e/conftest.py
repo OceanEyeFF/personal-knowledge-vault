@@ -287,11 +287,27 @@ def test_env(tmp_path_factory: pytest.TempPathFactory) -> TestEnv:
     return build_test_env(tmp_path_factory)
 
 
-def _build_mcp_client(test_env: TestEnv) -> MCPTestClient:
+def _build_mcp_client(
+    test_env: TestEnv,
+    *,
+    ready_fixture: bool = False,
+) -> MCPTestClient:
+    """Build an isolated MCP client for an explicitly prepared fixture.
+
+    A normal fresh fixture deliberately stays unready under the runtime
+    lifecycle contract.  Search E2E cases pre-populate SQLite and therefore
+    opt in to the child-only, secret-free READY snapshot seam.  Archive input
+    validation cases retain the unready path so they continue to cover the
+    status-only startup boundary.
+    """
+
+    child_env = dict(test_env.env)
+    if ready_fixture:
+        child_env["PKV_TEST_SYNTHETIC_RUNTIME_READY"] = "1"
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(PROJECT_ROOT / "tests" / "offline_entrypoint.py"), "mcp"],
-        env=test_env.env,
+        env=child_env,
         cwd=str(PROJECT_ROOT),
     )
     return MCPTestClient(params=params)
@@ -333,7 +349,7 @@ def live_archive_ready(live_archive_test_env: TestEnv) -> TestEnv:
     ) as config:
         if not config.llm_api_key or not config.embd_api_key:
             pytest.skip(
-                "需要在 config/local.yaml 配置 LLM 与 embedding API Key"
+                "需要在 %USERPROFILE%\\.pkv\\config.yaml 配置 LLM 与 embedding API Key"
             )
     return live_archive_test_env
 
@@ -352,7 +368,7 @@ def archive_mcp_server(archive_test_env: TestEnv) -> MCPTestClient:
 
 @pytest.fixture
 def mcp_server(test_env: TestEnv, sample_knowledge_db) -> MCPTestClient:
-    return _build_mcp_client(test_env)
+    return _build_mcp_client(test_env, ready_fixture=True)
 
 
 def _populate_sample_knowledge_db(test_env: TestEnv) -> Dict[str, object]:
@@ -412,7 +428,9 @@ def live_vector_knowledge_db(
     sample_knowledge_db = _populate_sample_knowledge_db(live_test_env)
     with temporary_test_config(live_test_env, load_local=True) as config:
         if not config.embd_api_key:
-            pytest.skip("需要在 config/local.yaml 配置 embedding API Key")
+            pytest.skip(
+                "需要在 %USERPROFILE%\\.pkv\\config.yaml 配置 embedding API Key"
+            )
 
         config_vector_dir = Path(config.vector_index_dir)
         if config_vector_dir.resolve() != live_test_env.vector_dir.resolve():

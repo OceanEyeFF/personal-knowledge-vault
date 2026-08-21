@@ -229,6 +229,69 @@ function Expand-InternalPackageZipSafely {
     return $root
 }
 
+function Get-InternalSmokeProfileRoot {
+    param([Parameter(Mandatory = $true)][string]$DataRoot)
+
+    return Join-Path $DataRoot 'tmp\internal-package-home'
+}
+
+function Get-InternalSmokeInjectedProfileRoot {
+    param([Parameter(Mandatory = $true)][string]$DataRoot)
+
+    # RuntimeLayout deliberately derives this sibling profile whenever the
+    # offline test seam supplies DATA_DIR.  Keep the normal USERPROFILE clean
+    # for the child process, but write the synthetic product Config where that
+    # explicit test seam actually resolves it.
+    $canonicalDataRoot = [System.IO.Path]::GetFullPath($DataRoot)
+    $parent = Split-Path -Path $canonicalDataRoot -Parent
+    $leaf = Split-Path -Path $canonicalDataRoot -Leaf
+    if ([string]::IsNullOrWhiteSpace($parent) -or [string]::IsNullOrWhiteSpace($leaf)) {
+        throw "cannot derive the offline synthetic profile from DATA_DIR: $DataRoot"
+    }
+    return Join-Path $parent ('.pkv-' + $leaf)
+}
+
+function Initialize-InternalSmokeProfile {
+    param([Parameter(Mandatory = $true)][string]$DataRoot)
+
+    # The packaged process receives an otherwise clean OS profile.  Its two
+    # values are fixed, non-real fixture placeholders so ordinary product
+    # Config parsing can validate Provider *structure* without reading a user
+    # credential or making an outbound request.  Under PKV_TEST_OFFLINE,
+    # RuntimeLayout resolves the Config at the deterministic DATA_DIR sibling
+    # below, rather than USERPROFILE.  It remains outside the payload, inside
+    # .data-test, and is never logged.
+    $profileRoot = Get-InternalSmokeInjectedProfileRoot -DataRoot $DataRoot
+    $profileConfigPath = Join-Path $profileRoot 'config.yaml'
+    if (Test-Path -LiteralPath $profileConfigPath) {
+        throw "synthetic internal-smoke profile config must be fresh: $profileConfigPath"
+    }
+    [void][System.IO.Directory]::CreateDirectory($profileRoot)
+    $content = @(
+        'ai:',
+        '  llm:',
+        '    api_key: internal-smoke-placeholder',
+        '  embedding:',
+        '    api_key: internal-smoke-placeholder',
+        ''
+    ) -join "`n"
+    $stream = [System.IO.FileStream]::new(
+        $profileConfigPath,
+        [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None
+    )
+    try {
+        $bytes = $Utf8NoBom.GetBytes($content)
+        $stream.Write($bytes, 0, $bytes.Length)
+    } finally {
+        $stream.Dispose()
+    }
+    [void](Get-CanonicalExistingPath -Path $profileConfigPath -Kind Leaf `
+        -Label 'synthetic internal-smoke profile config')
+    return $profileRoot
+}
+
 function New-IsolatedProcessStartInfo {
     param(
         [Parameter(Mandatory = $true)][string]$FileName,
@@ -256,7 +319,7 @@ function New-IsolatedProcessStartInfo {
     $info.StandardOutputEncoding = [System.Text.Encoding]::UTF8
     $info.StandardErrorEncoding = [System.Text.Encoding]::UTF8
 
-    $homeRoot = Join-Path $DataRoot 'tmp\internal-package-home'
+    $homeRoot = Get-InternalSmokeProfileRoot -DataRoot $DataRoot
     $appData = Join-Path $homeRoot 'AppData\Roaming'
     $localAppData = Join-Path $homeRoot 'AppData\Local'
     $tempRoot = Join-Path $DataRoot 'tmp\internal-package-child'
@@ -278,7 +341,9 @@ function New-IsolatedProcessStartInfo {
     $info.EnvironmentVariables['TEMP'] = $tempRoot
     $info.EnvironmentVariables['TMP'] = $tempRoot
     $info.EnvironmentVariables['TMPDIR'] = $tempRoot
-    $info.EnvironmentVariables['TMP_DIR'] = $tempRoot
+    # ``TMP_DIR`` is a PKV runtime-layout child copied above with DATA_DIR and
+    # must remain stable across fixture construction and the external Artifact.
+    # TEMP/TMP/TMPDIR are child-process scratch only and may remain separate.
 
     $windowsRoot = [System.Environment]::GetFolderPath(
         [System.Environment+SpecialFolder]::Windows
@@ -494,6 +559,7 @@ function Test-InternalMcpInitialize {
 
 try {
     $dataRoot = Assert-IsolatedRuntimeEnvironment
+    [void](Initialize-InternalSmokeProfile -DataRoot $dataRoot)
     $internalRoot = Get-CanonicalExistingPath -Path $InternalOutputRoot -Kind Container `
         -Label 'dist/internal'
     $packageRoot = Get-CanonicalExistingPath -Path $PackageRoot -Kind Container `
