@@ -902,6 +902,36 @@ def test_workflow_write_busy_projects_the_retryable_mcp_terminal():
     ]
 
 
+def test_runtime_failure_payload_preserves_write_busy_retry_projection():
+    secret = "MCP-WRITE-BUSY-INTERNAL-DETAIL"
+    payload = tools._runtime_failure_payload(
+        PKVRuntimeError(
+            ErrorCode.WRITE_BUSY,
+            secret,
+            stage="write_lease",
+            recoverable=True,
+        ),
+        fallback_code=ErrorCode.WORKFLOW_STEP_FAILED,
+        message="归档失败",
+        stage="archive_text",
+    )
+
+    assert payload["success"] is False
+    assert payload["terminal"] == "error"
+    assert payload["error_code"] == ErrorCode.WRITE_BUSY.value
+    assert payload["retryable"] is True
+    assert payload["issues"] == [
+        {
+            "code": ErrorCode.WRITE_BUSY.value,
+            "message": "另一个应用正在写入知识库，请稍后重试",
+            "stage": "write_lease",
+            "recoverable": True,
+            "severity": "error",
+        }
+    ]
+    assert secret not in str(payload)
+
+
 def test_workflow_audit_completion_pending_preserves_committed_mcp_terminal():
     """A completed archive remains committed when only its audit finalization failed."""
 

@@ -29,6 +29,7 @@
 - [MCP 最小评测基线（2026-07-29）](./operations/MCP最小评测基线-2026-07-29.md)
 - [真实数据验证 Runbook（P2）](./operations/testing/真实数据验证Runbook.md)（G0 完整离线通道；真实快照需 U1/G8 user-only launcher；写入仅 writable clone）
 - [测试环境隔离指南](./operations/testing/测试环境隔离指南.md)
+- [分层测试体系合同](./specs/testing/分层测试体系合同-2026-08.md)
 
 ## 长期参考
 

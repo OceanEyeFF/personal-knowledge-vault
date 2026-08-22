@@ -296,9 +296,13 @@ transport
 # Layer 3: stdio 黑盒测试 (最慢,启动子进程)
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-layer3 -Command @("pytest", "tests/blackbox/test_mcp_blackbox.py", "-v")
 
-# 全部 MCP 测试
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-all -Command @("pytest", "tests/unit", "tests/integration", "tests/blackbox", "tests/e2e", "-k", "mcp", "-v")
+# 正式 MCP 覆盖率门禁：固定版本化目标集、离线 selector 与 95% 阈值
+.\scripts\test-conda.ps1 -EnvironmentName py311-private -Suite MCP
 ```
+
+`-k mcp` 仅适合本地临时定位，不是覆盖率 gate：它会随着其他测试名称变化而扩大或缩小。
+`-Suite MCP` 的目标集固定覆盖 unit、integration、blackbox 与 E2E MCP 用例，并经
+`run-test.ps1` 为本次运行建立新的 `.data-test/conda-*/mcp-coverage` 根。
 
 ---
 

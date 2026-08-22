@@ -1,0 +1,189 @@
+# Internal-only Windows target topology. This supplements, rather than replaces,
+# the held M13 lane contract.
+schema_version: pkv.test-topology.v1
+contract_status: target_architecture
+classification: INTERNAL TEST ONLY
+
+authority:
+  primary_spec: docs/specs/testing/分层测试体系合同-2026-08.md
+  historical_m13_lane_contract: tests/contracts/m13_test_lanes.v1.yaml
+  historical_m13_lane_contract_treatment: preserve_unchanged
+  product_runtime_layout: docs/overview/ADR-用户配置与运行数据布局-2026-08.md
+
+non_goals:
+  - pypi_publication
+  - release_eligibility
+  - release_candidate_promotion
+  - installer_or_upgrade_policy
+  - real_user_data_validation
+  - real_provider_or_network_validation
+  - gui_packaging_or_gui_tests
+
+evidence_categories:
+  CURRENT_ARCHITECTURE:
+    object: current_headless_core_and_public_kernel_interface
+    release_evidence: forbidden
+  CURRENT_RELEASE_DECISION:
+    object: current_held_decision
+    release_eligible: false
+  HISTORICAL_PRE_SPLIT_W4_EVIDENCE:
+    object: frozen_gui_pre_split_held_candidate
+    proves_current_headless_revision: false
+  INTERNAL_SELF_TEST_ONLY:
+    object: current_internal_onedir_or_zip_smoke
+    proves_release_or_installer: false
+  INTERNAL_COMPATIBILITY_PROOF:
+    object: local_pkv_kernel_clean_install_wheel
+    proves_executable_or_release: false
+  PLANNED_GATED:
+    object: lane_without_complete_current_evidence
+    quality_gate: false
+
+global_invariants:
+  data_classification: synthetic_only
+  provider_credentials: forbidden
+  real_migration: forbidden
+  default_network: denied
+  historical_release_artifact_as_evidence: forbidden
+  shared_product_data_root: forbidden
+  required_test_data_root: .data-test/<isolated-run-root>/<lane>
+  required_profile_mode: synthetic_profile
+  required_environment_cleanup:
+    - provider_credentials
+    - proxy_variables
+    - pythonpath_and_python_startup_injection
+    - user_pytest_plugin_injection
+  protected_user_paths:
+    - '%USERPROFILE%/.pkv/config.yaml'
+    - '%USERPROFILE%/.pkv/data'
+    - '<effective-data-root>/config/local.yaml'
+  test_runtime_paths:
+    - DATA_DIR
+    - DB_PATH
+    - VAULT_DIR
+    - VECTOR_DIR
+    - LOG_DIR
+    - TMP_DIR
+  formal_product_environment_overrides:
+    - PKV_DATA_ROOT
+    - PKV_LOG_LEVEL
+
+layers:
+  L0-harness-isolation:
+    phase: pre_artifact
+    purpose: prove that the launcher contains paths, profile, credentials, and network
+    proof_style: negative_canary_and_wrapper_contract
+  L1-source-whitebox:
+    phase: pre_artifact
+    purpose: exercise implementation seams, domain invariants, and offline integration
+    proof_style: source_imports_and_deterministic_fakes_are_allowed
+  L2-build-contract:
+    phase: build
+    purpose: verify the locally built payload, metadata, and prohibited payload policy
+    proof_style: build_manifest_and_payload_assertions
+  L3-installed-wheel-blackbox:
+    phase: post_artifact
+    purpose: verify an installed local wheel without source-tree imports
+    proof_style: clean_venv_and_public_pkv_kernel_interface
+  L4-windows-internal-artifact-blackbox:
+    phase: post_artifact
+    purpose: verify an unpacked INTERNAL TEST ONLY Windows package via external interfaces
+    proof_style: source_free_process_and_synthetic_runtime_fixture
+
+lanes:
+  isolation-harness:
+    layer: L0-harness-isolation
+    phase: pre_artifact
+    execution_status: available_local
+    platforms: [windows-x86_64]
+    launcher: scripts/run-test.ps1
+    required_checks:
+      - rejects_paths_outside_selected_data_root
+      - clears_live_configuration_and_credentials_before_python_import
+      - establishes_offline_guard_before_pytest_or_product_import
+      - keeps_reports_and_temporary_outputs_under_the_selected_test_root_or_explicit_report_root
+    forbidden_substitutes:
+      - direct_python_from_user_profile
+      - inherited_user_configuration
+      - production_data_root_canary
+
+  windows-source-whitebox:
+    layer: L1-source-whitebox
+    phase: pre_artifact
+    execution_status: available_local
+    platforms: [windows-x86_64]
+    launcher: scripts/test-conda.ps1
+    suite: P0
+    source_tree_import: allowed
+    repository_cwd: allowed
+    allowed_inputs: [versioned_source, synthetic_fixtures, deterministic_fakes, offline_fault_injection]
+    required_outputs: [source_test_result, isolation_evidence]
+    forbidden_inputs: [user_config, local_runtime_snapshot, provider_credentials, real_vault]
+
+  windows-mcp-coverage:
+    layer: L1-source-whitebox
+    phase: pre_artifact
+    execution_status: available_local
+    platforms: [windows-x86_64]
+    launcher: scripts/test-conda.ps1
+    suite: MCP
+    coverage_target: src.mcp
+    coverage_fail_under: 95
+    source_tree_import: allowed
+    repository_cwd: allowed
+    required_outputs: [mcp_coverage_result, isolation_evidence]
+    forbidden_inputs: [user_config, local_runtime_snapshot, provider_credentials, real_vault]
+    forbidden_substitutes: [p0_result, live_provider_result, historical_ci_result]
+
+  local-package-build-contract:
+    layer: L2-build-contract
+    phase: build
+    execution_status: available_local
+    platforms: [windows-x86_64]
+    build_launcher: scripts/build-internal-package.ps1
+    build_execution_wrapper: scripts/run-windows.ps1
+    smoke_launcher: scripts/run-test.ps1
+    build_isolation: trusted_local_toolchain_not_l0_offline_launcher
+    source_tree_import: allowed_for_builder_only
+    allowed_inputs: [clean_checkout, locally_available_build_dependencies, versioned_packaging_config]
+    required_outputs: [local_build_result, payload_manifest, prohibited_payload_check]
+    forbidden_outputs: [release_eligible, pypi_upload, artifact_verified]
+    forbidden_inputs: [network_dependency_resolution, user_config, provider_credentials]
+
+  local-wheel-clean-install-blackbox:
+    layer: L3-installed-wheel-blackbox
+    phase: post_artifact
+    execution_status: available_local
+    platforms: [windows-x86_64]
+    launcher: scripts/run-test.ps1
+    artifact: locally_built_pkv_kernel_wheel
+    artifact_workspace: outside_repository_checkout
+    source_tree_import: forbidden
+    repository_cwd: forbidden
+    public_interface: pkv_kernel
+    required_inputs: [locally_built_wheel, synthetic_runtime_root]
+    required_outputs: [clean_install_result, version_and_capability_handshake_result]
+    forbidden_substitutes: [editable_install, source_tree_import, pypi_download, release_evidence]
+
+  windows-internal-artifact-blackbox:
+    layer: L4-windows-internal-artifact-blackbox
+    phase: post_artifact
+    execution_status: available_local
+    platforms: [windows-x86_64]
+    build_launcher: scripts/build-internal-package.ps1
+    smoke_runner: scripts/run-internal-package-smoke.ps1
+    classification: INTERNAL TEST ONLY
+    artifact_output_root: dist/internal
+    artifact_workspace: outside_repository_checkout
+    source_tree_import: forbidden_in_child_process
+    repository_cwd: forbidden_in_child_process
+    required_inputs: [internal_package_zip, synthetic_database_fixture, isolated_data_root]
+    required_outputs: [cli_help_result, bm25_search_result, mcp_stdio_initialize_result]
+    forbidden_outputs: [release_eligible, installer_qualification, pypi_upload]
+    forbidden_substitutes: [source_module_smoke, held_release_candidate_evidence, real_user_data]
+
+evidence_rules:
+  source_result_does_not_prove: [installed_wheel, windows_internal_artifact, release]
+  local_wheel_result_does_not_prove: [installer, release, pypi_publication]
+  internal_artifact_result_does_not_prove: [release, installer_qualification, upgrade_compatibility]
+  historical_held_candidate_does_not_prove: [current_headless_revision, internal_artifact]

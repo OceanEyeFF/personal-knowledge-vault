@@ -145,9 +145,15 @@ Prompt 模板的生产内容由 `tests/e2e/test_mcp_e2e_knowledge_qa.py` 等注�
 
 ### CI/CD 流水线
 
-CI 必须复用与本地相同的 fail-closed 合同：数据根位于 checkout 的 `.data-test`，pytest `--basetemp` 位于该数据根，默认排除 `network/manual`，不注入 Provider secret。Windows 本地验证直接调用 `scripts/run-test.ps1`；现有 Linux workflow 暂以受控步骤显式设置同等路径/marker，P1 应抽出 POSIX wrapper 并增加跨平台 wrapper contract，避免安全逻辑长期复制。本文不提供面向开发者的裸 `pytest` 示例。
+当前主线的 MCP 验证以 Windows 本地隔离 gate 为准：`scripts/test-conda.ps1 -Suite MCP`
+经 `scripts/run-test.ps1` 设置数据根、pytest temp/cache 与 coverage 输出，默认排除
+`network/manual`，且不注入 Provider secret。它是显式的 `src.mcp >=95%` 覆盖率门禁；
+`-Suite P0` 只验证默认收集和完整离线源码兼容性，不能替代该结论。本文不提供面向开发者的
+裸 `pytest` 示例；跨平台自动化属于独立实验，不构成当前主线的质量或产品平台证据。
 
-建议三个独立 gate：MCP unit、进程内 simulation、stdio/E2E offline；最后以 `--cov=src.mcp --cov-fail-under=95` 收口。live smoke 进入独立手动工作流，不作为 PR 必过项。
+覆盖门禁涵盖 MCP unit、进程内 simulation、stdio/E2E offline；最后以
+`--cov=src.mcp --cov-fail-under=95` 收口。live smoke 进入独立手动工作流，不作为
+默认自动化项。
 
 ---
 

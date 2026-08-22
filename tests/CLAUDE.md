@@ -31,7 +31,7 @@
 - 测试模块在收集/import 阶段不得联网。
 - 仓库 `tests/` 默认 lane 的 pytest 父进程在 pytest/plugin 导入前安装经过路径验证的 base-only Config 与网络 guard；父环境的 plugin 注入被清除，但 Conda 环境内已安装的 autoload plugin 属于受信运行时边界。非 Python Direct 无等价 Python G0，不得据此宣称安全。
 - wrapper 在启动 Conda/Python 前清除可引发 Python/coverage 预启动注入的父环境变量，并把 `TEMP`/`TMP`/`TMPDIR` 与 `COVERAGE_FILE` 固定到 selected DataRoot。Conda 环境本身及仓库根（包括其 Python startup 文件）是受信工具链/工作树边界，不是 G0 对抗对象。
-- CI 显式设置 `PKV_RUN_LIVE=0`；运行数据与 pytest temp/cache 位于 checkout 的 `.data-test/ci/*`，报告可位于 runner 临时目录。
+- Windows 默认验证经 `scripts/test-conda.ps1` 运行：`-Suite P0` 验证默认收集和完整离线源码兼容性，`-Suite MCP` 是单独的 `src.mcp >=95%` 覆盖率门禁。二者均经 `run-test.ps1` 把运行数据、pytest temp/cache 与 coverage 文件固定在本次 `.data-test/conda-*/` 根内。
 
 ### Phase B/Phase C MCP 最小评测闭环
 

@@ -21,11 +21,11 @@ SafeFetcher，不需要浏览器 runtime。脚本不会创建 `config/local.yaml
 `python -m pip check`。如果目标环境名已存在，脚本会拒绝覆盖或删除，需改用新的
 `-EnvironmentName`。
 
-Windows `P0` 预检依次验证默认收集和完整离线套件。MCP 95% 覆盖率属于独立的
-可选验证门禁，不作为 Windows 兼容性结论。也可以使用
-`-Suite Smoke`、`-Suite Contract` 或 `-Suite Offline` 缩小范围。所有 pytest
-命令都排除 `manual` 与 `network`；项目运行路径、pytest 临时目录和 cache
-目录均位于每次新建的 `.data-test/conda-*` 目录。
+Windows `P0` 预检依次验证默认收集和完整离线套件。MCP 95% 覆盖率是独立的
+Windows 专项门禁，不作为 P0 的兼容性结论；使用
+`-Suite MCP` 显式执行。也可以使用 `-Suite Smoke`、`-Suite Contract` 或
+`-Suite Offline` 缩小范围。所有 pytest 命令都排除 `manual` 与 `network`；项目
+运行路径、pytest 临时目录和 cache 目录均位于每次新建的 `.data-test/conda-*` 目录。
 
 ---
 
@@ -68,13 +68,14 @@ Windows `P0` 预检依次验证默认收集和完整离线套件。MCP 95% 覆�
 
 #### `test-conda.ps1` - Conda 测试脚本
 
-**用途**: 在指定 Conda 环境中运行 smoke、收集契约、离线全套或 Windows P0 预检
+**用途**: 在指定 Conda 环境中运行 smoke、收集契约、离线全套、MCP 覆盖率或 Windows P0 预检
 
 **运行方式**:
 
 ```powershell
 .\scripts\test-conda.ps1
 .\scripts\test-conda.ps1 -EnvironmentName py311-private -Suite P0
+.\scripts\test-conda.ps1 -EnvironmentName py311-private -Suite MCP
 ```
 
 **功能**:
@@ -84,7 +85,7 @@ Windows `P0` 预检依次验证默认收集和完整离线套件。MCP 95% 覆�
 - ✅ 通过 `run-test.ps1` 使用显式目标环境和隔离路径
 - ✅ 默认环境与 `setup-conda.ps1` 一致，为 `py311-private`；
   `setup-test-conda.ps1` 创建的测试环境仍须显式传入 `-EnvironmentName`
-- ✅ 默认运行纯离线基础语法 smoke；可选择 Windows P0 预检
+- ✅ 默认运行纯离线基础语法 smoke；可选择 Windows P0 或 MCP 覆盖率门禁
 - ✅ 排除 manual/network，测试数据只写入 `.data-test/`
 - ✅ pytest 的临时目录和 cache 仅由 `run-test.ps1` 管理，调用方不传
   `--basetemp` 或 `cache_dir`

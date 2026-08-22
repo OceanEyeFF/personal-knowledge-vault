@@ -10,6 +10,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SETUP_CONDA = PROJECT_ROOT / "scripts" / "setup-conda.ps1"
 RUN_WINDOWS = PROJECT_ROOT / "scripts" / "run-windows.ps1"
+TEST_CONDA = PROJECT_ROOT / "scripts" / "test-conda.ps1"
 POWERSHELL = shutil.which("powershell.exe") or shutil.which("pwsh")
 SCRIPT_DOCS = (
     PROJECT_ROOT / "scripts" / "CLAUDE.md",
@@ -69,7 +70,7 @@ def test_active_setup_docs_match_the_single_config_and_explicit_plan_contract() 
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")
-@pytest.mark.parametrize("script", (SETUP_CONDA, RUN_WINDOWS))
+@pytest.mark.parametrize("script", (SETUP_CONDA, RUN_WINDOWS, TEST_CONDA))
 def test_changed_powershell_scripts_parse_without_execution(script: Path) -> None:
     script_path = str(script).replace("'", "''")
     parser_command = (

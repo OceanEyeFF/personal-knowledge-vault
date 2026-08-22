@@ -1,12 +1,12 @@
 ﻿<#
 .SYNOPSIS
-Run smoke, collection, offline, or P0 preflight tests in a Windows Conda env.
+Run smoke, collection, offline, MCP coverage, or P0 preflight tests in a Windows Conda env.
 
 .DESCRIPTION
 All pytest commands use scripts/run-test.ps1, so project runtime paths and
 pytest temporary paths stay below .data-test. Manual and network tests are
-never selected by this script. The MCP 95% coverage gate remains an Ubuntu
-Python 3.11 CI responsibility.
+never selected by this script. MCP coverage is an explicit Windows suite, not
+an inferred result of the P0 source-compatibility preflight.
 
 .EXAMPLE
 .\scripts\test-conda.ps1 -EnvironmentName py311-private -Suite P0
@@ -19,7 +19,7 @@ param(
     [string]$EnvironmentName,
 
     [Parameter()]
-    [ValidateSet("Smoke", "Contract", "Offline", "P0")]
+    [ValidateSet("Smoke", "Contract", "Offline", "MCP", "P0")]
     [string]$Suite = "Smoke"
 )
 
@@ -260,6 +260,44 @@ try {
         if ($manualNodes.Count -gt 0) {
             $exitCode = 1
             throw "默认收集包含 manual_test 节点。"
+        }
+    }
+
+    if ($Suite -eq "MCP") {
+        Invoke-IsolatedTestStep `
+            -Name "MCP 覆盖率门禁" `
+            -DataRoot "$testRunRoot\mcp-coverage" `
+            -Command @(
+                "python",
+                "-m",
+                "pytest",
+                "tests\unit\test_mcp_citation_url_security.py",
+                "tests\unit\test_mcp_coverage_contract.py",
+                "tests\unit\test_mcp_prompts.py",
+                "tests\unit\test_mcp_quality_scorer.py",
+                "tests\unit\test_mcp_resources.py",
+                "tests\unit\test_mcp_security.py",
+                "tests\unit\test_mcp_server_w2.py",
+                "tests\unit\test_mcp_tools.py",
+                "tests\integration\test_mcp_client_simulation.py",
+                "tests\integration\test_mcp_functional.py",
+                "tests\integration\test_mcp_integration.py",
+                "tests\integration\test_mcp_quality_eval.py",
+                "tests\integration\test_mcp_ssrf_zero_write.py",
+                "tests\blackbox\test_mcp_blackbox.py",
+                "tests\e2e\test_mcp_e2e_archive.py",
+                "tests\e2e\test_mcp_e2e_knowledge_qa.py",
+                "tests\e2e\test_mcp_e2e_search.py",
+                "-m",
+                "not manual and not network and not artifact and not windows_release_env",
+                "--cov=src.mcp",
+                "--cov-report=term-missing",
+                "--cov-fail-under=95",
+                "-q"
+            )
+        if ($lastStepExitCode -ne 0) {
+            $exitCode = $lastStepExitCode
+            throw "MCP 覆盖率门禁失败。"
         }
     }
 

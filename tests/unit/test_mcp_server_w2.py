@@ -264,6 +264,94 @@ def test_main_keeps_stdio_available_when_runtime_inspection_fails(
     run_server.assert_called_once_with(transport="stdio")
 
 
+def test_unmanaged_runtime_status_redacts_unexpected_configuration_failure():
+    secret = "MCP-UNMANAGED-RUNTIME-SECRET"
+
+    with (
+        patch.object(server, "get_config", side_effect=OSError(secret)),
+        patch.object(server, "inspect_runtime") as inspect,
+    ):
+        status = server.get_runtime_status_payload()
+
+    assert status == {
+        "status": "error",
+        "readiness": RuntimeReadiness.REPAIR_REQUIRED.value,
+        "inspection": None,
+        "plan": None,
+        "issues": [
+            {
+                "code": ErrorCode.REPAIR_REQUIRED.value,
+                "message": "运行时状态无法安全确认，需要先修复。",
+                "stage": "runtime_readiness",
+                "recoverable": True,
+            }
+        ],
+    }
+    assert secret not in str(status)
+    inspect.assert_not_called()
+
+
+def test_managed_runtime_status_wraps_unexpected_reinspection_failure():
+    config = object()
+    secret = "MCP-MANAGED-RUNTIME-SECRET"
+    server._set_runtime_state(config=config, inspection=_inspection(), managed=True)
+
+    with patch.object(server, "inspect_runtime", side_effect=OSError(secret)):
+        status = server.get_runtime_status_payload()
+
+    assert status["status"] == "error"
+    assert status["readiness"] == RuntimeReadiness.REPAIR_REQUIRED.value
+    assert status["inspection"] is None
+    assert status["plan"] is None
+    assert status["issues"] == [
+        {
+            "code": ErrorCode.REPAIR_REQUIRED.value,
+            "message": "运行时状态无法安全确认，需要先修复。",
+            "stage": "runtime_readiness",
+            "recoverable": True,
+        }
+    ]
+    assert secret not in str(status)
+
+
+def test_runtime_readiness_error_preserves_the_upgrade_required_terminal():
+    error = server._readiness_error(_inspection(RuntimeReadiness.UPGRADE_REQUIRED))
+
+    assert error.code is ErrorCode.DATABASE_UPGRADE_REQUIRED
+    assert error.stage == "runtime_readiness"
+    assert error.recoverable is True
+    assert str(error) == "知识库需要显式升级后才能使用。"
+
+
+def test_runtime_status_redacts_plan_failure_but_retains_inspection():
+    config = object()
+    inspection = _inspection()
+    secret = "MCP-RUNTIME-PLAN-SECRET"
+    server._set_runtime_state(config=config, inspection=inspection, managed=True)
+
+    with (
+        patch.object(server, "inspect_runtime", return_value=inspection),
+        patch.object(server, "plan_runtime", side_effect=RuntimeError(secret)),
+    ):
+        status = server.get_runtime_status_payload()
+
+    assert status == {
+        "status": "error",
+        "readiness": RuntimeReadiness.REPAIR_REQUIRED.value,
+        "inspection": inspection.to_dict(),
+        "plan": None,
+        "issues": [
+            {
+                "code": ErrorCode.REPAIR_REQUIRED.value,
+                "message": "运行时计划无法安全生成，需要先修复。",
+                "stage": "runtime_readiness",
+                "recoverable": True,
+            }
+        ],
+    }
+    assert secret not in str(status)
+
+
 def test_managed_ready_accessors_reuse_one_published_application_snapshot():
     config = object()
     ready = _inspection()

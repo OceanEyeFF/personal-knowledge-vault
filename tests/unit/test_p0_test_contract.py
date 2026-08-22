@@ -11,8 +11,27 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEST_CONDA_SCRIPT = PROJECT_ROOT / "scripts" / "test-conda.ps1"
-CI_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "mcp-test.yml"
 POWERSHELL = shutil.which("powershell.exe") or shutil.which("pwsh")
+
+MCP_COVERAGE_TARGETS = (
+    "tests\\unit\\test_mcp_citation_url_security.py",
+    "tests\\unit\\test_mcp_coverage_contract.py",
+    "tests\\unit\\test_mcp_prompts.py",
+    "tests\\unit\\test_mcp_quality_scorer.py",
+    "tests\\unit\\test_mcp_resources.py",
+    "tests\\unit\\test_mcp_security.py",
+    "tests\\unit\\test_mcp_server_w2.py",
+    "tests\\unit\\test_mcp_tools.py",
+    "tests\\integration\\test_mcp_client_simulation.py",
+    "tests\\integration\\test_mcp_functional.py",
+    "tests\\integration\\test_mcp_integration.py",
+    "tests\\integration\\test_mcp_quality_eval.py",
+    "tests\\integration\\test_mcp_ssrf_zero_write.py",
+    "tests\\blackbox\\test_mcp_blackbox.py",
+    "tests\\e2e\\test_mcp_e2e_archive.py",
+    "tests\\e2e\\test_mcp_e2e_knowledge_qa.py",
+    "tests\\e2e\\test_mcp_e2e_search.py",
+)
 
 
 def _read_test_conda_script() -> str:
@@ -73,30 +92,44 @@ def test_success_cleanup_revalidates_and_rejects_unsafe_links() -> None:
 
 def test_test_conda_uses_setup_default_and_delegates_pytest_isolation_to_wrapper() -> None:
     script = _read_test_conda_script()
-    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 
     assert 'else {\n    "py311-private"\n}' in script
     assert "pkv-test-py311" not in script
     assert "--basetemp" not in script
     assert "cache_dir=" not in script
-    assert workflow.count("cache_dir=$TMP_DIR/pytest-cache") == 3
-    assert "paths: tests/test_basic_syntax.py tests/unit" in workflow
-    assert "paths: tests/test_*.py tests/unit" not in workflow
+    assert '& "$PSScriptRoot\\run-test.ps1"' in script
+    assert '$testRunRoot = ".data-test\\conda-$runId"' in script
 
 
 def test_test_conda_offline_selectors_preserve_default_opt_in_exclusions() -> None:
     script = _read_test_conda_script()
 
     selector = "not manual and not network and not artifact and not windows_release_env"
-    assert script.count(f'"{selector}",') == 2
+    assert script.count(f'"{selector}",') == 3
 
 
-def test_ci_pins_the_formal_data_root_in_every_isolated_job() -> None:
-    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+def test_test_conda_pins_each_suite_to_a_child_of_its_isolated_run_root() -> None:
+    script = _read_test_conda_script()
 
-    assert 'PKV_TEST_OFFLINE: "1"' in workflow
-    assert workflow.count('echo "PKV_DATA_ROOT=$data_dir"') == 3
-    assert workflow.count('echo "DATA_DIR=$data_dir"') == 3
+    for lane in ("smoke", "collect", "offline", "mcp-coverage"):
+        assert f'-DataRoot "$testRunRoot\\{lane}"' in script
+
+
+def test_mcp_coverage_is_an_explicit_isolated_windows_suite() -> None:
+    script = _read_test_conda_script()
+    suite_start = script.index('if ($Suite -eq "MCP")')
+    suite_end = script.index('if ($Suite -in @("Offline", "P0"))', suite_start)
+    suite = script[suite_start:suite_end]
+
+    assert '[ValidateSet("Smoke", "Contract", "Offline", "MCP", "P0")]' in script
+    assert '-Name "MCP 覆盖率门禁"' in suite
+    assert '-DataRoot "$testRunRoot\\mcp-coverage"' in suite
+    assert '"--cov=src.mcp",' in suite
+    assert '"--cov-report=term-missing",' in suite
+    assert '"--cov-fail-under=95",' in suite
+    assert '"not manual and not network and not artifact and not windows_release_env",' in suite
+    for target in MCP_COVERAGE_TARGETS:
+        assert f'"{target}",' in suite
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is unavailable")

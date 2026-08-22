@@ -65,7 +65,7 @@
 
 **功能**:
 - 检查 Conda 环境及 Python 3.11 合同，并执行 `pip check`
-- 通过 `run-test.ps1` 运行 smoke、收集契约、完整离线或 Windows P0 套件
+- 通过 `run-test.ps1` 运行 smoke、收集契约、完整离线、MCP 覆盖率或 Windows P0 套件
 - 全部 pytest 运行保持在新建的 `.data-test/conda-*` 根中
 - 显示测试结果
 
@@ -73,7 +73,8 @@
 `setup-test-conda.ps1` 创建的独立测试环境，必须显式传入
 `-EnvironmentName`。pytest 的临时目录与 cache 完全由 `run-test.ps1`
 在所选 `.data-test` 根内管理；`test-conda.ps1` 不传 `--basetemp` 或
-`cache_dir` 覆盖。
+`cache_dir` 覆盖。`-Suite MCP` 是 `src.mcp >=95%` 的显式 Windows 覆盖率门禁；
+它与仅验证默认收集和完整离线源码兼容性的 `-Suite P0` 分开报告。
 
 **适用场景**:
 - 首次安装后验证
