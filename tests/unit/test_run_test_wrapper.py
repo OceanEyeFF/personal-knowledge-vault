@@ -499,25 +499,6 @@ def test_wrapper_rejects_data_root_outside_repository_test_area(
             "显式离线测试白名单",
         ),
         (
-            [
-                "python",
-                "scripts/prepare_docker_test_context.py",
-                "--project-root",
-                "E:\\not-a-test-project",
-            ],
-            "显式离线测试白名单",
-        ),
-        (
-            [
-                "python",
-                "-m",
-                "scripts.prepare_docker_test_context",
-                "--project-root",
-                "E:\\not-a-test-project",
-            ],
-            "显式离线测试白名单",
-        ),
-        (
             ["python", "-m", "pytest", "tests/unit", "--noconftest"],
             "conftest/config",
         ),

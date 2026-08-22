@@ -21,8 +21,8 @@ SafeFetcher，不需要浏览器 runtime。脚本不会创建 `config/local.yaml
 `python -m pip check`。如果目标环境名已存在，脚本会拒绝覆盖或删除，需改用新的
 `-EnvironmentName`。
 
-Windows `P0` 预检依次验证默认收集和完整离线套件。MCP 95% 覆盖率仍由
-Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可以使用
+Windows `P0` 预检依次验证默认收集和完整离线套件。MCP 95% 覆盖率属于独立的
+可选验证门禁，不作为 Windows 兼容性结论。也可以使用
 `-Suite Smoke`、`-Suite Contract` 或 `-Suite Offline` 缩小范围。所有 pytest
 命令都排除 `manual` 与 `network`；项目运行路径、pytest 临时目录和 cache
 目录均位于每次新建的 `.data-test/conda-*` 目录。
@@ -89,28 +89,6 @@ Ubuntu/Python 3.11 CI 门禁负责，不作为 Windows 兼容性结论。也可�
 - ✅ pytest 的临时目录和 cache 仅由 `run-test.ps1` 管理，调用方不传
   `--basetemp` 或 `cache_dir`
 - ✅ 显示测试结果
-
----
-
-#### `run-docker-test.ps1` — Linux Docker 源码白盒（测试专用）
-
-**用途**：在 Docker/Linux 中补充运行离线源码测试，不是部署 Docker 镜像、发布包或
-Windows 兼容性替代品。脚本先把源码复制到 `.data-test` 下的受限上下文；它拒绝
-`local.yaml`、`.env*`、链接和疑似凭据的未跟踪文件，容器运行阶段没有宿主 checkout、
-用户 profile、Docker socket 或真实数据挂载。
-
-```powershell
-# 首次明确允许拉取基础镜像与安装测试依赖；这一步可能联网。
-./scripts/run-docker-test.ps1 -ProvisionImage
-
-# 镜像已存在时，运行阶段始终 --network none / --read-only / 非 root。
-./scripts/run-docker-test.ps1 -DataRoot .data-test/docker-source
-```
-
-运行时只挂载本轮 `.data-test/.../runtime` 输出目录，并经
-`tests/offline_entrypoint.py` 启动；Provider、真实 Vault、真实配置和真实迁移均不可用。
-Docker lane 只提供 Linux 源码证据，不能替代 Windows source、wheel clean-install、
-内部包黑盒或任何 release 证据。
 
 ---
 
