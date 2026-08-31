@@ -1,4 +1,10 @@
-﻿# Personal Knowledge Vault - 自动安装脚本 (PowerShell)
+﻿# Historical entrypoint fence: this script predates the personal runtime
+# layout and must never create .data, config/local.yaml, a venv, or network
+# traffic. Keep the return before every Config/Python/filesystem action.
+[Console]::Error.WriteLine("已停用的 legacy setup 入口；请使用当前文档和受控 lifecycle。")
+exit 2
+
+# Personal Knowledge Vault - 自动安装脚本 (PowerShell)
 # 作者: 幽浮酱
 # 用途: 创建虚拟环境、安装依赖、初始化数据库
 

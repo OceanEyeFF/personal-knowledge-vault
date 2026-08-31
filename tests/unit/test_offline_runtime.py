@@ -461,7 +461,7 @@ def test_synthetic_ready_seed_preserves_existing_runtime_snapshot(
     )
     existing_snapshot = {
         "schema_version": 1,
-        "database": {"schema_version": "1.2.4"},
+        "database": {"schema_version": "1.2.5"},
         "embedding": {"provider": "offline", "fingerprint": {}},
     }
     config = SimpleNamespace(

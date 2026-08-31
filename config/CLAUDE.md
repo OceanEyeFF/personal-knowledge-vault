@@ -54,6 +54,21 @@ ai:
     timeout_seconds: 30
     max_retries: 3
 
+  # R4 内部自动 AI 生命周期；默认关闭。启用必须由用户一次确认当前
+  # policy_sha256，并配置至少一个 token hard cap。没有价格卡时只记录 token，
+  # 不推测价格；price card/金额上限是可选的第二层控制。
+  automation:
+    schema_version: 1
+    enabled: false
+    authorization:
+      policy_sha256: null
+    token_budget:
+      timezone: "UTC"                  # IANA timezone
+      daily_total_tokens: null
+      monthly_total_tokens: null
+    retry:
+      max_attempts: 2
+
 # 检索配置
 retrieval:
   bm25:
@@ -242,6 +257,11 @@ ai:
 `Config.update_user_config()` 是产品写入入口。`update_local_config()` 和
 `Config.local_config_path` 保留一个 API-major 的弃用兼容，但都指向上述用户
 配置，绝不会写 data-root 内的 runtime `local.yaml`。
+
+R4 的 `ai.automation` 也只属于用户业务配置：它保存是否启用、无密钥的 policy
+approval hash、token 配额、时区和可选 price-card reference。它不会存入 API key，也不会
+进入 `<data-root>/config/local.yaml`；后者只保存 PKV 管理的 generation binding/runtime
+state。自动化 policy inspect 是纯本地检查，不创建 Provider、网络连接、数据根或日志。
 
 项目不加载 `.env`，旧 `PKV_LLM_*` / `PKV_EMBD_*` 变量不会覆盖 YAML。
 

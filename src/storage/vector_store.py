@@ -224,6 +224,20 @@ class VectorStore:
         self._runtime_config = runtime_config
         self._allow_index_creation = allow_index_creation
         self._read_only = read_only
+        # A Config-bound writable VectorStore is a product data-root writer:
+        # construction itself may create the index directory, recover a pair
+        # transaction, migrate metadata, or create lock sidecars.  Standalone
+        # tmp-path fixtures intentionally omit runtime_config; they are listed
+        # separately in the R3 writer inventory and cannot become a product
+        # adapter merely by acquiring an ambient Config later.
+        bound_layout = getattr(runtime_config, "layout", None)
+        if not self._read_only and bound_layout is not None:
+            from src.runtime.writer_inventory import require_active_data_root_writer
+
+            require_active_data_root_writer(
+                bound_layout,
+                owner="vector_store",
+            )
         self._contract = self._resolve_path_contract(
             self.index_dir,
             runtime_config=runtime_config,

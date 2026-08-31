@@ -253,7 +253,9 @@ def test_application_config_b_paths_never_fall_back_to_global_get_config(
     assert sqlite_tokenizer._runtime_config is config_b
     assert bm25_tokenizer._runtime_config is config_b
     assert router.text_processor._runtime_config is config_b
-    assert router.hybrid_retriever.bm25_retriever.text_processor._runtime_config is config_b
+    # R4 keeps a non-ready generation out of the semantic branch.  The router
+    # remains config-bound but must not construct the former flat hybrid reader.
+    assert router.hybrid_retriever is None
     assert evidence_tokenizer._runtime_config is config_b
     assert exploration_tokenizer._runtime_config is config_b
 

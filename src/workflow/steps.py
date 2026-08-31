@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -386,6 +387,12 @@ class AnalyzeStep(BaseStep):
             分析结果字典
         """
         entry: Optional[Entry] = context.state.get("entry")
+        if context.state.get("defer_ai_automation") is True:
+            # This branch must stay before Config/client construction: archive
+            # primary storage is complete before the internal AI lifecycle
+            # decides whether a Provider and token reservation are permitted.
+            self._log(context, "AI 分析已交由内部自动生命周期处理")
+            return {"entry": entry, "ai_automation_deferred": True}
         content = context.state.get("content") or (entry.content if entry else "")
         if not content:
             message = "内容为空，跳过分析"
@@ -677,6 +684,19 @@ class StoreStep(BaseStep):
             if self._runtime_config is not None
             else get_config()
         )
+        if os.environ.get("PKV_TEST_OFFLINE") == "1":
+            # The historical standalone Engine/StoreStep composition remains a
+            # deterministic offline fixture seam only.  It is not a supported
+            # product writer because it has no Application/Kernel mutation
+            # owner to carry the R3 task capability into workers.
+            pass
+        else:
+            from src.runtime.writer_inventory import require_active_data_root_writer
+
+            require_active_data_root_writer(
+                config.layout,
+                owner="workflow_store",
+            )
 
         required_targets = {"markdown", "sqlite"}
         if not required_targets.issubset(set(targets)):
@@ -712,7 +732,8 @@ class StoreStep(BaseStep):
         chunks: Optional[List[str]] = None
         vector_operation = None
         vector_error: Optional[BaseException] = None
-        vector_required = "vector_index" in targets
+        vector_deferred = context.state.get("defer_ai_automation") is True
+        vector_required = "vector_index" in targets and not vector_deferred
         if vector_required:
             try:
                 embedder = self._embedder
@@ -781,6 +802,9 @@ class StoreStep(BaseStep):
                 "entry": entry,
             }
         )
+        if vector_deferred:
+            result["ai_automation_deferred"] = True
+            result["deferred_targets"] = ["ai_analyze", "vector_index"]
         stable_errors = list(operation.errors)
         result["storage_errors"] = stable_errors
         # WorkflowEngine consumes the human-readable ``errors`` key. Preserve

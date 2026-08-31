@@ -33,6 +33,7 @@ class QueryRouter:
         *,
         embedder_factory: Callable[[], Embedder] | None = None,
         runtime_config: Any = None,
+        hybrid_retriever_factory: Callable[[], Any] | None = None,
     ) -> None:
         if isinstance(token_threshold, bool) or not isinstance(token_threshold, int):
             raise ValueError("token_threshold 必须是正整数")
@@ -48,12 +49,17 @@ class QueryRouter:
             runtime_config=runtime_config,
             text_processor=self.text_processor,
         )
-        self.hybrid_retriever = HybridRetriever(
-            db_path,
-            vector_index_dir,
-            embedder,
-            embedder_factory=embedder_factory,
-            runtime_config=runtime_config,
+        self._hybrid_retriever_factory = hybrid_retriever_factory
+        self.hybrid_retriever = (
+            None
+            if hybrid_retriever_factory is not None
+            else HybridRetriever(
+                db_path,
+                vector_index_dir,
+                embedder,
+                embedder_factory=embedder_factory,
+                runtime_config=runtime_config,
+            )
         )
         self.token_threshold = token_threshold
 
@@ -102,7 +108,12 @@ class QueryRouter:
             retriever = self.bm25_retriever
         else:
             selected = "hybrid"
-            retriever = self.hybrid_retriever
+            hybrid_retriever_factory = getattr(self, "_hybrid_retriever_factory", None)
+            retriever = (
+                hybrid_retriever_factory()
+                if hybrid_retriever_factory is not None
+                else self.hybrid_retriever
+            )
 
         logger.info(
             "查询分词数=%s, threshold=%s, strategy=%s",

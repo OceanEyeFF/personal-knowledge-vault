@@ -18,8 +18,8 @@ import pytest
 import src.runtime.write_lease as write_lease_module
 from src.runtime import VaultWriteLease, write_lease_scope
 from src.runtime.errors import ErrorCode, PKVRuntimeError
+from src.runtime.file_logging import RuntimeFileLogBinding, runtime_file_log_scope
 from src.runtime.layout import RuntimeLayout
-from src.runtime.write_lease import has_active_write_lease
 from src.utils.logger import LoggerSetup
 
 
@@ -418,6 +418,7 @@ def test_persistent_logger_is_inert_without_write_lease_then_writes_inside_one(
 
     layout = _layout(tmp_path)
     log_path = layout.log_dir / "pkv.log"
+    binding = RuntimeFileLogBinding(layout=layout, snapshot_id="lease-test")
     root_logger = logging.getLogger()
     original_handlers = list(root_logger.handlers)
     original_level = root_logger.level
@@ -427,11 +428,8 @@ def test_persistent_logger_is_inert_without_write_lease_then_writes_inside_one(
         LoggerSetup.setup(
             level="INFO",
             log_file=log_path,
-            path_validator=layout.writable_user_path,
             console_stream=io.StringIO(),
-            delay=True,
-            create_parent=False,
-            emit_guard=lambda: has_active_write_lease(layout),
+            runtime_file_binding=binding,
         )
 
         root_logger.info("read-path diagnostic")
@@ -442,7 +440,8 @@ def test_persistent_logger_is_inert_without_write_lease_then_writes_inside_one(
             # Bootstrap/setup owns directory creation.  The logger itself must
             # not make an unleased parent directory as a side effect of setup.
             layout.ensure_user_directories()
-            root_logger.info("covered mutation")
+            with runtime_file_log_scope(binding, owner="lease_test"):
+                root_logger.info("covered mutation")
 
         assert log_path.is_file()
         assert "covered mutation" in log_path.read_text(encoding="utf-8")
@@ -453,3 +452,71 @@ def test_persistent_logger_is_inert_without_write_lease_then_writes_inside_one(
         root_logger.handlers[:] = original_handlers
         root_logger.setLevel(original_level)
         LoggerSetup._initialized = original_initialized
+
+
+def test_runtime_log_reload_keeps_inflight_binding_separate_until_writer_drains(
+    tmp_path: Path,
+) -> None:
+    """Reload must not send an old mutation's records through Config B's handler."""
+
+    layout = _layout(tmp_path)
+    binding_a = RuntimeFileLogBinding(layout=layout, snapshot_id="config-a")
+    binding_b = RuntimeFileLogBinding(layout=layout, snapshot_id="config-b")
+    root_logger = logging.getLogger()
+    original_handlers = list(root_logger.handlers)
+    original_level = root_logger.level
+    started = threading.Event()
+    allow_old_log = threading.Event()
+    finished = threading.Event()
+    errors: list[BaseException] = []
+
+    try:
+        LoggerSetup.setup(
+            level="INFO",
+            log_file=binding_a.path,
+            console_stream=io.StringIO(),
+            runtime_file_binding=binding_a,
+        )
+
+        def old_mutation() -> None:
+            try:
+                with write_lease_scope(layout):
+                    layout.ensure_user_directories()
+                    with runtime_file_log_scope(binding_a, owner="archive-a"):
+                        started.set()
+                        assert allow_old_log.wait(10)
+                        root_logger.info("old-snapshot mutation")
+            except BaseException as exc:  # pragma: no cover - test diagnostics
+                errors.append(exc)
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=old_mutation)
+        worker.start()
+        assert started.wait(10)
+
+        assert LoggerSetup.rebind_runtime_file_handler(binding_b) is True
+        root_logger.info("read-path after reload")
+        allow_old_log.set()
+        assert finished.wait(10)
+        worker.join(timeout=10)
+        assert not errors
+
+        with write_lease_scope(layout):
+            with runtime_file_log_scope(binding_b, owner="archive-b"):
+                root_logger.info("new-snapshot mutation")
+
+        content = binding_a.path.read_text(encoding="utf-8")
+        assert "old-snapshot mutation" in content
+        assert "new-snapshot mutation" in content
+        assert "read-path after reload" not in content
+        assert all(
+            getattr(handler, "_pkv_runtime_file_binding", None) != binding_a
+            for handler in root_logger.handlers
+        )
+    finally:
+        for handler in list(root_logger.handlers):
+            root_logger.removeHandler(handler)
+            handler.close()
+        root_logger.handlers[:] = original_handlers
+        root_logger.setLevel(original_level)

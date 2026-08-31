@@ -46,7 +46,8 @@ from src.utils.config import endpoint_contract_sha256
 
 
 _SNAPSHOT_EXTENSION_KEY = "embedding_index"
-_SNAPSHOT_EXTENSION_SCHEMA = 1
+_SNAPSHOT_EXTENSION_SCHEMA = 2
+_LEGACY_POINTER_EXTENSION_SCHEMA = 1
 _GENERATION_MANIFEST_NAME = "generation-manifest.json"
 _GENERATION_MANIFEST_SCHEMA = 1
 _DOCUMENT_PIPELINE_VERSION = 1
@@ -102,6 +103,10 @@ class EmbeddingIndexState(str, Enum):
     READY = "ready"
     INITIAL_GENERATION_PENDING = "initial_generation_pending"
     REBUILD_REQUIRED = "rebuild_required"
+    PROCESSING = "processing"
+    RETRY_REQUIRED = "retry_required"
+    BUDGET_PAUSED = "budget_paused"
+    AUTHORIZATION_REQUIRED = "authorization_required"
     REPAIR_REQUIRED = "repair_required"
 
 
@@ -909,6 +914,54 @@ def _pointer_extension(
     return extension if isinstance(extension, Mapping) else None
 
 
+def _declared_nonready_state(value: object) -> EmbeddingIndexState:
+    """Parse only durable non-ready binding states admitted by schema v2."""
+
+    try:
+        state = EmbeddingIndexState(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("embedding binding state") from exc
+    if state not in {
+        EmbeddingIndexState.READY,
+        EmbeddingIndexState.REBUILD_REQUIRED,
+        EmbeddingIndexState.PROCESSING,
+        EmbeddingIndexState.RETRY_REQUIRED,
+        EmbeddingIndexState.BUDGET_PAUSED,
+        EmbeddingIndexState.AUTHORIZATION_REQUIRED,
+    }:
+        raise ValueError("embedding binding state")
+    return state
+
+
+def _binding_state_issue(state: EmbeddingIndexState) -> EmbeddingIssue:
+    """Project a non-ready binding without calling it an empty vector result."""
+
+    mapping = {
+        EmbeddingIndexState.REBUILD_REQUIRED: (
+            ErrorCode.EMBEDDING_REBUILD_REQUIRED,
+            "知识源已变化，正在等待内部 Embedding 重建。",
+        ),
+        EmbeddingIndexState.PROCESSING: (
+            ErrorCode.EMBEDDING_PROCESSING,
+            "Embedding 正在处理，相关文档将在 generation 发布后可用。",
+        ),
+        EmbeddingIndexState.RETRY_REQUIRED: (
+            ErrorCode.EMBEDDING_RETRY_REQUIRED,
+            "Embedding 上次处理可恢复失败，等待内部重试。",
+        ),
+        EmbeddingIndexState.BUDGET_PAUSED: (
+            ErrorCode.EMBEDDING_BUDGET_PAUSED,
+            "Embedding 自动任务已因 token 配额暂停。",
+        ),
+        EmbeddingIndexState.AUTHORIZATION_REQUIRED: (
+            ErrorCode.EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED,
+            "Embedding 自动任务等待当前自动化策略确认。",
+        ),
+    }
+    code, message = mapping[state]
+    return EmbeddingIssue(code=code.value, message=message, stage="embedding_binding")
+
+
 def _inspection(
     *,
     state: EmbeddingIndexState,
@@ -1150,14 +1203,83 @@ def inspect_embedding_index(
         )
 
     try:
-        if extension.get("schema_version") != _SNAPSHOT_EXTENSION_SCHEMA:
+        schema_version = extension.get("schema_version")
+        if schema_version not in {
+            _LEGACY_POINTER_EXTENSION_SCHEMA,
+            _SNAPSHOT_EXTENSION_SCHEMA,
+        }:
             raise ValueError("pointer schema")
         if extension.get("data_root_identity_sha256") != _data_root_identity_sha256(config):
             raise ValueError("pointer root identity")
+        pointer_contract = _parse_contract(extension.get("contract"))
+        if pointer_contract is None:
+            raise ValueError("pointer contract")
+        if schema_version == _SNAPSHOT_EXTENSION_SCHEMA:
+            declared_state = _declared_nonready_state(extension.get("state"))
+            source_digest = extension.get("source_digest")
+            if not _is_sha256(source_digest):
+                raise ValueError("binding source digest")
+            if pointer_contract != contract or not _runtime_embedding_base_matches(
+                snapshot.payload,
+                contract,
+                config=config,
+            ):
+                return _inspection(
+                    state=EmbeddingIndexState.REBUILD_REQUIRED,
+                    contract=contract,
+                    source=captured,
+                    active_generation=None,
+                    previous_generation=None,
+                    manifest_sha=None,
+                    issues=(
+                        EmbeddingIssue(
+                            code=ErrorCode.EMBEDDING_REBUILD_REQUIRED.value,
+                            message="当前 Embedding 配置与 binding 契约不同，需要重建。",
+                            stage="embedding_contract",
+                        ),
+                    ),
+                    config=config,
+                    source_reader=source_reader,
+                    snapshot=snapshot,
+                    config_source_revision=config_source_revision,
+                )
+            if declared_state is not EmbeddingIndexState.READY:
+                if source_digest != captured.summary.digest:
+                    return _inspection(
+                        state=EmbeddingIndexState.REBUILD_REQUIRED,
+                        contract=contract,
+                        source=captured,
+                        active_generation=None,
+                        previous_generation=None,
+                        manifest_sha=None,
+                        issues=(
+                            EmbeddingIssue(
+                                code=ErrorCode.EMBEDDING_REBUILD_REQUIRED.value,
+                                message="知识源在非 ready Embedding 状态期间已变化，需要重新计划。",
+                                stage="embedding_source",
+                            ),
+                        ),
+                        config=config,
+                        source_reader=source_reader,
+                        snapshot=snapshot,
+                        config_source_revision=config_source_revision,
+                    )
+                return _inspection(
+                    state=declared_state,
+                    contract=contract,
+                    source=captured,
+                    active_generation=None,
+                    previous_generation=None,
+                    manifest_sha=None,
+                    issues=(_binding_state_issue(declared_state),),
+                    config=config,
+                    source_reader=source_reader,
+                    snapshot=snapshot,
+                    config_source_revision=config_source_revision,
+                )
         active_generation = extension.get("active_generation")
         previous_generation = extension.get("previous_generation")
         manifest_sha = extension.get("active_manifest_sha256")
-        pointer_contract = _parse_contract(extension.get("contract"))
         retained = extension.get("retained_generations")
         if (
             not _is_generation_id(active_generation)
@@ -1192,6 +1314,29 @@ def inspect_embedding_index(
                 source_reader=source_reader,
                 snapshot=snapshot,
             config_source_revision=config_source_revision,
+            )
+        if (
+            schema_version == _SNAPSHOT_EXTENSION_SCHEMA
+            and extension.get("source_digest") != captured.summary.digest
+        ):
+            return _inspection(
+                state=EmbeddingIndexState.REBUILD_REQUIRED,
+                contract=contract,
+                source=captured,
+                active_generation=active_generation,
+                previous_generation=previous_generation,
+                manifest_sha=manifest_sha,
+                issues=(
+                    EmbeddingIssue(
+                        code=ErrorCode.EMBEDDING_REBUILD_REQUIRED.value,
+                        message="Embedding binding 的知识源摘要已漂移，需要重建。",
+                        stage="embedding_source",
+                    ),
+                ),
+                config=config,
+                source_reader=source_reader,
+                snapshot=snapshot,
+                config_source_revision=config_source_revision,
             )
         manifest, actual_manifest_sha = _validate_manifest(
             config,
@@ -1758,13 +1903,18 @@ def _pointer_update(
     snapshot: RuntimeSnapshotDocument,
     *,
     contract: EmbeddingContract,
+    source_digest: str,
     generation_id: str,
     previous_generation: str | None,
     manifest_sha: str,
 ) -> RuntimeSnapshotDocument:
+    if not _is_sha256(source_digest):
+        raise ValueError("Embedding binding source digest 无效")
     extension = {
         "schema_version": _SNAPSHOT_EXTENSION_SCHEMA,
         "data_root_identity_sha256": _data_root_identity_sha256(config),
+        "state": EmbeddingIndexState.READY.value,
+        "source_digest": source_digest,
         "active_generation": generation_id,
         "previous_generation": previous_generation,
         "retained_generations": _retained_generation_ids(
@@ -1778,6 +1928,86 @@ def _pointer_update(
     return RuntimeSnapshotStore(config.layout).publish(
         snapshot,
         snapshot.merged({_SNAPSHOT_EXTENSION_KEY: extension}),
+    )
+
+
+def publish_embedding_nonready_binding(
+    config: Any,
+    *,
+    state: EmbeddingIndexState,
+    source: EmbeddingSource | None = None,
+) -> EmbeddingIndexInspection:
+    """Durably revoke an active generation after a committed source mutation.
+
+    This is an internal Application lifecycle primitive, not a public rebuild
+    API.  It performs no Provider construction and never consults a flat vector
+    directory.  The caller must already hold the same data-root writer lease
+    that committed the Markdown/SQLite mutation; publishing a non-ready binding
+    prevents later reads from silently using the superseded generation.
+    """
+
+    if state not in {
+        EmbeddingIndexState.REBUILD_REQUIRED,
+        EmbeddingIndexState.PROCESSING,
+        EmbeddingIndexState.RETRY_REQUIRED,
+        EmbeddingIndexState.BUDGET_PAUSED,
+        EmbeddingIndexState.AUTHORIZATION_REQUIRED,
+    }:
+        raise ValueError("仅能发布非 ready Embedding binding 状态")
+    if config is None or not hasattr(config, "layout"):
+        raise TypeError("config 必须是显式的 Config 快照")
+
+    from src.runtime.writer_inventory import require_active_data_root_writer
+
+    require_active_data_root_writer(
+        config.layout,
+        owner="ai_automation_lifecycle",
+    )
+    source_reader = source or SQLiteEmbeddingSource()
+    try:
+        contract = EmbeddingContract.from_config(config)
+        config_source_revision = _config_source_revision(config)
+        snapshot_store = RuntimeSnapshotStore(config.layout)
+        snapshot = snapshot_store.read()
+        if not _runtime_embedding_base_matches(snapshot.payload, contract, config=config):
+            raise _safe_runtime_error(
+                ErrorCode.EMBEDDING_REBUILD_REQUIRED,
+                "R2 运行态快照尚未完成或已漂移；不能更新 Embedding binding。",
+                stage="runtime_snapshot",
+            )
+        captured = source_reader.capture(config)
+        extension = {
+            "schema_version": _SNAPSHOT_EXTENSION_SCHEMA,
+            "data_root_identity_sha256": _data_root_identity_sha256(config),
+            "state": state.value,
+            "source_digest": captured.summary.digest,
+            "contract": contract.to_dict(),
+        }
+        published = snapshot_store.publish(
+            snapshot,
+            snapshot.merged({_SNAPSHOT_EXTENSION_KEY: extension}),
+        )
+    except PKVRuntimeError:
+        raise
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        raise _safe_runtime_error(
+            ErrorCode.REPAIR_REQUIRED,
+            "Embedding 非 ready binding 无法安全发布。",
+            stage="embedding_binding",
+        ) from exc
+
+    return _inspection(
+        state=state,
+        contract=contract,
+        source=captured,
+        active_generation=None,
+        previous_generation=None,
+        manifest_sha=None,
+        issues=(_binding_state_issue(state),),
+        config=config,
+        source_reader=source_reader,
+        snapshot=published,
+        config_source_revision=config_source_revision,
     )
 
 
@@ -1851,7 +2081,15 @@ def execute_embedding_rebuild(
     else:
         lease = writer_lease_factory(plan._config)
 
-    with lease:
+    from src.runtime.file_logging import runtime_file_log_binding, runtime_file_log_scope
+
+    with lease, runtime_file_log_scope(
+        runtime_file_log_binding(
+            plan._config,
+            snapshot_id=f"config-{id(plan._config)}",
+        ),
+        owner="embedding_generation",
+    ):
         current = inspect_embedding_index(plan._config, source=plan._source)
         if not _canonical_plan_matches(plan, current):
             raise _safe_runtime_error(
@@ -1929,6 +2167,7 @@ def execute_embedding_rebuild(
                     plan._config,
                     current._snapshot,
                     contract=current.contract,
+                    source_digest=current._captured_source.summary.digest,
                     generation_id=generation_id,
                     previous_generation=current.active_generation,
                     manifest_sha=manifest_sha,
@@ -2019,6 +2258,27 @@ def resolve_embedding_index_binding(
             "当前没有与配置和知识源一致的 Embedding generation；需要显式重建。",
             stage="embedding_index",
         )
+    nonready_errors = {
+        EmbeddingIndexState.PROCESSING: (
+            ErrorCode.EMBEDDING_PROCESSING,
+            "Embedding 正在处理，当前不能使用旧 generation 或平铺索引。",
+        ),
+        EmbeddingIndexState.RETRY_REQUIRED: (
+            ErrorCode.EMBEDDING_RETRY_REQUIRED,
+            "Embedding 处理待重试，当前不能使用旧 generation 或平铺索引。",
+        ),
+        EmbeddingIndexState.BUDGET_PAUSED: (
+            ErrorCode.EMBEDDING_BUDGET_PAUSED,
+            "Embedding 自动任务已因 token 配额暂停。",
+        ),
+        EmbeddingIndexState.AUTHORIZATION_REQUIRED: (
+            ErrorCode.EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED,
+            "Embedding 自动任务等待当前策略确认。",
+        ),
+    }
+    if inspection.state in nonready_errors:
+        code, message = nonready_errors[inspection.state]
+        raise _safe_runtime_error(code, message, stage="embedding_index")
     raise _safe_runtime_error(
         ErrorCode.REPAIR_REQUIRED,
         "Embedding generation 状态不可验证，需要修复。",
@@ -2046,5 +2306,6 @@ __all__ = [
     "execute_embedding_rebuild",
     "inspect_embedding_index",
     "plan_embedding_rebuild",
+    "publish_embedding_nonready_binding",
     "resolve_embedding_index_binding",
 ]

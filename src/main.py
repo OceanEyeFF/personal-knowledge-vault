@@ -21,8 +21,8 @@ from src.utils.config import Config, get_config
 from src.utils.logger import LoggerSetup
 from src.runtime.bootstrap import project_bootstrap_error
 from src.runtime.errors import PKVRuntimeError
+from src.runtime.file_logging import runtime_file_log_binding
 from src.runtime.lifecycle import RuntimeInspection, RuntimeReadiness, inspect_runtime
-from src.runtime.write_lease import has_active_write_lease
 from src.application import configure_application
 
 LOG_LEVEL_DEBUG = "DEBUG"
@@ -122,7 +122,12 @@ def _resolve_log_level(verbose: bool, debug: bool) -> str:
     return LOG_LEVEL_WARNING
 
 
-def _configure_logging(config: Config, level: str) -> None:
+def _configure_logging(
+    config: Config,
+    level: str,
+    *,
+    snapshot_id: str | None = None,
+) -> None:
     """Configure logging only after the runtime has been verified READY.
 
     The persistent ``pkv.log`` handler is delayed and only emits while the
@@ -134,14 +139,15 @@ def _configure_logging(config: Config, level: str) -> None:
     stage = "runtime_logging"
     try:
         log_file = config.log_dir / "pkv.log"
+        binding = runtime_file_log_binding(
+            config,
+            snapshot_id=snapshot_id or f"config-{id(config)}",
+        )
         LoggerSetup.setup(
             level=level,
             log_file=log_file,
-            path_validator=config.layout.writable_user_path,
             console_stream=sys.stderr,
-            delay=True,
-            create_parent=False,
-            emit_guard=lambda: has_active_write_lease(config.layout),
+            runtime_file_binding=binding,
         )
         logging.getLogger(__name__).debug("Logging initialized at %s", level)
     except PKVRuntimeError:
@@ -215,7 +221,11 @@ def _prepare_cli_runtime(*, command_name: str | None = None) -> None:
         if inspection.readiness is RuntimeReadiness.READY:
             verbose = bool(context_object.get("verbose")) if isinstance(context_object, dict) else False
             debug = bool(context_object.get("debug")) if isinstance(context_object, dict) else False
-            _configure_logging(config, _resolve_log_level(verbose, debug))
+            _configure_logging(
+                config,
+                _resolve_log_level(verbose, debug),
+                snapshot_id=f"config-{id(config)}",
+            )
     except _StartupProjectionError:
         raise
     except PKVRuntimeError:

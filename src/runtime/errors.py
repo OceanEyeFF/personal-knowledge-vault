@@ -41,6 +41,12 @@ class ErrorCode(str, Enum):
     RUNTIME_PLAN_STALE = "runtime_plan_stale"
     DATA_ROOT_SWITCH_REQUIRED = "data_root_switch_required"
     EMBEDDING_REBUILD_REQUIRED = "embedding_rebuild_required"
+    EMBEDDING_PROCESSING = "embedding_processing"
+    EMBEDDING_RETRY_REQUIRED = "embedding_retry_required"
+    EMBEDDING_BUDGET_PAUSED = "embedding_budget_paused"
+    EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED = (
+        "embedding_automation_authorization_required"
+    )
     WORKFLOW_CONFIG_INVALID = "workflow_config_invalid"
     WORKFLOW_STEP_FAILED = "workflow_step_failed"
     WORKFLOW_CONDITION_INVALID = "workflow_condition_invalid"

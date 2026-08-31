@@ -235,4 +235,6 @@ async def test_search_vector_without_provider_is_error_not_no_hits(mcp_server):
     assert data["issues"][0]["code"] in {
         "provider_config_invalid",
         "retrieval_index_unavailable",
+        "embedding_rebuild_required",
+        "repair_required",
     }

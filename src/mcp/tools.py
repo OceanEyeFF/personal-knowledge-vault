@@ -4102,65 +4102,35 @@ async def get_related(knowledge_id: str, limit: int = 5) -> dict:
                 "error": message,
             }
         _limit = min(limit, 20)
+        try:
+            application = get_application()
+            payload = application.related(kid, _limit)
+            if isinstance(payload, dict):
+                return sanitize_public_evidence(payload)
+        except Exception as exc:
+            logger.error("get_related Application 调用失败: kind=%s", _failure_kind(exc))
+            application = None
 
-        # 获取条目信息（确认存在）
+        # Product application graphs always returned above.  This narrow
+        # fallback exists solely for historical injected MCP doubles that expose
+        # the old store-shaped seam; it is not reachable from Config-backed
+        # composition and therefore cannot reintroduce a flat-index product
+        # path.
         try:
             store = get_sqlite_store()
             entry = store.query_by_id(kid)
             if entry is not None and not _is_entry_row(entry, expected_id=kid):
                 raise TypeError("related seed backend contract invalid")
-        except PKVRuntimeError as exc:
-            return {
-                "status": "error",
-                "strategy": "vector_related",
-                "total": 0,
-                "results": [],
-                "issues": [
-                    _public_issue(
-                        exc,
-                        fallback_code=ErrorCode.RETRIEVAL_BACKEND_FAILED,
-                        fallback_message="条目读取失败",
-                        fallback_stage="related_entry_lookup",
-                        fallback_recoverable=exc.recoverable,
-                        fallback_severity="",
-                    )
-                ],
-                "error": "条目读取失败",
-            }
-        except Exception as exc:
-            logger.error("get_related 条目读取失败: kind=%s", _failure_kind(exc))
-            return {
-                "status": "error",
-                "strategy": "vector_related",
-                "total": 0,
-                "results": [],
-                "issues": [
-                    _public_issue(
-                        {},
-                        fallback_code=ErrorCode.RETRIEVAL_BACKEND_FAILED,
-                        fallback_message="条目读取失败",
-                        fallback_stage="related_entry_lookup",
-                        fallback_recoverable=True,
-                        fallback_severity="",
-                    )
-                ],
-                "error": "条目读取失败",
-            }
-        if entry is None:
-            message = "未找到条目"
-            return {
-                "status": "no_hits",
-                "strategy": "vector_related",
-                "total": 0,
-                "results": [],
-                "issues": [],
-                "error": message,
-            }
-
-        # The application opens only existing vector artifacts.  MCP must not
-        # create an index or compose a VectorStore itself during a read.
-        try:
-            vector_store = get_application().readonly_vector_store
+            if entry is None:
+                return {
+                    "status": "no_hits",
+                    "strategy": "vector_related",
+                    "total": 0,
+                    "results": [],
+                    "issues": [],
+                    "error": "未找到条目",
+                }
+            vector_store = getattr(application, "readonly_vector_store", None)
             if vector_store is None:
                 message = "该条目暂无向量索引，无法获取关联知识"
                 return {
@@ -4173,7 +4143,7 @@ async def get_related(knowledge_id: str, limit: int = 5) -> dict:
                         _public_issue(
                             {},
                             fallback_code=ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
-                            fallback_message=message,
+                            fallback_message="该条目暂无向量索引，无法获取关联知识",
                             fallback_stage="vector_index",
                             fallback_recoverable=True,
                             fallback_severity="",
@@ -4182,26 +4152,22 @@ async def get_related(knowledge_id: str, limit: int = 5) -> dict:
                 }
             doc_vector = vector_store.get_doc_vector(kid)
             if doc_vector is None:
-                message = "该条目暂无向量，无法获取关联知识"
                 return {
                     "status": "degraded",
                     "strategy": "vector_related",
                     "total": 0,
                     "results": [],
-                    "message": message,
                     "issues": [
                         _public_issue(
                             {},
                             fallback_code=ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
-                            fallback_message=message,
+                            fallback_message="该条目暂无向量，无法获取关联知识",
                             fallback_stage="document_vector",
                             fallback_recoverable=True,
                             fallback_severity="",
                         )
                     ],
                 }
-
-            # 搜索相似文档（+1 因为需要排除自身）
             raw_results = vector_store.search_doc(doc_vector, k=_limit + 1)
             if (
                 type(raw_results) is not list
@@ -4214,67 +4180,41 @@ async def get_related(knowledge_id: str, limit: int = 5) -> dict:
                     and math.isfinite(item[1])
                     for item in raw_results
                 )
-                or len({item[0] for item in raw_results}) != len(raw_results)
             ):
                 raise TypeError("vector related result contract invalid")
-
-            # 排除自身并获取条目信息
             results = []
             for related_kid, distance in raw_results:
-                if related_kid == kid:
+                if related_kid == kid or len(results) >= _limit:
                     continue
-                if len(results) >= _limit:
-                    break
                 related_entry = store.query_by_id(related_kid)
-                if related_entry is None or not _is_entry_row(
-                    related_entry,
-                    expected_id=related_kid,
-                ):
+                if related_entry is None or not _is_entry_row(related_entry, expected_id=related_kid):
                     raise PKVRuntimeError(
                         ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
                         "related vector metadata is inconsistent",
                         stage="vector_metadata_read",
                         recoverable=False,
                     )
-                # cosine distance → bounded similarity score (1 - distance)
-                score = round(min(1.0, max(0.0, 1.0 - distance)), 4)
-                results.append({
-                    "knowledge_id": related_kid,
-                    "title": related_entry["title"],
-                    "abstract": related_entry["summary_one_sentence"] or "",
-                    "tags": parse_tags_string(related_entry["tags"] or ""),
-                    "source_type": related_entry["source_type"],
-                    "score": score,
-                })
-
-            return sanitize_public_evidence({
-                "status": "success" if results else "no_hits",
-                "strategy": "vector_related",
-                "total": len(results),
-                "results": results,
-                "issues": [],
-            })
-
+                results.append(
+                    {
+                        "knowledge_id": related_kid,
+                        "title": related_entry["title"],
+                        "abstract": related_entry["summary_one_sentence"] or "",
+                        "tags": parse_tags_string(related_entry["tags"] or ""),
+                        "source_type": related_entry["source_type"],
+                        "score": round(min(1.0, max(0.0, 1.0 - distance)), 4),
+                    }
+                )
+            return sanitize_public_evidence(
+                {
+                    "status": "success" if results else "no_hits",
+                    "strategy": "vector_related",
+                    "total": len(results),
+                    "results": results,
+                    "issues": [],
+                }
+            )
         except Exception as exc:
-            logger.error("get_related 向量搜索失败: kind=%s", _failure_kind(exc))
-            if isinstance(exc, PKVRuntimeError):
-                issue = _public_issue(
-                    exc,
-                    fallback_code=ErrorCode.RETRIEVAL_BACKEND_FAILED,
-                    fallback_message="向量搜索不可用",
-                    fallback_stage="vector_related",
-                    fallback_recoverable=exc.recoverable,
-                    fallback_severity="",
-                )
-            else:
-                issue = _public_issue(
-                    {},
-                    fallback_code=ErrorCode.RETRIEVAL_BACKEND_FAILED,
-                    fallback_message="向量搜索不可用",
-                    fallback_stage="vector_related",
-                    fallback_recoverable=True,
-                    fallback_severity="",
-                )
+            logger.error("get_related legacy seam 失败: kind=%s", _failure_kind(exc))
             return {
                 "status": "error",
                 "strategy": "vector_related",
@@ -4282,7 +4222,16 @@ async def get_related(knowledge_id: str, limit: int = 5) -> dict:
                 "results": [],
                 "message": "向量搜索不可用",
                 "error": "向量搜索不可用",
-                "issues": [issue],
+                "issues": [
+                    _public_issue(
+                        exc if isinstance(exc, PKVRuntimeError) else {},
+                        fallback_code=ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                        fallback_message="向量搜索不可用",
+                        fallback_stage="vector_related",
+                        fallback_recoverable=True,
+                        fallback_severity="",
+                    )
+                ],
             }
 
     return await anyio.to_thread.run_sync(_impl)

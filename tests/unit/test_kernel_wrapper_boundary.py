@@ -271,7 +271,7 @@ def test_kernel_owns_cross_store_delete_vector_callback() -> None:
 
     def delete(knowledge_id, *, vector_operation):
         calls.append(("coordinator", knowledge_id))
-        vector_operation(knowledge_id)
+        assert vector_operation is None
         return "deleted"
 
     application = SimpleNamespace(
@@ -284,7 +284,7 @@ def test_kernel_owns_cross_store_delete_vector_callback() -> None:
     kernel = KnowledgeKernel._from_application(application)
 
     assert kernel.delete_entry(41) == "deleted"
-    assert calls == [("coordinator", 41), ("vector", 41)]
+    assert calls == [("coordinator", 41)]
 
 
 def test_kernel_reprobes_absent_vector_index_then_uses_new_index_for_delete() -> None:

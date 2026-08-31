@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
+from datetime import datetime
 import math
 from threading import RLock
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.retrieval.result import RetrievalIssue, SearchResponse
 from src.runtime.errors import ErrorCode, PKVRuntimeError
@@ -28,6 +30,30 @@ class ApplicationSnapshot:
 
     generation: int
     config: Any
+
+
+@dataclass(frozen=True)
+class _UnavailableVectorRetriever:
+    """Generation-binding failure projected as a vector branch response.
+
+    Hybrid retrieval may still return healthy BM25 candidates, but it must carry
+    the exact non-ready binding reason rather than construct a Provider or read
+    a flat index directory.
+    """
+
+    error: PKVRuntimeError
+
+    def search(self, query: str, limit: int = 10) -> SearchResponse:
+        del query, limit
+        return SearchResponse.failed_response(
+            RetrievalIssue(
+                code=self.error.code,
+                message=str(self.error),
+                stage=self.error.stage or "embedding_index",
+                recoverable=self.error.recoverable,
+            ),
+            strategy="vector",
+        )
 
 
 @dataclass
@@ -116,6 +142,12 @@ class KnowledgeApplication:
         """
 
         if self._vector_store is None:
+            from src.runtime.writer_inventory import require_active_data_root_writer
+
+            require_active_data_root_writer(
+                self.config.layout,
+                owner="application_vector_mutation",
+            )
             factory = self.vector_store_factory or self._default_vector_store
             candidate = factory(self.config)
             self._vector_store_checked = candidate is not None
@@ -125,14 +157,55 @@ class KnowledgeApplication:
 
     @property
     def readonly_vector_store(self) -> Any | None:
-        """Open existing vector artifacts in strict no-write/no-lock mode."""
+        """Open the current ready generation in strict no-write/no-lock mode."""
+
+        store, _ = self.resolve_readonly_vector_store()
+        return store
+
+    def resolve_readonly_vector_store(self) -> tuple[Any | None, PKVRuntimeError | None]:
+        """Resolve exactly one ready generation for a complete read operation.
+
+        Product composition never probes ``config.vector_index_dir`` here.  A
+        non-ready lifecycle binding returns its stable typed reason so CLI/MCP
+        can distinguish processing/retry/budget/authorization from true empty
+        search results.  Lightweight legacy test graphs keep their injected
+        read-only seam until their callers are migrated to this Application port.
+        """
+
+        if self._uses_internal_ai_automation():
+            try:
+                from src.runtime.embedding_lifecycle import resolve_embedding_index_binding
+                from src.storage.vector_store import VectorStore
+
+                binding = resolve_embedding_index_binding(self.config)
+                return (
+                    VectorStore.open_readonly(
+                        binding.index_dir,
+                        dim=binding.contract.dimension,
+                        runtime_config=self.config,
+                        layout=self.config.layout,
+                    ),
+                    None,
+                )
+            except PKVRuntimeError as error:
+                return None, error
+            except Exception as exc:
+                return (
+                    None,
+                    PKVRuntimeError(
+                        ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                        "Embedding generation 无法以只读方式打开。",
+                        stage="embedding_index",
+                        recoverable=True,
+                    ),
+                )
 
         if self._readonly_vector_store is None:
             candidate = self._default_readonly_vector_store(self.config)
             self._readonly_vector_store_checked = candidate is not None
             if candidate is not None:
                 self._readonly_vector_store = candidate
-        return self._readonly_vector_store
+        return self._readonly_vector_store, None
 
     @property
     def bm25_retriever(self) -> Any:
@@ -148,6 +221,14 @@ class KnowledgeApplication:
         """Return the cross-store write/delete coordinator."""
 
         if self._storage_coordinator is None:
+            # Constructing the coordinator creates its durable operation-journal
+            # directory, so even lazy composition is a mutation-owned action.
+            from src.runtime.writer_inventory import require_active_data_root_writer
+
+            require_active_data_root_writer(
+                self.config.layout,
+                owner="storage_coordinator",
+            )
             from src.storage.coordinator import StorageCoordinator
 
             self._storage_coordinator = StorageCoordinator(
@@ -246,10 +327,227 @@ class KnowledgeApplication:
         if normalized_strategy == "bm25":
             return self.bm25_retriever.search(query, limit)
         if normalized_strategy == "vector":
-            return self._new_vector_retriever().search(query, limit)
+            try:
+                return self._new_vector_retriever().search(query, limit)
+            except PKVRuntimeError as error:
+                return self._generation_unavailable_search_response(error, strategy="vector")
         if normalized_strategy == "hybrid":
             return self._new_hybrid_retriever().search(query, limit)
         raise ValueError(f"不支持的检索策略: {strategy}")
+
+    def related(self, knowledge_id: int, limit: int = 5) -> dict[str, Any]:
+        """Return read-only vector neighbours from one active generation binding.
+
+        This is the shared CLI/MCP port.  In particular, a non-ready binding is
+        a degradable lifecycle state, never a flat-index probe and never an
+        otherwise-successful ``no_hits`` response.
+        """
+
+        if isinstance(knowledge_id, bool) or not isinstance(knowledge_id, int) or knowledge_id <= 0:
+            return self._related_invalid("无效的 knowledge_id，需要正整数", "related_entry_lookup")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            return self._related_invalid("limit 必须是正整数", "limit_validation")
+        safe_limit = min(limit, 20)
+        try:
+            seed = self.sqlite_store.query_by_id(knowledge_id)
+        except PKVRuntimeError as error:
+            return self._related_error(error, message="条目读取失败")
+        except Exception:
+            return self._related_error(
+                PKVRuntimeError(
+                    ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                    "条目读取失败。",
+                    stage="related_entry_lookup",
+                    recoverable=True,
+                ),
+                message="条目读取失败",
+            )
+        if seed is None:
+            return {
+                "status": "no_hits",
+                "strategy": "vector_related",
+                "total": 0,
+                "results": [],
+                "issues": [],
+                "message": "未找到条目",
+            }
+
+        if self._uses_internal_ai_automation():
+            vector_store, unavailable = self.resolve_readonly_vector_store()
+        else:
+            # Compatibility graph for injected test/legacy adapters.  Product
+            # Config snapshots always take the binding-aware branch above.
+            vector_store, unavailable = self.readonly_vector_store, None
+        if unavailable is not None or vector_store is None:
+            error = unavailable or PKVRuntimeError(
+                ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                "检索索引不可用",
+                stage="vector_index",
+                recoverable=True,
+            )
+            return self._related_degraded(error, message="向量索引不可用，无法获取关联知识")
+
+        try:
+            document_vector = vector_store.get_doc_vector(knowledge_id)
+            if document_vector is None:
+                return self._related_degraded(
+                    PKVRuntimeError(
+                        ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
+                        "当前 generation 缺少该条目的文档向量。",
+                        stage="document_vector",
+                        recoverable=True,
+                    ),
+                    message="该条目暂无向量，无法获取关联知识",
+                )
+            raw_results = vector_store.search_doc(document_vector, k=safe_limit + 1)
+            if (
+                type(raw_results) is not list
+                or len(raw_results) > safe_limit + 1
+                or not all(
+                    type(item) is tuple
+                    and len(item) == 2
+                    and type(item[0]) is int
+                    and item[0] > 0
+                    and type(item[1]) in {int, float}
+                    and math.isfinite(item[1])
+                    for item in raw_results
+                )
+                or len({item[0] for item in raw_results}) != len(raw_results)
+            ):
+                raise PKVRuntimeError(
+                    ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                    "关联向量查询返回无效结果。",
+                    stage="vector_related",
+                    recoverable=True,
+                )
+            results: list[dict[str, Any]] = []
+            for related_id, distance in raw_results:
+                if related_id == knowledge_id:
+                    continue
+                if len(results) >= safe_limit:
+                    break
+                entry = self.sqlite_store.query_by_id(related_id)
+                if not isinstance(entry, Mapping):
+                    raise PKVRuntimeError(
+                        ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                        "关联向量与知识元数据不一致。",
+                        stage="vector_metadata_read",
+                        recoverable=False,
+                    )
+                tags = entry.get("tags")
+                if tags is None:
+                    tags_value: list[str] = []
+                elif isinstance(tags, str):
+                    tags_value = [value.strip() for value in tags.split(",") if value.strip()]
+                else:
+                    raise PKVRuntimeError(
+                        ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
+                        "关联条目的标签元数据不一致。",
+                        stage="vector_metadata_read",
+                        recoverable=False,
+                    )
+                results.append(
+                    {
+                        "knowledge_id": related_id,
+                        "title": entry.get("title") or f"条目 {related_id}",
+                        "abstract": entry.get("summary_one_sentence") or "",
+                        "tags": tags_value,
+                        "source_type": entry.get("source_type") or "",
+                        "score": round(min(1.0, max(0.0, 1.0 - distance)), 4),
+                    }
+                )
+        except PKVRuntimeError as error:
+            return self._related_error(error, message="向量关联查询不可用")
+        except Exception:
+            return self._related_error(
+                PKVRuntimeError(
+                    ErrorCode.RETRIEVAL_BACKEND_FAILED,
+                    "向量关联查询不可用。",
+                    stage="vector_related",
+                    recoverable=True,
+                ),
+                message="向量关联查询不可用",
+            )
+        return {
+            "status": "success" if results else "no_hits",
+            "strategy": "vector_related",
+            "total": len(results),
+            "results": results,
+            "issues": [],
+            **({"message": "未找到关联条目"} if not results else {}),
+        }
+
+    @staticmethod
+    def _related_invalid(message: str, stage: str) -> dict[str, Any]:
+        return {
+            "status": "invalid",
+            "strategy": "vector_related",
+            "total": 0,
+            "results": [],
+            "issues": [
+                {
+                    "code": ErrorCode.RETRIEVAL_INVALID_QUERY.value,
+                    "message": message,
+                    "stage": stage,
+                    "recoverable": True,
+                }
+            ],
+            "message": message,
+        }
+
+    @staticmethod
+    def _related_degraded(error: PKVRuntimeError, *, message: str) -> dict[str, Any]:
+        return {
+            "status": "degraded",
+            "strategy": "vector_related",
+            "total": 0,
+            "results": [],
+            "issues": [
+                {
+                    "code": error.code.value,
+                    "message": str(error),
+                    "stage": error.stage or "embedding_index",
+                    "recoverable": error.recoverable,
+                }
+            ],
+            "message": message,
+        }
+
+    @staticmethod
+    def _related_error(error: PKVRuntimeError, *, message: str) -> dict[str, Any]:
+        return {
+            "status": "error",
+            "strategy": "vector_related",
+            "total": 0,
+            "results": [],
+            "issues": [
+                {
+                    "code": error.code.value,
+                    "message": str(error),
+                    "stage": error.stage or "vector_related",
+                    "recoverable": error.recoverable,
+                }
+            ],
+            "message": message,
+        }
+
+    @staticmethod
+    def _generation_unavailable_search_response(
+        error: PKVRuntimeError,
+        *,
+        strategy: str,
+    ) -> SearchResponse:
+        """Keep a non-ready generation distinct from a completed empty query."""
+
+        return SearchResponse.failed_response(
+            RetrievalIssue(
+                code=error.code,
+                message=str(error),
+                stage=error.stage or "embedding_index",
+                recoverable=error.recoverable,
+            ),
+            strategy=strategy,
+        )
 
     async def archive_url(self, input_data: dict[str, Any]) -> WorkflowResult:
         """Validate and archive a published HTTP(S) URL through one workflow."""
@@ -276,6 +574,11 @@ class KnowledgeApplication:
         data["url"] = url
         data.setdefault("skip_sharpen", True)
         data.setdefault("skip_review", True)
+        if self._uses_internal_ai_automation():
+            # Archive persists the primary Markdown/SQLite facts first.  AI
+            # analysis and Embedding become one internal lifecycle task after
+            # that commit, so a Provider is never created in this request.
+            data["defer_ai_automation"] = True
 
         async def operation() -> WorkflowResult:
             return await self._new_workflow().execute_async("archive-url", data)
@@ -318,6 +621,8 @@ class KnowledgeApplication:
         data["url"] = source
         data.setdefault("skip_sharpen", True)
         data.setdefault("skip_review", True)
+        if self._uses_internal_ai_automation():
+            data["defer_ai_automation"] = True
 
         async def operation() -> WorkflowResult:
             return await self._new_workflow().execute_async("archive-url", data)
@@ -361,17 +666,17 @@ class KnowledgeApplication:
             entry = await processor.process_text(text)
             if title_clean:
                 entry.title = title_clean
-            return await self._new_workflow().execute_async(
-                "archive-text",
-                {
-                    "text": text,
-                    "title": entry.title,
-                    "entry": entry,
-                    "content": entry.content,
-                    "skip_sharpen": bool(skip_sharpen),
-                    "skip_review": bool(skip_review),
-                },
-            )
+            workflow_data = {
+                "text": text,
+                "title": entry.title,
+                "entry": entry,
+                "content": entry.content,
+                "skip_sharpen": bool(skip_sharpen),
+                "skip_review": bool(skip_review),
+            }
+            if self._uses_internal_ai_automation():
+                workflow_data["defer_ai_automation"] = True
+            return await self._new_workflow().execute_async("archive-text", workflow_data)
 
         return await self._run_archive_write(
             "archive_text",
@@ -404,6 +709,8 @@ class KnowledgeApplication:
                 except PKVRuntimeError as error:
                     audit.fail_runtime_error(error)
                     raise
+                result = self._schedule_archive_ai_automation(result)
+                result = self._drain_scheduled_ai_automation(result)
                 return self._finish_workflow_audit(audit, result)
 
         try:
@@ -427,7 +734,8 @@ class KnowledgeApplication:
 
         async def owned_operation() -> WorkflowResult:
             with self._write_lease_scope():
-                return await operation()
+                with self._runtime_file_log_scope(owner="application_archive"):
+                    return await operation()
 
         task = asyncio.create_task(owned_operation())
         try:
@@ -462,6 +770,509 @@ class KnowledgeApplication:
         from src.runtime.write_lease import write_lease_scope
 
         return write_lease_scope(self.config.layout)
+
+    def _uses_internal_ai_automation(self) -> bool:
+        """Whether this graph has a real Config snapshot with the R4 policy port.
+
+        Lightweight application doubles remain an intentionally narrow unit-test
+        seam.  Product composition always provides ``Config.get`` and therefore
+        always defers paid AI work until the internal lifecycle has admitted it.
+        """
+
+        # ``Config`` is the production immutable snapshot type.  A number of
+        # focused adapter tests intentionally provide a get()-shaped lightweight
+        # object; treating that object as an authorized product lifecycle would
+        # turn an isolated fake workflow into a data-root task writer.
+        from src.utils.config import Config
+
+        return isinstance(Config, type) and isinstance(self.config, Config)
+
+    def _schedule_archive_ai_automation(self, result: WorkflowResult) -> WorkflowResult:
+        """Invalidate stale retrieval and queue internal AI work after core commit.
+
+        This runs inside the archive's existing data-root lease and audit scope.
+        It neither creates a Provider nor starts a worker; P3 owns that later
+        lifecycle drain.  A post-commit binding/queue fault degrades the result
+        instead of inviting a duplicate archive retry.
+        """
+
+        if not self._uses_internal_ai_automation() or result.terminal == "error":
+            return result
+        payload = result.data if isinstance(result.data, Mapping) else {}
+        if (
+            payload.get("core_committed") is not True
+            or payload.get("ai_automation_deferred") is not True
+        ):
+            return result
+        mutation_id = payload.get("operation_id")
+        if not isinstance(mutation_id, str) or not mutation_id:
+            return self._automation_degraded_result(
+                result,
+                code=ErrorCode.REPAIR_REQUIRED,
+                message="文档已入库，但缺少内部 AI 任务标识；请先修复运行态。",
+                stage="ai_automation_lifecycle",
+                status="repair_required",
+                task_state=None,
+            )
+
+        try:
+            from src.runtime.ai_automation_policy import (
+                AutomationPolicyState,
+                inspect_ai_automation_policy,
+            )
+            from src.runtime.embedding_lifecycle import (
+                EmbeddingIndexState,
+                SQLiteEmbeddingSource,
+                publish_embedding_nonready_binding,
+            )
+            from src.storage.ai_automation_store import (
+                AIAutomationTaskState,
+                AIAutomationTaskStore,
+            )
+
+            policy = inspect_ai_automation_policy(self.config)
+            source = SQLiteEmbeddingSource()
+            captured = source.capture(self.config)
+            task_state: str | None = None
+            binding_state = EmbeddingIndexState.REBUILD_REQUIRED
+            status = "rebuild_required"
+            message = "文档已入库，正在等待内部 AI 生命周期处理。"
+            code = ErrorCode.EMBEDDING_REBUILD_REQUIRED
+
+            if policy.state is AutomationPolicyState.READY:
+                assert policy.policy_fingerprint is not None
+                task = AIAutomationTaskStore(self.config.layout).enqueue_rebuild(
+                    mutation_id=mutation_id,
+                    source_digest=captured.summary.digest,
+                    policy_fingerprint=policy.policy_fingerprint,
+                    state=AIAutomationTaskState.PENDING,
+                )
+                task_state = task.state.value
+                status = "processing"
+                message = "文档已入库，自动 AI 任务已排队处理。"
+                binding_state = EmbeddingIndexState.PROCESSING
+            elif policy.state in {
+                AutomationPolicyState.AUTHORIZATION_REQUIRED,
+                AutomationPolicyState.INVALID,
+            }:
+                binding_state = EmbeddingIndexState.AUTHORIZATION_REQUIRED
+                status = "authorization_required"
+                code = ErrorCode.EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED
+                message = "文档已入库，自动 AI 任务等待当前策略确认。"
+                if policy.policy_fingerprint is not None:
+                    task = AIAutomationTaskStore(self.config.layout).enqueue_rebuild(
+                        mutation_id=mutation_id,
+                        source_digest=captured.summary.digest,
+                        policy_fingerprint=policy.policy_fingerprint,
+                        state=AIAutomationTaskState.AUTHORIZATION_REQUIRED,
+                    )
+                    task_state = task.state.value
+            else:
+                message = "文档已入库；AI 自动化尚未启用，Embedding 等待后续内部处理。"
+
+            binding = publish_embedding_nonready_binding(
+                self.config,
+                state=binding_state,
+                source=source,
+            )
+            # A second capture would be a logic error under the same writer
+            # lease; never report that a queue represents a different source.
+            if binding.source is None or binding.source.digest != captured.summary.digest:
+                raise PKVRuntimeError(
+                    ErrorCode.RUNTIME_PLAN_STALE,
+                    "知识源在内部 AI 任务登记期间发生变化。",
+                    stage="ai_automation_lifecycle",
+                    recoverable=True,
+                )
+            return self._automation_degraded_result(
+                result,
+                code=code,
+                message=message,
+                stage="ai_automation_lifecycle",
+                status=status,
+                task_state=task_state,
+            )
+        except PKVRuntimeError as error:
+            return self._automation_degraded_result(
+                result,
+                code=error.code,
+                message="文档已入库，但内部 AI 生命周期未能安全登记；请勿直接重试文档导入。",
+                stage=error.stage or "ai_automation_lifecycle",
+                status="retry_required",
+                task_state=None,
+            )
+
+    @staticmethod
+    def _automation_degraded_result(
+        result: WorkflowResult,
+        *,
+        code: ErrorCode,
+        message: str,
+        stage: str,
+        status: str,
+        task_state: str | None,
+    ) -> WorkflowResult:
+        """Keep the committed archive visible while projecting AI lifecycle status."""
+
+        issue = {
+            "code": code.value,
+            "message": message,
+            "severity": "warning",
+            "stage": stage,
+            "recoverable": True,
+        }
+        return WorkflowResult(
+            success=True,
+            data={
+                **(dict(result.data) if isinstance(result.data, Mapping) else {}),
+                "ai_automation": {
+                    "status": status,
+                    "task_state": task_state,
+                },
+                "do_not_retry": True,
+            },
+            errors=[],
+            logs=list(result.logs),
+            warnings=[*result.warnings, message],
+            issues=[*result.issues, issue],
+            terminal="degraded",
+        )
+
+    def _schedule_committed_mutation_ai_automation(
+        self,
+        mutation_id: str,
+    ) -> Mapping[str, Any] | None:
+        """Register a non-workflow source mutation (currently Kernel delete).
+
+        The Kernel intentionally keeps its historical storage-result DTO.  This
+        private bridge shares the archive registration transaction without
+        adding a public rebuild/status method or widening the Kernel API.
+        """
+
+        outcome = self._schedule_archive_ai_automation(
+            WorkflowResult(
+                success=True,
+                data={
+                    "core_committed": True,
+                    "operation_id": mutation_id,
+                    "ai_automation_deferred": True,
+                },
+            )
+        )
+        outcome = self._drain_scheduled_ai_automation(outcome)
+        status = outcome.data.get("ai_automation")
+        return status if isinstance(status, Mapping) else None
+
+    def _drain_scheduled_ai_automation(self, result: WorkflowResult) -> WorkflowResult:
+        """Run one bounded, internal AI drain while the mutation lease is live.
+
+        This is deliberately not a daemon and is never reached from a read
+        path.  Archive/delete have already committed their core data before this
+        point.  Therefore every non-ready outcome is projected as a recoverable
+        lifecycle state rather than asking callers to repeat the import.
+        """
+
+        if not self._uses_internal_ai_automation():
+            return result
+        payload = result.data if isinstance(result.data, Mapping) else {}
+        automation = payload.get("ai_automation")
+        if not isinstance(automation, Mapping) or automation.get("task_state") != "pending":
+            return result
+
+        try:
+            outcome = self._drain_one_ai_automation_task()
+        except PKVRuntimeError as error:
+            return self._automation_degraded_result(
+                result,
+                code=error.code,
+                message="文档已入库，但自动 AI 任务需要重试。",
+                stage=error.stage or "ai_automation_lifecycle",
+                status="retry_required",
+                task_state="retry_required",
+            )
+
+        if outcome is None:
+            return result
+        status, task_state, code, message = outcome
+        if status == "ready":
+            return WorkflowResult(
+                success=True,
+                data={
+                    **dict(payload),
+                    "ai_automation": {"status": status, "task_state": task_state},
+                    "do_not_retry": True,
+                },
+                errors=[],
+                logs=list(result.logs),
+                warnings=[],
+                issues=[],
+                terminal="success",
+            )
+        return self._automation_degraded_result(
+            result,
+            code=code,
+            message=message,
+            stage="ai_automation_lifecycle",
+            status=status,
+            task_state=task_state,
+        )
+
+    @staticmethod
+    def _estimated_embedding_tokens(captured: Any) -> int:
+        """Return a local, price-free conservative input-token estimate.
+
+        Python has no bundled tokenizer for every configured Provider.  The
+        estimate is therefore explicitly recorded as a local estimate and is
+        used only as a hard-cap reservation; it is never presented as a price or
+        as Provider-reported usage.
+        """
+
+        text_characters = sum(
+            len(record.content) + sum(len(chunk) for _, chunk in record.chunks)
+            for record in captured.records
+        )
+        return math.ceil(text_characters / 4)
+
+    def _drain_one_ai_automation_task(
+        self,
+    ) -> tuple[str, str, ErrorCode, str] | None:
+        """Claim and execute the newest eligible internal generation task.
+
+        Preconditions are intentionally ordered: this method is called only
+        from an already-held Application writer lease; it then re-inspects
+        policy, source and plan, reserves tokens, and only then constructs an
+        Embedding Provider.  ``execute_embedding_rebuild`` receives the active
+        lease through a no-op nested scope, so it retains its full stale-plan,
+        staging, audit and pointer-CAS checks without attempting a second root
+        lock acquisition.
+        """
+
+        from src.runtime.ai_automation_policy import (
+            AutomationPolicyState,
+            TokenUsage,
+            inspect_ai_automation_policy,
+        )
+        from src.runtime.embedding_lifecycle import (
+            EmbeddingIndexState,
+            PreChunkedEmbeddingAdapter,
+            SQLiteEmbeddingSource,
+            confirm_embedding_rebuild,
+            execute_embedding_rebuild,
+            inspect_embedding_index,
+            plan_embedding_rebuild,
+            publish_embedding_nonready_binding,
+        )
+        from src.storage.ai_automation_store import AIAutomationTaskStore
+
+        store = AIAutomationTaskStore(self.config.layout)
+        # At most one current-source task is executed per foreground mutation.
+        # Older queued tasks may be retired without Provider work, otherwise a
+        # failed historical task could permanently hide the newly committed one.
+        for _ in range(8):
+            task = store.claim_next()
+            if task is None:
+                return None
+            assert task.claim_token is not None
+            claim_token = task.claim_token
+            policy = inspect_ai_automation_policy(self.config)
+            source = SQLiteEmbeddingSource()
+
+            if policy.state in {
+                AutomationPolicyState.AUTHORIZATION_REQUIRED,
+                AutomationPolicyState.INVALID,
+            }:
+                store.mark_authorization_required(task.task_id, claim_token=claim_token)
+                publish_embedding_nonready_binding(
+                    self.config,
+                    state=EmbeddingIndexState.AUTHORIZATION_REQUIRED,
+                    source=source,
+                )
+                return (
+                    "authorization_required",
+                    "authorization_required",
+                    ErrorCode.EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED,
+                    "文档已入库，自动 AI 任务等待当前策略确认。",
+                )
+            if policy.state is not AutomationPolicyState.READY:
+                store.mark_retry(
+                    task.task_id,
+                    claim_token=claim_token,
+                    error_code=ErrorCode.EMBEDDING_REBUILD_REQUIRED.value,
+                )
+                publish_embedding_nonready_binding(
+                    self.config,
+                    state=EmbeddingIndexState.REBUILD_REQUIRED,
+                    source=source,
+                )
+                return (
+                    "rebuild_required",
+                    "retry_required",
+                    ErrorCode.EMBEDDING_REBUILD_REQUIRED,
+                    "AI 自动化当前未启用；文档已保存，Embedding 等待后续内部处理。",
+                )
+
+            assert policy.policy_fingerprint is not None
+            inspection = inspect_embedding_index(self.config, source=source)
+            if inspection.source is None or inspection.source.digest != task.source_digest:
+                store.mark_superseded(task.task_id, claim_token=claim_token)
+                continue
+            if task.policy_fingerprint != policy.policy_fingerprint:
+                # A newer explicitly approved policy may not be silently applied
+                # to an old claim.  It remains visible as authorization-required
+                # until the next mutation lifecycle records a matching task.
+                store.mark_authorization_required(task.task_id, claim_token=claim_token)
+                publish_embedding_nonready_binding(
+                    self.config,
+                    state=EmbeddingIndexState.AUTHORIZATION_REQUIRED,
+                    source=source,
+                )
+                return (
+                    "authorization_required",
+                    "authorization_required",
+                    ErrorCode.EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED,
+                    "AI 策略已变化；现有任务等待以新策略重新登记。",
+                )
+
+            try:
+                plan = plan_embedding_rebuild(inspection)
+            except PKVRuntimeError as error:
+                store.mark_retry(
+                    task.task_id,
+                    claim_token=claim_token,
+                    error_code=error.code.value,
+                )
+                publish_embedding_nonready_binding(
+                    self.config,
+                    state=EmbeddingIndexState.RETRY_REQUIRED,
+                    source=source,
+                )
+                return (
+                    "retry_required",
+                    "retry_required",
+                    error.code,
+                    "自动 AI 任务的运行态计划需要重试。",
+                )
+
+            quota = policy.token_quota
+            assert quota is not None
+            local_now = datetime.now(ZoneInfo(quota.timezone))
+            estimate = self._estimated_embedding_tokens(inspection._captured_source)
+            reservation = store.reserve_tokens(
+                task.task_id,
+                claim_token=claim_token,
+                timezone=quota.timezone,
+                local_day=local_now.date().isoformat(),
+                local_month=local_now.strftime("%Y-%m"),
+                reserved_tokens=estimate,
+                daily_total_tokens=quota.daily_total_tokens,
+                monthly_total_tokens=quota.monthly_total_tokens,
+            )
+            if reservation is None:
+                publish_embedding_nonready_binding(
+                    self.config,
+                    state=EmbeddingIndexState.BUDGET_PAUSED,
+                    source=source,
+                )
+                return (
+                    "budget_paused",
+                    "budget_paused",
+                    ErrorCode.EMBEDDING_BUDGET_PAUSED,
+                    "文档已入库；已达到 token 预算，自动 AI 任务暂停。",
+                )
+
+            # Reserve and record before the Provider is constructed.  If a
+            # provider can later expose reliable usage, it may append a distinct
+            # provider_reported row; unknown cached/generated dimensions remain
+            # NULL rather than fabricated zeros.
+            store.record_usage(
+                task.task_id,
+                claim_token=claim_token,
+                reservation_id=reservation.reservation_id,
+                usage=TokenUsage(
+                    embedding_input_tokens=estimate,
+                    source="local_estimate",
+                ),
+            )
+            try:
+                provider = self._create_embedder()
+                execution = execute_embedding_rebuild(
+                    plan,
+                    confirm_embedding_rebuild(plan, allow_network=True),
+                    embedder=PreChunkedEmbeddingAdapter(provider),
+                    writer_lease_factory=lambda _config: nullcontext(),
+                )
+            except PKVRuntimeError as error:
+                store.settle_reservation(reservation.reservation_id, claim_token=claim_token)
+                store.mark_retry(
+                    task.task_id,
+                    claim_token=claim_token,
+                    error_code=error.code.value,
+                )
+                publish_embedding_nonready_binding(
+                    self.config,
+                    state=EmbeddingIndexState.RETRY_REQUIRED,
+                    source=source,
+                )
+                return (
+                    "retry_required",
+                    "retry_required",
+                    error.code,
+                    "自动 AI 任务失败；文档已保存，稍后将重试。",
+                )
+            except Exception:
+                store.settle_reservation(reservation.reservation_id, claim_token=claim_token)
+                store.mark_retry(
+                    task.task_id,
+                    claim_token=claim_token,
+                    error_code=ErrorCode.PROVIDER_UNAVAILABLE.value,
+                )
+                publish_embedding_nonready_binding(
+                    self.config,
+                    state=EmbeddingIndexState.RETRY_REQUIRED,
+                    source=source,
+                )
+                return (
+                    "retry_required",
+                    "retry_required",
+                    ErrorCode.PROVIDER_UNAVAILABLE,
+                    "自动 AI 服务暂不可用；文档已保存，稍后将重试。",
+                )
+
+            store.settle_reservation(reservation.reservation_id, claim_token=claim_token)
+            store.mark_completed(task.task_id, claim_token=claim_token)
+            return (
+                "ready",
+                "completed",
+                ErrorCode.EMBEDDING_REBUILD_REQUIRED,
+                "自动 AI 任务已完成。",
+            )
+        raise PKVRuntimeError(
+            ErrorCode.RUNTIME_PLAN_STALE,
+            "AI 自动化队列包含过多已过期任务；请在下一次写入时继续处理。",
+            stage="ai_automation_lifecycle",
+            recoverable=True,
+        )
+
+    @contextmanager
+    def _runtime_file_log_scope(self, *, owner: str) -> Iterator[None]:
+        """Bind file logging to this immutable application snapshot's mutation.
+
+        The scope itself opens no file.  If a CLI/MCP process configured a
+        matching delayed handler, only records emitted while this exact
+        snapshot owns the R3 lease reach ``pkv.log``.
+        """
+
+        from src.runtime.file_logging import (
+            runtime_file_log_binding,
+            runtime_file_log_scope,
+        )
+
+        binding = runtime_file_log_binding(
+            self.config,
+            snapshot_id=f"config-{id(self.config)}",
+        )
+        with runtime_file_log_scope(binding, owner=owner):
+            yield
 
     async def _run_tracked_write_worker(
         self,
@@ -694,7 +1505,10 @@ class KnowledgeApplication:
             return self.text_processor_factory()
         from src.processors.text_fallback_processor import TextFallbackProcessor
 
-        return TextFallbackProcessor(config=self.config)
+        return TextFallbackProcessor(
+            config=self.config,
+            allow_ai_enrichment=not self._uses_internal_ai_automation(),
+        )
 
     def _create_deepseek_client(self) -> Any:
         from src.ai.deepseek_client import DeepSeekClient
@@ -718,9 +1532,16 @@ class KnowledgeApplication:
     def _new_vector_retriever(self) -> Any:
         from src.retrieval.vector_retriever import VectorRetriever
 
+        if self._uses_internal_ai_automation():
+            from src.runtime.embedding_lifecycle import resolve_embedding_index_binding
+
+            binding = resolve_embedding_index_binding(self.config)
+            index_dir = binding.index_dir
+        else:
+            index_dir = self.config.vector_index_dir
         return VectorRetriever(
             self.config.db_path,
-            self.config.vector_index_dir,
+            index_dir,
             embedder_factory=self._create_embedder,
             runtime_config=self.config,
         )
@@ -728,9 +1549,24 @@ class KnowledgeApplication:
     def _new_hybrid_retriever(self) -> Any:
         from src.retrieval.hybrid_retriever import HybridRetriever
 
+        if self._uses_internal_ai_automation():
+            from src.runtime.embedding_lifecycle import resolve_embedding_index_binding
+
+            try:
+                binding = resolve_embedding_index_binding(self.config)
+            except PKVRuntimeError as error:
+                return HybridRetriever(
+                    self.config.db_path,
+                    self.config.layout.vector_index_dir,
+                    runtime_config=self.config,
+                    vector_retriever=_UnavailableVectorRetriever(error),
+                )
+            index_dir = binding.index_dir
+        else:
+            index_dir = self.config.vector_index_dir
         return HybridRetriever(
             self.config.db_path,
-            self.config.vector_index_dir,
+            index_dir,
             embedder_factory=self._create_embedder,
             runtime_config=self.config,
         )
@@ -786,10 +1622,19 @@ class KnowledgeApplication:
 
         return BM25Retriever(config.db_path, runtime_config=config)
 
-    @staticmethod
-    def _default_query_router(config: Any, token_threshold: int) -> Any:
+    def _default_query_router(self, config: Any, token_threshold: int) -> Any:
         from src.retrieval.query_router import QueryRouter
 
+        if self._uses_internal_ai_automation():
+            return QueryRouter(
+                db_path=config.db_path,
+                # This placeholder is never opened: the per-search factory
+                # resolves one immutable generation binding first.
+                vector_index_dir=config.layout.vector_index_dir,
+                token_threshold=token_threshold,
+                runtime_config=config,
+                hybrid_retriever_factory=self._new_hybrid_retriever,
+            )
         return QueryRouter(
             db_path=config.db_path,
             vector_index_dir=config.vector_index_dir,
@@ -924,7 +1769,17 @@ def reload_application() -> KnowledgeApplication:
             if callable(reload_snapshot)
             else config_module.Config()
         )
-        return _publish_application(config, replace_legacy_config=True)
+        application = _publish_application(config, replace_legacy_config=True)
+        # Rebind only an already-opted-in process logger.  Reload never creates
+        # pkv.log (the replacement handler remains delayed), while an older
+        # shielded write retains its previous binding until it drains.
+        from src.runtime.file_logging import runtime_file_log_binding
+        from src.utils.logger import LoggerSetup
+
+        LoggerSetup.rebind_runtime_file_handler(
+            runtime_file_log_binding(config, snapshot_id=f"config-{id(config)}")
+        )
+        return application
 
 
 def reset_application() -> None:

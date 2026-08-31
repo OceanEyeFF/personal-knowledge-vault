@@ -323,6 +323,13 @@ class AuditTrace:
         generic ``AuditTraceError`` rather than exposing the original value.
         """
 
+        # A trace is a persistent product writer.  Reject an unowned task
+        # before it can create the data-root directory, open a leaf, or fsync.
+        # Keep this outside the generic AuditTraceError wrapper so Application,
+        # Kernel and adapters retain the stable ``write_busy`` projection.
+        from src.runtime.writer_inventory import require_active_data_root_writer
+
+        require_active_data_root_writer(self._layout, owner="runtime_audit")
         try:
             sanitized_event = self._sanitize_mapping(event, seen=set())
             timestamp = self._timestamp()

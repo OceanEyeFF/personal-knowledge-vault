@@ -270,7 +270,7 @@ symlink/reparse 或目录竞态，会保留 workspace 并失败。
 - `--force` 保留已经过链接扫描的 `tmp/` 运行时内容，避免删除当前 wrapper/Conda 正在使用的命令载荷；其余受管内容仍按合同清理重建。
 
 1. 根目录已有内容、未传 `--force` → 先做完整 fail-closed 校验；本次 `--seed` / `--count` / `--no-seed` 还必须与 manifest 一致，通过才报告 `up_to_date`。自定义参数重跑时必须重复传入；如需变更则使用 `--force`。
-2. 根目录为空、不存在，或仅含 wrapper 预建的空 scaffold（五个标准目录及 `reports`/`runtime`）→ 迁移 9 个脚本至 v1.2.4 + 生成默认 3 条确定性种子 + 健康检查 + 写入 manifest。
+2. 根目录为空、不存在，或仅含 wrapper 预建的空 scaffold（五个标准目录及 `reports`/`runtime`）→ 迁移 10 个脚本至 v1.2.5 + 生成默认 3 条确定性种子 + 健康检查 + 写入 manifest。
 3. 传 `--force` → 受控清理（先校验链接）后完整重建（仅限已通过边界校验的 `.data-test` 专用子目录）。
 4. `--check-only` → 必须同样经 `run-test.ps1` 的 Direct Python/FT7 入口；SQLite `mode=ro` 只读，对不存在或不完整的 DB 必须失败（exit 1），不会创建数据库，也不把迁移脚本合法误当 vault 健康。包装器只会预建受控空 scaffold。
 5. `--no-seed` → 可验证：manifest 记录 `seeded=false, seed_count=0`，重复运行仍 `up_to_date`。

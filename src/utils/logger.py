@@ -96,6 +96,116 @@ class LoggerSetup:
     _DEFAULT_LOG_FORMAT = "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s"
     _DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+    @staticmethod
+    def _close_and_remove(root_logger: logging.Logger, handler: logging.Handler) -> None:
+        """Remove and close a handler before replacing process logging state."""
+
+        root_logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            # Logging replacement must not make a valid adapter startup fail
+            # solely because an already-detached third-party handler is broken.
+            pass
+
+    @classmethod
+    def _replace_root_handlers(cls, root_logger: logging.Logger) -> None:
+        for handler in list(root_logger.handlers):
+            cls._close_and_remove(root_logger, handler)
+
+    @classmethod
+    def _add_runtime_file_handler(
+        cls,
+        binding,
+        *,
+        level: Optional[str | int] = None,
+        log_format: Optional[str] = None,
+        date_format: Optional[str] = None,
+    ) -> bool:
+        """Install one delayed, lease- and snapshot-bound ``pkv.log`` handler.
+
+        A reload may temporarily retain an older handler only while an already
+        active mutation owns its binding.  Each handler filters exact bindings,
+        so old work never writes through a newly reloaded snapshot.  Once the
+        old scope drains, it is closed and removed deterministically.
+        """
+
+        from src.runtime.file_logging import (
+            RuntimeFileLogBinding,
+            runtime_file_log_binding_is_active,
+            runtime_file_log_emit_allowed,
+        )
+
+        if not isinstance(binding, RuntimeFileLogBinding):
+            raise TypeError("runtime_file_binding must be RuntimeFileLogBinding")
+        log_file = binding.path
+        root_logger = logging.getLogger()
+
+        for handler in list(root_logger.handlers):
+            existing = getattr(handler, "_pkv_runtime_file_binding", None)
+            if existing == binding:
+                return False
+            if existing is not None:
+                if runtime_file_log_binding_is_active(existing):
+                    setattr(handler, "_pkv_runtime_file_retired", True)
+                else:
+                    cls._close_and_remove(root_logger, handler)
+
+        file_handler = _ValidatedRotatingFileHandler(
+            log_file,
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+            # Delayed open is mandatory: merely configuring a READY/read-only
+            # adapter must not create pkv.log or its rotation sidecars.
+            delay=True,
+            path_validator=binding.layout.writable_user_path,
+            emit_guard=lambda: runtime_file_log_emit_allowed(binding),
+            label="日志文件",
+        )
+        setattr(file_handler, "_pkv_runtime_file_binding", binding)
+        setattr(file_handler, "_pkv_runtime_file_retired", False)
+        file_handler.setLevel(level if level is not None else logging.INFO)
+        file_handler.setFormatter(
+            logging.Formatter(
+                log_format or cls._DEFAULT_LOG_FORMAT,
+                datefmt=date_format or cls._DEFAULT_DATE_FORMAT,
+            )
+        )
+        root_logger.addHandler(file_handler)
+        return True
+
+    @classmethod
+    def retire_inactive_runtime_file_handlers(cls) -> None:
+        """Close only reload-retired runtime handlers after their scopes drain."""
+
+        from src.runtime.file_logging import runtime_file_log_binding_is_active
+
+        root_logger = logging.getLogger()
+        for handler in list(root_logger.handlers):
+            binding = getattr(handler, "_pkv_runtime_file_binding", None)
+            if binding is None or not getattr(handler, "_pkv_runtime_file_retired", False):
+                continue
+            if not runtime_file_log_binding_is_active(binding):
+                cls._close_and_remove(root_logger, handler)
+
+    @classmethod
+    def rebind_runtime_file_handler(cls, binding) -> bool:
+        """Replace an already-configured runtime handler for an explicit reload.
+
+        This is intentionally a no-op when the process never opted into file
+        logging.  A fresh binding is installed only after a config reload; any
+        in-flight old binding is retained until its scoped mutation drains.
+        """
+
+        root_logger = logging.getLogger()
+        if not any(
+            getattr(handler, "_pkv_runtime_file_binding", None) is not None
+            for handler in root_logger.handlers
+        ):
+            return False
+        return cls._add_runtime_file_handler(binding, level=root_logger.level)
+
     @classmethod
     def setup(
         cls,
@@ -109,6 +219,7 @@ class LoggerSetup:
         delay: bool = False,
         create_parent: bool = True,
         emit_guard: Optional[Callable[[], bool]] = None,
+        runtime_file_binding=None,
     ):
         """
         设置全局日志配置
@@ -118,15 +229,13 @@ class LoggerSetup:
             log_file: 日志文件路径（写入前必须通过统一可写叶子合同）
             log_format: 日志格式
             date_format: 时间格式
-            path_validator: 可写叶子验证器（由 adapter 注入 layout 合同）
+            path_validator: 已弃用；runtime file logging 从 binding 获取 layout 合同。
             console_stream: 控制台日志目标；默认保持 stdout 兼容
-            delay: 延迟打开文件；用于不允许启动阶段写入的适配器。
-            create_parent: 是否允许 Logger 自行创建日志父目录。
-            emit_guard: 返回 ``True`` 才允许一条记录触发文件写入。
+            delay/create_parent/emit_guard: 仅保留参数兼容；data-root file
+                logging 一律由 binding 强制 delayed + lease guard。
+            runtime_file_binding: 明确 RuntimeLayout + immutable snapshot
+                binding；未提供时不得配置文件 handler。
         """
-        if cls._initialized:
-            return
-
         # 设置日志级别
         log_level = getattr(logging, level.upper(), logging.INFO)
 
@@ -143,8 +252,10 @@ class LoggerSetup:
         root_logger = logging.getLogger()
         root_logger.setLevel(log_level)
 
-        # 清除已有的 handlers
-        root_logger.handlers.clear()
+        # A reload/reconfiguration closes handlers instead of merely clearing
+        # the list.  This releases Windows file handles and cannot leave a
+        # closed-over old RuntimeLayout writing after its owner was replaced.
+        cls._replace_root_handlers(root_logger)
 
         # 添加控制台 handler
         console_handler = logging.StreamHandler(
@@ -156,26 +267,18 @@ class LoggerSetup:
 
         # 添加文件 handler (如果指定)
         if log_file is not None:
-            log_file = Path(log_file)
-            if path_validator is not None:
-                path_validator(log_file, label="日志文件")
-
-            if create_parent:
-                log_file.parent.mkdir(parents=True, exist_ok=True)
-
-            file_handler = _ValidatedRotatingFileHandler(
-                log_file,
-                maxBytes=10 * 1024 * 1024,  # 10 MB
-                backupCount=5,
-                encoding="utf-8",
-                delay=delay,
-                path_validator=path_validator,
-                emit_guard=emit_guard,
-                label="日志文件",
+            if runtime_file_binding is None:
+                raise ValueError(
+                    "data-root file logging requires an explicit runtime_file_binding"
+                )
+            if Path(log_file) != runtime_file_binding.path:
+                raise ValueError("log_file must match runtime_file_binding.path")
+            cls._add_runtime_file_handler(
+                runtime_file_binding,
+                level=log_level,
+                log_format=log_format,
+                date_format=date_format,
             )
-            file_handler.setLevel(log_level)
-            file_handler.setFormatter(formatter)
-            root_logger.addHandler(file_handler)
 
         cls._initialized = True
 
@@ -190,43 +293,25 @@ class LoggerSetup:
         date_format: Optional[str] = None,
         delay: bool = False,
         emit_guard: Optional[Callable[[], bool]] = None,
+        runtime_file_binding=None,
     ) -> bool:
-        """向根 logger 追加一个已验证的滚动文件 handler（按路径幂等）。
+        """向根 logger 追加一个受 RuntimeLayout binding 约束的滚动 handler。
 
         Returns:
             True 表示已添加；False 表示同一路径的 handler 已存在。
         """
-        log_file = Path(log_file)
-        root_logger = logging.getLogger()
-        for handler in root_logger.handlers:
-            if (
-                isinstance(handler, _ValidatedRotatingFileHandler)
-                and Path(handler.baseFilename) == log_file
-            ):
-                return False
-
-        if path_validator is not None:
-            path_validator(log_file, label="日志文件")
-
-        file_handler = _ValidatedRotatingFileHandler(
-            log_file,
-            maxBytes=10 * 1024 * 1024,  # 10 MB
-            backupCount=5,
-            encoding="utf-8",
-            delay=delay,
-            path_validator=path_validator,
-            emit_guard=emit_guard,
-            label="日志文件",
-        )
-        file_handler.setLevel(level if level is not None else logging.INFO)
-        file_handler.setFormatter(
-            logging.Formatter(
-                log_format or cls._DEFAULT_LOG_FORMAT,
-                datefmt=date_format or cls._DEFAULT_DATE_FORMAT,
+        if runtime_file_binding is None:
+            raise ValueError(
+                "data-root file logging requires an explicit runtime_file_binding"
             )
+        if Path(log_file) != runtime_file_binding.path:
+            raise ValueError("log_file must match runtime_file_binding.path")
+        return cls._add_runtime_file_handler(
+            runtime_file_binding,
+            level=level,
+            log_format=log_format,
+            date_format=date_format,
         )
-        root_logger.addHandler(file_handler)
-        return True
 
 
 def get_logger(name: str) -> logging.Logger:

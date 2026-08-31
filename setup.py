@@ -33,6 +33,7 @@ KERNEL_RESOURCE_MANIFEST: tuple[tuple[str, str], ...] = (
     ("scripts/migrations/008_align_fts_contract.sql", "scripts/migrations/008_align_fts_contract.sql"),
     ("scripts/migrations/009_repair_fts_storage_contract.sql", "scripts/migrations/009_repair_fts_storage_contract.sql"),
     ("scripts/migrations/010_add_storage_operation_commits.sql", "scripts/migrations/010_add_storage_operation_commits.sql"),
+    ("scripts/migrations/011_add_ai_automation_ledger.sql", "scripts/migrations/011_add_ai_automation_ledger.sql"),
     ("src/ai/prompts/extract_tags.txt", "src/ai/prompts/extract_tags.txt"),
     ("src/ai/prompts/summarize.txt", "src/ai/prompts/summarize.txt"),
 )

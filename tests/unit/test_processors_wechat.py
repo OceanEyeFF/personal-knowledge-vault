@@ -20,6 +20,7 @@ from bs4 import BeautifulSoup
 
 from src.processors.wechat_processor import WechatProcessor
 from src.processors.safe_fetch import SafeResponse
+from src.runtime import write_lease_scope
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.runtime.layout import RuntimeLayout
 
@@ -46,7 +47,8 @@ async def test_wechat_process(wechat_html: str):
     processor = WechatProcessor()
 
     with patch.object(processor, "_fetch_html", new=AsyncMock(return_value=wechat_html)):
-        entry = await processor.process("https://mp.weixin.qq.com/s/test")
+        with _writer_scope(processor):
+            entry = await processor.process("https://mp.weixin.qq.com/s/test")
 
     assert entry.title == "Wechat Sample Title"
     assert entry.source_type == "wechat"
@@ -121,12 +123,19 @@ def _processor_with_layout(tmp_path: Path):
     return processor, layout
 
 
+def _writer_scope(processor: WechatProcessor):
+    """Make a fixture image write an explicit R3 mutation, never ambient IO."""
+
+    return write_lease_scope(processor._config.layout)
+
+
 def test_wechat_image_write_publishes_atomically(tmp_path: Path):
     """微信图片写完整临时文件后原子发布，不留临时残留。"""
     processor, layout = _processor_with_layout(tmp_path)
     target = layout.tmp_dir / "wechat_img.jpg"
 
-    processor._write_image_file(target, b"image-bytes")
+    with _writer_scope(processor):
+        processor._write_image_file(target, b"image-bytes")
 
     assert target.read_bytes() == b"image-bytes"
     assert list(layout.tmp_dir.glob(f".{target.name}.*.tmp")) == []
@@ -148,7 +157,8 @@ def test_wechat_image_write_rejects_hardlinked_target(tmp_path: Path):
 
     try:
         with pytest.raises(PKVRuntimeError) as exc_info:
-            processor._write_image_file(target, b"new-content")
+            with _writer_scope(processor):
+                processor._write_image_file(target, b"new-content")
 
         assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
         assert outside.read_bytes() == b"attacker"
@@ -170,7 +180,8 @@ def test_wechat_image_write_rejects_symlinked_target(tmp_path: Path):
         pytest.skip(f"symlink unavailable: {exc}")
 
     with pytest.raises(PKVRuntimeError) as exc_info:
-        processor._write_image_file(target, b"new-content")
+        with _writer_scope(processor):
+            processor._write_image_file(target, b"new-content")
 
     assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
     assert outside.read_bytes() == b"attacker"
@@ -190,7 +201,8 @@ def test_wechat_image_write_failure_preserves_target_and_cleans_temp(
 
     with patch("src.runtime.layout.os.replace", side_effect=fail_replace):
         with pytest.raises(OSError, match="injected replace failure"):
-            processor._write_image_file(target, b"new-content")
+            with _writer_scope(processor):
+                processor._write_image_file(target, b"new-content")
 
     assert target.read_bytes() == b"original"
     assert list(layout.tmp_dir.glob(f".{target.name}.*.tmp")) == []
@@ -210,7 +222,8 @@ async def test_wechat_download_image_uses_contract(tmp_path: Path):
     ))
     processor._safe_fetcher = fetcher
 
-    uri = await processor._download_image("https://mp.weixin.qq.com/s/article/image.png")
+    with _writer_scope(processor):
+        uri = await processor._download_image("https://mp.weixin.qq.com/s/article/image.png")
 
     assert uri.startswith("file:")
     assert fetcher.fetch.await_args.kwargs["max_response_bytes"] == 20 * 1024 * 1024
@@ -240,7 +253,8 @@ async def test_wechat_entry_content_never_publishes_tmp_file_uri(tmp_path: Path)
     processor._safe_fetcher = fetcher
 
     with patch.object(processor, "_fetch_html", new=AsyncMock(return_value=html)):
-        entry = await processor.process("https://mp.weixin.qq.com/s/article")
+        with _writer_scope(processor):
+            entry = await processor.process("https://mp.weixin.qq.com/s/article")
 
     assert (
         "https://img.example/article.png?token=redacted&width=640"
@@ -280,7 +294,8 @@ async def test_wechat_image_ssrf_denial_becomes_stable_processing_issue(
     processor._safe_fetcher = fetcher
 
     with patch.object(processor, "_fetch_html", new=AsyncMock(return_value=html)):
-        entry = await processor.process("https://mp.weixin.qq.com/s/article")
+        with _writer_scope(processor):
+            entry = await processor.process("https://mp.weixin.qq.com/s/article")
 
     assert entry.processing_issues == [
         {
@@ -317,7 +332,8 @@ async def test_wechat_image_userinfo_rejection_is_not_full_success(
     processor._safe_fetcher = fetcher
 
     with patch.object(processor, "_fetch_html", new=AsyncMock(return_value=html)):
-        entry = await processor.process("https://mp.weixin.qq.com/s/article")
+        with _writer_scope(processor):
+            entry = await processor.process("https://mp.weixin.qq.com/s/article")
 
     assert entry.processing_issues == [
         {
@@ -385,10 +401,11 @@ async def test_wechat_image_count_budget_stops_before_max_plus_one(tmp_path: Pat
         ]
     )
 
-    issues = await processor._download_images(
-        content,
-        base_url="https://mp.weixin.qq.com/s/article",
-    )
+    with _writer_scope(processor):
+        issues = await processor._download_images(
+            content,
+            base_url="https://mp.weixin.qq.com/s/article",
+        )
 
     assert fetcher.fetch.await_count == 2
     _assert_resource_limit_issue(
@@ -426,10 +443,11 @@ async def test_wechat_duplicate_image_url_is_fetched_once(tmp_path: Path):
         ["https://img.example/shared.png", "https://img.example/shared.png"]
     )
 
-    issues = await processor._download_images(
-        content,
-        base_url="https://mp.weixin.qq.com/s/article",
-    )
+    with _writer_scope(processor):
+        issues = await processor._download_images(
+            content,
+            base_url="https://mp.weixin.qq.com/s/article",
+        )
 
     assert issues == []
     assert fetcher.fetch.await_count == 1
@@ -458,10 +476,11 @@ async def test_wechat_budget_stop_sanitizes_all_remaining_image_sources(tmp_path
         ]
     )
 
-    issues = await processor._download_images(
-        content,
-        base_url="https://mp.weixin.qq.com/s/article",
-    )
+    with _writer_scope(processor):
+        issues = await processor._download_images(
+            content,
+            base_url="https://mp.weixin.qq.com/s/article",
+        )
 
     assert fetcher.fetch.await_count == 1
     _assert_resource_limit_issue(
@@ -505,10 +524,11 @@ async def test_wechat_cumulative_byte_budget_caps_next_fetch_and_stops(tmp_path:
         ]
     )
 
-    issues = await processor._download_images(
-        content,
-        base_url="https://mp.weixin.qq.com/s/article",
-    )
+    with _writer_scope(processor):
+        issues = await processor._download_images(
+            content,
+            base_url="https://mp.weixin.qq.com/s/article",
+        )
 
     assert fetcher.fetch.await_count == 2
     assert [
@@ -541,10 +561,11 @@ async def test_wechat_failed_image_attempts_cannot_bypass_total_budget(tmp_path:
         ]
     )
 
-    issues = await processor._download_images(
-        content,
-        base_url="https://mp.weixin.qq.com/s/article",
-    )
+    with _writer_scope(processor):
+        issues = await processor._download_images(
+            content,
+            base_url="https://mp.weixin.qq.com/s/article",
+        )
 
     assert fetcher.fetch.await_count == 2
     assert [

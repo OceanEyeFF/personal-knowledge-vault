@@ -360,6 +360,9 @@ class WechatProcessor(BaseProcessor):
         """通过统一目录合同准备微信图片临时目录。"""
         layout = getattr(self._config, "layout", None)
         if layout is not None:
+            from src.runtime.writer_inventory import require_active_data_root_writer
+
+            require_active_data_root_writer(layout, owner="wechat_processor_tmp")
             layout.ensure_user_directories()
             layout.validate_user_directory(self.tmp_dir, label="临时目录")
         else:

@@ -1,4 +1,6 @@
 @echo off
+echo 已停用的 legacy setup 入口；请使用当前文档和受控 lifecycle。 1>&2
+exit /b 2
 @chcp 65001 >nul
 REM Personal Knowledge Vault - 自动安装脚本 (CMD/Batch)
 REM 作者: 幽浮酱

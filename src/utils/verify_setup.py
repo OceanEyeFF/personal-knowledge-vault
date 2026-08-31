@@ -20,6 +20,7 @@ import src.utils.config as config_module
 from src.utils.config import get_config
 from src.utils.logger import LoggerSetup, get_logger
 from src.utils.text_utils import TextProcessor, preserve_jieba_global_state
+from src.runtime.file_logging import runtime_file_log_binding, runtime_file_log_scope
 from src.runtime.write_lease import write_lease_scope
 from src.storage.markdown_store import MarkdownStore, Entry
 from src.storage.sqlite_store import SQLiteStore
@@ -55,13 +56,25 @@ def test_logger(log_file: Path | None = None, log_level: str | None = None):
     print("\n📝 测试日志系统...")
     config = get_config()
 
-    LoggerSetup.setup(
-        level=log_level or config.log_level,
-        log_file=log_file or config.log_dir / "verify.log"
+    binding = runtime_file_log_binding(
+        config,
+        snapshot_id=f"config-{id(config)}",
     )
+    target = log_file or config.log_dir / "verify.log"
+    if target != binding.path:
+        # The verifier's historical ``verify.log`` is no longer a product log
+        # sink.  Keep its fixture name only by using the canonical pkv.log
+        # destination under the same isolated temporary RuntimeLayout.
+        target = binding.path
+    with runtime_file_log_scope(binding, owner="offline_verify_fixture"):
+        LoggerSetup.setup(
+            level=log_level or config.log_level,
+            log_file=target,
+            runtime_file_binding=binding,
+        )
 
-    logger = get_logger(__name__)
-    logger.info("这是一条测试日志")
+        logger = get_logger(__name__)
+        logger.info("这是一条测试日志")
     print("  ✅ 日志系统正常")
 
 

@@ -31,10 +31,20 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.application import configure_application, reset_application  # noqa: E402
 from src.mcp.server import mcp  # noqa: E402
+from src.runtime.embedding_lifecycle import (  # noqa: E402
+    SQLiteEmbeddingSource,
+    confirm_embedding_rebuild,
+    execute_embedding_rebuild,
+    inspect_embedding_index,
+    plan_embedding_rebuild,
+)
+from src.runtime.bootstrap import bootstrap_runtime  # noqa: E402
+from src.runtime.layout import RuntimeLayout  # noqa: E402
+from src.runtime.runtime_snapshot import RuntimeSnapshotStore  # noqa: E402
 from src.runtime.write_lease import write_lease_scope  # noqa: E402
 from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
+from src.storage.migration_manager import MigrationManager  # noqa: E402
 from src.storage.sqlite_store import SQLiteStore  # noqa: E402
-from src.storage.vector_store import VectorStore  # noqa: E402
 from src.workflow.models import WorkflowResult  # noqa: E402
 import src.utils.config as config_module  # noqa: E402
 from src.utils.text_utils import TextProcessor, preserve_jieba_global_state  # noqa: E402
@@ -251,41 +261,63 @@ def _build_sample_entries() -> List[Entry]:
     ]
 
 
+def _seed_r2_snapshot(config: config_module.Config) -> None:
+    """Bind this isolated fixture to its current Embedding configuration."""
+
+    assert config.embedding_dim is not None
+    snapshot_store = RuntimeSnapshotStore(config.layout)
+    current_version = MigrationManager(
+        config.db_path,
+        config.layout.migrations_dir,
+        read_only=True,
+    ).get_current_version()
+    payload = {
+        "schema_version": 1,
+        "database": {"schema_version": current_version},
+        "embedding": {
+            "provider": config.embd_provider,
+            "fingerprint": config.embedding_index_fingerprint(config.embedding_dim),
+        },
+    }
+    with write_lease_scope(config.layout):
+        snapshot_store.publish(snapshot_store.read(), payload)
+
+
 @pytest.fixture
 def test_env(monkeypatch, tmp_path: Path) -> Dict[str, Any]:
     # Each in-process MCP scenario creates and then deletes its own root.  Do
     # not leave jieba's single process-global tokenizer pointing at that root.
     with preserve_jieba_global_state():
         base_dir = tmp_path / "mcp_client_sim"
-        db_path = base_dir / "db" / "knowledge_vault.db"
-        vault_dir = base_dir / "vault"
-        vector_dir = base_dir / "vectors"
-
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        vault_dir.mkdir(parents=True, exist_ok=True)
-        vector_dir.mkdir(parents=True, exist_ok=True)
-
-        runtime_paths = {
-            "DATA_DIR": base_dir,
-            "DB_PATH": db_path,
-            "VAULT_DIR": vault_dir,
-            "VECTOR_DIR": vector_dir,
-            "LOG_DIR": base_dir / "logs",
-            "TMP_DIR": base_dir / "tmp",
-        }
-        for key, path in runtime_paths.items():
-            monkeypatch.setenv(key, str(path))
         monkeypatch.setenv("LOG_LEVEL", "WARNING")
 
-        # Configure the shared application service with this test's isolated
-        # runtime snapshot.  MCP no longer owns Store/Retriever singleton caches.
-        config = config_module.Config(str(PROJECT_ROOT / "config" / "config.yaml"))
-        config._config.setdefault("storage", {})
-        config._config["storage"]["vector_index_dir"] = str(vector_dir)
-        config._config["storage"]["vault_dir"] = str(vault_dir)
-        config._config.setdefault("ai", {}).setdefault("embedding", {})["dim"] = (
-            TEST_EMBEDDING_DIM
+        # Build the shared application service from one explicit RuntimeLayout.
+        # The previous legacy env-var fixture could make SQLite and the R2/R4
+        # snapshot resolve different roots, which hid exactly the binding
+        # contract this integration scenario intends to exercise.
+        layout = RuntimeLayout.resolve(
+            resources_root=PROJECT_ROOT,
+            user_data_root=base_dir,
+            profile_root=base_dir / "profile",
+            environment={},
         )
+        layout.user_config_path.parent.mkdir(parents=True, exist_ok=True)
+        layout.user_config_path.write_text(
+            json.dumps(
+                {
+                    "ai": {
+                        "embedding": {
+                            "api_key": "test-embedding-secret",
+                            "base_url": "https://embedding.invalid/v1",
+                            "model": "mcp-fixture-embedding",
+                            "dim": TEST_EMBEDDING_DIM,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        config = config_module.Config(layout=layout)
         config.ensure_dirs()
         # The application owns an explicit Config snapshot.  Seed that snapshot's
         # tokenizer cache under the same root write lease a confirmed setup would
@@ -299,9 +331,9 @@ def test_env(monkeypatch, tmp_path: Path) -> Dict[str, Any]:
             yield {
                 "base_dir": base_dir,
                 "config": config,
-                "db_path": db_path,
-                "vault_dir": vault_dir,
-                "vector_dir": vector_dir,
+                "db_path": config.db_path,
+                "vault_dir": config.vault_dir,
+                "vector_dir": config.vector_index_dir,
             }
         finally:
             reset_application()
@@ -311,34 +343,50 @@ def test_env(monkeypatch, tmp_path: Path) -> Dict[str, Any]:
 def populated_env(test_env) -> Dict[str, Any]:
     store = SQLiteStore(test_env["db_path"], runtime_config=test_env["config"])
     store.initialize()
+    bootstrap_runtime(test_env["config"])
+    _seed_r2_snapshot(test_env["config"])
     md_store = MarkdownStore(test_env["vault_dir"])
 
     entries = _build_sample_entries()
     entry_ids: List[int] = []
     for entry in entries:
         md_path = md_store.save(entry, subdir=entry.source_type)
-        entry_id = store.insert_entry(entry, str(md_path))
+        entry_id = store.insert_entry_with_chunks(
+            entry,
+            str(md_path),
+            [entry.content],
+        )
         entry_ids.append(entry_id)
 
-    # 构造向量索引，保证 get_related 可用
-    vector_store = VectorStore(test_env["vector_dir"], dim=TEST_EMBEDDING_DIM)
+    # R4 product readers must consume a ready generation binding, never a flat
+    # ``vector_dir`` fixture.  Build one deterministic staged generation with
+    # no Provider factory/network call.
+    config = test_env["config"]
+    assert config.embedding_dim == TEST_EMBEDDING_DIM
+    class _DeterministicEmbeddingProvider:
+        def embed_document(self, text: str) -> np.ndarray:
+            del text
+            return np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
-    vectors = [
-        np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
-        np.array([0.95, 0.05, 0.0, 0.0], dtype=np.float32),
-        np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
-        np.array([1.0, 0.0, 0.1, 0.0], dtype=np.float32),
-        np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32),
-    ]
-    for kid, vec in zip(entry_ids, vectors):
-        vector_store.add_doc_vector(kid, vec)
+        def embed_stored_chunks(self, chunks: tuple[str, ...]) -> np.ndarray:
+            return np.asarray(
+                [[1.0, 0.0, 0.0, 0.0] for _ in chunks],
+                dtype=np.float32,
+            )
+
+    source = SQLiteEmbeddingSource()
+    plan = plan_embedding_rebuild(inspect_embedding_index(config, source=source))
+    execute_embedding_rebuild(
+        plan,
+        confirm_embedding_rebuild(plan, allow_network=True),
+        embedder=_DeterministicEmbeddingProvider(),
+    )
 
     return {
         "store": store,
         "md_store": md_store,
         "entry_ids": entry_ids,
         "entries": entries,
-        "vector_store": vector_store,
     }
 
 

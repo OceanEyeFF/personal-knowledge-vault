@@ -6,9 +6,10 @@ facts there (R2 database/provider readiness and R4 active vector generation),
 so a feature must not replace the whole mapping with just its own fields.
 
 This module provides the narrow shared primitive: safe read, deep semantic
-merge, and compare-and-swap atomic publication.  It deliberately does *not*
-take a writer lease itself.  A product mutation boundary owns that lease so a
-compound operation (build generation -> flip pointer) has one writer authority.
+merge, and compare-and-swap atomic publication.  Publication deliberately does
+*not acquire* a lease itself, but it verifies that its caller already owns the
+current R3 lease.  A product mutation boundary therefore retains one writer
+authority across a compound operation (build generation -> flip pointer).
 """
 
 from __future__ import annotations
@@ -241,6 +242,12 @@ class RuntimeSnapshotStore:
 
         if not isinstance(expected, RuntimeSnapshotDocument):
             raise TypeError("expected 必须由 RuntimeSnapshotStore.read 返回")
+        # This is the shared pointer/readiness publication primitive.  It must
+        # not become a shortcut around the owning lifecycle mutation boundary.
+        # Check before directory creation or the atomic temp-file path.
+        from src.runtime.writer_inventory import require_active_data_root_writer
+
+        require_active_data_root_writer(self._layout, owner="runtime_snapshot")
         safe_payload = _copy_mapping(payload)
         try:
             encoded = yaml.safe_dump(

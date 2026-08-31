@@ -27,12 +27,13 @@ from src.runtime.embedding_lifecycle import (
     execute_embedding_rebuild,
     inspect_embedding_index,
     plan_embedding_rebuild,
+    publish_embedding_nonready_binding,
     resolve_embedding_index_binding,
 )
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.runtime.layout import RuntimeLayout
 from src.runtime.runtime_snapshot import RuntimeSnapshotStore
-from src.runtime.write_lease import VaultWriteLease
+from src.runtime.write_lease import VaultWriteLease, write_lease_scope
 from src.storage.markdown_store import Entry, MarkdownStore
 from src.storage.sqlite_store import SQLiteStore
 from src.utils.config import Config
@@ -167,7 +168,7 @@ def _r2_base(config: Config) -> dict[str, object]:
     assert config.embedding_dim is not None
     return {
         "schema_version": 1,
-        "database": {"schema_version": "1.2.4"},
+        "database": {"schema_version": "1.2.5"},
         "embedding": {
             "provider": config.embd_provider,
             "fingerprint": config.embedding_index_fingerprint(config.embedding_dim),
@@ -178,7 +179,8 @@ def _r2_base(config: Config) -> dict[str, object]:
 def _seed_r2_snapshot(config: Config) -> None:
     store = RuntimeSnapshotStore(config.layout)
     observed = store.read()
-    store.publish(observed, _r2_base(config))
+    with write_lease_scope(config.layout):
+        store.publish(observed, _r2_base(config))
 
 
 def _prepare_r2(config: Config) -> None:
@@ -188,6 +190,34 @@ def _prepare_r2(config: Config) -> None:
 
     bootstrap_runtime(config)
     _seed_r2_snapshot(config)
+
+
+def _publish_v2_nonready_binding(
+    config: Config,
+    source: _MutableSource,
+    state: EmbeddingIndexState | str,
+) -> None:
+    """Seed only a test fixture; production state writes arrive in R4 P1."""
+
+    inspection = inspect_embedding_index(config, source=source)
+    assert inspection.contract is not None
+    assert inspection.source is not None
+    snapshot_store = RuntimeSnapshotStore(config.layout)
+    observed = snapshot_store.read()
+    extension = {
+        "schema_version": 2,
+        "data_root_identity_sha256": hashlib.sha256(
+            config.data_root_identity.encode("utf-8")
+        ).hexdigest(),
+        "state": state.value if isinstance(state, EmbeddingIndexState) else state,
+        "source_digest": inspection.source.digest,
+        "contract": inspection.contract.to_dict(),
+    }
+    with write_lease_scope(config.layout):
+        snapshot_store.publish(
+            observed,
+            observed.merged({"embedding_index": extension}),
+        )
 
 
 def _execute(
@@ -202,6 +232,38 @@ def _execute(
         confirm_embedding_rebuild(plan, allow_network=True),
         embedder=embedder,
     )
+
+
+def test_nonready_binding_publish_requires_lease_and_revokes_any_prior_index(
+    tmp_path: Path,
+) -> None:
+    _, config = _configured(tmp_path)
+    source = _MutableSource(_records())
+    _prepare_r2(config)
+    before = RuntimeSnapshotStore(config.layout).read()
+
+    with pytest.raises(PKVRuntimeError) as no_lease:
+        publish_embedding_nonready_binding(
+            config,
+            state=EmbeddingIndexState.REBUILD_REQUIRED,
+            source=source,
+        )
+
+    assert no_lease.value.code is ErrorCode.WRITE_BUSY
+    assert RuntimeSnapshotStore(config.layout).read() == before
+    with write_lease_scope(config.layout):
+        published = publish_embedding_nonready_binding(
+            config,
+            state=EmbeddingIndexState.AUTHORIZATION_REQUIRED,
+            source=source,
+        )
+
+    assert published.state is EmbeddingIndexState.AUTHORIZATION_REQUIRED
+    current = inspect_embedding_index(config, source=source)
+    assert current.state is EmbeddingIndexState.AUTHORIZATION_REQUIRED
+    with pytest.raises(PKVRuntimeError) as unavailable:
+        resolve_embedding_index_binding(config, source=source)
+    assert unavailable.value.code is ErrorCode.EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED
 
 
 def test_inspection_and_plan_are_zero_write_and_explicit_config_only(
@@ -247,9 +309,12 @@ def test_successful_generation_preserves_r2_snapshot_and_redacts_audit(
     snapshot = RuntimeSnapshotStore(layout).read().payload
     pointer = snapshot["embedding_index"]
     assert execution.inspection.state is EmbeddingIndexState.READY
+    assert pointer["schema_version"] == 2
+    assert pointer["state"] == "ready"
+    assert pointer["source_digest"] == execution.inspection.source.digest
     assert pointer["active_generation"] == execution.generation_id
     assert pointer["previous_generation"] is None
-    assert snapshot["database"] == {"schema_version": "1.2.4"}
+    assert snapshot["database"] == {"schema_version": "1.2.5"}
     assert snapshot["embedding"] == _r2_base(config_b)["embedding"]
     assert (layout.vector_index_dir / "generations" / execution.generation_id).is_dir()
     assert not (layout.vector_index_dir / "doc_vectors.idx").exists()
@@ -259,6 +324,30 @@ def test_successful_generation_preserves_r2_snapshot_and_redacts_audit(
     assert "embedding-test-secret" not in audit
     assert "alice:password" not in audit
     assert "[REDACTED]" in audit
+
+
+def test_legacy_v1_ready_pointer_remains_strictly_readable(tmp_path: Path) -> None:
+    layout, config = _configured(tmp_path)
+    _prepare_r2(config)
+    source = _MutableSource(_records())
+    execution = _execute(config, source, _FakeEmbedder())
+    snapshot_store = RuntimeSnapshotStore(layout)
+    observed = snapshot_store.read()
+    legacy = dict(observed.payload["embedding_index"])
+    legacy["schema_version"] = 1
+    legacy.pop("state")
+    legacy.pop("source_digest")
+    with write_lease_scope(layout):
+        snapshot_store.publish(
+            observed,
+            observed.merged({"embedding_index": legacy}),
+        )
+
+    inspection = inspect_embedding_index(config, source=source)
+    binding = resolve_embedding_index_binding(config, source=source)
+
+    assert inspection.state is EmbeddingIndexState.READY
+    assert binding.generation_id == execution.generation_id
 
 
 def test_failure_source_drift_and_busy_never_change_active_pointer(
@@ -319,6 +408,58 @@ def test_failure_source_drift_and_busy_never_change_active_pointer(
     assert busy_error.value.code is ErrorCode.WRITE_BUSY
     assert snapshot_store.read().raw_sha256 == active_before.raw_sha256
     assert audit_path.read_bytes() == audit_before_busy
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_code"),
+    [
+        (EmbeddingIndexState.PROCESSING, ErrorCode.EMBEDDING_PROCESSING),
+        (EmbeddingIndexState.RETRY_REQUIRED, ErrorCode.EMBEDDING_RETRY_REQUIRED),
+        (EmbeddingIndexState.BUDGET_PAUSED, ErrorCode.EMBEDDING_BUDGET_PAUSED),
+        (
+            EmbeddingIndexState.AUTHORIZATION_REQUIRED,
+            ErrorCode.EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED,
+        ),
+    ],
+)
+def test_v2_nonready_binding_projects_stable_state_without_flat_fallback(
+    tmp_path: Path,
+    state: EmbeddingIndexState,
+    expected_code: ErrorCode,
+) -> None:
+    layout, config = _configured(tmp_path)
+    _prepare_r2(config)
+    source = _MutableSource(_records())
+    _publish_v2_nonready_binding(config, source, state)
+    snapshot_store = RuntimeSnapshotStore(layout)
+    before = snapshot_store.read().raw_sha256
+
+    inspection = inspect_embedding_index(config, source=source)
+
+    assert inspection.state is state
+    assert inspection.issues[0].code == expected_code.value
+    with pytest.raises(PKVRuntimeError) as binding_error:
+        resolve_embedding_index_binding(config, source=source)
+    assert binding_error.value.code is expected_code
+    assert snapshot_store.read().raw_sha256 == before
+    assert not (layout.vector_index_dir / "doc_vectors.idx").exists()
+    assert not (layout.vector_index_dir / "chunk_vectors.idx").exists()
+    assert not (layout.log_dir / "pkv.log").exists()
+    assert not (layout.log_dir / "audit.jsonl").exists()
+
+
+def test_v2_binding_rejects_unknown_state_instead_of_treating_it_as_no_hits(
+    tmp_path: Path,
+) -> None:
+    _, config = _configured(tmp_path)
+    _prepare_r2(config)
+    source = _MutableSource(_records())
+    _publish_v2_nonready_binding(config, source, "no_hits")
+
+    inspection = inspect_embedding_index(config, source=source)
+
+    assert inspection.state is EmbeddingIndexState.REPAIR_REQUIRED
+    assert inspection.issues[0].code == ErrorCode.REPAIR_REQUIRED.value
 
 
 def test_source_change_during_staged_build_leaves_old_generation_active(tmp_path: Path) -> None:

@@ -36,12 +36,13 @@ class HybridRetriever:
         *,
         embedder_factory: Callable[[], Embedder] | None = None,
         runtime_config: Any = None,
+        vector_retriever: Any | None = None,
     ) -> None:
         self.bm25_retriever = BM25Retriever(
             db_path,
             runtime_config=runtime_config,
         )
-        self.vector_retriever = VectorRetriever(
+        self.vector_retriever = vector_retriever or VectorRetriever(
             db_path,
             vector_index_dir,
             embedder,

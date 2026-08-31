@@ -53,6 +53,7 @@ class TextFallbackProcessor(BaseProcessor):
         deepseek_client: Optional[DeepSeekClient] = None,
         *,
         config: Any | None = None,
+        allow_ai_enrichment: bool = True,
     ):
         """
         Initialize the processor.
@@ -60,6 +61,10 @@ class TextFallbackProcessor(BaseProcessor):
         Args:
             max_summary_words: Summary length in words.
             deepseek_client: Optional injected DeepSeek client (for testing).
+            allow_ai_enrichment: Whether this parsing pass may construct an AI
+                client.  Application-owned R4 archive sets this false so the
+                document can be safely stored before its internal lifecycle
+                admits paid/network work.
         """
         runtime_config = config if config is not None else get_config()
         self._runtime_config = runtime_config
@@ -67,6 +72,9 @@ class TextFallbackProcessor(BaseProcessor):
             runtime_config.get("text_fallback.summary_max_words", max_summary_words)
         )
         self._deepseek_client = deepseek_client
+        if type(allow_ai_enrichment) is not bool:
+            raise ValueError("allow_ai_enrichment 必须是 bool")
+        self._allow_ai_enrichment = allow_ai_enrichment
         self._deepseek_model = runtime_config.llm_model
         self._summary_temperature = float(
             runtime_config.get("ai.llm.temperature", 0.7)
@@ -399,6 +407,12 @@ class TextFallbackProcessor(BaseProcessor):
         """Generate summary and tags using DeepSeek, with graceful fallback."""
         if not text:
             return "内容为空。", ["text", "empty", "fallback"]
+
+        if not self._allow_ai_enrichment:
+            return (
+                self._fallback_summary(text, text_type, messages),
+                self._fallback_tags(text, text_type, messages),
+            )
 
         try:
             client = self._deepseek_client or DeepSeekClient(

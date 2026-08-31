@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from threading import RLock
 from typing import Any, ClassVar
 
@@ -18,6 +19,21 @@ from src.runtime.errors import PKVRuntimeError
 from src.utils.config import Config
 
 
+def _application_file_log_scope(application: Any, *, owner: str) -> Any:
+    """Return a lease-bound runtime log scope when using a real Application.
+
+    Kernel boundary tests deliberately use minimal, storage-shaped doubles.  They
+    have no RuntimeLayout and therefore cannot configure a product file handler;
+    keeping them console-only is safe.  Every real KnowledgeApplication exposes
+    the private scope and remains subject to its binding plus writer lease.
+    """
+
+    scope_factory = getattr(application, "_runtime_file_log_scope", None)
+    if callable(scope_factory):
+        return scope_factory(owner=owner)
+    return nullcontext()
+
+
 class KernelChatSessions:
     """Narrow chat-session port; no storage implementation escapes the Kernel."""
 
@@ -31,19 +47,26 @@ class KernelChatSessions:
     def _write_lease_scope(self) -> Any:
         return self._application._write_lease_scope()
 
+    def _runtime_file_log_scope(self) -> Any:
+        return _application_file_log_scope(
+            self._application,
+            owner="kernel_chat_session",
+        )
+
     def create_session(self, session_id: str, title: str) -> Any:
         with self._write_lease_scope():
-            with self._application._audit_mutation(
-                "chat_session_create",
-                {"session_id": session_id, "title": title},
-            ) as audit:
-                try:
-                    result = self._store.create_session(session_id, title)
-                except PKVRuntimeError as error:
-                    audit.fail_runtime_error(error)
-                    raise
-                self._application._finish_mutation_audit(audit, result)
-                return result
+            with self._runtime_file_log_scope():
+                with self._application._audit_mutation(
+                    "chat_session_create",
+                    {"session_id": session_id, "title": title},
+                ) as audit:
+                    try:
+                        result = self._store.create_session(session_id, title)
+                    except PKVRuntimeError as error:
+                        audit.fail_runtime_error(error)
+                        raise
+                    self._application._finish_mutation_audit(audit, result)
+                    return result
 
     def get_session(self, session_id: str) -> Any:
         return self._store.get_session(session_id)
@@ -53,45 +76,48 @@ class KernelChatSessions:
 
     def update_session(self, **kwargs: Any) -> Any:
         with self._write_lease_scope():
-            with self._application._audit_mutation(
-                "chat_session_update",
-                {"updates": kwargs},
-            ) as audit:
-                try:
-                    result = self._store.update_session(**kwargs)
-                except PKVRuntimeError as error:
-                    audit.fail_runtime_error(error)
-                    raise
-                self._application._finish_mutation_audit(audit, result)
-                return result
+            with self._runtime_file_log_scope():
+                with self._application._audit_mutation(
+                    "chat_session_update",
+                    {"updates": kwargs},
+                ) as audit:
+                    try:
+                        result = self._store.update_session(**kwargs)
+                    except PKVRuntimeError as error:
+                        audit.fail_runtime_error(error)
+                        raise
+                    self._application._finish_mutation_audit(audit, result)
+                    return result
 
     def delete_session(self, session_id: str) -> Any:
         with self._write_lease_scope():
-            with self._application._audit_mutation(
-                "chat_session_delete",
-                {"session_id": session_id},
-            ) as audit:
-                try:
-                    result = self._store.delete_session(session_id)
-                except PKVRuntimeError as error:
-                    audit.fail_runtime_error(error)
-                    raise
-                self._application._finish_mutation_audit(audit, result)
-                return result
+            with self._runtime_file_log_scope():
+                with self._application._audit_mutation(
+                    "chat_session_delete",
+                    {"session_id": session_id},
+                ) as audit:
+                    try:
+                        result = self._store.delete_session(session_id)
+                    except PKVRuntimeError as error:
+                        audit.fail_runtime_error(error)
+                        raise
+                    self._application._finish_mutation_audit(audit, result)
+                    return result
 
     def archive_session(self, session_id: str, *, is_archived: bool) -> Any:
         with self._write_lease_scope():
-            with self._application._audit_mutation(
-                "chat_session_archive",
-                {"session_id": session_id, "is_archived": is_archived},
-            ) as audit:
-                try:
-                    result = self._store.archive_session(session_id, is_archived=is_archived)
-                except PKVRuntimeError as error:
-                    audit.fail_runtime_error(error)
-                    raise
-                self._application._finish_mutation_audit(audit, result)
-                return result
+            with self._runtime_file_log_scope():
+                with self._application._audit_mutation(
+                    "chat_session_archive",
+                    {"session_id": session_id, "is_archived": is_archived},
+                ) as audit:
+                    try:
+                        result = self._store.archive_session(session_id, is_archived=is_archived)
+                    except PKVRuntimeError as error:
+                        audit.fail_runtime_error(error)
+                        raise
+                    self._application._finish_mutation_audit(audit, result)
+                    return result
 
     def query_by_url(self, url: str) -> Any:
         return self._store.query_by_url(url)
@@ -219,40 +245,53 @@ class KnowledgeKernel:
 
     def delete_vectors_for_entry(self, knowledge_id: int) -> None:
         with self._application._write_lease_scope():
-            with self._application._audit_mutation(
-                "delete_vectors",
-                {"knowledge_id": knowledge_id},
-            ) as audit:
-                try:
-                    vector_store = self._application.vector_store
-                    if vector_store is not None:
-                        vector_store.delete_vectors_for_entry(knowledge_id)
-                except PKVRuntimeError as error:
-                    audit.fail_runtime_error(error)
-                    raise
-                self._application._finish_mutation_audit(audit, None)
+            with _application_file_log_scope(
+                self._application,
+                owner="kernel_mutation",
+            ):
+                with self._application._audit_mutation(
+                    "delete_vectors",
+                    {"knowledge_id": knowledge_id},
+                ) as audit:
+                    try:
+                        vector_store = self._application.vector_store
+                        if vector_store is not None:
+                            vector_store.delete_vectors_for_entry(knowledge_id)
+                    except PKVRuntimeError as error:
+                        audit.fail_runtime_error(error)
+                        raise
+                    self._application._finish_mutation_audit(audit, None)
 
     def delete_entry(self, knowledge_id: int) -> Any:
-        def delete_vectors(entry_id: int) -> None:
-            vector_store = self._application.vector_store
-            if vector_store is not None:
-                vector_store.delete_vectors_for_entry(entry_id)
-
         with self._application._write_lease_scope():
-            with self._application._audit_mutation(
-                "delete_entry",
-                {"knowledge_id": knowledge_id},
-            ) as audit:
-                try:
-                    result = self._application.storage_coordinator.delete(
-                        knowledge_id,
-                        vector_operation=delete_vectors,
-                    )
-                except PKVRuntimeError as error:
-                    audit.fail_runtime_error(error)
-                    raise
-                self._application._finish_mutation_audit(audit, result)
-                return result
+            with _application_file_log_scope(
+                self._application,
+                owner="kernel_mutation",
+            ):
+                with self._application._audit_mutation(
+                    "delete_entry",
+                    {"knowledge_id": knowledge_id},
+                ) as audit:
+                    try:
+                        result = self._application.storage_coordinator.delete(
+                            knowledge_id,
+                            # An active generation is immutable.  Deleting its
+                            # per-entry vectors would make a seemingly ready
+                            # binding corrupt; the internal lifecycle instead
+                            # revokes the binding and rebuilds a successor.
+                            vector_operation=None,
+                        )
+                        if getattr(result, "core_committed", False) is True:
+                            mutation_id = getattr(result, "operation_id", None)
+                            if isinstance(mutation_id, str) and mutation_id:
+                                self._application._schedule_committed_mutation_ai_automation(
+                                    mutation_id
+                                )
+                    except PKVRuntimeError as error:
+                        audit.fail_runtime_error(error)
+                        raise
+                    self._application._finish_mutation_audit(audit, result)
+                    return result
 
     def update_local_config(self, updates: dict[str, Any]) -> "KnowledgeKernel":
         """Persist settings and publish a successor for this Kernel's scope.

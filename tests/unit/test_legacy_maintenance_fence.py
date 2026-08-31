@@ -59,3 +59,38 @@ def test_retained_chunk_backfill_helper_requires_isolated_test_environment(
         )
 
     assert not db_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "forbidden_markers", "fence"),
+    [
+        (
+            Path("scripts/legacy/setup.ps1"),
+            ("python --version", "pip install", "config\\local.yaml", ".data\\db"),
+            "exit 2",
+        ),
+        (
+            Path("scripts/legacy/setup.bat"),
+            ("python --version", "pip install", "config\\local.yaml", ".data\\db"),
+            "exit /b 2",
+        ),
+        (
+            Path("scripts/legacy/test.ps1"),
+            ("Activate.ps1", "python src\\utils\\verify_setup.py"),
+            "exit 2",
+        ),
+    ],
+)
+def test_legacy_setup_and_test_entrypoints_fence_before_config_network_or_data_root(
+    relative_path: Path,
+    forbidden_markers: tuple[str, ...],
+    fence: str,
+) -> None:
+    """The historical scripts cannot reach an old layout before failing closed."""
+
+    source = (Path(__file__).resolve().parents[2] / relative_path).read_text(
+        encoding="utf-8-sig"
+    ).casefold()
+    fence_index = source.index(fence)
+    for marker in forbidden_markers:
+        assert fence_index < source.index(marker.casefold())

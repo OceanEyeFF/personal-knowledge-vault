@@ -89,6 +89,22 @@ It mentions coverage expectations.
 
 
 @pytest.mark.asyncio
+async def test_text_fallback_can_use_deterministic_summary_without_constructing_ai_client():
+    """R4 archive defers paid/network enrichment until after primary storage."""
+
+    processor = TextFallbackProcessor(allow_ai_enrichment=False)
+    with patch(
+        "src.processors.text_fallback_processor.DeepSeekClient",
+        side_effect=AssertionError("AI client must not be constructed"),
+    ):
+        entry = await processor.process("# Local title\nLocal body")
+
+    assert entry.title == "Local title"
+    assert entry.summary_100_words == "# Local title\nLocal body"
+    assert entry.tags
+
+
+@pytest.mark.asyncio
 async def test_text_fallback_process_empty_input():
     """Blank input should return an empty entry."""
     processor = TextFallbackProcessor()

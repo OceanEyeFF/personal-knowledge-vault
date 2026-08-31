@@ -1,4 +1,9 @@
-﻿# Personal Knowledge Vault - 测试脚本 (PowerShell)
+﻿# Historical entrypoint fence: test execution must go through
+# scripts/run-test.ps1 so no real profile/config/data root can be reached.
+[Console]::Error.WriteLine("已停用的 legacy test 入口；请使用 scripts/run-test.ps1。")
+exit 2
+
+# Personal Knowledge Vault - 测试脚本 (PowerShell)
 # 作者: 幽浮酱
 # 用途: 运行所有验证测试
 

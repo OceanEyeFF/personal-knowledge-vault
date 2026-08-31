@@ -693,15 +693,26 @@ class TestToolCallWriteSecurity:
         """get_related 应处理不存在的 ID。"""
         store, md_store, vault_dir, entry_ids = populated_db
         patches = _patch_stores(store, md_store)
+        application = MagicMock()
+        application.related.return_value = {
+            "status": "no_hits",
+            "strategy": "vector_related",
+            "total": 0,
+            "results": [],
+            "issues": [],
+            "message": "未找到条目",
+        }
 
-        with patches[0], patches[1], patches[2], patches[3]:
+        with patches[0], patches[1], patches[2], patches[3], patch(
+            "src.mcp.tools.get_application", return_value=application
+        ):
             raw = await mcp.call_tool(
                 "get_related", {"knowledge_id": "99999"}
             )
 
         result = parse_tool_result(raw)
-        assert "error" in result
-        assert "未找到" in result["error"]
+        assert result["status"] == "no_hits"
+        assert "未找到" in result["message"]
 
     @pytest.mark.asyncio
     async def test_query_subgraph_success(self):

@@ -68,7 +68,7 @@ def _configured(
 def _runtime_snapshot_payload(
     config: Config,
     *,
-    database_schema_version: str = "1.2.4",
+    database_schema_version: str = "1.2.5",
 ) -> dict[str, object]:
     """Return the smallest strict v1 runtime snapshot for lifecycle fixtures."""
 
@@ -108,15 +108,23 @@ class _NoDimensionProbe(_FakeProbe):
 
 
 class _RecordingLease:
-    def __init__(self) -> None:
+    def __init__(self, layout: RuntimeLayout) -> None:
+        self._layout = layout
         self.events: list[str] = []
+        self._scope = None
 
     def __enter__(self) -> Self:
         self.events.append("enter")
+        self._scope = write_lease_scope(self._layout)
+        self._scope.__enter__()
         return self
 
     def __exit__(self, *args: object) -> None:
-        self.events.append("exit")
+        try:
+            assert self._scope is not None
+            self._scope.__exit__(*args)
+        finally:
+            self.events.append("exit")
 
 
 def test_inspect_and_plan_fresh_root_are_strictly_readonly(tmp_path: Path) -> None:
@@ -280,7 +288,7 @@ def test_execute_fresh_plan_uses_explicit_probe_and_writer_lease(tmp_path: Path)
     layout, config = _configured(tmp_path)
     plan = plan_runtime(inspect_runtime(config))
     probe = _FakeProbe()
-    lease = _RecordingLease()
+    lease = _RecordingLease(layout)
 
     execution = execute_runtime_plan(
         plan,
@@ -747,7 +755,7 @@ def test_runtime_snapshot_secret_is_rejected_without_serializing_it(tmp_path: Pa
         {"schema_version": 1},
         {
             "schema_version": 1,
-            "database": {"schema_version": "1.2.4"},
+            "database": {"schema_version": "1.2.5"},
             "embedding": {
                 "provider": "openai_compatible",
                 "fingerprint": {
@@ -759,7 +767,7 @@ def test_runtime_snapshot_secret_is_rejected_without_serializing_it(tmp_path: Pa
         },
         {
             "schema_version": 1,
-            "database": {"schema_version": "1.2.4"},
+            "database": {"schema_version": "1.2.5"},
             "embedding": {
                 "provider": "openai_compatible",
                 "fingerprint": {

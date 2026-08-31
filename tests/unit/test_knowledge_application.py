@@ -18,7 +18,7 @@ from src.kernel import KnowledgeKernel
 from src.retrieval.result import SearchResponse
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.runtime.layout import RuntimeLayout
-from src.runtime.write_lease import VaultWriteLease
+from src.runtime.write_lease import VaultWriteLease, write_lease_scope
 from src.workflow.models import WorkflowResult
 
 
@@ -159,7 +159,7 @@ def test_busy_archive_stops_before_processor_workflow_or_audit(tmp_path) -> None
         workflow_factory=workflow_factory,
     )
 
-    with VaultWriteLease(config.layout):
+    with write_lease_scope(config.layout):
         result = asyncio.run(app.archive_text("contended text"))
 
     assert result.success is False
@@ -455,13 +455,15 @@ def test_missing_vector_index_is_reprobed_then_cached_after_it_appears(tmp_path)
     app = KnowledgeApplication(config, vector_store_factory=writable_factory)
     app._default_readonly_vector_store = readonly_factory
 
-    assert app.vector_store is None
+    with write_lease_scope(config.layout):
+        assert app.vector_store is None
+        assert app.vector_store is writable
     assert app.readonly_vector_store is None
-    assert app.vector_store is writable
     assert app.readonly_vector_store is readonly
 
     # A successfully opened index is process-cached; only absence is re-probed.
-    assert app.vector_store is writable
+    with write_lease_scope(config.layout):
+        assert app.vector_store is writable
     assert app.readonly_vector_store is readonly
     assert writable_calls == [config, config]
     assert readonly_calls == [config, config]
@@ -606,7 +608,8 @@ def test_writer_vector_store_binds_application_config_not_ambient_global(
 
     monkeypatch.setattr(vector_store_module, "get_config", reject_ambient_config)
 
-    store = KnowledgeApplication(config_b)._create_writer_vector_store(4)
+    with write_lease_scope(config_b.layout):
+        store = KnowledgeApplication(config_b)._create_writer_vector_store(4)
 
     assert store._runtime_config is config_b
     assert store.embedding_fingerprint["embedding_model"] == "embedding-model-b"
@@ -719,6 +722,7 @@ def test_archive_vector_write_uses_explicit_config_b_not_ambient_config_a(
             "status": "ready",
             "knowledge_id": 73,
             "operation_id": "b" * 32,
+            "core_committed": True,
             "errors": [],
         },
     )
@@ -896,17 +900,15 @@ def _runtime_config(tmp_path: Path):
     return Config(layout=layout)
 
 
-def test_explicit_kernel_b_real_vector_index_transition_never_consults_global_a(
+def test_explicit_kernel_b_archive_defers_ai_without_consulting_global_a(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A real B archive publishes an absent index for related/delete without A.
+    """A real B archive keeps primary storage and deferred AI on B only.
 
-    This is deliberately not a Store/Vector mock: the regression exercises the
-    Application/Kernel composition through isolated SQLite, Markdown, hnswlib,
-    strict related reads, and the coordinated delete path.  Config A is kept as
-    the process-global compatibility identity but every global lookup is a
-    failure sentinel, so an accidental fallback cannot pass by using A's paths.
+    Config A is kept as the process-global compatibility identity but every
+    global lookup is a failure sentinel.  R4 P2 must persist B's documents,
+    revoke stale vector readiness, and avoid a flat-vector or Provider fallback.
     """
 
     import src.cli.commands as commands
@@ -915,13 +917,45 @@ def test_explicit_kernel_b_real_vector_index_transition_never_consults_global_a(
     import src.workflow.engine as workflow_engine_module
     import src.workflow.steps as workflow_steps_module
     from src.runtime.bootstrap import bootstrap_runtime
+    from src.runtime.embedding_lifecycle import EmbeddingIndexState, inspect_embedding_index
+    from src.runtime.runtime_snapshot import RuntimeSnapshotStore
+    from src.runtime.write_lease import write_lease_scope
     from src.storage.markdown_store import Entry
 
     config_a = _runtime_config(tmp_path / "config-a")
     config_b = _runtime_config(tmp_path / "config-b")
+    config_b.user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_b.user_config_path.write_text(
+        json.dumps(
+            {
+                "ai": {
+                    "llm": {"api_key": "test-llm-secret"},
+                    "embedding": {"api_key": "test-embedding-secret"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_b = config_b.reload_snapshot()
     # Bootstrap is an isolated B-only fixture setup: it creates B's schema and
     # writer-owned tokenizer cache before the read/FTS portions of this test.
     bootstrap_runtime(config_b, recover_interrupted=False)
+    assert config_b.embedding_dim is not None
+    snapshot_store = RuntimeSnapshotStore(config_b.layout)
+    with write_lease_scope(config_b.layout):
+        snapshot_store.publish(
+            snapshot_store.read(),
+            {
+                "schema_version": 1,
+                "database": {"schema_version": "1.2.5"},
+                "embedding": {
+                    "provider": config_b.embd_provider,
+                    "fingerprint": config_b.embedding_index_fingerprint(
+                        config_b.embedding_dim
+                    ),
+                },
+            },
+        )
 
     def reject_global_config_a(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("global Config A must not be consulted by explicit Config B")
@@ -966,32 +1000,13 @@ def test_explicit_kernel_b_real_vector_index_transition_never_consults_global_a(
                 content=text,
             )
 
-    class FakeEmbedder:
-        dim = 2
-
-        @staticmethod
-        def _vector(text: str) -> np.ndarray:
-            if text == "B alpha":
-                return np.array([1.0, 0.0], dtype=np.float32)
-            if text == "B beta":
-                return np.array([0.95, 0.05], dtype=np.float32)
-            raise AssertionError(f"unexpected deterministic embedding input: {text}")
-
-        def embed_document(self, text: str) -> np.ndarray:
-            return self._vector(text)
-
-        def embed_chunks(
-            self,
-            text: str,
-            _include_chunks: bool,
-        ) -> tuple[np.ndarray, list[str]]:
-            return self._vector(text).reshape(1, -1), [text]
-
     app = KnowledgeApplication(
         config_b,
         text_processor_factory=FakeTextProcessor,
     )
-    app._create_embedder = lambda: FakeEmbedder()
+    app._create_embedder = lambda: (_ for _ in ()).throw(
+        AssertionError("Embedding must be deferred")
+    )
     kernel = KnowledgeKernel._from_application(app)
 
     assert kernel.config is config_b
@@ -999,37 +1014,37 @@ def test_explicit_kernel_b_real_vector_index_transition_never_consults_global_a(
     assert not vector_store_module.VectorStore.has_index_artifacts(
         config_b.vector_index_dir
     )
-    # Missing artifacts are not cached permanently: this strict read is None,
-    # then the same B application must observe the writer-published index.
+    # R4 P2 never writes a flat index during archive.
     assert kernel.has_vector_index() is False
 
     alpha = asyncio.run(kernel.archive_text("B alpha"))
     beta = asyncio.run(kernel.archive_text("B beta"))
-    assert alpha.terminal == "success", alpha.errors
-    assert beta.terminal == "success", beta.errors
+    assert alpha.terminal == "degraded", alpha.errors
+    assert beta.terminal == "degraded", beta.errors
+    assert alpha.data["ai_automation"]["status"] == "rebuild_required"
+    assert beta.data["ai_automation"]["status"] == "rebuild_required"
     alpha_id = alpha.data["knowledge_id"]
     beta_id = beta.data["knowledge_id"]
     assert type(alpha_id) is int and type(beta_id) is int
     assert alpha_id != beta_id
 
-    assert vector_store_module.VectorStore.has_index_artifacts(config_b.vector_index_dir)
-    assert kernel.has_vector_index() is True
+    assert not vector_store_module.VectorStore.has_index_artifacts(config_b.vector_index_dir)
+    assert kernel.has_vector_index() is False
 
     # Exercise the production strict-read related adapter with an explicit B.
     # It creates neither a Provider nor a writer VectorStore.
     monkeypatch.setattr(commands, "_load_config", lambda: config_b)
     related = commands._related_payload(str(alpha_id), 5)
-    assert related["status"] == "success"
-    assert related["issues"] == []
-    assert beta_id in [item["knowledge_id"] for item in related["results"]]
+    assert related["status"] == "degraded"
+    assert related["issues"][0]["code"] == ErrorCode.EMBEDDING_REBUILD_REQUIRED.value
 
     deleted = kernel.delete_entry(alpha_id)
     assert deleted.successful is True
     assert kernel.get_entry(alpha_id) is None
-    writer = app.vector_store
-    assert writer is not None
-    assert writer.get_doc_vector(alpha_id) is None
-    assert kernel.has_vector_index() is True  # beta keeps B's published pair usable
+    assert kernel.has_vector_index() is False
+    after_delete = inspect_embedding_index(config_b)
+    assert after_delete.state is EmbeddingIndexState.REBUILD_REQUIRED
+    assert after_delete.source is not None and after_delete.source.document_count == 1
     assert commands._related_payload(str(alpha_id), 5)["status"] == "no_hits"
     assert not config_a.data_root.exists()
 

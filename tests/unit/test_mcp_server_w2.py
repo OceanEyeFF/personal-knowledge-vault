@@ -162,11 +162,11 @@ def test_main_does_not_coerce_malformed_file_logging_flag(
 
 
 def test_main_accepts_exact_true_file_logging_flag(preserve_root_logger):
-    path_validator = object()
+    log_dir = Path("isolated") / "logs"
     config = SimpleNamespace(
         log_level="INFO",
-        log_dir=Path("isolated") / "logs",
-        layout=SimpleNamespace(writable_user_path=path_validator),
+        log_dir=log_dir,
+        layout=SimpleNamespace(writable_user_path=object(), log_dir=log_dir),
     )
     config.get = lambda key, default=None: (
         True if key == "logging.file.enabled" else default
@@ -176,22 +176,19 @@ def test_main_accepts_exact_true_file_logging_flag(preserve_root_logger):
         patch.object(sys, "argv", ["pkv-mcp"]),
         patch.object(server, "get_config", return_value=config),
         patch.object(server, "inspect_runtime", return_value=_inspection()),
-        patch.object(server, "has_active_write_lease", return_value=False) as has_lease,
         patch.object(server.LoggerSetup, "add_file_handler") as add_file_handler,
         patch.object(server.mcp, "run"),
     ):
         server.main()
-        guard_result = add_file_handler.call_args.kwargs["emit_guard"]()
 
     add_file_handler.assert_called_once()
     args, kwargs = add_file_handler.call_args
     assert args == (config.log_dir / "pkv.log",)
-    assert kwargs["path_validator"] is path_validator
     assert kwargs["level"] == logging.INFO
     assert kwargs["log_format"] == "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-    assert kwargs["delay"] is True
-    assert guard_result is False
-    has_lease.assert_called_once_with(config.layout)
+    binding = kwargs["runtime_file_binding"]
+    assert binding.layout is config.layout
+    assert binding.path == config.log_dir / "pkv.log"
 
 
 def test_main_keeps_stdio_available_but_status_only_when_runtime_unready(

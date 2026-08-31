@@ -626,119 +626,16 @@ def _related_payload(knowledge_id: str, limit: int) -> Dict[str, Any]:
     safe_limit = min(limit, 20)
     try:
         config = _load_config()
-        application = get_application(config)
-        store = application.sqlite_store
-        seed_entry = _get_related_entry_by_id(store, related_id)
-    except Exception as exc:
-        return _related_failure_payload(
-            exc,
-            stage="related_entry_lookup",
-            message="条目读取失败",
-        )
-
-    if seed_entry is None:
-        return {
-            "status": "no_hits",
-            "strategy": "vector_related",
-            "total": 0,
-            "results": [],
-            "issues": [],
-            "message": "未找到条目",
-        }
-
-    try:
-        vector_store = application.readonly_vector_store
-        if vector_store is None:
-            return {
-                "status": "degraded",
-                "strategy": "vector_related",
-                "total": 0,
-                "results": [],
-                "issues": [
-                    _related_issue(
-                        ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
-                        stage="vector_index",
-                        recoverable=True,
-                    )
-                ],
-                "message": "向量索引不可用，无法获取关联知识",
-            }
-
-        document_vector = vector_store.get_doc_vector(related_id)
-        if document_vector is None:
-            return {
-                "status": "degraded",
-                "strategy": "vector_related",
-                "total": 0,
-                "results": [],
-                "issues": [
-                    _related_issue(
-                        ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE,
-                        stage="document_vector",
-                        recoverable=True,
-                    )
-                ],
-                "message": "该条目暂无向量，无法获取关联知识",
-            }
-
-        raw_results = vector_store.search_doc(document_vector, k=safe_limit + 1)
-        if (
-            type(raw_results) is not list
-            or len(raw_results) > safe_limit + 1
-            or not all(
-                type(item) is tuple
-                and len(item) == 2
-                and type(item[0]) is int
-                and item[0] > 0
-                and type(item[1]) in {int, float}
-                and math.isfinite(item[1])
-                for item in raw_results
-            )
-            or len({item[0] for item in raw_results}) != len(raw_results)
-        ):
+        payload = get_application(config).related(related_id, safe_limit)
+        if not isinstance(payload, dict):
             raise _BackendReadContractError
-
-        results: List[Dict[str, Any]] = []
-        for neighbour_id, distance in raw_results:
-            if neighbour_id == related_id:
-                continue
-            if len(results) >= safe_limit:
-                break
-            neighbour = _get_related_entry_by_id(store, neighbour_id)
-            if neighbour is None:
-                raise PKVRuntimeError(
-                    ErrorCode.RETRIEVAL_METADATA_INCONSISTENT,
-                    "related vector metadata is inconsistent",
-                    stage="vector_metadata_read",
-                    recoverable=False,
-                )
-            results.append(
-                {
-                    "knowledge_id": neighbour_id,
-                    "title": neighbour["title"],
-                    "abstract": neighbour["summary_one_sentence"] or "",
-                    "tags": _stored_tags(neighbour["tags"]),
-                    "source_type": neighbour["source_type"],
-                    "score": round(min(1.0, max(0.0, 1.0 - distance)), 4),
-                }
-            )
+        return payload
     except Exception as exc:
         return _related_failure_payload(
             exc,
             stage="vector_related",
             message="向量关联查询不可用",
         )
-
-    payload: Dict[str, Any] = {
-        "status": "success" if results else "no_hits",
-        "strategy": "vector_related",
-        "total": len(results),
-        "results": results,
-        "issues": [],
-    }
-    if not results:
-        payload["message"] = "未找到关联条目"
-    return payload
 
 
 def _extract_result_id(result: Any) -> Optional[int]:

@@ -11,6 +11,7 @@ import pytest
 from src.runtime.audit import AUDIT_SCHEMA_VERSION, REDACTED_VALUE, AuditTrace, AuditTraceError
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.runtime.layout import RuntimeLayout
+from src.runtime.write_lease import write_lease_scope
 
 
 def _layout(tmp_path: Path) -> RuntimeLayout:
@@ -21,6 +22,10 @@ def _layout(tmp_path: Path) -> RuntimeLayout:
         user_data_root=tmp_path / "data",
         environment={},
     )
+
+
+def _audit_lease(trace: AuditTrace):
+    return write_lease_scope(trace._layout)
 
 
 def test_audit_trace_keeps_full_article_prompt_but_redacts_nested_credentials_and_urls(
@@ -38,8 +43,9 @@ def test_audit_trace_keeps_full_article_prompt_but_redacts_nested_credentials_an
         now=lambda: datetime(2026, 8, 20, 1, 2, 3, tzinfo=timezone.utc),
     )
 
-    path = trace.append(
-        {
+    with _audit_lease(trace):
+        path = trace.append(
+            {
             "operation": "archive_text",
             "article": article,
             "prompt": prompt,
@@ -65,8 +71,8 @@ def test_audit_trace_keeps_full_article_prompt_but_redacts_nested_credentials_an
                 "Authorization: Bearer r4-inline-secret; "
                 "cookie=r4-inline-cookie; api key = r4-inline-api-key"
             ),
-        }
-    )
+            }
+        )
 
     assert path == trace.path
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -117,8 +123,9 @@ def test_audit_trace_is_jsonl_and_uses_only_layout_log_root(tmp_path: Path) -> N
         now=lambda: datetime(2026, 8, 20, tzinfo=timezone.utc),
     )
 
-    trace.append({"operation": "first", "article": "first full article"})
-    trace.append({"operation": "second", "prompt": "second full prompt"})
+    with _audit_lease(trace):
+        trace.append({"operation": "first", "article": "first full article"})
+        trace.append({"operation": "second", "prompt": "second full prompt"})
 
     assert trace.path == layout.log_dir / "audit.jsonl"
     assert trace.path.is_file()
@@ -138,8 +145,9 @@ def test_audit_trace_rejects_unsupported_payload_without_secret_reflection(
 
     trace = AuditTrace(_layout(tmp_path), secret_values=(api_key,))
 
-    with pytest.raises(AuditTraceError) as captured:
-        trace.append({"article": UnsafeValue()})
+    with _audit_lease(trace):
+        with pytest.raises(AuditTraceError) as captured:
+            trace.append({"article": UnsafeValue()})
 
     assert str(captured.value) == "审计追踪无法安全写入"
     assert api_key not in str(captured.value)
@@ -166,20 +174,21 @@ def test_audit_operation_captures_full_context_and_typed_failure_without_message
         "provider": {"api_key": api_key},
     }
 
-    with trace.operation("embedding_rebuild", context=captured_context) as operation:
-        # The timeline has already captured its own safe snapshot; a later
-        # caller mutation must not turn the terminal record into Config B.
-        captured_context["configuration_generation"] = 8
-        captured_context["article"] = "不应出现在结束记录的替换文章"
-        operation.fail_runtime_error(
-            PKVRuntimeError(
-                ErrorCode.WRITE_BUSY,
-                secret_message,
-                stage="write_lease",
-                recoverable=True,
-            ),
-            details={"plan_id": "r4-plan-1", "authorization": api_key},
-        )
+    with _audit_lease(trace):
+        with trace.operation("embedding_rebuild", context=captured_context) as operation:
+            # The timeline has already captured its own safe snapshot; a later
+            # caller mutation must not turn the terminal record into Config B.
+            captured_context["configuration_generation"] = 8
+            captured_context["article"] = "不应出现在结束记录的替换文章"
+            operation.fail_runtime_error(
+                PKVRuntimeError(
+                    ErrorCode.WRITE_BUSY,
+                    secret_message,
+                    stage="write_lease",
+                    recoverable=True,
+                ),
+                details={"plan_id": "r4-plan-1", "authorization": api_key},
+            )
 
     records = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
     assert [record["event"]["phase"] for record in records] == ["started", "failed"]
@@ -215,9 +224,10 @@ def test_audit_operation_unknown_exception_never_reads_exception_text_or_creates
         def __str__(self) -> str:
             return api_key
 
-    with pytest.raises(UnsafeFailure):
-        with trace.operation("archive_text", context={"article": "全文"}):
-            raise UnsafeFailure()
+    with _audit_lease(trace):
+        with pytest.raises(UnsafeFailure):
+            with trace.operation("archive_text", context={"article": "全文"}):
+                raise UnsafeFailure()
 
     records = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
     assert [record["event"]["phase"] for record in records] == ["started", "failed"]
@@ -253,9 +263,10 @@ def test_audit_operation_preserves_business_error_when_failure_trace_cannot_appe
     class BusinessFailure(RuntimeError):
         pass
 
-    with pytest.raises(BusinessFailure):
-        with trace.operation("archive_text", context={"article": "全文"}):
-            raise BusinessFailure()
+    with _audit_lease(trace):
+        with pytest.raises(BusinessFailure):
+            with trace.operation("archive_text", context={"article": "全文"}):
+                raise BusinessFailure()
 
     records = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
     assert [record["event"]["phase"] for record in records] == ["started"]
@@ -264,9 +275,24 @@ def test_audit_operation_preserves_business_error_when_failure_trace_cannot_appe
 def test_audit_operation_auto_completes_when_caller_has_no_result(tmp_path: Path) -> None:
     trace = AuditTrace(_layout(tmp_path), secret_values=())
 
-    with trace.operation("delete_entry", context={"knowledge_id": 42}) as operation:
-        assert not operation.terminal
+    with _audit_lease(trace):
+        with trace.operation("delete_entry", context={"knowledge_id": 42}) as operation:
+            assert not operation.terminal
 
     records = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
     assert [record["event"]["phase"] for record in records] == ["started", "completed"]
     assert records[-1]["event"]["context"] == {"knowledge_id": 42}
+
+
+def test_audit_trace_without_lease_is_write_busy_and_has_zero_side_effects(
+    tmp_path: Path,
+) -> None:
+    trace = AuditTrace(_layout(tmp_path), secret_values=())
+
+    with pytest.raises(PKVRuntimeError) as captured:
+        trace.append({"operation": "archive_text"})
+
+    assert captured.value.code is ErrorCode.WRITE_BUSY
+    assert captured.value.stage == "write_lease"
+    assert not trace._layout.user_data_root.exists()
+    assert not trace.path.exists()

@@ -27,7 +27,7 @@ from src.runtime.lifecycle import (
     inspect_runtime,
     plan_runtime,
 )
-from src.runtime.write_lease import has_active_write_lease
+from src.runtime.file_logging import runtime_file_log_binding
 from src.utils.config import get_config
 from src.utils.logger import LoggerSetup
 
@@ -471,19 +471,14 @@ def main():
     level_str, log_level = _canonical_log_level(configured_level)
 
     log_format = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-    formatter = logging.Formatter(log_format)
-
-    # 获取根 logger，避免重复 handler
-    root_logger = logging.getLogger()
-    root_logger.setLevel(log_level)
-    root_logger.handlers.clear()
-
-    # ── 控制台 handler ──
-    # ⚠️ stdio 模式下 stdout 被 MCP 协议占用，日志必须走 stderr
-    console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setLevel(log_level)
-    console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
+    # ⚠️ stdio 模式下 stdout 被 MCP 协议占用，日志必须走 stderr.  LoggerSetup
+    # closes replaced handlers (rather than merely clearing the list), avoiding
+    # stale Windows file handles across an explicit process reconfiguration.
+    LoggerSetup.setup(
+        level=level_str,
+        log_format=log_format,
+        console_stream=sys.stderr,
+    )
 
     # ── 文件 handler（仅 READY 的 config）──
     # 日志叶子和 CLI 一样走统一可写叶子合同；失败不阻止服务启动。
@@ -503,15 +498,12 @@ def main():
         try:
             LoggerSetup.add_file_handler(
                 log_file,
-                path_validator=config.layout.writable_user_path,
                 level=log_level,
                 log_format=log_format,
-                # A running MCP server can serve concurrent read requests.
-                # Its durable log must therefore be a mutation only while the
-                # current request owns this data-root's writer lease.  The
-                # console handler remains available for all diagnostics.
-                delay=True,
-                emit_guard=lambda: has_active_write_lease(config.layout),
+                runtime_file_binding=runtime_file_log_binding(
+                    config,
+                    snapshot_id=f"config-{id(config)}",
+                ),
             )
             logger.info("MCP 文件日志初始化完成")
         except Exception as e:

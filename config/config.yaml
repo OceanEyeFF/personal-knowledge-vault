@@ -42,6 +42,21 @@ ai:
     timeout_seconds: 30
     max_retries: 3
 
+  # R4 内部自动 AI 生命周期默认关闭。用户只在决定启用时，才在
+  # %USERPROFILE%/.pkv/config.yaml 确认当前 policy_sha256；缺少 token
+  # 配额或确认不会构造 Provider。pricing 为可选，缺少时仅记录 token。
+  automation:
+    schema_version: 1
+    enabled: false
+    authorization:
+      policy_sha256: null
+    token_budget:
+      timezone: "UTC"
+      daily_total_tokens: null
+      monthly_total_tokens: null
+    retry:
+      max_attempts: 2
+
   # Whisper 配置 (Phase 2)
   whisper:
     model: "whisper-1"

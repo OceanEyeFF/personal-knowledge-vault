@@ -68,6 +68,11 @@ EXPECTED_TABLES_BY_VERSION = {
     "1.1.2": ("review_queue", "review_history"),
     "1.2.0": ("knowledge_relations",),
     "1.2.4": ("storage_operation_commits",),
+    "1.2.5": (
+        "ai_automation_tasks",
+        "ai_token_reservations",
+        "ai_token_usage",
+    ),
 }
 APPLICATION_TABLES_BY_MIGRATION = {
     "001_initial_schema.sql": frozenset(
@@ -90,6 +95,9 @@ APPLICATION_TABLES_BY_MIGRATION = {
     "010_add_storage_operation_commits.sql": frozenset(
         {"storage_operation_commits"}
     ),
+    "011_add_ai_automation_ledger.sql": frozenset(
+        {"ai_automation_tasks", "ai_token_reservations", "ai_token_usage"}
+    ),
 }
 FTS_REBUILD_VERSIONS = {"1.2.2", "1.2.3"}
 LATEST_REQUIRED_TABLES = frozenset(
@@ -108,6 +116,9 @@ LATEST_REQUIRED_TABLES = frozenset(
         "review_history",
         "knowledge_relations",
         "storage_operation_commits",
+        "ai_automation_tasks",
+        "ai_token_reservations",
+        "ai_token_usage",
     }
 )
 

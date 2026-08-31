@@ -156,6 +156,7 @@ def test_server_main_degrades_when_file_logging_cannot_start(
     config = MagicMock()
     config.log_level = "INFO"
     config.log_dir = tmp_path / "logs"
+    config.layout.log_dir = config.log_dir
     config.get.side_effect = lambda _key, default=None: default
 
     with (
@@ -190,6 +191,7 @@ def test_server_main_registers_validated_file_logger(
     config = MagicMock()
     config.log_level = "INFO"
     config.log_dir = tmp_path / "logs"
+    config.layout.log_dir = config.log_dir
     config.get.side_effect = lambda _key, default=None: default
 
     with (
@@ -209,10 +211,9 @@ def test_server_main_registers_validated_file_logger(
 
     add_file_handler.assert_called_once()
     assert add_file_handler.call_args.args[0] == config.log_dir / "pkv.log"
-    assert (
-        add_file_handler.call_args.kwargs["path_validator"]
-        is config.layout.writable_user_path
-    )
+    binding = add_file_handler.call_args.kwargs["runtime_file_binding"]
+    assert binding.layout is config.layout
+    assert binding.path == config.log_dir / "pkv.log"
     assert add_file_handler.call_args.kwargs["level"] == logging.ERROR
 
 

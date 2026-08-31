@@ -552,7 +552,7 @@ def test_cli_archive_text_returns_write_busy_while_reads_remain_available(
 def test_archive_text_then_tags_json_via_offline_cli(
     cli_tester: CLIBlackboxTester,
 ):
-    """A degraded archive keeps committed reads available but blocks new writes."""
+    """A deferred AI archive keeps its committed core data immediately readable."""
     title = "CLI 文本归档链路"
     archive_result = cli_tester.run_cli(
         "archive-text",
@@ -565,11 +565,11 @@ def test_archive_text_then_tags_json_via_offline_cli(
 
     assert archive_result.returncode == 0
     archive_payload = json.loads(archive_result.stdout)
-    # The offline fixture deliberately blocks the Provider-backed vector phase.
-    # Core storage still commits and records a degraded journal, which a fresh
-    # CLI child must expose to reads without silently repairing it.
+    # The Provider-backed vector phase is deferred.  Core storage is READY;
+    # the workflow terminal remains degraded solely to surface non-ready AI
+    # processing rather than claiming semantic retrieval is ready.
     assert archive_payload["terminal"] == "degraded"
-    assert archive_payload["status"] == "degraded"
+    assert archive_payload["status"] == "ready"
     assert isinstance(archive_payload["knowledge_id"], int)
     assert archive_payload["knowledge_id"] > 0
     assert archive_payload["title"] == title
@@ -579,24 +579,10 @@ def test_archive_text_then_tags_json_via_offline_cli(
     assert archive_payload["file_path"]
     assert isinstance(archive_payload["issues"], list)
 
-    journal_dir = cli_tester.data_dir / "runtime" / "operations"
-    journal_before_reads = {
-        path.name: path.read_bytes()
-        for path in sorted(journal_dir.glob("*.json"))
-    }
-    assert journal_before_reads
-    read_sidecars = (
-        cli_tester.data_dir / "logs" / "pkv.log",
-        cli_tester.data_dir / "runtime" / "write.lease",
-    )
-    sidecars_before_reads = {
-        path.relative_to(cli_tester.data_dir).as_posix(): (
-            path.read_bytes(),
-            path.stat().st_mtime_ns,
-        )
-        for path in read_sidecars
-    }
-    assert len(sidecars_before_reads) == len(read_sidecars)
+    # R3.1 makes file logging optional and lease-owned.  A CLI reader must
+    # preserve every existing persistent artifact and must not create either
+    # logging or lease sidecars merely to service show/tags.
+    state_before_reads = _persistent_file_state(cli_tester.data_dir)
 
     show_result = cli_tester.run_cli("show", str(archive_payload["knowledge_id"]))
     assert show_result.returncode == 0
@@ -610,36 +596,18 @@ def test_archive_text_then_tags_json_via_offline_cli(
     assert tags_payload["total"] > 0
     tag_names = {item["name"] for item in tags_payload["tags"]}
     assert tag_names.intersection(archive_payload["tags"])
+    assert _persistent_file_state(cli_tester.data_dir) == state_before_reads
 
-    # A degraded journal means no second mutation is admitted until the user
-    # reviews a lifecycle repair plan.  The allowed reads above must not repair
-    # or rewrite that record as a side effect.
-    blocked_write = cli_tester.run_cli(
+    # A deferred semantic generation never blocks an independent core write.
+    # It also must not be silently repaired by the preceding reads.
+    second_write = cli_tester.run_cli(
         "archive-text",
-        "第二次写入必须被降级运行态门禁拒绝。",
+        "第二次写入应继续保留核心文档。",
         "--format",
         "json",
-        check=False,
     )
-    assert blocked_write.returncode == 1
-    assert json.loads(blocked_write.stderr) == {
-        "adapter": "cli",
-        "code": "repair_required",
-        "recoverable": True,
-        "stage": "runtime_readiness",
-        "status": "error",
-    }
-    assert {
-        path.name: path.read_bytes()
-        for path in sorted(journal_dir.glob("*.json"))
-    } == journal_before_reads
-    assert {
-        path.relative_to(cli_tester.data_dir).as_posix(): (
-            path.read_bytes(),
-            path.stat().st_mtime_ns,
-        )
-        for path in read_sidecars
-    } == sidecars_before_reads
+    assert second_write.returncode == 0
+    assert json.loads(second_write.stdout)["status"] == "ready"
 
 
 def test_related_command_degrades_without_vector_index(
@@ -664,10 +632,10 @@ def test_related_command_degrades_without_vector_index(
     assert payload["issues"]
 
 
-def test_related_command_returns_fixed_offline_vector_neighbor_without_mutation(
+def test_related_command_refuses_legacy_flat_vectors_without_mutation(
     cli_tester: CLIBlackboxTester,
 ):
-    """真实离线 related 应读取固定向量且不改写任何索引 artifact。"""
+    """R4 refuses legacy flat vectors instead of treating them as a generation."""
     from src.storage.vector_store import VectorStore
 
     seed_id = cli_tester.entry_ids["Python 装饰器详解"]
@@ -703,16 +671,11 @@ def test_related_command_returns_fixed_offline_vector_neighbor_without_mutation(
 
     assert result.returncode == 0
     payload = json.loads(result.stdout)
-    assert payload["status"] == "success"
+    assert payload["status"] == "degraded"
     assert payload["strategy"] == "vector_related"
-    assert payload["total"] == 1
-    assert payload["issues"] == []
-    assert len(payload["results"]) == 1
-    neighbor = payload["results"][0]
-    assert neighbor["knowledge_id"] == nearest_id
-    assert neighbor["knowledge_id"] != seed_id
-    assert neighbor["title"] == "Docker 容器化实践"
-    assert 0.0 <= neighbor["score"] <= 1.0
+    assert payload["total"] == 0
+    assert payload["results"] == []
+    assert payload["issues"]
     assert _snapshot_vector_artifacts(cli_tester.vector_dir) == before_snapshot
 
 

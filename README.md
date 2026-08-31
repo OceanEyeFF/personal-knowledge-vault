@@ -577,7 +577,7 @@ live/secret/proxy 环境并安装 Python 级网络与子进程 guard，但它不
 [MCP 最小评测闭环](docs/operations/MCP最小评测闭环.md)。
 
 开发 vault 重建入口 `scripts/rebuild-dev-vault.py` 已完成合成演练：
-`rebuilt -> up_to_date -> checked`，目标 schema `1.2.4`、9 个迁移、3 条 seed。
+`rebuilt -> up_to_date -> checked`，目标 schema `1.2.5`、10 个迁移、3 条 seed。
 这只证明离线合成开发基线可重建；真实快照仍受 U1/G8 与迁移 FT5 阻塞，
 本轮未读取或执行真实数据。M13 W1/W2/W3 与 W4 installed-Artifact 功能验证均在该离线基线上完成；W4 候选仍受合规 hold，且这不等于真实数据验收。
 

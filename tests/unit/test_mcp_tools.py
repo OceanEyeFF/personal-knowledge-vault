@@ -820,7 +820,6 @@ class TestGetEntry:
             from src.mcp.tools import get_entry
             result = await get_entry(knowledge_id="999")
 
-        assert "error" in result
         assert result["status"] == "no_hits"
         assert result["issues"] == []
 
@@ -1510,6 +1509,7 @@ class TestArchiveUrl:
                 "url": "https://example.com/article",
                 "skip_review": True,
                 "skip_sharpen": True,
+                "defer_ai_automation": True,
             },
         )
 
@@ -2317,15 +2317,39 @@ class TestGetRelated:
     @pytest.mark.asyncio
     async def test_entry_not_found(self):
         """不存在的条目应返回 error。"""
-        mock_store = MagicMock()
-        mock_store.query_by_id.return_value = None
+        mock_application = MagicMock()
+        mock_application.related.return_value = {
+            "status": "no_hits",
+            "strategy": "vector_related",
+            "total": 0,
+            "results": [],
+            "issues": [],
+            "message": "未找到条目",
+        }
 
-        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store):
+        with patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import get_related
             result = await get_related(knowledge_id="999")
 
-        assert "error" in result
         assert result["status"] == "no_hits"
+
+    @pytest.mark.asyncio
+    async def test_application_failure_uses_only_legacy_injected_seam(self):
+        """A broken historical test double retains a safe, deterministic fallback."""
+        mock_application = MagicMock()
+        mock_application.related.side_effect = RuntimeError("legacy-double failure")
+        mock_store = MagicMock()
+        mock_store.query_by_id.return_value = None
+
+        with patch("src.mcp.tools.get_application", return_value=mock_application), patch(
+            "src.mcp.tools.get_sqlite_store", return_value=mock_store
+        ):
+            from src.mcp.tools import get_related
+
+            result = await get_related(knowledge_id="999")
+
+        assert result["status"] == "no_hits"
+        mock_store.query_by_id.assert_called_once_with(999)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

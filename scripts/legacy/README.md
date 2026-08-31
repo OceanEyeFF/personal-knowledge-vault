@@ -1,13 +1,14 @@
 # Legacy 脚本说明
 
-这个目录包含旧的 venv 虚拟环境安装脚本喵～ ฅ'ω'ฅ
+这个目录保留旧 venv 脚本的历史文件，供审计与迁移记录使用。
 
-## ⚠️ 不推荐使用
+## ⚠️ 已封存，不能执行
 
-这些脚本已被 **Conda 安装方案**取代，原因：
-- Python 3.13 存在兼容性问题（`lxml`、`greenlet` 编译失败）
-- Conda 方案环境隔离更彻底
-- Conda 可以自动管理 Python 版本
+setup.ps1、setup.bat 与 test.ps1 都会在任何配置、网络、数据根或
+Provider 操作前以非零状态退出。它们不得作为开发、测试或安装入口。
+
+这项 fence 避免历史脚本重新创建旧 .data 布局或写入旧的
+config/local.yaml 合同。
 
 ## 推荐方案
 
@@ -26,10 +27,7 @@
 
 **用途**: 使用 Python venv 创建虚拟环境
 
-**运行方式**:
-```powershell
-.\scripts\legacy\setup.ps1
-```
+**状态**: 已封存；执行会 fail-closed。
 
 **限制**:
 - 需要 Python 3.11（不支持 3.13）
@@ -41,10 +39,7 @@
 
 **用途**: CMD 版本的 venv 安装脚本
 
-**运行方式**:
-```cmd
-.\scripts\legacy\setup.bat
-```
+**状态**: 已封存；执行会 fail-closed。
 
 **限制**: 同 `setup.ps1`
 
@@ -54,21 +49,15 @@
 
 **用途**: 在 venv 环境中运行验证测试
 
-**运行方式**:
-```powershell
-.\scripts\legacy\test.ps1
-```
+**状态**: 已封存；执行会 fail-closed。测试请使用 scripts/run-test.ps1 与隔离 .data-test 根。
 
 ---
 
-## 何时使用 Legacy 脚本？
+## 正确入口
 
-**仅在以下情况使用**:
-1. 无法安装 Conda
-2. 明确使用 Python 3.11（不是 3.13）
-3. 熟悉 venv 且愿意手动解决问题
-
-**其他情况请使用 Conda 方案** ✅
+这些历史文件均不可运行。安装请使用当前受支持的安装文档和脚本；默认测试
+自动化使用 scripts/run-test.ps1，并指定隔离 .data-test 根。不得以历史文件
+为理由恢复旧数据根、local.yaml 或网络安装行为。
 
 ---
 

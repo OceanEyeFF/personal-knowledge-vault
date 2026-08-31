@@ -339,7 +339,7 @@ symlink/reparse 或竞态变化必须失败并保留现场。
 1. 检查当前版本: 1.0.0
 2. 扫描待迁移脚本:
    - 002_add_cli_tables.sql (v1.1.0)
-   - ...（当前链的末端为 010_add_storage_operation_commits.sql，v1.2.4）
+   - ...（当前链的末端为 011_add_ai_automation_ledger.sql，v1.2.5）
 3. 自动备份到 .data-backup/
 4. 执行迁移脚本
 5. 更新 schema_version 表
@@ -402,6 +402,7 @@ CREATE TABLE IF NOT EXISTS cli_stats (
 | `008_align_fts_contract.sql` | 1.2.2 | FTS 表与触发器合同对齐 |
 | `009_repair_fts_storage_contract.sql` | 1.2.3 | FTS 存储合同修复 |
 | `010_add_storage_operation_commits.sql` | 1.2.4 | 跨存储操作提交凭据 |
+| `011_add_ai_automation_ledger.sql` | 1.2.5 | 内部 AI 自动任务与 token 用量账本 |
 
 详见: [scripts/migrations/README.md](./migrations/README.md)
 
@@ -652,6 +653,7 @@ U1/G8/FT5 user-only gate 尚未交付
 | `migrations/008_align_fts_contract.sql` | 1.2.2 | FTS 表与触发器合同对齐 |
 | `migrations/009_repair_fts_storage_contract.sql` | 1.2.3 | FTS 存储合同修复 |
 | `migrations/010_add_storage_operation_commits.sql` | 1.2.4 | 跨存储操作提交凭据 |
+| `migrations/011_add_ai_automation_ledger.sql` | 1.2.5 | 内部 AI 自动任务与 token 用量账本 |
 | `migrations/README.md` | - | 迁移脚本说明 |
 
 ### 文档

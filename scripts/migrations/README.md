@@ -17,7 +17,8 @@ scripts/migrations/
 ├── 007_add_timeline_time_fields.sql # v1.2.1 新增真实时间字段
 ├── 008_align_fts_contract.sql     # v1.2.2 统一 FTS 表与触发器合同
 ├── 009_repair_fts_storage_contract.sql # v1.2.3 修复 FTS 存储合同
-└── 010_add_storage_operation_commits.sql # v1.2.4 新增跨存储提交凭据
+├── 010_add_storage_operation_commits.sql # v1.2.4 新增跨存储提交凭据
+└── 011_add_ai_automation_ledger.sql # v1.2.5 新增内部 AI 自动任务与 token 用量账本
 ```
 
 ---
@@ -112,6 +113,7 @@ VALUES ('{版本号}', '{变更描述}');
 | 1.2.2 | 008_align_fts_contract.sql | 统一 FTS 表名与触发器合同到 `knowledge_items_fts` | 2026-04-01 |
 | 1.2.3 | 009_repair_fts_storage_contract.sql | 修复 `knowledge_items_fts` 存储合同并清理重复索引 | 2026-04-03 |
 | 1.2.4 | 010_add_storage_operation_commits.sql | 新增跨存储操作提交凭据 | 2026-08-03 |
+| 1.2.5 | 011_add_ai_automation_ledger.sql | 新增内部 AI 自动任务、reservation 与 token 用量账本 | 2026-08-31 |
 
 ### 版本号规范
 

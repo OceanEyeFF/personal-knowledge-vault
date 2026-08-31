@@ -16,8 +16,10 @@ R4 的唯一 extension 是无密钥的 `embedding_index`：
 
 ```yaml
 embedding_index:
-  schema_version: 1
+  schema_version: 2
   data_root_identity_sha256: "<sha256>"
+  state: ready
+  source_digest: "<sha256>"
   active_generation: g-...
   previous_generation: g-... # 可为空
   retained_generations: [g-..., g-...]
@@ -48,6 +50,12 @@ global `get_config()`。
 `VectorStore.MAX_CHUNK_INDEX` 之外的 chunk 都是 `repair_required`，且不会调用
 Provider。重建永远使用已存 chunks，不能按当前 chunk 参数重新切分。
 
+schema v2 把 binding 状态和 ready pointer 置于同一无密钥 extension。`ready` 必须同时有
+完整 pointer/manifest；`rebuild_required`、`processing`、`retry_required`、`budget_paused` 与
+`authorization_required` 不可解析为 vector binding，即使它仍保留一代历史 generation。reader
+必须把它们投影为相应稳定状态，绝不能使用旧 generation、平铺目录或 `no_hits`。schema v1 的
+历史 ready pointer 仍可严格读取；新 generation publish 写入 schema v2 的 `ready` binding。
+
 `resolve_embedding_index_binding(config)` 只在 `ready` 时返回一次性的
 `generation_id`、`index_dir`、pointer revision 和 contract。一个逻辑读操作必须只解析
 一次 binding；后续 pointer flip 只影响后续操作。检查会用
@@ -58,6 +66,19 @@ fingerprint，且不产生 sidecar。binding 永远指向
 当前 Application 的 readonly vector port 仍需一个后续 adapter gate：它必须在每个读操作
 开始时解析此 binding 并以 `VectorStore.open_readonly(binding.index_dir, ...)` 打开，不能
 重新指向 writer store 或 `<data-root>/vectors`。
+
+## 自动化授权与 token 用量（R4 P0）
+
+自动 AI lifecycle 的 policy 只从显式 Config 的 `ai.automation` 解析：默认关闭；启用时必须
+有一次性、当前 Provider/model/token quota policy hash 确认，以及至少一个日/月 token hard cap。
+policy inspect 不创建数据根、Provider、网络、日志或 snapshot。可选的 price-card reference
+不是启用前提；没有 card 时只记录 token，绝不估算金额。
+
+所有后续 usage ledger 至少区分（Provider 适用且已报告时）
+`uncached_input_tokens`、`cached_input_tokens`、`generated_tokens` 与
+`embedding_input_tokens`。Provider 未报告的字段保存 unknown，而不是零。任务 claim、token
+reservation、usage settlement 与 binding state publish 是 P1 的 lease-protected owner 写入；本
+P0 只冻结 parser/DTO/reader 投影，不启动 Provider 或自动任务。
 
 ## Confirmed rebuild
 

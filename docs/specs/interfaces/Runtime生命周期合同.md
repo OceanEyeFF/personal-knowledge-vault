@@ -49,7 +49,7 @@ Provider 的 structural validation 只验证本地配置结构。实际 LLM/Embe
 ```yaml
 schema_version: 1
 database:
-  schema_version: "1.2.4" # bundled migration chain 的 canonical semver
+  schema_version: "1.2.5" # bundled migration chain 的 canonical semver
 embedding:
   provider: openai_compatible
   fingerprint:
@@ -113,11 +113,27 @@ embedding contract，因此 key rotation 本身不触发 vector rebuild。写入
 同一 fresh state。数据库、journal、runtime snapshot、Provider contract 与任何其他数据根
 内容仍会使计划 stale；lease anchor 不能掩盖真实数据漂移。
 
+## R3.1 writer inventory
+
+`src.runtime.writer_inventory.DATA_ROOT_WRITER_INVENTORY` 是版本化的
+data-root 持久写入清单（当前版本 `2`）。它明确区分：
+
+- 产品 mutation owner：已确认 lifecycle、Application archive、Kernel delete/chat、
+  Embedding generation、内部自动 AI lifecycle（task/用量/generation）、audit 与 runtime file logging；
+- `.data-test` 下的 offline fixture；
+- 必须在入口 fail-closed 的历史 maintenance/setup 脚本。
+
+产品 sink 在创建目录、打开可写文件、发布 snapshot、创建/恢复 writable VectorStore 或
+append audit 前，都必须验证当前 task/thread 持有同一 `RuntimeLayout` 的 R3 lease。缺失
+能力一律为 `write_busy` / `write_lease`，不是隐式取锁、更不是静默写入。只读/status 路径
+不获取 lease；`pkv.log` 为 delayed、layout+immutable-Config binding 的 handler，只有匹配
+binding 的 mutation scope 才能触发打开、轮转或追加。reload 会替换新的 binding，同时保留
+仍在飞行的旧 binding handler 至其 mutation 排空，避免旧写入混入新 snapshot。
+
 ## 后续边界
 
-- R3 已为受支持的 Application/CLI/MCP 业务/数据 mutation 提供默认 writer lease，并由
-  `write_busy` 回归覆盖竞争写入；这不宣称所有文件系统写入均已串行化。运行时日志写入的
-  所有权和遗留维护 writer 的 lease/隔离是 R3.1 P1，不能由本文件推定已完成。
+- R3.1 的 writer inventory 只约束产品 data-root persistent writers；测试 fixture、
+  report、backup/restore 和已栅栏历史脚本不能被笼统称作“所有文件系统写入”。
 - R4 staged core 已扩展 runtime snapshot 的 Embedding generation 契约、confirmed rebuild、
   retained previous generation 与 atomic pointer；公开 CLI/MCP/Kernel adapter、自动清理和
   rollback action 仍是独立 gate，不能由 core 测试反推已经公开。

@@ -1719,7 +1719,15 @@ def execute_runtime_plan(
     actual_validation = current.provider_validation
     context: RuntimeContext | None = None
     probed_embedding_dimension: int | None = None
-    with lease:
+    from src.runtime.file_logging import runtime_file_log_binding, runtime_file_log_scope
+
+    with lease, runtime_file_log_scope(
+        runtime_file_log_binding(
+            plan._config,
+            snapshot_id=f"config-{id(plan._config)}",
+        ),
+        owner="runtime_lifecycle",
+    ):
         # Re-check after the writer boundary has been obtained: another writer
         # may have completed work while this plan was waiting for the lease.
         current = inspect_runtime(plan._config)
