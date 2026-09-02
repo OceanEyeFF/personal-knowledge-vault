@@ -3073,12 +3073,78 @@ def _workflow_result_payload(
     if type(raw_data) is not dict:
         return _invalid_result("invalid workflow result data")
 
-    storage_projection_requested = terminal in {"success", "degraded"} or any(
-        key in raw_data
-        for key in ("status", "knowledge_id", "core_committed", "do_not_retry")
+    raw_ingress = raw_data.get("ingress")
+    operation_id = raw_data.get("operation_id")
+    valid_operation_id = (
+        type(operation_id) is str
+        and len(operation_id) == 32
+        and all(char in "0123456789abcdef" for char in operation_id)
+    )
+    valid_ingress_projection = (
+        type(raw_ingress) is dict
+        and set(raw_ingress) == {"status"}
+        and raw_ingress["status"]
+        in {
+            "accepted",
+            "processing",
+            "prepared",
+            "submitted",
+            "retry_required",
+            "rejected",
+            "repair_required",
+            "superseded",
+        }
+        and valid_operation_id
+    )
+    pending_projection = (
+        terminal == "degraded"
+        and valid_ingress_projection
+        and raw_ingress["status"]
+        in {"accepted", "processing", "prepared", "submitted", "retry_required"}
+        and raw_data.get("do_not_retry") is True
+        and raw_data.get("core_committed") is not True
+        and "knowledge_id" not in raw_data
+        and "status" not in raw_data
+    )
+    committed_ingress_projection = (
+        terminal in {"success", "degraded"}
+        and valid_ingress_projection
+        and raw_ingress["status"] == "submitted"
+        and raw_data.get("core_committed") is True
+    )
+    failed_ingress_projection = (
+        terminal == "error"
+        and valid_ingress_projection
+        and raw_ingress["status"]
+        in {"retry_required", "rejected", "repair_required", "superseded"}
+        and raw_data.get("core_committed") is not True
+        and "knowledge_id" not in raw_data
+        and "status" not in raw_data
+    )
+    if "ingress" in raw_data and not (
+        pending_projection
+        or committed_ingress_projection
+        or failed_ingress_projection
+    ):
+        return _invalid_result("invalid workflow processing result data")
+
+    storage_projection_requested = not pending_projection and (
+        terminal in {"success", "degraded"}
+        or any(
+            key in raw_data
+            for key in ("status", "knowledge_id", "core_committed", "do_not_retry")
+        )
     )
     data: dict[str, object] = {}
     storage_status = ""
+    if pending_projection:
+        data = {
+            "status": "processing",
+            "ingress_status": raw_ingress["status"],
+            "operation_id": raw_data["operation_id"],
+            "core_committed": False,
+            "do_not_retry": True,
+        }
     if storage_projection_requested:
         storage_status = raw_data.get("status")
         knowledge_id = raw_data.get("knowledge_id")
@@ -3261,12 +3327,13 @@ def _workflow_result_payload(
         else []
     )
 
+    public_state = data if pending_projection else _public_storage_terminal(data)
     payload: dict[str, object] = {
         "success": terminal != "error",
         "terminal": terminal,
         "warnings": warnings,
         "issues": issues,
-        **_public_storage_terminal(data),
+        **public_state,
     }
     if terminal == "error":
         payload["error"] = "归档失败"
@@ -3278,7 +3345,7 @@ def _workflow_result_payload(
                 for issue in issues
             )
 
-    if terminal != "error":
+    if terminal != "error" and not pending_projection:
         payload["knowledge_id"] = data["knowledge_id"]
         payload["entry_locator"] = _public_entry_locator(data["knowledge_id"])
         payload["title"] = data.get(

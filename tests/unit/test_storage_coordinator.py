@@ -15,9 +15,10 @@ from src.storage.coordinator import (
     StorageOperationJournal,
     recover_interrupted_operations,
 )
+from src.storage.derivation_patch import DerivationPatch
 from src.storage.markdown_store import Entry, MarkdownStore
 from src.storage.migration_manager import MigrationManager
-from src.storage.sqlite_store import SQLiteStore
+from src.storage.sqlite_store import SQLiteStore, row_projection_sha256
 
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -50,6 +51,29 @@ def _entry(title: str = "W1 entry") -> Entry:
         content="第一段知识。\n\n第二段证据。",
         tags=["w1", "safety"],
         keywords=["storage", "repair"],
+    )
+
+
+def _patch_for(
+    archived,
+    sqlite: SQLiteStore,
+    *,
+    summary: str = "Derived summary. Second sentence.",
+) -> DerivationPatch:
+    assert archived.knowledge_id is not None
+    row = sqlite.query_by_id(archived.knowledge_id)
+    assert row is not None
+    expected_revision = row_projection_sha256(
+        row,
+        sqlite.get_chunks_by_knowledge_id(archived.knowledge_id),
+    )
+    return DerivationPatch.create(
+        derivation_task_id="d" * 32,
+        target_knowledge_id=archived.knowledge_id,
+        expected_revision_sha256=expected_revision,
+        input_digest="e" * 64,
+        summary=summary,
+        tags=["derived", "r4"],
     )
 
 
@@ -221,6 +245,83 @@ def test_archive_commit_then_raise_is_reconciled_without_deleting_markdown(
     assert markdown.load(result.relative_file_path or "").title == "W1 entry"
     assert sqlite.query_by_id(result.knowledge_id) is not None
     assert coordinator.journal.read(result.operation_id)["sqlite_commit_reconciled"] is True
+
+
+def test_patch_commit_then_raise_is_reconciled_without_restoring_old_markdown(
+    stores: tuple[StorageCoordinator, MarkdownStore, SQLiteStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A proven patch commit must not be compensated after a late exception."""
+
+    coordinator, markdown, sqlite = stores
+    archived = coordinator.archive(_entry())
+    patch = _patch_for(archived, sqlite)
+    original_apply = sqlite.apply_ai_patch
+
+    def commit_then_raise(**kwargs):
+        original_apply(**kwargs)
+        raise OSError("injected exception after patch SQLite commit")
+
+    monkeypatch.setattr(sqlite, "apply_ai_patch", commit_then_raise)
+
+    result = coordinator.apply_ai_patch(patch)
+
+    assert result.status is OperationStatus.READY
+    assert result.core_committed is True
+    row = sqlite.query_by_id(archived.knowledge_id or 0)
+    assert row is not None and row["summary_100_words"] == patch.summary
+    assert archived.file_path is not None
+    assert markdown.load(Path(archived.file_path)).summary_100_words == patch.summary
+    assert coordinator.journal.read(result.operation_id)["sqlite_commit_reconciled"] is True
+
+
+def test_patch_recovery_restores_exact_quarantined_predecessor_after_failed_compensation(
+    stores: tuple[StorageCoordinator, MarkdownStore, SQLiteStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crashed failed patch can restore only the journal-bound old primary."""
+
+    coordinator, markdown, sqlite = stores
+    archived = coordinator.archive(_entry())
+    patch = _patch_for(archived, sqlite)
+    original_restore = markdown.gateway.restore
+    restore_attempts = {"count": 0}
+
+    monkeypatch.setattr(
+        sqlite,
+        "apply_ai_patch",
+        lambda **_: (_ for _ in ()).throw(OSError("sqlite unavailable")),
+    )
+
+    def fail_first_restore(item):
+        restore_attempts["count"] += 1
+        if restore_attempts["count"] == 1:
+            raise OSError("injected restore interruption")
+        return original_restore(item)
+
+    monkeypatch.setattr(markdown.gateway, "restore", fail_first_restore)
+
+    result = coordinator.apply_ai_patch(patch)
+
+    assert result.status is OperationStatus.REPAIR_REQUIRED
+    assert archived.file_path is not None and not Path(archived.file_path).exists()
+    record = coordinator.journal.read(result.operation_id)
+    assert record["checkpoint"] == "patch_compensating"
+    monkeypatch.setattr(markdown.gateway, "restore", original_restore)
+
+    usable, blocking = recover_interrupted_operations(
+        coordinator.journal,
+        markdown,
+        sqlite,
+    )
+
+    assert usable == []
+    assert blocking == []
+    assert Path(archived.file_path).is_file()
+    row = sqlite.query_by_id(archived.knowledge_id or 0)
+    assert row is not None and row["summary_100_words"] == ""
+    recovered = coordinator.journal.read(result.operation_id)
+    assert recovered["status"] == OperationStatus.REJECTED.value
 
 
 def test_vector_failure_is_degraded_but_core_stores_are_explainable(

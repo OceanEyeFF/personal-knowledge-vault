@@ -947,7 +947,7 @@ def test_explicit_kernel_b_archive_defers_ai_without_consulting_global_a(
             snapshot_store.read(),
             {
                 "schema_version": 1,
-                "database": {"schema_version": "1.2.5"},
+                "database": {"schema_version": "1.2.6"},
                 "embedding": {
                     "provider": config_b.embd_provider,
                     "fingerprint": config_b.embedding_index_fingerprint(

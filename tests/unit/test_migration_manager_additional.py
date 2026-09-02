@@ -91,7 +91,7 @@ def test_apply_all_pending_rebuilds_fts_when_alignment_versions_present(
 
     monkeypatch.setattr(SQLiteStore, "rebuild_fts5_index", spy_rebuild)
 
-    assert manager.apply_all_pending(auto_backup=False) == 10
+    assert manager.apply_all_pending(auto_backup=False) == 11
     assert len(rebuilt) == 1
     assert rebuilt[0] != manager.db_path
     assert manager.inspect_database().state is DatabaseState.READY

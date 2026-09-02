@@ -21,6 +21,7 @@ from src.ai.provider_factory import (
     validate_provider_base_url,
 )
 from src.runtime.layout import RuntimeLayout, open_user_file_nofollow
+from src.runtime.ai_automation_policy import TokenUsage
 from src.utils.config import (
     get_config,
     suppress_unsafe_http_transport_logs,
@@ -114,6 +115,10 @@ class DeepSeekClient:
         self.model = effective_settings.model
         self.timeout = effective_settings.timeout_seconds
         self.max_retries = effective_settings.max_retries
+        # Last-call usage is a narrow, per-client adapter seam.  Q2 reads it
+        # immediately after each synchronous call; absent provider fields stay
+        # None rather than being fabricated as zero.
+        self._last_usage: TokenUsage | None = None
         suppress_unsafe_http_transport_logs()
 
         # 加载 Prompt 模板
@@ -173,6 +178,7 @@ class DeepSeekClient:
             Exception: API 调用失败
         """
         validate_provider_base_url(self.base_url)
+        self._last_usage = None
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -209,6 +215,12 @@ class DeepSeekClient:
                         usage.get("completion_tokens")
                     )
                     total_tokens = safe_provider_usage_count(usage.get("total_tokens"))
+                    if prompt_tokens is not None or completion_tokens is not None:
+                        self._last_usage = TokenUsage(
+                            uncached_input_tokens=prompt_tokens,
+                            generated_tokens=completion_tokens,
+                            source="provider_reported",
+                        )
                     logger.info(
                         "Provider 调用成功: component=llm "
                         "prompt_tokens=%s completion_tokens=%s total_tokens=%s",
@@ -281,6 +293,12 @@ class DeepSeekClient:
 
         # 所有重试都失败
         raise Exception(f"DeepSeek API 调用失败 (已重试 {self.max_retries} 次)")
+
+    @property
+    def last_usage(self) -> TokenUsage | None:
+        """Normalized known usage from the immediately preceding request."""
+
+        return self._last_usage
 
     def summarize(
         self,

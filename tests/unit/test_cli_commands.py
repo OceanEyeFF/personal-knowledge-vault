@@ -858,6 +858,92 @@ def test_archive_accepts_non_storage_degradation_with_ready_committed_storage(
     assert "归档失败" not in published
 
 
+def test_archive_preserves_admitted_processing_without_claiming_commit(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+    console_spy,
+) -> None:
+    operation_id = "0123456789abcdef0123456789abcdef"
+    result = WorkflowResult(
+        success=True,
+        terminal="degraded",
+        data={
+            "ingress": {"status": "processing"},
+            "operation_id": operation_id,
+            "do_not_retry": True,
+        },
+        warnings=["请求已接受，正在前处理。"],
+        issues=[
+            {
+                "code": ErrorCode.EMBEDDING_PROCESSING.value,
+                "message": "请求已接受，正在前处理。",
+                "severity": "warning",
+                "stage": "r4_ingress",
+                "recoverable": True,
+            }
+        ],
+    )
+    application = mocker.MagicMock()
+    application.archive_cli_input = mocker.AsyncMock(return_value=result)
+    mocker.patch.object(commands, "get_application", return_value=application)
+
+    response = runner.invoke(commands.cli, ["archive", "https://example.com/item"])
+
+    assert response.exit_code == 0
+    published = "\n".join(_printed_strings(console_spy)) + response.output
+    assert "归档仍在处理中" in published
+    assert operation_id in published
+    assert "成功: 归档完成" not in published
+    assert "归档失败" not in published
+
+
+def test_archive_text_json_preserves_admitted_processing_without_entry_fields(
+    runner: CliRunner,
+    mocker: pytest.MockFixture,
+    load_config_stub,
+) -> None:
+    operation_id = "fedcba9876543210fedcba9876543210"
+    result = WorkflowResult(
+        success=True,
+        terminal="degraded",
+        data={
+            "ingress": {"status": "prepared"},
+            "operation_id": operation_id,
+            "do_not_retry": True,
+        },
+        warnings=["请求已接受，等待内容提交。"],
+        issues=[
+            {
+                "code": ErrorCode.EMBEDDING_PROCESSING.value,
+                "message": "请求已接受，等待内容提交。",
+                "severity": "warning",
+                "stage": "r4_q1",
+                "recoverable": True,
+            }
+        ],
+    )
+    application = mocker.MagicMock()
+    application.archive_text = mocker.AsyncMock(return_value=result)
+    mocker.patch.object(commands, "get_application", return_value=application)
+
+    response = runner.invoke(
+        commands.cli,
+        ["archive-text", "literal body", "--format", "json"],
+    )
+
+    assert response.exit_code == 0
+    payload = json.loads(response.output)
+    assert payload["terminal"] == "degraded"
+    assert payload["status"] == "processing"
+    assert payload["ingress_status"] == "prepared"
+    assert payload["operation_id"] == operation_id
+    assert payload["core_committed"] is False
+    assert payload["do_not_retry"] is True
+    assert "knowledge_id" not in payload
+    assert "title" not in payload
+
+
 def test_archive_unknown_exception_does_not_echo_canary_or_path(
     runner: CliRunner,
     mocker: pytest.MockFixture,

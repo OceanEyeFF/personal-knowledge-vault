@@ -18,7 +18,8 @@ scripts/migrations/
 ├── 008_align_fts_contract.sql     # v1.2.2 统一 FTS 表与触发器合同
 ├── 009_repair_fts_storage_contract.sql # v1.2.3 修复 FTS 存储合同
 ├── 010_add_storage_operation_commits.sql # v1.2.4 新增跨存储提交凭据
-└── 011_add_ai_automation_ledger.sql # v1.2.5 新增内部 AI 自动任务与 token 用量账本
+├── 011_add_ai_automation_ledger.sql # v1.2.5 新增内部 AI 自动任务与 token 用量账本
+└── 012_add_r4_content_submission.sql # v1.2.6 新增 R4 Q0/Q1′/Q2 durable 生命周期
 ```
 
 ---
@@ -114,6 +115,7 @@ VALUES ('{版本号}', '{变更描述}');
 | 1.2.3 | 009_repair_fts_storage_contract.sql | 修复 `knowledge_items_fts` 存储合同并清理重复索引 | 2026-04-03 |
 | 1.2.4 | 010_add_storage_operation_commits.sql | 新增跨存储操作提交凭据 | 2026-08-03 |
 | 1.2.5 | 011_add_ai_automation_ledger.sql | 新增内部 AI 自动任务、reservation 与 token 用量账本 | 2026-08-31 |
+| 1.2.6 | 012_add_r4_content_submission.sql | 新增 R4 Q0 ingress、Q1′ 内容提交/handoff 与 Q2 fenced 用量账本 | 2026-09-01 |
 
 ### 版本号规范
 

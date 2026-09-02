@@ -37,9 +37,10 @@
 
 | 文件 | 用途 | 格式 |
 |------|------|------|
-| `test_urls.json` | 集成测试真实链接配置 | JSON |
+| `test_urls.example.json` | 仅含 `example.com` 的受控模板 | JSON |
+| `test_urls.json` | 用户本地、Git 忽略的真实链接配置 | JSON |
 
-`test_urls.json` 属于 user-only live/数据出境材料，不进入默认 W2 回归或完成定义。Agent 不填写、不运行这些真实链接；默认只使用上表合成 fixture、`.data-test` 隔离根和注入的 `SafeFetcher` doubles，不读取真实 key、Provider 或 Vault。
+`test_urls.json` 属于 user-only live/数据出境材料，不进入默认 W2 回归或完成定义，也不得提交到仓库。先复制 `test_urls.example.json`，再仅在本地填写。Agent 不填写、不运行这些真实链接；默认只使用上表合成 fixture、`.data-test` 隔离根和注入的 `SafeFetcher` doubles，不读取真实 key、Provider 或 Vault。
 
 ---
 
@@ -48,6 +49,8 @@
 ### 1. 打开配置文件
 
 ```bash
+# 首次使用先复制受控模板；生成的 test_urls.json 已被 Git 忽略
+cp tests/fixtures/test_urls.example.json tests/fixtures/test_urls.json
 # 使用任何文本编辑器打开
 nano tests/fixtures/test_urls.json
 # 或

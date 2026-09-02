@@ -17,6 +17,21 @@
 
 ---
 
+## R4 内容提交与派生写入边界
+
+schema `1.2.6` 新增的 `ingress_tasks`、`content_mutation_tasks`、handoff、Q2 derivation/
+reservation/usage 表是私有 lifecycle ledger，不保存正文、API key 或 Provider 输出正文。原始
+request、`PreparedDocument` 与 `DerivationPatch` 仅存在受身份/hash 校验的 private spool。
+
+- Q1′/`StorageCoordinator` 是 Markdown + SQLite 内容与 patch 的唯一 writer，并保留
+  operation-bound proof；Q0 crawler/parser 与 Q2 Provider 不得直接改写这些后端。
+- Q2 在 current claim/fence、source/target revision、policy 与预算预留全部通过后才可运行，且
+  Provider output 必须作为 immutable patch 回到 Q1′。unknown Provider usage 保持 SQL `NULL`。
+- 启用 R4 内部自动化的产品路径不写历史 flat `VectorStore`；generation 的 staged publish 与
+  ready pointer 由 embedding lifecycle 管理，非 ready binding 绝不可读取旧 flat artifact。
+
+---
+
 ## 🔧 MarkdownStore
 
 ### 核心方法

@@ -30,6 +30,7 @@ from src.ai.provider_factory import (
     validate_embedding_provider_settings,
     validate_provider_base_url,
 )
+from src.runtime.ai_automation_policy import TokenUsage
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.utils.config import (
     get_config,
@@ -189,6 +190,11 @@ class OpenAIClient:
         self._use_dimensions = self.dimensions is not None
         self.timeout = effective_settings.timeout_seconds
         self.max_retries = effective_settings.max_retries
+        # The Q2 ledger reads this immediately after one embedding operation.
+        # It is deliberately ``None`` when the provider omits usable token
+        # metadata; missing facts must not become a fabricated zero.
+        self._last_usage: TokenUsage | None = None
+        self._last_usage_complete = False
 
         # SDK 将资源路径拼接到纯 base_url，之后再合并 endpoint query；
         # fragment 按 HTTP 语义不发送。
@@ -233,6 +239,8 @@ class OpenAIClient:
             raise ValueError("Embedding 文本不能为空")
 
         try:
+            self._last_usage = None
+            self._last_usage_complete = True
             logger.debug(f"开始生成 Embedding: text_length={len(text)}")
 
             response = self._create_embedding_response(text)
@@ -246,6 +254,7 @@ class OpenAIClient:
             usage = self._safe_response_usage(response)
             prompt_tokens = _safe_usage_field(usage, "prompt_tokens")
             total_tokens = _safe_usage_field(usage, "total_tokens")
+            self._append_embedding_usage(prompt_tokens)
             logger.info(
                 "Provider 调用成功: component=embedding "
                 "prompt_tokens=%s total_tokens=%s embedding_dim=%s",
@@ -306,6 +315,8 @@ class OpenAIClient:
         )
 
         all_embeddings: List[List[float]] = []
+        self._last_usage = None
+        self._last_usage_complete = True
 
         # 分批处理
         for i in range(0, len(valid_texts), batch_size):
@@ -326,6 +337,7 @@ class OpenAIClient:
                 usage = self._safe_response_usage(response)
                 prompt_tokens = _safe_usage_field(usage, "prompt_tokens")
                 total_tokens = _safe_usage_field(usage, "total_tokens")
+                self._append_embedding_usage(prompt_tokens)
                 logger.info(
                     "Provider 批次完成: component=embedding batch=%s "
                     "prompt_tokens=%s total_tokens=%s",
@@ -360,6 +372,18 @@ class OpenAIClient:
     def dim(self) -> Optional[int]:
         """当前已知的向量维度；auto 模式首次成功前可能为空。"""
         return self.dimensions
+
+    @property
+    def last_usage(self) -> TokenUsage | None:
+        """Known token usage from the immediately preceding embedding operation."""
+
+        return self._last_usage
+
+    @property
+    def last_usage_complete(self) -> bool:
+        """Whether every response in the preceding operation reported input use."""
+
+        return self._last_usage_complete
 
     def resolve_dimensions(self) -> int:
         """解析并返回当前模型实际输出维度。"""
@@ -523,6 +547,23 @@ class OpenAIClient:
             return response.usage
         except Exception:
             return None
+
+    def _append_embedding_usage(self, prompt_tokens: int | None) -> None:
+        """Accumulate known embedding input tokens without guessing omissions."""
+
+        if prompt_tokens is None:
+            self._last_usage_complete = False
+            return
+        previous = self._last_usage
+        previous_tokens = (
+            previous.embedding_input_tokens
+            if previous is not None and previous.source == "provider_reported"
+            else 0
+        )
+        self._last_usage = TokenUsage(
+            embedding_input_tokens=previous_tokens + prompt_tokens,
+            source="provider_reported",
+        )
 
     def _create_embedding_response(self, input_payload: str | List[str]):
         """调用 Embedding API，并在后端不支持 dimensions 时自动回退。"""

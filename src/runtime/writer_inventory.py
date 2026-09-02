@@ -16,7 +16,7 @@ from typing import Literal
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 
 
-WRITER_INVENTORY_VERSION = 2
+WRITER_INVENTORY_VERSION = 3
 
 WriterKind = Literal["product", "test_fixture", "historical_fenced"]
 
@@ -48,14 +48,28 @@ DATA_ROOT_WRITER_INVENTORY: tuple[DataRootWriter, ...] = (
     ),
     DataRootWriter(
         "application_archive",
-        ("vault/", "db/knowledge_vault.db", "runtime/operations/", "vectors/", "tmp/"),
+        (
+            "vault/",
+            "db/knowledge_vault.db",
+            "runtime/operations/",
+            "runtime/r4/ingress/",
+            "runtime/r4/prepared/",
+            "vectors/",
+            "tmp/",
+        ),
         "KnowledgeApplication archive mutation",
         "product",
         "read adapters open existing artifacts only",
     ),
     DataRootWriter(
         "kernel_mutations",
-        ("vault/", "db/knowledge_vault.db", "runtime/operations/", "vectors/"),
+        (
+            "vault/",
+            "db/knowledge_vault.db",
+            "runtime/operations/",
+            "runtime/r4/prepared/",
+            "vectors/",
+        ),
         "KnowledgeKernel delete/chat mutation",
         "product",
         "Kernel reads do not acquire a data-root lease",
@@ -72,6 +86,7 @@ DATA_ROOT_WRITER_INVENTORY: tuple[DataRootWriter, ...] = (
         (
             "db/knowledge_vault.db",
             "runtime/operations/",
+            "runtime/r4/patches/",
             "config/local.yaml",
             "vectors/staging/",
             "vectors/generations/",

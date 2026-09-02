@@ -6,10 +6,12 @@ import os
 import platform
 import re
 import runpy
+import json
 import stat
 import sys
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 from tests.offline_runtime import (
     LOAD_LOCAL_SENTINEL,
@@ -30,6 +32,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASE_CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
 _SYNTHETIC_READY_RUNTIME_SENTINEL = "PKV_TEST_SYNTHETIC_RUNTIME_READY"
 _ABSENT_DATA_ROOT_SENTINEL = "PKV_TEST_ABSENT_DATA_ROOT"
+_TEST_USER_CONFIG_SENTINEL = "PKV_TEST_USER_CONFIG"
+_MAX_TEST_USER_CONFIG_BYTES = 64 * 1024
+_BLACKBOX_API_KEY = "pkv-blackbox-not-a-secret"
+_BLACKBOX_LLM_MODEL = "pkv-r4-blackbox-chat-v1"
+_BLACKBOX_EMBEDDING_MODEL = "pkv-r4-blackbox-embedding-v1"
 
 
 def _live_mode_enabled() -> bool:
@@ -52,15 +59,11 @@ def _live_user_config_path() -> Path:
 
 
 def _validate_child_environment() -> None:
-    expected_lexical = Path(
-        os.path.abspath(os.path.normpath(os.fspath(PROJECT_ROOT)))
-    )
+    expected_lexical = Path(os.path.abspath(os.path.normpath(os.fspath(PROJECT_ROOT))))
     configured_root = os.environ.get(PROJECT_ROOT_SENTINEL)
     if configured_root is None or not Path(configured_root).is_absolute():
         raise RuntimeError("child project-root sentinel is missing or invalid")
-    configured_lexical = Path(
-        os.path.abspath(os.path.normpath(configured_root))
-    )
+    configured_lexical = Path(os.path.abspath(os.path.normpath(configured_root)))
     if os.path.normcase(os.fspath(configured_lexical)) != os.path.normcase(
         os.fspath(expected_lexical)
     ):
@@ -71,9 +74,7 @@ def _validate_child_environment() -> None:
         raise RuntimeError("child project-root sentinel is missing or invalid")
 
     runtime_overrides = {
-        key: os.environ[key]
-        for key in RUNTIME_PATH_ENV_KEYS
-        if key in os.environ
+        key: os.environ[key] for key in RUNTIME_PATH_ENV_KEYS if key in os.environ
     }
     canonical = validate_test_runtime_paths(
         project_root=expected_root,
@@ -90,18 +91,21 @@ def _install_test_config(
     *,
     load_local: bool,
     leave_data_root_absent: bool = False,
+    test_user_config_path: str | None = None,
 ) -> Callable[..., object]:
     """Install Config before importing either product entrypoint."""
 
     from src.utils import config as config_module
 
-    synthetic_ready_runtime = (
-        os.environ.get(_SYNTHETIC_READY_RUNTIME_SENTINEL) == "1"
+    synthetic_ready_runtime = os.environ.get(_SYNTHETIC_READY_RUNTIME_SENTINEL) == "1"
+    if load_local and test_user_config_path is not None:
+        raise RuntimeError("live child cannot use an offline test user config")
+    user_config_path = (
+        str(_live_user_config_path()) if load_local else test_user_config_path
     )
-    user_config_path = str(_live_user_config_path()) if load_local else None
 
     def new_config(*_args, **_kwargs):
-        if not synthetic_ready_runtime:
+        if not synthetic_ready_runtime or test_user_config_path is not None:
             return config_module.Config(
                 str(BASE_CONFIG_PATH),
                 user_config_path=user_config_path,
@@ -164,6 +168,207 @@ def _consume_absent_data_root_request() -> bool:
     return True
 
 
+def _strict_json_object(raw: bytes) -> dict[str, object]:
+    def reject_duplicates(pairs):
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise RuntimeError("test user config contains duplicate keys")
+            value[key] = item
+        return value
+
+    try:
+        parsed = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=reject_duplicates,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("test user config must be strict UTF-8 JSON/YAML") from exc
+    if type(parsed) is not dict:
+        raise RuntimeError("test user config root is invalid")
+    return parsed
+
+
+def _test_provider_endpoint(value: object) -> tuple[str, int]:
+    if type(value) is not str:
+        raise RuntimeError("test Provider base_url is invalid")
+    parsed = urlsplit(value)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("test Provider base_url port is invalid") from exc
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is None
+        or not 1 <= port <= 65_535
+        or parsed.path != "/v1"
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RuntimeError("test Provider must use an exact numeric-loopback URL")
+    return "127.0.0.1", port
+
+
+def _validate_test_user_config(raw: bytes) -> frozenset[tuple[str, int]]:
+    payload = _strict_json_object(raw)
+    if set(payload) != {"ai"} or type(payload["ai"]) is not dict:
+        raise RuntimeError("test user config fields are invalid")
+    ai = payload["ai"]
+    if set(ai) != {"llm", "embedding", "automation"}:
+        raise RuntimeError("test user AI config fields are invalid")
+    llm = ai["llm"]
+    embedding = ai["embedding"]
+    automation = ai["automation"]
+    if type(llm) is not dict or set(llm) != {
+        "provider",
+        "api_key",
+        "base_url",
+        "model",
+        "timeout_seconds",
+        "max_retries",
+    }:
+        raise RuntimeError("test LLM config fields are invalid")
+    if type(embedding) is not dict or set(embedding) != {
+        "provider",
+        "api_key",
+        "base_url",
+        "model",
+        "dim",
+        "timeout_seconds",
+        "max_retries",
+    }:
+        raise RuntimeError("test Embedding config fields are invalid")
+    if any(
+        type(provider["provider"]) is not str
+        or provider["provider"] != "openai_compatible"
+        or type(provider["api_key"]) is not str
+        or provider["api_key"] != _BLACKBOX_API_KEY
+        or type(provider["max_retries"]) is not int
+        or provider["max_retries"] != 0
+        or type(provider["timeout_seconds"]) is not int
+        or not 1 <= provider["timeout_seconds"] <= 30
+        for provider in (llm, embedding)
+    ):
+        raise RuntimeError("test Provider settings are invalid")
+    if llm["model"] != _BLACKBOX_LLM_MODEL:
+        raise RuntimeError("test LLM model is invalid")
+    if embedding["model"] != _BLACKBOX_EMBEDDING_MODEL or embedding["dim"] != 3:
+        raise RuntimeError("test Embedding contract is invalid")
+    llm_endpoint = _test_provider_endpoint(llm["base_url"])
+    embedding_endpoint = _test_provider_endpoint(embedding["base_url"])
+    if llm_endpoint != embedding_endpoint:
+        raise RuntimeError("test Provider endpoints must use one harness")
+
+    if type(automation) is not dict or set(automation) != {
+        "schema_version",
+        "enabled",
+        "authorization",
+        "token_budget",
+        "retry",
+    }:
+        raise RuntimeError("test automation config fields are invalid")
+    authorization = automation["authorization"]
+    budget = automation["token_budget"]
+    retry = automation["retry"]
+    policy_sha256 = (
+        authorization.get("policy_sha256")
+        if type(authorization) is dict and set(authorization) == {"policy_sha256"}
+        else None
+    )
+    if (
+        type(automation["schema_version"]) is not int
+        or automation["schema_version"] != 1
+        or automation["enabled"] is not True
+        or type(policy_sha256) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", policy_sha256) is None
+        or type(budget) is not dict
+        or set(budget) != {"timezone", "daily_total_tokens", "monthly_total_tokens"}
+        or budget["timezone"] != "UTC"
+        or type(budget["daily_total_tokens"]) is not int
+        or type(budget["monthly_total_tokens"]) is not int
+        or not 1_000 <= budget["daily_total_tokens"] <= 10_000_000
+        or not budget["daily_total_tokens"]
+        <= budget["monthly_total_tokens"]
+        <= 100_000_000
+        or type(retry) is not dict
+        or set(retry) != {"max_attempts"}
+        or type(retry["max_attempts"]) is not int
+        or retry["max_attempts"] != 2
+    ):
+        raise RuntimeError("test automation policy is invalid")
+    return frozenset({llm_endpoint})
+
+
+def _consume_test_user_config_request(
+    *,
+    target: str,
+    load_local: bool,
+) -> tuple[str, frozenset[tuple[str, int]]] | None:
+    """Validate one offline, DataRoot-contained synthetic user YAML source.
+
+    The path is consumed by this dedicated test entrypoint and removed before
+    product code starts.  The product still receives the normal public
+    ``Config(..., user_config_path=...)`` interface; no Provider setting is read
+    from an environment variable or injected into a product module.
+    """
+
+    raw = os.environ.pop(_TEST_USER_CONFIG_SENTINEL, None)
+    if raw is None:
+        return None
+    if os.environ.get(_SYNTHETIC_READY_RUNTIME_SENTINEL) != "1":
+        raise RuntimeError(
+            "test user config requires an explicitly synthetic ready runtime"
+        )
+    if load_local or target not in {"cli", "mcp"}:
+        raise RuntimeError(
+            "test user config is available only to offline CLI/MCP children"
+        )
+    if not raw or "\x00" in raw:
+        raise RuntimeError("test user config path is invalid")
+
+    data_root = Path(os.environ["DATA_DIR"])
+    expected = data_root / "profile" / ".pkv" / "config.yaml"
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        raise RuntimeError("test user config path must be absolute")
+    candidate_lexical = Path(os.path.abspath(os.path.normpath(os.fspath(candidate))))
+    expected_lexical = Path(os.path.abspath(os.path.normpath(os.fspath(expected))))
+    if os.path.normcase(os.fspath(candidate_lexical)) != os.path.normcase(
+        os.fspath(expected_lexical)
+    ):
+        raise RuntimeError("test user config must use the selected DataRoot profile")
+
+    cursor = data_root
+    relative = expected_lexical.relative_to(data_root)
+    item_stat: os.stat_result | None = None
+    for index, part in enumerate(relative.parts):
+        cursor /= part
+        try:
+            item_stat = os.lstat(cursor)
+        except OSError as exc:
+            raise RuntimeError("test user config is unavailable") from exc
+        file_attributes = getattr(item_stat, "st_file_attributes", 0)
+        if stat.S_ISLNK(item_stat.st_mode) or bool(file_attributes & 0x400):
+            raise RuntimeError("test user config path contains a link")
+        is_leaf = index == len(relative.parts) - 1
+        if not is_leaf and not stat.S_ISDIR(item_stat.st_mode):
+            raise RuntimeError("test user config parent is invalid")
+    if (
+        item_stat is None
+        or not stat.S_ISREG(item_stat.st_mode)
+        or item_stat.st_nlink != 1
+        or not 1 <= item_stat.st_size <= _MAX_TEST_USER_CONFIG_BYTES
+    ):
+        raise RuntimeError("test user config file is invalid")
+    if candidate_lexical.resolve(strict=True) != expected_lexical.resolve(strict=True):
+        raise RuntimeError("test user config path canonicalization drifted")
+    endpoints = _validate_test_user_config(candidate_lexical.read_bytes())
+    return str(expected_lexical), endpoints
+
+
 def _seed_synthetic_ready_runtime_snapshot(config: object) -> None:
     """Publish a secret-free snapshot for an explicitly seeded offline fixture.
 
@@ -203,7 +408,9 @@ def _seed_synthetic_ready_runtime_snapshot(config: object) -> None:
 
     dimension = config.embedding_dim
     if type(dimension) is not int or dimension < 1:
-        raise RuntimeError("synthetic ready fixture requires a declared embedding dimension")
+        raise RuntimeError(
+            "synthetic ready fixture requires a declared embedding dimension"
+        )
 
     # This branch is reached only when this child is the one that publishes the
     # absent synthetic runtime snapshot.  Keep the cache prewarm in that same
@@ -290,23 +497,17 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
     return True
 
 
-_PROHIBITED_DIRECT_ROOT_NAMES = frozenset(
-    {".data", ".data-test", ".git", "config"}
-)
+_PROHIBITED_DIRECT_ROOT_NAMES = frozenset({".data", ".data-test", ".git", "config"})
 
 
 def _direct_candidate_lexical(value: str) -> tuple[Path, Path, Path]:
     """Validate a Direct Python path lexically without touching its target."""
 
-    root_lexical = Path(
-        os.path.abspath(os.path.normpath(os.fspath(PROJECT_ROOT)))
-    )
+    root_lexical = Path(os.path.abspath(os.path.normpath(os.fspath(PROJECT_ROOT))))
     candidate = Path(value)
     if not candidate.is_absolute():
         candidate = root_lexical / candidate
-    candidate_lexical = Path(
-        os.path.abspath(os.path.normpath(os.fspath(candidate)))
-    )
+    candidate_lexical = Path(os.path.abspath(os.path.normpath(os.fspath(candidate))))
     if not _is_relative_to(candidate_lexical, root_lexical):
         raise SystemExit("direct Python script must remain inside the project root")
 
@@ -384,15 +585,16 @@ def _validated_direct_script_candidate(
     try:
         resolved = candidate_lexical.resolve(strict=True)
     except OSError as exc:
-        raise SystemExit("direct Python script does not exist or is not readable") from exc
+        raise SystemExit(
+            "direct Python script does not exist or is not readable"
+        ) from exc
     root = root_lexical.resolve()
     if not _is_relative_to(resolved, root):
         raise SystemExit("direct Python script escaped the project root")
     resolved_relative = resolved.relative_to(root)
     if (
         not resolved_relative.parts
-        or resolved_relative.parts[0].casefold()
-        in _PROHIBITED_DIRECT_ROOT_NAMES
+        or resolved_relative.parts[0].casefold() in _PROHIBITED_DIRECT_ROOT_NAMES
     ):
         raise SystemExit("direct Python script resolved into a prohibited project root")
     if resolved == Path(__file__).resolve():
@@ -456,7 +658,9 @@ def _validated_direct_module(value: str) -> str:
         parent /= part
         init_script = parent / "__init__.py"
         if _try_validated_direct_script(init_script) is None:
-            raise SystemExit("direct Python module is not an executable repository target")
+            raise SystemExit(
+                "direct Python module is not an executable repository target"
+            )
 
     leaf = parent / parts[-1]
     module_script = leaf.with_suffix(".py")
@@ -512,9 +716,7 @@ _PYTEST_UNSAFE_EXACT_OPTIONS = frozenset(
     }
 )
 _PYTEST_UNSAFE_LONG_PREFIXES = tuple(
-    f"{name}="
-    for name in _PYTEST_UNSAFE_EXACT_OPTIONS
-    if name.startswith("--")
+    f"{name}=" for name in _PYTEST_UNSAFE_EXACT_OPTIONS if name.startswith("--")
 )
 _PYTEST_VALUE_OPTIONS = frozenset(
     {
@@ -563,19 +765,17 @@ def _validate_pytest_target(value: str) -> None:
     """Restrict collection to no-follow paths under the repository tests tree."""
 
     if value.startswith("@"):
-        raise SystemExit("pytest response files are not allowed by the offline entrypoint")
+        raise SystemExit(
+            "pytest response files are not allowed by the offline entrypoint"
+        )
     path_value = value.split("::", 1)[0]
     if not path_value:
         raise SystemExit("pytest collection target is empty")
     candidate = Path(path_value)
     if not candidate.is_absolute():
         candidate = PROJECT_ROOT / candidate
-    root_lexical = Path(
-        os.path.abspath(os.path.normpath(os.fspath(PROJECT_ROOT)))
-    )
-    candidate_lexical = Path(
-        os.path.abspath(os.path.normpath(os.fspath(candidate)))
-    )
+    root_lexical = Path(os.path.abspath(os.path.normpath(os.fspath(PROJECT_ROOT))))
+    candidate_lexical = Path(os.path.abspath(os.path.normpath(os.fspath(candidate))))
     tests_root = root_lexical / "tests"
     if not _is_relative_to(candidate_lexical, tests_root):
         raise SystemExit("pytest collection targets must remain under repository tests")
@@ -659,13 +859,17 @@ def _validate_pytest_arguments(arguments: list[str]) -> None:
                     raise SystemExit("pytest --cov-report requires a terminal report")
                 report = arguments[index + 1].lower()
                 if report not in _PYTEST_TERMINAL_COVERAGE_REPORTS:
-                    raise SystemExit("pytest coverage reports must remain terminal-only")
+                    raise SystemExit(
+                        "pytest coverage reports must remain terminal-only"
+                    )
                 index += 2
                 continue
             if lower.startswith("--cov-report="):
                 report = argument.split("=", 1)[1].lower()
                 if report not in _PYTEST_TERMINAL_COVERAGE_REPORTS:
-                    raise SystemExit("pytest coverage reports must remain terminal-only")
+                    raise SystemExit(
+                        "pytest coverage reports must remain terminal-only"
+                    )
                 index += 1
                 continue
 
@@ -701,8 +905,7 @@ def _run_python(arguments: list[str]) -> None:
 
     if not arguments:
         raise SystemExit(
-            "usage: offline_entrypoint.py python {-m module|script.py} "
-            "[arguments...]"
+            "usage: offline_entrypoint.py python {-m module|script.py} [arguments...]"
         )
 
     # The launcher itself lives under tests/, so always restore the canonical
@@ -738,12 +941,23 @@ def main() -> None:
     leave_data_root_absent = _consume_absent_data_root_request()
     _validate_child_environment()
     load_local = _live_mode_enabled()
+    test_user_config_request = _consume_test_user_config_request(
+        target=target,
+        load_local=load_local,
+    )
+    test_user_config_path = (
+        test_user_config_request[0] if test_user_config_request is not None else None
+    )
     if leave_data_root_absent and (load_local or target not in {"cli", "mcp"}):
         raise RuntimeError(
             "absent-data-root child is available only for offline CLI/MCP tests"
         )
+    if leave_data_root_absent and test_user_config_path is not None:
+        raise RuntimeError("absent-data-root child cannot use a test user config")
     if target in {"pytest", "python"} and load_local:
-        raise RuntimeError("generic Direct Python/pytest is available only in offline mode")
+        raise RuntimeError(
+            "generic Direct Python/pytest is available only in offline mode"
+        )
     scrub_child_process_env(os.environ)
     if not load_local:
         for key in tuple(os.environ):
@@ -756,7 +970,14 @@ def main() -> None:
                 LOAD_LOCAL_SENTINEL: "0",
             }
         )
-        install_offline_network_guard(block_raw_sockets=False)
+        install_offline_network_guard(
+            block_raw_sockets=False,
+            allowed_stream_endpoints=(
+                test_user_config_request[1]
+                if test_user_config_request is not None
+                else None
+            ),
+        )
         if target == "python":
             # ``platform`` may invoke the Windows ``ver`` command on first use.
             # Warm that standard-library cache before target process creation is
@@ -768,6 +989,7 @@ def main() -> None:
     config_factory = _install_test_config(
         load_local=load_local,
         leave_data_root_absent=leave_data_root_absent,
+        test_user_config_path=test_user_config_path,
     )
     # pytest must retain the real Config class: configuration tests explicitly
     # construct alternate base/local pairs.  Parent plugin injection and

@@ -1,0 +1,8 @@
+# R4 optional price-card resource.
+#
+# The distributable baseline intentionally contains no provider price.  This
+# keeps token-only automation usable and prevents PKV from inventing a monetary
+# estimate.  A reviewed build may add a card; user config must name both its id
+# and canonical sha256 before monetary limits become active.
+schema_version: 1
+cards: []

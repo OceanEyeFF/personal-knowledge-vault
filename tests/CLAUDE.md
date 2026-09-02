@@ -117,6 +117,8 @@
 | `test_cli_basic.py` | CLI 基础黑盒测试 |
 | `test_cli_blackbox.py` | CLI 完整黑盒测试 |
 | `test_mcp_blackbox.py` | MCP stdio 协议级黑盒测试（Layer 3） |
+| `test_r4_cli_fullflow.py` | CLI → R4 → 重启 → vector/hybrid 的真实进程闭环 |
+| `test_r4_mcp_fullflow.py` | MCP stdio → R4 → 新 server → vector/hybrid 的真实进程闭环 |
 
 **MCP 黑盒测试**: 仅经 `tests/offline_entrypoint.py mcp` 启动 base-only 子进程，并由 MCP SDK 经 JSON-RPC over stdio 端到端验证；不得直接启动默认配置入口。验证:
 - 服务启动与协议初始化(MCP 握手)
@@ -126,6 +128,17 @@
 - Prompt 端到端调用
 - Resource 端到端读取
 - 跨功能端到端场景 (list -> get -> read -> stats)
+
+**R4 source black-box 合同**: `test_r4_cli_fullflow.py` 和
+`test_r4_mcp_fullflow.py` 通过正式 CLI/MCP、Application、Storage 与 Retrieval
+边界运行。它们使用 `tests/harness/r4_openai_compatible_provider.py` 这个产品进程外、
+仅绑定随机 numeric-loopback 端口的确定性 Provider，并通过正式用户配置接口接入。
+测试入口只允许 Provider 使用的高层 resolver/connection helper 访问白名单中的确切
+harness endpoint；为兼容 Windows `asyncio.socketpair()`，raw socket 仍允许 numeric
+loopback，但 DNS 与非 loopback 始终 fail-closed。真实用户配置与 Provider 凭据不会被
+读取。harness 的 barrier 用于证明 Provider 调用时 writer lease 可取得，并替代 sleep
+同步。该证据只代表源码黑盒验收，不升级任何 Artifact/release 状态；既有 compliance
+hold 保持不变。
 
 ---
 
@@ -170,6 +183,7 @@ Layer 2: 进程内集成 (中速, FastMCP)
 
 Layer 3: stdio 黑盒 (最慢, 子进程)
     tests/blackbox/test_mcp_blackbox.py  -- stdio_client + ClientSession + JSON-RPC
+    tests/blackbox/test_r4_mcp_fullflow.py -- 真实 R4 写入、重启与语义检索
 ```
 
 **Layer 2 vs Layer 3 对比**:
@@ -240,7 +254,7 @@ Layer 3: stdio 黑盒 (最慢, 子进程)
 
 ### 测试 URL
 
-- `fixtures/test_urls.json` - 真实 URL 列表，仅供 `manual_test_*` / 后续显式 live 流程；默认 integration/E2E 不读取或访问这些 URL
+- `fixtures/test_urls.example.json` - 仅含保留域名的受控模板；真实 URL 只能写入被忽略的本地 `fixtures/test_urls.json`，且仅供显式 `manual_test_*` / live 流程
 
 详见: [fixtures/README.md](./fixtures/README.md)
 

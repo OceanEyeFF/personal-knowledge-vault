@@ -348,7 +348,7 @@ converter.unicode_snob = True     # 使用 Unicode 而非 ASCII
 | `tests/unit/test_safe_fetch.py` | SafeFetcher DNS pinning / redirect / TLS 安全合同 |
 | `tests/fixtures/ai_chat/` | AI 聊天样本数据 |
 | `tests/fixtures/chat_sample.json` | 聊天记录样本 |
-| `tests/fixtures/test_urls.json` | 测试 URL 列表 |
+| `tests/fixtures/test_urls.example.json` | 仅含保留域名的模板；真实 URL 使用被忽略的本地 `test_urls.json` |
 
 ---
 

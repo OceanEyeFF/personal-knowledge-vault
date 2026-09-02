@@ -4,7 +4,7 @@
 >
 > **文档版本**: v1.2
 > **创建日期**: 2026-02-16
-> **最后更新**: 2026-08-20 (对齐当前 MCP runtime / 单写者合同)
+> **最后更新**: 2026-09-01 (对齐当前 MCP runtime / R4 内部生命周期合同)
 > **作者**: 幽浮喵 (猫娘工程师)
 > **目标版本**: v0.7.0
 
@@ -15,6 +15,10 @@
 > - 当前已注册 `9` 条 Resource；chunk、metadata field 和 relation locator 都可直接读取。公开 MCP 的结构化字段不返回本机文件路径，写入 Tool 以 `pkv://entries/{id}` locator 回传新条目；entry Markdown 正文保持原文，不做内容级路径替换。
 > - M13 Developer Preview 只发布 MCP stdio。HTTP transport、监听端口和 Bearer Token 均已从当前入口移除；非 stdio 请求会在读取应用配置、bootstrap 数据或 bind 前 fail-closed。
 > - 默认验证离线，只使用合成数据与 `.data-test` 隔离根，不连接真实 Provider、不读取真实 API key 或真实 Vault。
+> - R4 不增加 MCP Tool。已存在的 `archive_url` / `archive_text` 仅投影 Q0→Q1′→Q2 的稳定
+>   envelope：Q0/Q1′ 未完成时为可恢复 processing，`core_committed` 后才称已保存；Q2 的
+>   retry/budget/authorization 状态保持为 degraded issue，绝不触发 Tool 内的 direct Provider、
+>   flat vector 或后台 daemon。
 
 > **历史设计阅读边界（2026-08-20）**：第 3–6 节中 `src.*`、直接构造
 > `WorkflowEngine`、`SQLiteStore` 或 `QueryRouter` 的示例和映射是 v0.7.0 的历史设计

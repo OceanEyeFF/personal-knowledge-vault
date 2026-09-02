@@ -18,7 +18,8 @@ from src.runtime.layout import (
     open_user_file_nofollow,
     validate_directory_components,
 )
-from src.storage.markdown_store import Entry, MarkdownStore
+from src.storage.derivation_patch import DerivationPatch
+from src.storage.markdown_store import Entry, MarkdownStore, PlannedVaultWrite
 from src.storage.sqlite_store import (
     SQLiteStore,
     entry_projection_sha256,
@@ -62,6 +63,26 @@ def _valid_sha256(value: Any) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _operation_id_or_new(value: str | None) -> str:
+    """Return a caller-supplied durable operation identity or create one.
+
+    Q1′ owns the handoff identity before it enters the cross-store coordinator,
+    so a restart can join its task row to the existing operation journal.  The
+    historical public coordinator callers still omit it and retain the original
+    UUID allocation behavior.
+    """
+
+    if value is None:
+        return uuid.uuid4().hex
+    if (
+        not isinstance(value, str)
+        or not value
+        or any(character not in "0123456789abcdef-" for character in value)
+    ):
+        raise ValueError("operation_id 非法")
+    return value
 
 
 def _proof_matches(
@@ -175,6 +196,55 @@ def _probe_delete_commit(
         return _CommitProbe("absent", knowledge_id=knowledge_id)
     except Exception as exc:
         return _CommitProbe("ambiguous", reason=f"delete 提交状态查询失败: {exc}")
+
+
+def _probe_patch_commit(
+    sqlite_store: SQLiteStore,
+    *,
+    operation_id: str,
+    knowledge_id: int,
+    relative_file_path: str,
+    previous_revision_sha256: str,
+    resulting_revision_sha256: str,
+) -> _CommitProbe:
+    """Prove a revision-bound patch commit, its untouched predecessor, or ambiguity."""
+
+    try:
+        proof = sqlite_store.query_r4_content_operation(operation_id)
+        row = sqlite_store.query_by_id(knowledge_id)
+        if proof is not None:
+            expected = {
+                "operation_id": operation_id,
+                "action": "apply_ai_patch",
+                "knowledge_id": knowledge_id,
+                "relative_file_path": relative_file_path,
+                "previous_revision_sha256": previous_revision_sha256,
+                "resulting_revision_sha256": resulting_revision_sha256,
+            }
+            # ``committed_at`` is source-owned; all remaining proof fields bind
+            # this recovery request exactly.
+            if {key: proof.get(key) for key in expected} != expected:
+                return _CommitProbe("ambiguous", reason="patch 提交凭据字段不匹配")
+            if (
+                row is None
+                or row.get("file_path") != relative_file_path
+                or not _observed_projection_matches(
+                    sqlite_store, row, resulting_revision_sha256
+                )
+            ):
+                return _CommitProbe("ambiguous", reason="patch 凭据与 SQLite 投影不一致")
+            return _CommitProbe("committed", knowledge_id=knowledge_id)
+        if (
+            row is None
+            or row.get("file_path") != relative_file_path
+            or not _observed_projection_matches(
+                sqlite_store, row, previous_revision_sha256
+            )
+        ):
+            return _CommitProbe("ambiguous", reason="patch 前 SQLite 投影已变化")
+        return _CommitProbe("absent", knowledge_id=knowledge_id)
+    except Exception as exc:
+        return _CommitProbe("ambiguous", reason=f"patch 提交状态查询失败: {exc}")
 
 
 @dataclass(frozen=True)
@@ -309,7 +379,7 @@ class StorageOperationJournal:
             or any(ch not in "0123456789abcdef-" for ch in operation_id)
         ):
             return None, f"operation journal operation_id 与文件名不一致或非法: {path.name}"
-        if payload["action"] not in {"archive", "delete"}:
+        if payload["action"] not in {"archive", "delete", "apply_ai_patch"}:
             return None, f"operation journal action 非法: {path.name}"
         valid_statuses = {status.value for status in OperationStatus} | {"in_progress"}
         if payload["status"] not in valid_statuses:
@@ -354,12 +424,16 @@ class StorageOperationJournal:
         projection_sha256 = payload.get("projection_sha256")
         if projection_sha256 is not None and not _valid_sha256(projection_sha256):
             return None, f"operation journal projection_sha256 非法: {path.name}"
-        for digest_field in ("primary_sha256", "quarantine_sha256"):
+        for digest_field in (
+            "primary_sha256",
+            "quarantine_sha256",
+            "previous_primary_sha256",
+        ):
             if digest_field in payload and payload[digest_field] is not None and not _valid_sha256(
                 payload[digest_field]
             ):
                 return None, f"operation journal {digest_field} 非法: {path.name}"
-        for prefix in ("primary", "quarantine"):
+        for prefix in ("primary", "quarantine", "previous_primary"):
             st_dev = payload.get(f"{prefix}_st_dev")
             st_ino = payload.get(f"{prefix}_st_ino")
             if (st_dev is None) != (st_ino is None):
@@ -383,6 +457,14 @@ class StorageOperationJournal:
                     "delete_planned": StorageStage.DELETE_PLANNED.value,
                     "primary_quarantined": StorageStage.DELETE_QUARANTINED.value,
                 },
+                "apply_ai_patch": {
+                    "journal_created": StorageStage.PREPARING.value,
+                    "patch_planned": StorageStage.PREPARING.value,
+                    "patch_quarantined": StorageStage.PREPARING.value,
+                    "patch_primary_committed": StorageStage.PRIMARY_COMMITTED.value,
+                    "patch_index_committed": StorageStage.INDEX_COMMITTED.value,
+                    "patch_compensating": StorageStage.COMPENSATING.value,
+                },
             }
             if checkpoint not in allowed[action] or allowed[action][checkpoint] != payload["stage"]:
                 return None, f"operation journal checkpoint/stage 非法: {path.name}"
@@ -398,7 +480,9 @@ class StorageOperationJournal:
                     relative_field
                 ]:
                     return None, f"operation journal 缺少相对路径: {path.name}"
-                if not isinstance(payload.get("vector_required"), bool):
+                if action in {"archive", "delete"} and not isinstance(
+                    payload.get("vector_required"), bool
+                ):
                     return None, f"operation journal 缺少 vector_required: {path.name}"
             if action == "archive" and checkpoint in {
                 "primary_committed",
@@ -439,6 +523,42 @@ class StorageOperationJournal:
                     and not _valid_sha256(payload.get("quarantine_sha256"))
                 ):
                     return None, f"operation journal 缺少隔离文件摘要: {path.name}"
+            if action == "apply_ai_patch":
+                if (
+                    not _valid_positive_int(knowledge_id)
+                    or not _valid_sha256(payload.get("previous_revision_sha256"))
+                ):
+                    return None, f"operation journal patch revision/knowledge 字段非法: {path.name}"
+                if checkpoint != "journal_created":
+                    if not _valid_sha256(payload.get("resulting_revision_sha256")):
+                        return None, f"operation journal patch 缺少 resulting revision: {path.name}"
+                    if not isinstance(payload.get("original_path"), str) or not payload[
+                        "original_path"
+                    ]:
+                        return None, f"operation journal patch 缺少原 Markdown 路径: {path.name}"
+                    if not isinstance(payload.get("planned_quarantine_path"), str) or not payload[
+                        "planned_quarantine_path"
+                    ]:
+                        return None, f"operation journal patch 缺少隔离计划路径: {path.name}"
+                    if _recorded_file_identity(payload, "previous_primary") is None or not _valid_sha256(
+                        payload.get("previous_primary_sha256")
+                    ):
+                        return None, f"operation journal patch 缺少旧主文件身份或摘要: {path.name}"
+                if checkpoint == "patch_quarantined":
+                    if _recorded_file_identity(payload, "quarantine") is None or not _valid_sha256(
+                        payload.get("quarantine_sha256")
+                    ):
+                        return None, f"operation journal patch 缺少隔离文件身份或摘要: {path.name}"
+                if checkpoint in {
+                    "patch_primary_committed",
+                    "patch_index_committed",
+                    "patch_compensating",
+                }:
+                    for prefix in ("primary", "quarantine"):
+                        if _recorded_file_identity(payload, prefix) is None or not _valid_sha256(
+                            payload.get(f"{prefix}_sha256")
+                        ):
+                            return None, f"operation journal patch 缺少 {prefix} 身份或摘要: {path.name}"
         return payload, None
 
     def _fsync_directory(self) -> None:
@@ -542,12 +662,13 @@ class StorageCoordinator:
         self,
         entry: Entry,
         *,
+        operation_id: str | None = None,
         chunks: Optional[list[str]] = None,
         vector_operation: Optional[VectorOperation] = None,
         vector_error: Optional[BaseException] = None,
         vector_required: bool = False,
     ) -> StorageOperationResult:
-        operation_id = uuid.uuid4().hex
+        operation_id = _operation_id_or_new(operation_id)
         initial = {
             "action": "archive",
             "status": "in_progress",
@@ -1032,9 +1153,10 @@ class StorageCoordinator:
         self,
         knowledge_id: int,
         *,
+        operation_id: str | None = None,
         vector_operation: Optional[VectorOperation] = None,
     ) -> StorageOperationResult:
-        operation_id = uuid.uuid4().hex
+        operation_id = _operation_id_or_new(operation_id)
         if not _valid_positive_int(knowledge_id):
             return StorageOperationResult(
                 operation_id,
@@ -1553,6 +1675,497 @@ class StorageCoordinator:
         )
         return self._finish(result)
 
+    def apply_ai_patch(
+        self,
+        patch: DerivationPatch,
+        *,
+        operation_id: str | None = None,
+    ) -> StorageOperationResult:
+        """Commit one revision-bound DerivationPatch through the Q1′ writer.
+
+        The old Markdown primary is quarantined before the patched replacement is
+        published.  SQLite then verifies the exact prior projection and records
+        an operation proof in the R4 table.  A failed SQLite half restores the
+        quarantined primary whenever its identities remain provable.
+        """
+
+        if not isinstance(patch, DerivationPatch):
+            raise TypeError("patch 必须是 DerivationPatch")
+        operation_id = _operation_id_or_new(operation_id)
+        initial = {
+            "action": "apply_ai_patch",
+            "status": "in_progress",
+            "stage": StorageStage.PREPARING.value,
+            "journal_schema_version": 3,
+            "checkpoint": "journal_created",
+            "knowledge_id": patch.target_knowledge_id,
+            "previous_revision_sha256": patch.expected_revision_sha256,
+            "errors": [],
+            "repair_actions": [],
+        }
+        try:
+            self.journal.write(operation_id, initial)
+        except OSError as exc:
+            return StorageOperationResult(
+                operation_id,
+                "apply_ai_patch",
+                OperationStatus.REJECTED,
+                StorageStage.PREPARING,
+                knowledge_id=patch.target_knowledge_id,
+                errors=(
+                    _error(
+                        ErrorCode.STORAGE_PRIMARY_FAILED,
+                        f"无法创建 patch 操作日志: {exc}",
+                        recoverable=True,
+                    ),
+                ),
+            )
+
+        existing_proof = self.sqlite_store.query_r4_content_operation(operation_id)
+        if existing_proof is not None:
+            if (
+                existing_proof.get("action") != "apply_ai_patch"
+                or existing_proof.get("knowledge_id") != patch.target_knowledge_id
+                or existing_proof.get("previous_revision_sha256")
+                != patch.expected_revision_sha256
+            ):
+                return self._finish(
+                    StorageOperationResult(
+                        operation_id,
+                        "apply_ai_patch",
+                        OperationStatus.REPAIR_REQUIRED,
+                        StorageStage.INDEX_COMMITTED,
+                        knowledge_id=patch.target_knowledge_id,
+                        errors=(
+                            _error(
+                                ErrorCode.STORAGE_REPAIR_REQUIRED,
+                                "已有 DerivationPatch 提交凭据与当前 patch 不一致。",
+                                recoverable=True,
+                            ),
+                        ),
+                        repair_actions=("audit_patch_consistency",),
+                    )
+                )
+            try:
+                self.journal.write(
+                    operation_id,
+                    {
+                        **initial,
+                        "relative_file_path": existing_proof.get("relative_file_path"),
+                        "projection_sha256": existing_proof.get(
+                            "resulting_revision_sha256"
+                        ),
+                        "core_committed": True,
+                    },
+                )
+            except OSError:
+                pass
+            return self._finish(
+                StorageOperationResult(
+                    operation_id,
+                    "apply_ai_patch",
+                    OperationStatus.READY,
+                    StorageStage.COMPLETED,
+                    knowledge_id=patch.target_knowledge_id,
+                    relative_file_path=existing_proof.get("relative_file_path"),
+                    core_committed=True,
+                )
+            )
+
+        try:
+            row = self.sqlite_store.query_by_id(patch.target_knowledge_id)
+            if row is None:
+                raise PKVRuntimeError(
+                    ErrorCode.RUNTIME_PLAN_STALE,
+                    "DerivationPatch 的目标条目已不存在。",
+                    stage="r4_patch_target",
+                    recoverable=True,
+                )
+            relative_path = row.get("file_path")
+            if not isinstance(relative_path, str) or not relative_path:
+                raise PKVRuntimeError(
+                    ErrorCode.REPAIR_REQUIRED,
+                    "DerivationPatch 目标缺少 Vault 相对路径。",
+                    stage="r4_patch_target",
+                    recoverable=True,
+                )
+            chunks = self.sqlite_store.get_chunks_by_knowledge_id(patch.target_knowledge_id)
+            if row_projection_sha256(row, chunks) != patch.expected_revision_sha256:
+                raise PKVRuntimeError(
+                    ErrorCode.RUNTIME_PLAN_STALE,
+                    "DerivationPatch 目标 revision 已变化。",
+                    stage="r4_patch_target",
+                    recoverable=True,
+                )
+            original_path = self.markdown_store.gateway.resolve(
+                relative_path,
+                must_exist=True,
+                require_file=True,
+            )
+            original_identity, original_sha256 = (
+                self.markdown_store.gateway.file_fingerprint(original_path)
+            )
+            planned_quarantine_path = self.markdown_store.gateway.plan_quarantine_path(
+                original_path,
+                operation_id=operation_id,
+            )
+            original = self.markdown_store.load(original_path)
+            chunk_texts = [str(item["chunk_text"]) for item in chunks]
+            if entry_projection_sha256(original, relative_path, chunk_texts) != patch.expected_revision_sha256:
+                raise PKVRuntimeError(
+                    ErrorCode.REPAIR_REQUIRED,
+                    "DerivationPatch 的 Markdown 与 SQLite 投影不一致。",
+                    stage="r4_patch_target",
+                    recoverable=True,
+                )
+            patched = replace(
+                original,
+                abstract=patch.summary,
+                summary_one_sentence=self._first_sentence(patch.summary),
+                summary_100_words=patch.summary,
+                tags=list(patch.tags),
+            )
+            resulting_revision = entry_projection_sha256(
+                patched,
+                relative_path,
+                chunk_texts,
+            )
+        except PKVRuntimeError as error:
+            return self._finish(
+                StorageOperationResult(
+                    operation_id,
+                    "apply_ai_patch",
+                    OperationStatus.REJECTED,
+                    StorageStage.PREPARING,
+                    knowledge_id=patch.target_knowledge_id,
+                    errors=(
+                        _error(error.code, str(error), recoverable=error.recoverable),
+                    ),
+                )
+            )
+        except Exception as exc:
+            return self._finish(
+                StorageOperationResult(
+                    operation_id,
+                    "apply_ai_patch",
+                    OperationStatus.REJECTED,
+                    StorageStage.PREPARING,
+                    knowledge_id=patch.target_knowledge_id,
+                    errors=(
+                        _error(
+                            ErrorCode.STORAGE_PRIMARY_FAILED,
+                            f"无法准备 DerivationPatch: {exc}",
+                            recoverable=True,
+                        ),
+                    ),
+                )
+            )
+
+        planned_payload = {
+            **initial,
+            "checkpoint": "patch_planned",
+            "relative_file_path": relative_path,
+            "original_path": str(original_path),
+            "planned_quarantine_path": str(planned_quarantine_path),
+            "previous_primary_st_dev": original_identity[0],
+            "previous_primary_st_ino": original_identity[1],
+            "previous_primary_sha256": original_sha256,
+            "resulting_revision_sha256": resulting_revision,
+            "projection_sha256": resulting_revision,
+        }
+        try:
+            self.journal.write(operation_id, planned_payload)
+        except OSError as exc:
+            return self._finish(
+                StorageOperationResult(
+                    operation_id,
+                    "apply_ai_patch",
+                    OperationStatus.REJECTED,
+                    StorageStage.PREPARING,
+                    knowledge_id=patch.target_knowledge_id,
+                    relative_file_path=relative_path,
+                    errors=(
+                        _error(
+                            ErrorCode.STORAGE_PRIMARY_FAILED,
+                            f"无法持久化 DerivationPatch 计划: {exc}",
+                            recoverable=True,
+                        ),
+                    ),
+                )
+            )
+
+        quarantined = None
+        published_file = None
+        try:
+            quarantined = self.markdown_store.gateway.quarantine(
+                original_path,
+                operation_id=operation_id,
+                expected_identity=original_identity,
+                expected_sha256=original_sha256,
+            )
+            quarantined_payload = {
+                **planned_payload,
+                "checkpoint": "patch_quarantined",
+                "quarantine_path": str(quarantined.quarantine_path),
+                "quarantine_st_dev": quarantined.st_dev,
+                "quarantine_st_ino": quarantined.st_ino,
+                "quarantine_sha256": quarantined.sha256,
+            }
+            self.journal.write(operation_id, quarantined_payload)
+            published_file = self.markdown_store.save_planned_record(
+                PlannedVaultWrite(original_path, relative_path),
+                patched,
+            )
+            primary_payload = {
+                **quarantined_payload,
+                "stage": StorageStage.PRIMARY_COMMITTED.value,
+                "checkpoint": "patch_primary_committed",
+                "file_path": str(original_path),
+                "primary_st_dev": published_file.st_dev,
+                "primary_st_ino": published_file.st_ino,
+                "primary_sha256": published_file.sha256,
+                "quarantine_path": str(quarantined.quarantine_path),
+                "quarantine_st_dev": quarantined.st_dev,
+                "quarantine_st_ino": quarantined.st_ino,
+                "quarantine_sha256": quarantined.sha256,
+            }
+            self.journal.write(operation_id, primary_payload)
+        except Exception as exc:
+            errors = [
+                _error(
+                    ErrorCode.STORAGE_PRIMARY_FAILED,
+                    f"DerivationPatch Markdown 提交失败: {exc}",
+                    recoverable=True,
+                )
+            ]
+            repairs: tuple[str, ...] = ()
+            if quarantined is not None and published_file is None:
+                try:
+                    self.markdown_store.gateway.restore(quarantined)
+                except Exception as restore_error:
+                    errors.append(
+                        _error(
+                            ErrorCode.STORAGE_COMPENSATION_FAILED,
+                            f"DerivationPatch 原 Markdown 恢复失败: {restore_error}",
+                            recoverable=True,
+                        )
+                    )
+                    repairs = ("restore_patch_quarantine",)
+            elif published_file is not None and quarantined is not None:
+                try:
+                    self.markdown_store.gateway.delete_if_identity(
+                        original_path,
+                        expected_identity=published_file.identity,
+                        expected_sha256=published_file.sha256,
+                    )
+                    self.markdown_store.gateway.restore(quarantined)
+                except Exception as restore_error:
+                    errors.append(
+                        _error(
+                            ErrorCode.STORAGE_COMPENSATION_FAILED,
+                            f"DerivationPatch 补偿恢复失败: {restore_error}",
+                            recoverable=True,
+                        )
+                    )
+                    repairs = ("restore_patch_quarantine",)
+            return self._finish(
+                StorageOperationResult(
+                    operation_id,
+                    "apply_ai_patch",
+                    OperationStatus.REPAIR_REQUIRED if repairs else OperationStatus.REJECTED,
+                    StorageStage.COMPENSATING if repairs else StorageStage.PREPARING,
+                    knowledge_id=patch.target_knowledge_id,
+                    relative_file_path=relative_path,
+                    errors=tuple(errors),
+                    repair_actions=repairs,
+                )
+            )
+
+        sqlite_commit_reconciled = False
+        try:
+            self.sqlite_store.apply_ai_patch(
+                operation_id=operation_id,
+                knowledge_id=patch.target_knowledge_id,
+                relative_file_path=relative_path,
+                previous_revision_sha256=patch.expected_revision_sha256,
+                resulting_revision_sha256=resulting_revision,
+                entry=patched,
+            )
+        except Exception as exc:
+            probe = _probe_patch_commit(
+                self.sqlite_store,
+                operation_id=operation_id,
+                knowledge_id=patch.target_knowledge_id,
+                relative_file_path=relative_path,
+                previous_revision_sha256=patch.expected_revision_sha256,
+                resulting_revision_sha256=resulting_revision,
+            )
+            if probe.state == "committed":
+                # A transaction-bound proof shows that the SQLite half made it
+                # through despite the caller seeing an exception.  The patched
+                # Markdown must remain paired with that committed row.
+                sqlite_commit_reconciled = True
+            elif probe.state == "ambiguous":
+                return self._finish(
+                    StorageOperationResult(
+                        operation_id,
+                        "apply_ai_patch",
+                        OperationStatus.REPAIR_REQUIRED,
+                        StorageStage.PRIMARY_COMMITTED,
+                        knowledge_id=patch.target_knowledge_id,
+                        relative_file_path=relative_path,
+                        errors=(
+                            _error(
+                                ErrorCode.STORAGE_INDEX_FAILED,
+                                f"DerivationPatch SQLite 提交返回异常: {exc}",
+                                recoverable=True,
+                            ),
+                            _error(
+                                ErrorCode.STORAGE_REPAIR_REQUIRED,
+                                f"DerivationPatch SQLite 提交状态无法安全归因: {probe.reason}",
+                                recoverable=True,
+                            ),
+                        ),
+                        repair_actions=("audit_patch_consistency",),
+                    )
+                )
+            else:
+                try:
+                    self.journal.write(
+                        operation_id,
+                        {
+                            **primary_payload,
+                            "stage": StorageStage.COMPENSATING.value,
+                            "checkpoint": "patch_compensating",
+                            "errors": [
+                                _error(
+                                    ErrorCode.STORAGE_INDEX_FAILED,
+                                    f"DerivationPatch SQLite 提交失败: {exc}",
+                                    recoverable=True,
+                                )
+                            ],
+                        },
+                    )
+                except OSError:
+                    pass
+                try:
+                    assert published_file is not None and quarantined is not None
+                    removed = self.markdown_store.gateway.delete_if_identity(
+                        original_path,
+                        expected_identity=published_file.identity,
+                        expected_sha256=published_file.sha256,
+                    )
+                    if not removed:
+                        raise FileNotFoundError(original_path)
+                    self.markdown_store.gateway.restore(quarantined)
+                except Exception as compensation_error:
+                    return self._finish(
+                        StorageOperationResult(
+                            operation_id,
+                            "apply_ai_patch",
+                            OperationStatus.REPAIR_REQUIRED,
+                            StorageStage.COMPENSATING,
+                            knowledge_id=patch.target_knowledge_id,
+                            relative_file_path=relative_path,
+                            errors=(
+                                _error(
+                                    ErrorCode.STORAGE_INDEX_FAILED,
+                                    f"DerivationPatch SQLite 提交失败: {exc}",
+                                    recoverable=True,
+                                ),
+                                _error(
+                                    ErrorCode.STORAGE_COMPENSATION_FAILED,
+                                    f"DerivationPatch Markdown 恢复失败: {compensation_error}",
+                                    recoverable=True,
+                                ),
+                            ),
+                            repair_actions=("restore_patch_quarantine",),
+                        )
+                    )
+                return self._finish(
+                    StorageOperationResult(
+                        operation_id,
+                        "apply_ai_patch",
+                        OperationStatus.REJECTED,
+                        StorageStage.COMPENSATING,
+                        knowledge_id=patch.target_knowledge_id,
+                        relative_file_path=relative_path,
+                        errors=(
+                            _error(
+                                ErrorCode.STORAGE_INDEX_FAILED,
+                                f"DerivationPatch SQLite 提交失败，Markdown 已恢复: {exc}",
+                                recoverable=True,
+                            ),
+                        ),
+                    )
+                )
+
+        indexed_payload = {
+            **primary_payload,
+            "stage": StorageStage.INDEX_COMMITTED.value,
+            "checkpoint": "patch_index_committed",
+            "projection_sha256": resulting_revision,
+            "core_committed": True,
+            "sqlite_commit_reconciled": sqlite_commit_reconciled,
+        }
+        try:
+            self.journal.write(operation_id, indexed_payload)
+        except OSError as exc:
+            return self._finish(
+                StorageOperationResult(
+                    operation_id,
+                    "apply_ai_patch",
+                    OperationStatus.REPAIR_REQUIRED,
+                    StorageStage.INDEX_COMMITTED,
+                    knowledge_id=patch.target_knowledge_id,
+                    relative_file_path=relative_path,
+                    core_committed=True,
+                    errors=(
+                        _error(
+                            ErrorCode.STORAGE_REPAIR_REQUIRED,
+                            f"DerivationPatch 核心提交后日志更新失败: {exc}",
+                            recoverable=True,
+                        ),
+                    ),
+                    repair_actions=("audit_patch_consistency",),
+                )
+            )
+
+        errors: tuple[dict[str, Any], ...] = ()
+        repairs: tuple[str, ...] = ()
+        try:
+            assert quarantined is not None
+            self.markdown_store.gateway.finalize_quarantine(quarantined)
+        except Exception as exc:
+            errors = (
+                _error(
+                    ErrorCode.STORAGE_REPAIR_REQUIRED,
+                    f"DerivationPatch 已提交但旧 Markdown 隔离副本待清理: {exc}",
+                    recoverable=True,
+                ),
+            )
+            repairs = ("purge_patch_quarantine",)
+        return self._finish(
+            StorageOperationResult(
+                operation_id,
+                "apply_ai_patch",
+                OperationStatus.DEGRADED if errors else OperationStatus.READY,
+                StorageStage.COMPLETED,
+                knowledge_id=patch.target_knowledge_id,
+                relative_file_path=relative_path,
+                core_committed=True,
+                errors=errors,
+                repair_actions=repairs,
+            )
+        )
+
+    @staticmethod
+    def _first_sentence(summary: str) -> str:
+        for delimiter in ("。", ".", "！", "!", "？", "?"):
+            if delimiter in summary:
+                return summary.split(delimiter, 1)[0].strip()
+        return summary.strip()
+
     def pending_repairs(self) -> list[dict[str, Any]]:
         return [
             record
@@ -1580,7 +2193,17 @@ class StorageCoordinator:
             # vector_required).  Replacing them with result.to_dict() alone can
             # make a later restart falsely promote an unknown vector outcome to
             # READY.
-            previous.update(payload)
+            for key, value in payload.items():
+                # ``StorageOperationResult`` intentionally has a compact public
+                # envelope.  Its optional fields default to ``None`` (and
+                # core_committed to False), so blindly updating would erase the
+                # operation-bound paths/identities retained by an in-progress
+                # journal exactly when restart recovery needs them.
+                if value is None and key in previous:
+                    continue
+                if key == "core_committed" and previous.get(key) is True and value is False:
+                    continue
+                previous[key] = value
             payload = previous
         try:
             self.journal.write(result.operation_id, payload)
@@ -2111,6 +2734,289 @@ def _resolve_interrupted_delete(
     return None
 
 
+def _resolve_interrupted_patch(
+    record: dict[str, Any],
+    markdown_store: MarkdownStore,
+    sqlite_store: SQLiteStore,
+) -> Optional[dict[str, Any]]:
+    """Resolve an interrupted AI patch only from revision-bound evidence.
+
+    A patch has one extra destructive boundary compared with archive: it first
+    moves the old Markdown into the operation-derived quarantine location, then
+    publishes a replacement.  The planned journal records the old file's exact
+    identity before that move, and each later checkpoint records the new primary
+    identity.  Recovery therefore restores or deletes only files that the
+    journal can prove belong to this operation.
+    """
+
+    stage = record.get("stage")
+    checkpoint = record.get("checkpoint")
+    if checkpoint == "journal_created":
+        if (
+            stage == StorageStage.PREPARING.value
+            and not record.get("relative_file_path")
+            and not record.get("resulting_revision_sha256")
+        ):
+            return _terminal_record(
+                record,
+                OperationStatus.REJECTED,
+                StorageStage.COMPLETED,
+                note="崩溃恢复：仅创建 DerivationPatch 日志，尚未规划或产生副作用",
+            )
+        return None
+
+    if checkpoint not in {
+        "patch_planned",
+        "patch_quarantined",
+        "patch_primary_committed",
+        "patch_index_committed",
+        "patch_compensating",
+    }:
+        return None
+    operation_id = record.get("operation_id")
+    knowledge_id = record.get("knowledge_id")
+    relative = record.get("relative_file_path")
+    previous_revision = record.get("previous_revision_sha256")
+    resulting_revision = record.get("resulting_revision_sha256")
+    if (
+        not isinstance(operation_id, str)
+        or not operation_id
+        or not _valid_positive_int(knowledge_id)
+        or not isinstance(relative, str)
+        or not relative
+        or not _valid_sha256(previous_revision)
+        or not _valid_sha256(resulting_revision)
+    ):
+        return None
+    previous_identity = _recorded_file_identity(record, "previous_primary")
+    previous_sha256 = _recorded_file_sha256(record, "previous_primary")
+    if previous_identity is None or previous_sha256 is None:
+        return None
+
+    try:
+        original = markdown_store.gateway.resolve(relative, must_exist=False)
+    except Exception:
+        return None
+    expected_quarantine = (
+        markdown_store.gateway.vault_dir
+        / ".pkv-quarantine"
+        / f"{operation_id}-{original.name}"
+    )
+
+    def same_lexical_path(left: Any, right: Path) -> bool:
+        return isinstance(left, str) and bool(left) and os.path.normcase(
+            os.path.abspath(left)
+        ) == os.path.normcase(os.path.abspath(os.fspath(right)))
+
+    if not same_lexical_path(record.get("original_path"), original) or not same_lexical_path(
+        record.get("planned_quarantine_path"), expected_quarantine
+    ):
+        return None
+    recorded_quarantine = record.get("quarantine_path")
+    if recorded_quarantine and not same_lexical_path(
+        recorded_quarantine, expected_quarantine
+    ):
+        return None
+
+    probe = _probe_patch_commit(
+        sqlite_store,
+        operation_id=operation_id,
+        knowledge_id=knowledge_id,
+        relative_file_path=relative,
+        previous_revision_sha256=previous_revision,
+        resulting_revision_sha256=resulting_revision,
+    )
+    if probe.state == "ambiguous":
+        return None
+
+    def path_exists() -> Optional[bool]:
+        try:
+            markdown_store.gateway.resolve(relative, must_exist=True, require_file=True)
+            return True
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return None
+
+    def revision_matches(expected_revision: str) -> Optional[bool]:
+        try:
+            primary = markdown_store.gateway.resolve(
+                relative, must_exist=True, require_file=True
+            )
+            entry = markdown_store.load(primary)
+            chunks = sqlite_store.get_chunks_by_knowledge_id(knowledge_id)
+            return (
+                entry_projection_sha256(
+                    entry,
+                    relative,
+                    [str(item["chunk_text"]) for item in chunks],
+                )
+                == expected_revision
+            )
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return None
+
+    def exact_file_state(
+        candidate: Path,
+        identity: tuple[int, int] | None,
+        sha256: str | None,
+        *,
+        allow_internal: bool = False,
+    ) -> Optional[bool]:
+        if identity is None or sha256 is None:
+            return None
+        try:
+            resolved = markdown_store.gateway.resolve(
+                candidate,
+                must_exist=True,
+                require_file=True,
+                allow_internal=allow_internal,
+            )
+            observed_identity, observed_sha256 = markdown_store.gateway.file_fingerprint(
+                resolved,
+                allow_internal=allow_internal,
+            )
+            return observed_identity == identity and observed_sha256 == sha256
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return None
+
+    quarantine_identity = _recorded_file_identity(record, "quarantine")
+    quarantine_sha256 = _recorded_file_sha256(record, "quarantine")
+    if checkpoint == "patch_planned":
+        # The plan itself owns the old primary identity.  A crash immediately
+        # after the move still has enough evidence to restore it if the primary
+        # path is empty.
+        quarantine_identity = previous_identity
+        quarantine_sha256 = previous_sha256
+    quarantine_state = exact_file_state(
+        expected_quarantine,
+        quarantine_identity,
+        quarantine_sha256,
+        allow_internal=True,
+    )
+    primary_exists = path_exists()
+    if primary_exists is None or quarantine_state is None:
+        return None
+    old_primary = revision_matches(previous_revision)
+    new_primary = revision_matches(resulting_revision)
+    if old_primary is None or new_primary is None:
+        return None
+
+    def reject_after_restore() -> Optional[dict[str, Any]]:
+        try:
+            markdown_store.gateway.restore(
+                QuarantinedVaultFile(
+                    original,
+                    expected_quarantine,
+                    previous_identity[0],
+                    previous_identity[1],
+                    previous_sha256,
+                )
+            )
+        except Exception:
+            return None
+        return _terminal_record(
+            record,
+            OperationStatus.REJECTED,
+            StorageStage.COMPLETED,
+            note="崩溃恢复：DerivationPatch 未提交，旧 Markdown 已恢复",
+        )
+
+    def committed_terminal(
+        status: OperationStatus,
+        *,
+        message: str | None = None,
+        repairs: Iterable[str] = (),
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        terminal = _terminal_record(
+            record,
+            status,
+            StorageStage.COMPLETED,
+            message=message,
+            repairs=repairs,
+            note=note,
+        )
+        terminal["core_committed"] = True
+        return terminal
+
+    if checkpoint in {"patch_planned", "patch_quarantined"}:
+        if probe.state == "absent":
+            if quarantine_state and primary_exists is False:
+                return reject_after_restore()
+            if not quarantine_state and old_primary:
+                return _terminal_record(
+                    record,
+                    OperationStatus.REJECTED,
+                    StorageStage.COMPLETED,
+                    note="崩溃恢复：DerivationPatch 未提交，旧 Markdown 与 SQLite 均未改变",
+                )
+            return None
+        if probe.state == "committed" and not quarantine_state and new_primary:
+            return committed_terminal(
+                OperationStatus.READY,
+                note="崩溃恢复：DerivationPatch 核心已提交",
+            )
+        return None
+
+    published_identity = _recorded_file_identity(record, "primary")
+    published_sha256 = _recorded_file_sha256(record, "primary")
+    primary_state = exact_file_state(
+        original,
+        published_identity,
+        published_sha256,
+    )
+    if primary_state is None:
+        return None
+
+    if probe.state == "committed":
+        if not primary_state or not new_primary:
+            return None
+        if quarantine_state:
+            # The committed old primary is retained as a repair artifact.  Do
+            # not delete it at startup: even a path with a matching name is a
+            # user fact unless a repair action explicitly performs the purge.
+            return committed_terminal(
+                OperationStatus.DEGRADED,
+                message="崩溃恢复：DerivationPatch 核心已提交，旧 Markdown 隔离副本待清理",
+                repairs=("purge_patch_quarantine",),
+            )
+        return committed_terminal(
+            OperationStatus.READY,
+            note="崩溃恢复：DerivationPatch 核心已提交",
+        )
+
+    # The SQLite predecessor still exists.  Compensate only the exact new
+    # primary followed by the exact quarantined predecessor; any replacement or
+    # content mismatch remains a blocking repair instead of deleting user data.
+    if primary_state and quarantine_state:
+        try:
+            removed = markdown_store.gateway.delete_if_identity(
+                original,
+                expected_identity=published_identity,
+                expected_sha256=published_sha256,
+            )
+            if not removed:
+                return None
+        except Exception:
+            return None
+        return reject_after_restore()
+    if primary_exists is False and quarantine_state:
+        return reject_after_restore()
+    if not quarantine_state and old_primary:
+        return _terminal_record(
+            record,
+            OperationStatus.REJECTED,
+            StorageStage.COMPLETED,
+            note="崩溃恢复：DerivationPatch 未提交，旧 Markdown 已恢复",
+        )
+    return None
+
+
 def _resolve_interrupted(
     record: dict[str, Any],
     markdown_store: MarkdownStore,
@@ -2121,6 +3027,8 @@ def _resolve_interrupted(
         return _resolve_interrupted_archive(record, markdown_store, sqlite_store)
     if action == "delete":
         return _resolve_interrupted_delete(record, markdown_store, sqlite_store)
+    if action == "apply_ai_patch":
+        return _resolve_interrupted_patch(record, markdown_store, sqlite_store)
     return None
 
 

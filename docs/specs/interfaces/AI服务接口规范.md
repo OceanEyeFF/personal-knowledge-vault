@@ -240,14 +240,24 @@ def _call_api(
 
 **日志记录**:
 ```python
-# 成功时记录 token 使用情况
+# 成功时记录 Provider 明确报告的 token 使用情况；缺失字段保持 unknown。
 logger.info(
     f"LLM API 调用成功: "
-    f"prompt_tokens={usage.get('prompt_tokens', 0)}, "
-    f"completion_tokens={usage.get('completion_tokens', 0)}, "
-    f"total_tokens={usage.get('total_tokens', 0)}"
+    f"prompt_tokens={prompt_tokens if prompt_tokens is not None else 'unknown'}, "
+    f"completion_tokens={completion_tokens if completion_tokens is not None else 'unknown'}, "
+    f"total_tokens={total_tokens if total_tokens is not None else 'unknown'}"
 )
 ```
+
+#### R4 usage 适配合同
+
+`DeepSeekClient.last_usage` 与 `OpenAIClient.last_usage` 仅暴露紧接上一调用中 Provider
+明确报告的 `TokenUsage`；没有报告时为 `None`，部分报告的维度仍为 `None`，绝不能填充为
+零。Embedding client 还可用 `last_usage_complete` 表示一次 batch 聚合是否完整。
+
+内部 R4 Q2 lifecycle 立即读取这些窄 seam，将 Provider fact、local estimate 与 reservation
+分别写入受 fence 保护的账本。它不是公开计费 API：没有经确认的 price card 时只记录 token，
+不推测或显示货币金额。
 
 ---
 

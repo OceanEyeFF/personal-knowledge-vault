@@ -285,6 +285,7 @@ try {
                 "tests\integration\test_mcp_quality_eval.py",
                 "tests\integration\test_mcp_ssrf_zero_write.py",
                 "tests\blackbox\test_mcp_blackbox.py",
+                "tests\blackbox\test_r4_mcp_fullflow.py",
                 "tests\e2e\test_mcp_e2e_archive.py",
                 "tests\e2e\test_mcp_e2e_knowledge_qa.py",
                 "tests\e2e\test_mcp_e2e_search.py",

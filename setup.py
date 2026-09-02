@@ -22,6 +22,7 @@ from setuptools.command.build_py import build_py as _BuildPy
 KERNEL_RESOURCE_MANIFEST: tuple[tuple[str, str], ...] = (
     ("config/config.yaml", "config/config.yaml"),
     ("config/custom_dict.txt", "config/custom_dict.txt"),
+    ("config/price-cards.yaml", "config/price-cards.yaml"),
     ("config/workflows/archive-text.yaml", "config/workflows/archive-text.yaml"),
     ("config/workflows/archive-url.yaml", "config/workflows/archive-url.yaml"),
     ("scripts/migrations/001_initial_schema.sql", "scripts/migrations/001_initial_schema.sql"),
@@ -34,6 +35,7 @@ KERNEL_RESOURCE_MANIFEST: tuple[tuple[str, str], ...] = (
     ("scripts/migrations/009_repair_fts_storage_contract.sql", "scripts/migrations/009_repair_fts_storage_contract.sql"),
     ("scripts/migrations/010_add_storage_operation_commits.sql", "scripts/migrations/010_add_storage_operation_commits.sql"),
     ("scripts/migrations/011_add_ai_automation_ledger.sql", "scripts/migrations/011_add_ai_automation_ledger.sql"),
+    ("scripts/migrations/012_add_r4_content_submission.sql", "scripts/migrations/012_add_r4_content_submission.sql"),
     ("src/ai/prompts/extract_tags.txt", "src/ai/prompts/extract_tags.txt"),
     ("src/ai/prompts/summarize.txt", "src/ai/prompts/summarize.txt"),
 )

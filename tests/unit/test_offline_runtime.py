@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import stat
@@ -192,7 +193,9 @@ def test_runtime_paths_resolve_relative_values_from_project_root(
 
     assert canonical == {
         "DATA_DIR": str((project_root / ".data-test" / "case").resolve()),
-        "DB_PATH": str((project_root / ".data-test" / "case" / "db" / "test.db").resolve()),
+        "DB_PATH": str(
+            (project_root / ".data-test" / "case" / "db" / "test.db").resolve()
+        ),
     }
 
 
@@ -270,7 +273,9 @@ def test_entrypoint_writes_canonical_runtime_paths_back_to_env(
         (project_root / ".data-test" / "entrypoint-canonical").resolve()
     )
     assert os.environ["DB_PATH"] == str(
-        (project_root / ".data-test" / "entrypoint-canonical" / "db" / "test.db").resolve()
+        (
+            project_root / ".data-test" / "entrypoint-canonical" / "db" / "test.db"
+        ).resolve()
     )
     assert os.environ["PKV_DATA_ROOT"] == os.environ["DATA_DIR"]
 
@@ -335,11 +340,19 @@ def test_pytest_entrypoint_preserves_real_config_class(
 
     monkeypatch.setattr(offline_entrypoint, "_validate_child_environment", lambda: None)
     monkeypatch.setattr(offline_entrypoint, "_live_mode_enabled", lambda: False)
-    monkeypatch.setattr(offline_entrypoint, "scrub_child_process_env", lambda _env: None)
-    monkeypatch.setattr(offline_entrypoint, "install_offline_network_guard", lambda **_kwargs: None)
-    monkeypatch.setattr(offline_entrypoint, "_install_test_config", lambda **_kwargs: config_factory)
+    monkeypatch.setattr(
+        offline_entrypoint, "scrub_child_process_env", lambda _env: None
+    )
+    monkeypatch.setattr(
+        offline_entrypoint, "install_offline_network_guard", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        offline_entrypoint, "_install_test_config", lambda **_kwargs: config_factory
+    )
     monkeypatch.setattr(offline_entrypoint, "_bind_test_config_factory", bind_factory)
-    monkeypatch.setattr(offline_entrypoint, "mark_offline_runtime_ready", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        offline_entrypoint, "mark_offline_runtime_ready", lambda **_kwargs: None
+    )
     monkeypatch.setattr(offline_entrypoint, "_run_pytest", run_pytest)
     for key in offline_entrypoint.LIVE_ENV_KEYS:
         monkeypatch.setenv(key, "parent-sentinel")
@@ -418,6 +431,122 @@ def test_entrypoint_live_config_uses_user_profile_and_keeps_isolated_root(
     config.ensure_dirs.assert_called_once_with()
 
 
+def test_entrypoint_offline_test_user_config_uses_normal_config_interface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A contained synthetic YAML is a runner input, not Provider env config."""
+
+    from src.utils import config as config_module
+
+    config = MagicMock()
+    config.data_dir = Path(os.environ["DATA_DIR"])
+    config.db_path = Path(os.environ["DB_PATH"])
+    config.vault_dir = Path(os.environ["VAULT_DIR"])
+    config.vector_index_dir = Path(os.environ["VECTOR_DIR"])
+    config.log_dir = Path(os.environ["LOG_DIR"])
+    config.tmp_dir = Path(os.environ["TMP_DIR"])
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("ai: {}\n", encoding="utf-8")
+    factory = MagicMock(return_value=config)
+    monkeypatch.setattr(config_module, "Config", factory)
+    monkeypatch.setattr(config_module, "_config_instance", None)
+
+    offline_entrypoint._install_test_config(
+        load_local=False,
+        test_user_config_path=str(user_config),
+    )
+
+    factory.assert_called_once_with(
+        str(offline_entrypoint.BASE_CONFIG_PATH),
+        user_config_path=str(user_config),
+    )
+    config.ensure_dirs.assert_called_once_with()
+
+
+def test_entrypoint_consumes_only_exact_dataroot_profile_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "product"
+    config_path = data_root / "profile" / ".pkv" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as port_probe:
+        port_probe.bind(("127.0.0.1", 0))
+        provider_port = port_probe.getsockname()[1]
+    provider_url = f"http://127.0.0.1:{provider_port}/v1"
+    config_path.write_text(
+        json.dumps(
+            {
+                "ai": {
+                    "llm": {
+                        "provider": "openai_compatible",
+                        "api_key": "pkv-blackbox-not-a-secret",
+                        "base_url": provider_url,
+                        "model": "pkv-r4-blackbox-chat-v1",
+                        "timeout_seconds": 5,
+                        "max_retries": 0,
+                    },
+                    "embedding": {
+                        "provider": "openai_compatible",
+                        "api_key": "pkv-blackbox-not-a-secret",
+                        "base_url": provider_url,
+                        "model": "pkv-r4-blackbox-embedding-v1",
+                        "dim": 3,
+                        "timeout_seconds": 5,
+                        "max_retries": 0,
+                    },
+                    "automation": {
+                        "schema_version": 1,
+                        "enabled": True,
+                        "authorization": {"policy_sha256": "a" * 64},
+                        "token_budget": {
+                            "timezone": "UTC",
+                            "daily_total_tokens": 100_000,
+                            "monthly_total_tokens": 1_000_000,
+                        },
+                        "retry": {"max_attempts": 2},
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DATA_DIR", str(data_root))
+    monkeypatch.setenv("PKV_TEST_SYNTHETIC_RUNTIME_READY", "1")
+    monkeypatch.setenv("PKV_TEST_USER_CONFIG", str(config_path))
+
+    accepted = offline_entrypoint._consume_test_user_config_request(
+        target="cli",
+        load_local=False,
+    )
+
+    assert accepted == (
+        str(config_path.resolve()),
+        frozenset({("127.0.0.1", provider_port)}),
+    )
+    assert "PKV_TEST_USER_CONFIG" not in os.environ
+
+
+def test_entrypoint_rejects_test_user_config_outside_selected_dataroot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "product"
+    data_root.mkdir()
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("ai: {}\n", encoding="utf-8")
+    monkeypatch.setenv("DATA_DIR", str(data_root))
+    monkeypatch.setenv("PKV_TEST_SYNTHETIC_RUNTIME_READY", "1")
+    monkeypatch.setenv("PKV_TEST_USER_CONFIG", str(outside))
+
+    with pytest.raises(RuntimeError, match="selected DataRoot profile"):
+        offline_entrypoint._consume_test_user_config_request(
+            target="mcp",
+            load_local=False,
+        )
+
+
 def test_synthetic_ready_child_does_not_take_a_setup_lease_before_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -436,7 +565,9 @@ def test_synthetic_ready_child_does_not_take_a_setup_lease_before_command(
     monkeypatch.setenv("PKV_TEST_SYNTHETIC_RUNTIME_READY", "1")
     monkeypatch.setattr(config_module, "Config", MagicMock(return_value=config))
     monkeypatch.setattr(config_module, "_config_instance", None)
-    monkeypatch.setattr(offline_entrypoint, "_seed_synthetic_ready_runtime_snapshot", seed)
+    monkeypatch.setattr(
+        offline_entrypoint, "_seed_synthetic_ready_runtime_snapshot", seed
+    )
 
     offline_entrypoint._install_test_config(load_local=False)
 
@@ -461,7 +592,7 @@ def test_synthetic_ready_seed_preserves_existing_runtime_snapshot(
     )
     existing_snapshot = {
         "schema_version": 1,
-        "database": {"schema_version": "1.2.5"},
+        "database": {"schema_version": "1.2.6"},
         "embedding": {"provider": "offline", "fingerprint": {}},
     }
     config = SimpleNamespace(
@@ -539,9 +670,12 @@ def test_entrypoint_binds_direct_config_imports_to_validated_factory(
     assert config_module.Config() is factory.return_value
     # The child constructor facade must retain Config's static/class surface;
     # runtime snapshot validation recursively resolves ``Config`` by name.
-    assert config_module.Config._runtime_snapshot_has_sensitive_field(
-        {"nested": {"api_key": "fixture"}}
-    ) is True
+    assert (
+        config_module.Config._runtime_snapshot_has_sensitive_field(
+            {"nested": {"api_key": "fixture"}}
+        )
+        is True
+    )
 
 
 def test_direct_python_module_forwards_arguments_without_new_interpreter(
@@ -551,9 +685,7 @@ def test_direct_python_module_forwards_arguments_without_new_interpreter(
     monkeypatch.setattr(offline_entrypoint.runpy, "run_module", run_module)
     monkeypatch.setattr(sys, "argv", ["pytest-sentinel"])
 
-    offline_entrypoint._run_python(
-        ["-m", "src.utils.verify_setup", "--flag", "value"]
-    )
+    offline_entrypoint._run_python(["-m", "src.utils.verify_setup", "--flag", "value"])
 
     assert sys.argv == ["src.utils.verify_setup", "--flag", "value"]
     run_module.assert_called_once_with(
@@ -910,6 +1042,43 @@ def test_network_guard_allows_internal_socketpair_but_blocks_raw_external_ip(
     left.close()
     right.close()
 
+    with pytest.raises(OfflineNetworkError, match="outbound network"):
+        socket.getaddrinfo("127.0.0.1", 80, type=socket.SOCK_STREAM)
+    with pytest.raises(OfflineNetworkError, match="outbound network"):
+        socket.getaddrinfo("localhost", 80)
+    with pytest.raises(OfflineNetworkError, match="outbound network"):
+        socket.create_connection(("127.0.0.1", 80), timeout=1)
+
+
+def test_network_guard_can_pin_clients_to_one_ephemeral_harness_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    allowed_port = server.getsockname()[1]
+    blocked_port = allowed_port + 1 if allowed_port < 65_535 else allowed_port - 1
+    install_offline_network_guard(
+        monkeypatch.setattr,
+        block_raw_sockets=False,
+        allowed_stream_endpoints=frozenset({("127.0.0.1", allowed_port)}),
+    )
+
+    assert socket.getaddrinfo("127.0.0.1", allowed_port, type=socket.SOCK_STREAM)
+    for host, port in (
+        ("127.0.0.1", blocked_port),
+        ("localhost", allowed_port),
+        ("8.8.8.8", allowed_port),
+    ):
+        with pytest.raises(OfflineNetworkError, match="outbound network"):
+            socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+
+    allowed = socket.create_connection(("127.0.0.1", allowed_port), timeout=1)
+    accepted, _ = server.accept()
+    accepted.close()
+    allowed.close()
+    server.close()
+
 
 def test_direct_process_guard_and_runtime_attestation(
     monkeypatch: pytest.MonkeyPatch,
@@ -962,14 +1131,17 @@ def test_guarded_direct_targets_reject_naked_processes(
     command: list[str],
 ) -> None:
     project_root = Path(__file__).resolve().parents[2]
-    runtime = {key: os.environ[key] for key in (
-        "DATA_DIR",
-        "DB_PATH",
-        "LOG_DIR",
-        "TMP_DIR",
-        "VAULT_DIR",
-        "VECTOR_DIR",
-    )}
+    runtime = {
+        key: os.environ[key]
+        for key in (
+            "DATA_DIR",
+            "DB_PATH",
+            "LOG_DIR",
+            "TMP_DIR",
+            "VAULT_DIR",
+            "VECTOR_DIR",
+        )
+    }
     env = prepare_offline_child_env(
         project_root=project_root,
         runtime_overrides=runtime,

@@ -368,7 +368,7 @@ def test_force_rebuilds_incomplete_root(managed_root: Path) -> None:
     manifest = _read_manifest(root)
     assert manifest["seeded"]
     assert manifest["seed_count"] == 2
-    assert manifest["schema_version"] == "1.2.5"
+    assert manifest["schema_version"] == "1.2.6"
 
 
 def test_force_cleanup_preserves_active_runtime_tmp(managed_root: Path) -> None:
@@ -905,7 +905,7 @@ def test_rebuild_creates_isolated_root(managed_root: Path) -> None:
     assert report["phase"] == "rebuilt"
     assert report["seeded"] == 3
     assert report["stats"]["total_entries"] == 3
-    assert report["schema_version"] == "1.2.5"
+    assert report["schema_version"] == "1.2.6"
     assert report["health"]["healthy"]
 
     db_path = managed_root / "db" / "knowledge_vault.db"
@@ -922,7 +922,7 @@ def test_rebuild_creates_isolated_root(managed_root: Path) -> None:
     assert manifest["tool"] == "rebuild-dev-vault"
     assert manifest["seeded"]
     assert manifest["seed_count"] == 3
-    assert manifest["schema_version"] == "1.2.5"
+    assert manifest["schema_version"] == "1.2.6"
 
 
 def test_seed_tags_are_unique_and_counts_match_relations(managed_root: Path) -> None:
@@ -973,7 +973,7 @@ def test_rebuild_force_rebuilds_with_new_count(managed_root: Path) -> None:
     assert report["phase"] == "rebuilt"
     assert report["seeded"] == 5
     assert report["stats"]["total_entries"] == 5
-    assert report["migrations_applied"] == 10
+    assert report["migrations_applied"] == 11
     assert len(list((managed_root / "vault").rglob("*.md"))) == 5
     manifest = _read_manifest(managed_root)
     assert manifest["seed_count"] == 5
@@ -1016,7 +1016,7 @@ def test_check_only_reports_valid_root(managed_root: Path) -> None:
     report = _parse_json_output(checked)
     assert report["phase"] == "checked"
     assert report["ok"]
-    assert report["schema_version"] == "1.2.5"
+    assert report["schema_version"] == "1.2.6"
     assert report["stats"]["total_entries"] == 2
 
 

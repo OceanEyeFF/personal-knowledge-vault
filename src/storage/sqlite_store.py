@@ -948,6 +948,160 @@ class SQLiteStore:
             ).fetchone()
             return dict(row) if row is not None else None
 
+    def query_r4_content_operation(self, operation_id: str) -> dict[str, Any] | None:
+        """Read the revision-bound proof for one Q1′ apply_ai_patch commit."""
+
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT operation_id, action, knowledge_id, relative_file_path,
+                       previous_revision_sha256, resulting_revision_sha256,
+                       committed_at
+                FROM r4_content_operation_commits
+                WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def apply_ai_patch(
+        self,
+        *,
+        operation_id: str,
+        knowledge_id: int,
+        relative_file_path: str,
+        previous_revision_sha256: str,
+        resulting_revision_sha256: str,
+        entry: Entry,
+    ) -> dict[str, Any]:
+        """Atomically apply an already-validated R4 patch and write its proof.
+
+        The caller has already updated a quarantined Markdown primary.  This
+        transaction is the SQLite half of that Q1′ operation; it verifies the
+        exact previous projection and records an operation-bound resulting
+        revision so recovery never infers success from mutable business fields.
+        """
+
+        self._validate_operation_proof(operation_id, previous_revision_sha256)
+        if not isinstance(relative_file_path, str) or not relative_file_path:
+            raise ValueError("apply_ai_patch 必须提供 relative_file_path")
+        if not isinstance(resulting_revision_sha256, str) or len(resulting_revision_sha256) != 64:
+            raise ValueError("resulting_revision_sha256 无效")
+        if type(knowledge_id) is not int or knowledge_id <= 0:
+            raise ValueError("knowledge_id 必须是正整数")
+        if not isinstance(entry, Entry):
+            raise TypeError("apply_ai_patch entry 必须是 Entry")
+
+        with self.get_connection() as conn:
+            existing_proof = conn.execute(
+                """
+                SELECT operation_id, action, knowledge_id, relative_file_path,
+                       previous_revision_sha256, resulting_revision_sha256
+                FROM r4_content_operation_commits WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if existing_proof is not None:
+                proof = dict(existing_proof)
+                if proof != {
+                    "operation_id": operation_id,
+                    "action": "apply_ai_patch",
+                    "knowledge_id": knowledge_id,
+                    "relative_file_path": relative_file_path,
+                    "previous_revision_sha256": previous_revision_sha256,
+                    "resulting_revision_sha256": resulting_revision_sha256,
+                }:
+                    raise RuntimeError("apply_ai_patch 提交凭据与请求不一致")
+                current = conn.execute(
+                    "SELECT * FROM knowledge_items WHERE knowledge_id = ?",
+                    (knowledge_id,),
+                ).fetchone()
+                if current is None:
+                    raise RuntimeError("apply_ai_patch 凭据存在但知识条目缺失")
+                chunks = [
+                    dict(chunk)
+                    for chunk in conn.execute(
+                        """
+                        SELECT chunk_index, chunk_text FROM content_chunks
+                        WHERE knowledge_id = ? ORDER BY chunk_index ASC
+                        """,
+                        (knowledge_id,),
+                    ).fetchall()
+                ]
+                if row_projection_sha256(dict(current), chunks) != resulting_revision_sha256:
+                    raise RuntimeError("apply_ai_patch 凭据与当前 SQLite 投影不一致")
+                return {
+                    "knowledge_id": knowledge_id,
+                    "relative_file_path": relative_file_path,
+                    "resulting_revision_sha256": resulting_revision_sha256,
+                }
+
+            current = conn.execute(
+                "SELECT * FROM knowledge_items WHERE knowledge_id = ?",
+                (knowledge_id,),
+            ).fetchone()
+            if current is None:
+                raise RuntimeError("apply_ai_patch 目标知识条目不存在")
+            current_data = dict(current)
+            if current_data.get("file_path") != relative_file_path:
+                raise RuntimeError("apply_ai_patch 目标 file_path 已变化")
+            chunks = [
+                dict(chunk)
+                for chunk in conn.execute(
+                    """
+                    SELECT chunk_index, chunk_text FROM content_chunks
+                    WHERE knowledge_id = ? ORDER BY chunk_index ASC
+                    """,
+                    (knowledge_id,),
+                ).fetchall()
+            ]
+            if row_projection_sha256(current_data, chunks) != previous_revision_sha256:
+                raise RuntimeError("apply_ai_patch 前 SQLite revision 已变化")
+
+            self._decrement_tag_counts(conn, knowledge_id)
+            conn.execute("DELETE FROM knowledge_tags WHERE knowledge_id = ?", (knowledge_id,))
+            tags_value = ",".join(entry.tags) if isinstance(entry.tags, list) else str(entry.tags or "")
+            conn.execute(
+                """
+                UPDATE knowledge_items
+                SET summary_one_sentence = ?, summary_100_words = ?, tags = ?
+                WHERE knowledge_id = ?
+                """,
+                (
+                    entry.summary_one_sentence,
+                    entry.summary_100_words,
+                    tags_value,
+                    knowledge_id,
+                ),
+            )
+            self._insert_tags(conn, knowledge_id, list(entry.tags))
+            updated = conn.execute(
+                "SELECT * FROM knowledge_items WHERE knowledge_id = ?", (knowledge_id,)
+            ).fetchone()
+            assert updated is not None
+            if row_projection_sha256(dict(updated), chunks) != resulting_revision_sha256:
+                raise RuntimeError("apply_ai_patch 结果 SQLite projection 不一致")
+            conn.execute(
+                """
+                INSERT INTO r4_content_operation_commits(
+                    operation_id, action, knowledge_id, relative_file_path,
+                    previous_revision_sha256, resulting_revision_sha256
+                ) VALUES (?, 'apply_ai_patch', ?, ?, ?, ?)
+                """,
+                (
+                    operation_id,
+                    knowledge_id,
+                    relative_file_path,
+                    previous_revision_sha256,
+                    resulting_revision_sha256,
+                ),
+            )
+            return {
+                "knowledge_id": knowledge_id,
+                "relative_file_path": relative_file_path,
+                "resulting_revision_sha256": resulting_revision_sha256,
+            }
+
     def delete_entry(
         self,
         knowledge_id: int,

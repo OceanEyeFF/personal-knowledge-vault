@@ -141,9 +141,8 @@ def _validate_runtime_overrides(
 
     for key in runtime_overrides:
         upper_key = _normalise_env_name(key)
-        if (
-            upper_key in PROXY_ENV_KEYS | LIVE_ENV_KEYS
-            or _is_secret_or_provider_env(key)
+        if upper_key in PROXY_ENV_KEYS | LIVE_ENV_KEYS or _is_secret_or_provider_env(
+            key
         ):
             raise ValueError(f"unsafe child runtime override: {key}")
         if upper_key not in SAFE_RUNTIME_OVERRIDE_KEYS:
@@ -237,9 +236,7 @@ def validate_test_runtime_paths(
         if key in RUNTIME_PATH_ENV_KEYS:
             resolved = lexical_paths[key].resolve()
             if key != "DATA_DIR" and not _is_relative_to(resolved, data_dir):
-                raise ValueError(
-                    f"{key} must remain inside automated-test DATA_DIR"
-                )
+                raise ValueError(f"{key} must remain inside automated-test DATA_DIR")
             canonical[key] = str(resolved)
         else:
             canonical[key] = str(value)
@@ -383,9 +380,10 @@ def _blocked_process_call(*_args, **_kwargs):
 
 
 _ORIGINAL_RAW_SOCKET_METHODS = {
-    name: getattr(socket.socket, name)
-    for name in ("connect", "connect_ex", "sendto")
+    name: getattr(socket.socket, name) for name in ("connect", "connect_ex", "sendto")
 }
+_ORIGINAL_GETADDRINFO = socket.getaddrinfo
+_ORIGINAL_CREATE_CONNECTION = socket.create_connection
 
 
 def _is_internal_socket_destination(address: object) -> bool:
@@ -404,10 +402,45 @@ def _is_internal_socket_destination(address: object) -> bool:
         return False
 
 
+def _is_numeric_loopback_host(host: object) -> bool:
+    """Accept an IP literal only; never resolve a hostname for the offline lane."""
+
+    if isinstance(host, bytes):
+        try:
+            host = host.decode("ascii", errors="strict")
+        except UnicodeDecodeError:
+            return False
+    if not isinstance(host, str) or not host:
+        return False
+    try:
+        return ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return False
+
+
+def _stream_endpoint(
+    address: object,
+) -> tuple[str, int] | None:
+    if not isinstance(address, tuple) or len(address) < 2:
+        return None
+    host, port = address[:2]
+    if (
+        not _is_numeric_loopback_host(host)
+        or isinstance(port, bool)
+        or not isinstance(port, int)
+        or not 1 <= port <= 65_535
+    ):
+        return None
+    if isinstance(host, bytes):
+        host = host.decode("ascii")
+    return host, port
+
+
 def install_offline_network_guard(
     patch: Callable[[object, str, object], None] | None = None,
     *,
     block_raw_sockets: bool = True,
+    allowed_stream_endpoints: frozenset[tuple[str, int]] | None = None,
 ) -> None:
     """Block DNS, stream connects, and datagram sends in the current process.
 
@@ -415,7 +448,10 @@ def install_offline_network_guard(
     functions after a test. With no patch callback the guard is process-wide.
     When ``block_raw_sockets`` is false, raw sockets are still guarded but
     loopback/AF_UNIX destinations remain available for asyncio's Windows
-    socketpair implementation. This is not an OS-level sandbox.
+    socketpair implementation.  A supplied endpoint allowlist pins the
+    high-level resolver/connection helpers used by Provider HTTP clients; raw
+    numeric-loopback sockets remain available for the socketpair fallback.
+    This is not an OS-level sandbox.
     """
 
     def set_attr(target: object, name: str, value: object) -> None:
@@ -424,9 +460,43 @@ def install_offline_network_guard(
         else:
             patch(target, name, value)
 
+    if allowed_stream_endpoints is not None:
+        if not allowed_stream_endpoints or any(
+            _stream_endpoint(endpoint) != endpoint
+            for endpoint in allowed_stream_endpoints
+        ):
+            raise ValueError("offline stream endpoint allowlist is invalid")
+
+    if block_raw_sockets or allowed_stream_endpoints is None:
+        set_attr(socket, "create_connection", _blocked_network_call)
+        set_attr(socket, "getaddrinfo", _blocked_network_call)
+    else:
+        # HTTPX/OpenAI use these high-level helpers even for a literal
+        # ``127.0.0.1`` endpoint.  Keep that published loopback harness route
+        # available while rejecting hostnames before the resolver is called.
+        def internal_create_connection_only(address, *args, **kwargs):
+            endpoint = _stream_endpoint(address)
+            if endpoint is None or endpoint not in allowed_stream_endpoints:
+                return _blocked_network_call()
+            return _ORIGINAL_CREATE_CONNECTION(address, *args, **kwargs)
+
+        def internal_getaddrinfo_only(host, port, *args, **kwargs):
+            endpoint = _stream_endpoint((host, port))
+            if endpoint is None or endpoint not in allowed_stream_endpoints:
+                return _blocked_network_call()
+            return _ORIGINAL_GETADDRINFO(
+                host,
+                port,
+                *args,
+                **kwargs,
+            )
+
+        internal_create_connection_only._pkv_offline_guard = True
+        internal_getaddrinfo_only._pkv_offline_guard = True
+        set_attr(socket, "create_connection", internal_create_connection_only)
+        set_attr(socket, "getaddrinfo", internal_getaddrinfo_only)
+
     for name in (
-        "create_connection",
-        "getaddrinfo",
         "gethostbyaddr",
         "gethostbyname",
         "gethostbyname_ex",
@@ -505,7 +575,10 @@ def mark_offline_runtime_ready(*, process_guarded: bool) -> None:
 
     global _OFFLINE_PROCESS_GUARDED, _OFFLINE_RUNTIME_READY
 
-    if socket.getaddrinfo is not _blocked_network_call:
+    if (
+        socket.getaddrinfo is not _blocked_network_call
+        and getattr(socket.getaddrinfo, "_pkv_offline_guard", False) is not True
+    ):
         raise RuntimeError("offline network guard is not installed")
     if process_guarded and subprocess.Popen.__init__ is not _blocked_process_call:
         raise RuntimeError("offline process guard is not installed")

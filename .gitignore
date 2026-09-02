@@ -50,6 +50,9 @@ config/local.yaml
 .data-backup/
 backups/
 .migration/
+
+# User-only live test inputs (copy from the tracked synthetic example).
+tests/fixtures/test_urls.json
 pkv_index.db
 pkv_vectors/
 

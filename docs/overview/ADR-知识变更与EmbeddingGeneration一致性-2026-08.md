@@ -1,7 +1,7 @@
 # ADR：知识变更与 Embedding Generation 一致性
 
-**状态：策略已确认；实施计划等待用户确认**
-**初始日期：2026-08-23；本次更新：2026-08-31**
+**状态：R4 内部生命周期实施中；公开 rebuild/release 仍为 held gate**
+**初始日期：2026-08-23；本次更新：2026-09-01**
 
 ## 决策
 
@@ -26,18 +26,16 @@ R4 采用**选项 2：mutation 后显式 `rebuild_required`** 作为内部一致
 完整的分阶段计划见
 [R4 自动 AI 生命周期与费用控制实施计划](./R4-自动AI生命周期与费用控制实施计划-2026-08.md)。
 
-## 已验证的现状与问题
+## 已验证的现状与剩余边界
 
-Embedding lifecycle 已具备 staged generation、完整性清单、active pointer 与严格的
-pointer 解析原语。它们目前是内部生命周期原语；Application 的 archive、delete、
-related、`VectorRetriever`、CLI、MCP 与 Kernel 仍直接使用平铺的
-`config.vector_index_dir`。首次“无索引 → archive”也仍可创建平铺索引。此分叉必须由
-本 ADR 的 adapter 实施消除，不能被 flat fallback 或 `no_hits` 隐藏。
+R4 production `Config` composition 已将 archive 输入改为 Q0 admission → Q1′ 内容提交 →
+Q2 fenced 派生：核心 Markdown/SQLite 提交、durable handoff、AI patch 和 staged generation
+彼此分离。启用内部自动化时 Application 的 vector/related 读路径解析 ready generation，
+archive/delete 的历史 flat-vector 写入被拒绝或隔离；非 ready 状态不能被 `no_hits` 掩盖。
 
-当前 archive workflow 仍是“AI 分析 → StoreStep（Markdown、SQLite、平铺 Vector）”。
-因此它不能满足“核心文档先安全保存、AI 后续自动完成”的产品承诺。R4 实施必须把核心
-存储提交、任务入队、AI enrichment 与 generation 发布拆开；本 ADR 不宣称当前代码已经
-完成该转换。
+历史 workflow、flat store 和轻量 injected test graph 仍因兼容/characterization 存在，但它们
+不是 R4 产品路径或发布证据。R4 也不因此新增 rebuild CLI/MCP/Kernel capability，Developer
+Preview Artifact 继续保持 held，直至独立合规与发布 gate 关闭。
 
 ## 不变量
 
@@ -135,8 +133,8 @@ daemon、Docker 或 GUI 代码带回 Core。
 
 ## 实施约束与非目标
 
-- R4 实施前可补 characterization tests、内部 binding 设计和文档；在本 ADR 的实施计划
-  获用户确认前，不改变 archive/delete 的正式 generation 语义。
+- R4 变更继续以 characterization/fault-injection tests、私有 binding 设计和文档为准；不能
+  由一次功能回归把 held Artifact 提升为 release。
 - 不公开 `pkv_kernel` rebuild API，不增加 CLI rebuild 命令或 MCP rebuild Tool；已有 archive、
   related、search 等入口只可投影状态和自动处理结果。
 - 若持久任务/费用账本需要数据库 schema 变更，既有用户数据根只能经 R2 的 inspect → plan →
@@ -146,10 +144,10 @@ daemon、Docker 或 GUI 代码带回 Core。
 - 所有实现和验证仅使用 `scripts/run-test.ps1`、隔离 `.data-test`、合成数据与 fake Provider；
   不读取真实 Vault、`%USERPROFILE%\\.pkv\\config.yaml` 或真实凭据。
 
-## 进入实施前的确认点
+## 持续实施确认点
 
 用户已确认选项 2、“一次授权后的内部自动处理”与“无价格卡时只记录 token、不估价”的
-费用原则。进入代码实施前还需确认随附实施计划的宿主边界：
+费用原则。后续实现和验证持续遵守随附实施计划的宿主边界：
 
 1. v1 是进程内自动 drain，不承诺独立后台 daemon；进程退出后的可恢复任务显示“待重试”，
    由下一次允许写入的内部生命周期恢复。

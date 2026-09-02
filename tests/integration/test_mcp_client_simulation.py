@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import sys
 from contextlib import ExitStack
 from pathlib import Path
@@ -29,7 +30,10 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.application import configure_application, reset_application  # noqa: E402
+from src.application import (  # noqa: E402
+    configure_application,
+    reset_application,
+)
 from src.mcp.server import mcp  # noqa: E402
 from src.runtime.embedding_lifecycle import (  # noqa: E402
     SQLiteEmbeddingSource,
@@ -45,7 +49,6 @@ from src.runtime.write_lease import write_lease_scope  # noqa: E402
 from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
 from src.storage.migration_manager import MigrationManager  # noqa: E402
 from src.storage.sqlite_store import SQLiteStore  # noqa: E402
-from src.workflow.models import WorkflowResult  # noqa: E402
 import src.utils.config as config_module  # noqa: E402
 from src.utils.text_utils import TextProcessor, preserve_jieba_global_state  # noqa: E402
 
@@ -405,15 +408,12 @@ def mcp_patches(populated_env):
 
 
 @pytest.fixture
-def archive_stub(populated_env):
-    store = populated_env["store"]
-    md_store = populated_env["md_store"]
+def archive_fetcher():
+    observed_urls: list[str] = []
 
-    async def _fake_execute_async(self, workflow_name: str, input_data: Dict[str, Any]) -> WorkflowResult:
-        if workflow_name != "archive-url":
-            return WorkflowResult(success=False, data={}, errors=["未知工作流"], logs=[])
-
-        url = input_data.get("url", "")
+    async def _fake_fetch_execute(_step, context):
+        url = context.state.get("url", "")
+        observed_urls.append(url)
         entry = Entry(
             title="快速归档：AI 工作流测试",
             source_type="generic",
@@ -426,25 +426,12 @@ def archive_stub(populated_env):
             content="快速归档内容示例：AI 工作流 测试。",
             word_count=80,
         )
-        md_path = md_store.save(entry, subdir=entry.source_type)
-        knowledge_id = store.insert_entry(entry, str(md_path))
-        return WorkflowResult(
-            success=True,
-            data={
-                "knowledge_id": knowledge_id,
-                "title": entry.title,
-                "status": "ready",
-                "core_committed": True,
-                "file_path": str(md_path),
-                "tags": entry.tags,
-                "summary_one_sentence": entry.summary_one_sentence,
-            },
-            errors=[],
-            logs=[],
-        )
+        return {"entry": entry}
 
-    with patch("src.workflow.engine.WorkflowEngine.execute_async", new=_fake_execute_async):
-        yield
+    # Keep the real MCP → Application → Q0/Q1′/Q2 path.  Only the external
+    # crawler boundary is deterministic and offline.
+    with patch("src.workflow.steps.FetchStep.execute", new=_fake_fetch_execute):
+        yield observed_urls
 
 
 # ============================================================
@@ -479,7 +466,11 @@ async def test_scenario_1_search_flow(mcp_patches, populated_env):
 
 
 @pytest.mark.asyncio
-async def test_scenario_2_archive_and_search(mcp_patches, archive_stub):
+async def test_scenario_2_archive_and_search(
+    mcp_patches,
+    archive_fetcher,
+    populated_env,
+):
     """场景 2: 快速归档 URL + 即刻搜索验证。"""
     simulator = MCPClientSimulator(mcp)
 
@@ -490,12 +481,42 @@ async def test_scenario_2_archive_and_search(mcp_patches, archive_stub):
     archive_result = outcome["archive"]
     search_result = outcome["search"]
 
-    assert archive_result["success"] is True
+    assert archive_result["success"] is True, archive_result
+    assert archive_result["terminal"] == "degraded"
+    assert archive_result["storage_status"] == "ready"
     assert archive_result.get("knowledge_id")
     assert archive_result["entry_locator"] == (
         f"pkv://entries/{archive_result['knowledge_id']}"
     )
     assert "file_path" not in archive_result
+    assert archive_fetcher == ["https://example.com/fast-archive"]
+
+    operation_id = archive_result["operation_id"]
+    with sqlite3.connect(populated_env["store"].db_path) as connection:
+        lifecycle_states = {
+            "q0": connection.execute(
+                "SELECT state FROM ingress_tasks WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone(),
+            "q1": connection.execute(
+                "SELECT state FROM content_mutation_tasks WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone(),
+            "handoff": connection.execute(
+                "SELECT state FROM content_ai_handoffs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone(),
+            "q2": connection.execute(
+                "SELECT state FROM ai_derivation_tasks WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone(),
+        }
+    assert lifecycle_states == {
+        "q0": ("submitted",),
+        "q1": ("completed",),
+        "handoff": ("q2_activated",),
+        "q2": ("authorization_required",),
+    }
 
     assert_search_schema(search_result)
     titles = [r["title"] for r in search_result["results"]]

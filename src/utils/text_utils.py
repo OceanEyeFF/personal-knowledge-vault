@@ -4,6 +4,7 @@
 提供 jieba 分词、文本清洗等功能
 """
 
+import logging
 import marshal
 import re
 import unicodedata
@@ -18,6 +19,11 @@ from src.runtime.errors import ErrorCode, PKVRuntimeError
 
 
 _MISSING = object()
+
+# Jieba's default logger writes cache filesystem paths directly to process
+# stderr while loading its dictionary.  Product CLI/MCP diagnostics must not
+# disclose the user's runtime layout; warnings and errors remain available.
+jieba.setLogLevel(logging.WARNING)
 
 
 @dataclass
@@ -327,8 +333,12 @@ class TextProcessor:
         return {
             "title": TextProcessor.tokenize_chinese(title),
             "summary_100_words": TextProcessor.tokenize_chinese(summary),
-            "keywords": TextProcessor.tokenize_chinese(TextProcessor._normalize_terms(keywords)),
-            "tags": TextProcessor.tokenize_chinese(TextProcessor._normalize_terms(tags)),
+            "keywords": TextProcessor.tokenize_chinese(
+                TextProcessor._normalize_terms(keywords)
+            ),
+            "tags": TextProcessor.tokenize_chinese(
+                TextProcessor._normalize_terms(tags)
+            ),
         }
 
     @staticmethod
@@ -362,9 +372,7 @@ class TextProcessor:
         # tabs and newlines), so remove them before applying display-friendly
         # punctuation replacements.
         title = "".join(
-            character
-            for character in title
-            if unicodedata.category(character) != "Cc"
+            character for character in title if unicodedata.category(character) != "Cc"
         )
 
         # 替换规则
@@ -384,7 +392,7 @@ class TextProcessor:
             title = title.replace(old, new)
 
         # 移除非法字符
-        title = re.sub(r'[<>|]', '', title)
+        title = re.sub(r"[<>|]", "", title)
 
         # 限制长度。单独的 ``.``/``..`` 不是文件名 stem；归一为稳定的
         # 回退名，保证 MarkdownStore 不会把它交给路径层。
@@ -409,14 +417,14 @@ class TextProcessor:
             3
         """
         # 移除空白字符
-        text = re.sub(r'\s+', '', text)
+        text = re.sub(r"\s+", "", text)
 
         # 计算中文字符数
-        chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
+        chinese_chars = re.findall(r"[\u4e00-\u9fff]", text)
         chinese_count = len(chinese_chars)
 
         # 计算英文单词数
-        english_words = re.findall(r'[a-zA-Z]+', text)
+        english_words = re.findall(r"[a-zA-Z]+", text)
         english_count = len(english_words)
 
         return chinese_count + english_count

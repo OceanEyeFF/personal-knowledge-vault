@@ -15,7 +15,7 @@ from src.application import (
 )
 from src.kernel.preview import PreviewOutcome, load_preview_with_store
 from src.runtime.bootstrap import bootstrap_runtime
-from src.runtime.errors import PKVRuntimeError
+from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.utils.config import Config
 
 
@@ -244,6 +244,14 @@ class KnowledgeKernel:
         return self._application.readonly_vector_store is not None
 
     def delete_vectors_for_entry(self, knowledge_id: int) -> None:
+        uses_r4 = getattr(self._application, "_uses_internal_ai_automation", None)
+        if callable(uses_r4) and uses_r4():
+            raise PKVRuntimeError(
+                ErrorCode.EMBEDDING_REBUILD_REQUIRED,
+                "R4 generation binding 不允许按条目写入历史 flat vector 索引。",
+                stage="embedding_index",
+                recoverable=True,
+            )
         with self._application._write_lease_scope():
             with _application_file_log_scope(
                 self._application,
@@ -273,20 +281,42 @@ class KnowledgeKernel:
                     {"knowledge_id": knowledge_id},
                 ) as audit:
                     try:
-                        result = self._application.storage_coordinator.delete(
-                            knowledge_id,
-                            # An active generation is immutable.  Deleting its
-                            # per-entry vectors would make a seemingly ready
-                            # binding corrupt; the internal lifecycle instead
-                            # revokes the binding and rebuilds a successor.
-                            vector_operation=None,
+                        uses_r4 = getattr(
+                            self._application,
+                            "_uses_internal_ai_automation",
+                            None,
                         )
-                        if getattr(result, "core_committed", False) is True:
-                            mutation_id = getattr(result, "operation_id", None)
-                            if isinstance(mutation_id, str) and mutation_id:
-                                self._application._schedule_committed_mutation_ai_automation(
-                                    mutation_id
+                        if callable(uses_r4) and uses_r4():
+                            from src.application.r4_lifecycle import R4ContentLifecycle
+                            from src.storage.content_lifecycle import PreparedDocument
+
+                            q1 = R4ContentLifecycle(self._application)
+                            q1_result = q1.submit_and_drain_sync(
+                                PreparedDocument.for_delete(knowledge_id)
+                            )
+                            result = q1_result.storage_operation
+                            if result is None:
+                                raise PKVRuntimeError(
+                                    ErrorCode.EMBEDDING_PROCESSING,
+                                    "删除请求已进入 Q1′ 内容提交队列，等待后续内部恢复。",
+                                    stage="r4_q1",
+                                    recoverable=True,
                                 )
+                        else:
+                            result = self._application.storage_coordinator.delete(
+                                knowledge_id,
+                                # An active generation is immutable.  Deleting its
+                                # per-entry vectors would make a seemingly ready
+                                # binding corrupt; the internal lifecycle instead
+                                # revokes the binding and rebuilds a successor.
+                                vector_operation=None,
+                            )
+                            if getattr(result, "core_committed", False) is True:
+                                mutation_id = getattr(result, "operation_id", None)
+                                if isinstance(mutation_id, str) and mutation_id:
+                                    self._application._schedule_committed_mutation_ai_automation(
+                                        mutation_id
+                                    )
                     except PKVRuntimeError as error:
                         audit.fail_runtime_error(error)
                         raise

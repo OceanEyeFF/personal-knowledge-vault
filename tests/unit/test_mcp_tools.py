@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import logging
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -52,6 +52,14 @@ from src.retrieval.result import (  # noqa: E402
 from src.runtime.errors import ErrorCode, PKVRuntimeError  # noqa: E402
 from src.storage.markdown_store import Entry, MarkdownStore  # noqa: E402
 from src.workflow.models import WorkflowResult  # noqa: E402
+
+
+def _archive_application(method: str, result: object) -> MagicMock:
+    """Return the current MCP adapter seam for one archive result."""
+
+    application = MagicMock()
+    setattr(application, method, AsyncMock(return_value=result))
+    return application
 
 
 class _DiagnosticAccessBombResult:
@@ -1487,12 +1495,8 @@ class TestArchiveUrl:
             },
         )
 
-        from unittest.mock import AsyncMock
-        with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            mock_engine_instance = MagicMock()
-            mock_engine_instance.execute_async = AsyncMock(return_value=mock_result)
-            MockEngine.return_value = mock_engine_instance
-
+        application = _archive_application("archive_url", mock_result)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
             result = await archive_url(url="https://example.com/article")
 
@@ -1503,14 +1507,12 @@ class TestArchiveUrl:
         assert result["knowledge_id"] == 42
         assert result["entry_locator"] == "pkv://entries/42"
         assert "file_path" not in result
-        mock_engine_instance.execute_async.assert_awaited_once_with(
-            "archive-url",
+        application.archive_url.assert_awaited_once_with(
             {
                 "url": "https://example.com/article",
                 "skip_review": True,
                 "skip_sharpen": True,
-                "defer_ai_automation": True,
-            },
+            }
         )
 
     @pytest.mark.asyncio
@@ -1532,12 +1534,8 @@ class TestArchiveUrl:
             ],
         )
 
-        from unittest.mock import AsyncMock
-        with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            mock_engine_instance = MagicMock()
-            mock_engine_instance.execute_async = AsyncMock(return_value=mock_result)
-            MockEngine.return_value = mock_engine_instance
-
+        application = _archive_application("archive_url", mock_result)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
             result = await archive_url(url="https://example.com/timeout")
 
@@ -1621,13 +1619,9 @@ class TestArchiveUrl:
             },
         )
 
-        from unittest.mock import AsyncMock
-        with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            MockEngine.return_value.execute_async = AsyncMock(
-                return_value=result_object
-            )
+        application = _archive_application("archive_url", result_object)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
-
             result = await archive_url(url="https://example.com/article")
 
         assert result["terminal"] == "error"
@@ -1676,13 +1670,9 @@ class TestArchiveUrl:
             },
         )
 
-        from unittest.mock import AsyncMock
-        with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            MockEngine.return_value.execute_async = AsyncMock(
-                return_value=malformed_result
-            )
+        application = _archive_application("archive_url", malformed_result)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
-
             result = await archive_url(url="https://example.com/article")
 
         assert result["success"] is False
@@ -1721,11 +1711,9 @@ class TestArchiveUrl:
             },
         )
 
-        from unittest.mock import AsyncMock
-        with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            MockEngine.return_value.execute_async = AsyncMock(return_value=mock_result)
+        application = _archive_application("archive_url", mock_result)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
-
             result = await archive_url(url="https://example.com/article")
 
         assert result["success"] is True
@@ -1769,11 +1757,9 @@ class TestArchiveUrl:
             },
         )
 
-        from unittest.mock import AsyncMock
-        with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            MockEngine.return_value.execute_async = AsyncMock(return_value=mock_result)
+        application = _archive_application("archive_url", mock_result)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
-
             result = await archive_url(url="https://example.com/article")
 
         rendered = repr(result)
@@ -1802,13 +1788,9 @@ class TestArchiveUrl:
             },
         )
 
-        from unittest.mock import AsyncMock
-        with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            MockEngine.return_value.execute_async = AsyncMock(
-                return_value=result_object
-            )
+        application = _archive_application("archive_url", result_object)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
-
             result = await archive_url(url="https://example.com/article")
 
         assert result["success"] is False
@@ -1827,11 +1809,10 @@ class TestArchiveUrl:
             recoverable=True,
         )
 
-        from unittest.mock import AsyncMock
-        with patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            MockEngine.return_value.execute_async = AsyncMock(side_effect=runtime_error)
+        application = MagicMock()
+        application.archive_url = AsyncMock(side_effect=runtime_error)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
-
             result = await archive_url(url="https://example.com/article")
 
         assert result["success"] is False
@@ -1887,17 +1868,8 @@ class TestArchiveText:
             },
         )
 
-        from unittest.mock import AsyncMock
-        with patch("src.processors.text_fallback_processor.TextFallbackProcessor") as MockProcessor, \
-             patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            mock_proc_instance = MagicMock()
-            mock_proc_instance.process_text = AsyncMock(return_value=mock_entry)
-            MockProcessor.return_value = mock_proc_instance
-
-            mock_engine_instance = MagicMock()
-            mock_engine_instance.execute_async = AsyncMock(return_value=mock_result)
-            MockEngine.return_value = mock_engine_instance
-
+        application = _archive_application("archive_text", mock_result)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_text
             result = await archive_text(text="这是一段测试文本内容")
 
@@ -1908,10 +1880,12 @@ class TestArchiveText:
         assert result["knowledge_id"] == 43
         assert result["entry_locator"] == "pkv://entries/43"
         assert "file_path" not in result
-        call = mock_engine_instance.execute_async.await_args
-        assert call.args[0] == "archive-text"
-        assert call.args[1]["skip_review"] is True
-        assert call.args[1]["skip_sharpen"] is True
+        application.archive_text.assert_awaited_once_with(
+            "这是一段测试文本内容",
+            title="",
+            skip_review=True,
+            skip_sharpen=True,
+        )
 
     @pytest.mark.asyncio
     async def test_custom_title_override(self):
@@ -1934,22 +1908,17 @@ class TestArchiveText:
             },
         )
 
-        from unittest.mock import AsyncMock
-        with patch("src.processors.text_fallback_processor.TextFallbackProcessor") as MockProcessor, \
-             patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            mock_proc_instance = MagicMock()
-            mock_proc_instance.process_text = AsyncMock(return_value=mock_entry)
-            MockProcessor.return_value = mock_proc_instance
-
-            mock_engine_instance = MagicMock()
-            mock_engine_instance.execute_async = AsyncMock(return_value=mock_result)
-            MockEngine.return_value = mock_engine_instance
-
+        application = _archive_application("archive_text", mock_result)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_text
             await archive_text(text="内容", title="自定义标题")
 
-        # 验证 title 被覆盖
-        assert mock_entry.title == "自定义标题"
+        application.archive_text.assert_awaited_once_with(
+            "内容",
+            title="自定义标题",
+            skip_review=True,
+            skip_sharpen=True,
+        )
 
     @pytest.mark.asyncio
     async def test_text_workflow_failure_preserves_do_not_retry(self):
@@ -1978,13 +1947,9 @@ class TestArchiveText:
             },
         )
 
-        from unittest.mock import AsyncMock
-        with patch("src.processors.text_fallback_processor.TextFallbackProcessor") as MockProcessor, \
-             patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            MockProcessor.return_value.process_text = AsyncMock(return_value=mock_entry)
-            MockEngine.return_value.execute_async = AsyncMock(return_value=mock_result)
+        application = _archive_application("archive_text", mock_result)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_text
-
             result = await archive_text(text="需要归档的内容")
 
         assert result["success"] is False
@@ -2039,18 +2004,9 @@ class TestArchiveText:
             },
         )
 
-        from unittest.mock import AsyncMock
-        with patch(
-            "src.processors.text_fallback_processor.TextFallbackProcessor"
-        ) as MockProcessor, patch(
-            "src.workflow.engine.WorkflowEngine"
-        ) as MockEngine:
-            MockProcessor.return_value.process_text = AsyncMock(return_value=mock_entry)
-            MockEngine.return_value.execute_async = AsyncMock(
-                return_value=malformed_result
-            )
+        application = _archive_application("archive_text", malformed_result)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_text
-
             result = await archive_text(text="需要归档的内容")
 
         assert result["success"] is False
@@ -2067,18 +2023,17 @@ class TestArchiveText:
         from unittest.mock import AsyncMock
         from src.mcp.resources import get_entry_content
         from src.mcp.tools import archive_text
-        from src.processors.text_fallback_processor import TextFallbackProcessor
-
         secret = "pkv-local-file-content-canary"
         external_file = tmp_path / "external-secret.txt"
         external_file.write_text(secret, encoding="utf-8")
-        fake_ai = MagicMock()
-        fake_ai.summarize.return_value = "路径形状文本"
-        fake_ai.extract_tags.return_value = ["text"]
-        processor = TextFallbackProcessor(deepseek_client=fake_ai)
-        workflow = MagicMock()
-        workflow.execute_async = AsyncMock(
-            return_value=WorkflowResult(
+        archived_entry = Entry(
+            title="路径形状文本",
+            source_type="text",
+            content=str(external_file),
+        )
+        application = _archive_application(
+            "archive_text",
+            WorkflowResult(
                 success=True,
                 terminal="success",
                 data={
@@ -2088,16 +2043,10 @@ class TestArchiveText:
                     "status": "ready",
                     "core_committed": True,
                 },
-            )
+            ),
         )
 
-        with patch(
-            "src.processors.text_fallback_processor.TextFallbackProcessor",
-            return_value=processor,
-        ), patch(
-            "src.workflow.engine.WorkflowEngine",
-            return_value=workflow,
-        ), patch.object(
+        with patch("src.mcp.tools.get_application", return_value=application), patch.object(
             Path,
             "exists",
             side_effect=AssertionError("unexpected local path lookup"),
@@ -2111,8 +2060,12 @@ class TestArchiveText:
         assert result["terminal"] == "success"
         exists.assert_not_called()
         read_text.assert_not_called()
-        workflow_payload = workflow.execute_async.await_args.args[1]
-        archived_entry = workflow_payload["entry"]
+        application.archive_text.assert_awaited_once_with(
+            str(external_file),
+            title="",
+            skip_review=True,
+            skip_sharpen=True,
+        )
         assert secret not in archived_entry.content
 
         vault_dir = tmp_path / "vault"
@@ -2204,16 +2157,9 @@ class TestArchiveText:
             },
         )
 
-        from unittest.mock import AsyncMock
-        with patch(
-            "src.processors.text_fallback_processor.TextFallbackProcessor"
-        ) as MockProcessor, patch(
-            "src.workflow.engine.WorkflowEngine"
-        ) as MockEngine:
-            MockProcessor.return_value.process_text = AsyncMock(return_value=mock_entry)
-            MockEngine.return_value.execute_async = AsyncMock(return_value=result_object)
+        application = _archive_application("archive_text", result_object)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_text
-
             result = await archive_text(text="需要归档的内容")
 
         assert result["success"] is False
@@ -2256,13 +2202,9 @@ class TestArchiveText:
             },
         )
 
-        from unittest.mock import AsyncMock
-        with patch("src.processors.text_fallback_processor.TextFallbackProcessor") as MockProcessor, \
-             patch("src.workflow.engine.WorkflowEngine") as MockEngine:
-            MockProcessor.return_value.process_text = AsyncMock(return_value=mock_entry)
-            MockEngine.return_value.execute_async = AsyncMock(return_value=mock_result)
+        application = _archive_application("archive_text", mock_result)
+        with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_text
-
             result = await archive_text(text="需要归档的内容")
 
         rendered = repr(result)
@@ -2369,7 +2311,16 @@ class TestGetRelated:
         store_error,
         caplog,
     ):
-        with patch("src.mcp.tools.get_sqlite_store", side_effect=store_error):
+        # The production route is Application.related().  Explicitly model the
+        # legacy injected-double fallback before exercising its store failure
+        # contract, rather than relying on an ambient application graph.
+        mock_application = MagicMock()
+        mock_application.related.side_effect = RuntimeError(
+            "legacy injected application failure"
+        )
+        with patch(
+            "src.mcp.tools.get_application", return_value=mock_application
+        ), patch("src.mcp.tools.get_sqlite_store", side_effect=store_error):
             from src.mcp.tools import get_related
 
             result = await get_related(knowledge_id="1")

@@ -73,6 +73,15 @@ EXPECTED_TABLES_BY_VERSION = {
         "ai_token_reservations",
         "ai_token_usage",
     ),
+    "1.2.6": (
+        "ingress_tasks",
+        "content_mutation_tasks",
+        "content_ai_handoffs",
+        "r4_content_operation_commits",
+        "ai_derivation_tasks",
+        "ai_derivation_reservations",
+        "ai_derivation_usage",
+    ),
 }
 APPLICATION_TABLES_BY_MIGRATION = {
     "001_initial_schema.sql": frozenset(
@@ -98,6 +107,17 @@ APPLICATION_TABLES_BY_MIGRATION = {
     "011_add_ai_automation_ledger.sql": frozenset(
         {"ai_automation_tasks", "ai_token_reservations", "ai_token_usage"}
     ),
+    "012_add_r4_content_submission.sql": frozenset(
+        {
+            "content_mutation_tasks",
+            "content_ai_handoffs",
+            "r4_content_operation_commits",
+            "ai_derivation_tasks",
+            "ingress_tasks",
+            "ai_derivation_reservations",
+            "ai_derivation_usage",
+        }
+    ),
 }
 FTS_REBUILD_VERSIONS = {"1.2.2", "1.2.3"}
 LATEST_REQUIRED_TABLES = frozenset(
@@ -119,6 +139,13 @@ LATEST_REQUIRED_TABLES = frozenset(
         "ai_automation_tasks",
         "ai_token_reservations",
         "ai_token_usage",
+        "content_mutation_tasks",
+        "content_ai_handoffs",
+        "r4_content_operation_commits",
+        "ai_derivation_tasks",
+        "ingress_tasks",
+        "ai_derivation_reservations",
+        "ai_derivation_usage",
     }
 )
 

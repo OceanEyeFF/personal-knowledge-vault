@@ -42,6 +42,7 @@ def test_migration_versions_are_monotonic_for_active_chain(tmp_path: Path) -> No
         "009_repair_fts_storage_contract.sql",
         "010_add_storage_operation_commits.sql",
         "011_add_ai_automation_ledger.sql",
+        "012_add_r4_content_submission.sql",
     ]
     parsed_versions = [
         manager._parse_version_from_file(MIGRATIONS_DIR / name)
@@ -59,6 +60,7 @@ def test_migration_versions_are_monotonic_for_active_chain(tmp_path: Path) -> No
         "1.2.3",
         "1.2.4",
         "1.2.5",
+        "1.2.6",
     ]
 
 
@@ -82,6 +84,7 @@ def test_get_pending_migrations_keeps_007_when_version_missing_even_if_columns_e
         "1.2.3",
         "1.2.4",
         "1.2.5",
+        "1.2.6",
     ]
     assert [path.name for _, path in pending] == [
         "004_add_chat_sessions.sql",
@@ -92,6 +95,7 @@ def test_get_pending_migrations_keeps_007_when_version_missing_even_if_columns_e
         "009_repair_fts_storage_contract.sql",
         "010_add_storage_operation_commits.sql",
         "011_add_ai_automation_ledger.sql",
+        "012_add_r4_content_submission.sql",
     ]
 
 
@@ -157,6 +161,7 @@ def test_get_pending_migrations_keeps_007_for_legacy_schema(tmp_path: Path) -> N
         "1.2.3",
         "1.2.4",
         "1.2.5",
+        "1.2.6",
     ]
 
 
@@ -303,6 +308,124 @@ def test_apply_all_pending_and_upgrade_prompt_cover_no_pending_paths(
     assert manager.check_and_prompt_upgrade() is False
 
 
+def test_fresh_schema_enforces_r4_table_shapes_and_fail_closed_constraints(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "r4-schema.db"
+    manager = MigrationManager(db_path, MIGRATIONS_DIR)
+    assert manager.initialize_fresh().state is DatabaseState.READY
+
+    expected_columns = {
+        "ingress_tasks": {
+            "task_id",
+            "operation_id",
+            "request_kind",
+            "request_ref",
+            "request_sha256",
+            "prepared_ref",
+            "prepared_sha256",
+            "state",
+            "claim_token",
+            "claimed_until",
+            "owner_fence",
+            "attempt_count",
+            "not_before",
+            "last_error_code",
+            "created_at",
+            "updated_at",
+        },
+        "content_ai_handoffs": {
+            "operation_id",
+            "derivation_task_id",
+            "state",
+            "source_digest",
+            "binding_state",
+            "last_error_code",
+            "created_at",
+            "updated_at",
+        },
+        "ai_derivation_tasks": {
+            "task_id",
+            "operation_id",
+            "target_knowledge_id",
+            "target_revision_sha256",
+            "source_digest",
+            "policy_fingerprint",
+            "patch_ref",
+            "patch_sha256",
+            "patch_applied",
+            "state",
+            "attempt_count",
+            "claim_token",
+            "claimed_until",
+            "owner_fence",
+            "not_before",
+            "last_error_code",
+            "created_at",
+            "updated_at",
+        },
+        "ai_derivation_reservations": {
+            "reservation_id",
+            "task_id",
+            "claim_token",
+            "owner_fence",
+            "policy_fingerprint",
+            "timezone",
+            "local_day",
+            "local_month",
+            "reserved_tokens",
+            "reserved_micros",
+            "settled_tokens",
+            "settled_micros",
+            "currency",
+            "state",
+            "created_at",
+            "settled_at",
+        },
+        "ai_derivation_usage": {
+            "usage_id",
+            "task_id",
+            "reservation_id",
+            "stage",
+            "source",
+            "uncached_input_tokens",
+            "cached_input_tokens",
+            "generated_tokens",
+            "embedding_input_tokens",
+            "amount_micros",
+            "currency",
+            "recorded_at",
+        },
+    }
+    with sqlite3.connect(str(db_path)) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        for table, columns in expected_columns.items():
+            assert {row[1] for row in connection.execute(f"PRAGMA table_info({table})")} == columns
+        handoff_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(content_ai_handoffs)"
+        ).fetchall()
+        assert any(row[2:5] == ("content_mutation_tasks", "operation_id", "operation_id") for row in handoff_foreign_keys)
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO ingress_tasks(
+                    task_id, operation_id, request_kind, request_ref,
+                    request_sha256, state
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                ("a" * 32, "b" * 32, "url", "c" * 32, "d" * 64, "completed"),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO content_ai_handoffs(
+                    operation_id, derivation_task_id, state
+                ) VALUES (?, ?, ?)
+                """,
+                ("e" * 32, "f" * 32, "pending"),
+            )
+
+
 def test_apply_all_pending_rebuilds_fts_after_alignment_migrations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -319,7 +442,7 @@ def test_apply_all_pending_rebuilds_fts_after_alignment_migrations(
 
     migrated = manager.apply_all_pending(auto_backup=False)
 
-    assert migrated == 10
+    assert migrated == 11
     assert len(rebuild_calls) == 1
     assert rebuild_calls[0] != manager.db_path
     assert manager.inspect_database().state is DatabaseState.READY

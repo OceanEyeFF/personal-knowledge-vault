@@ -402,6 +402,9 @@ class TestOpenAIEmbed:
 
         assert len(embedding) == 1536
         assert all(isinstance(x, float) for x in embedding)
+        assert client.last_usage is not None
+        assert client.last_usage.embedding_input_tokens == 10
+        assert client.last_usage_complete is True
         client.client.embeddings.create.assert_called_once_with(
             model="text-embedding-3-small",
             input="Hello, world!",
@@ -425,6 +428,8 @@ class TestOpenAIEmbed:
         assert "total_tokens=unknown" in caplog.text
         assert "sdk-usage-api-key-secret" not in caplog.text
         assert "Injected-Header" not in caplog.text
+        assert client.last_usage is None
+        assert client.last_usage_complete is False
 
     def test_embed_rejects_dimension_mismatch(self, client):
         """测试返回维度与配置不一致时抛出异常。"""
@@ -829,6 +834,9 @@ class TestOpenAIEmbedBatch:
 
         assert len(embeddings) == 3
         assert all(len(emb) == 1536 for emb in embeddings)
+        assert client.last_usage is not None
+        assert client.last_usage.embedding_input_tokens == 30
+        assert client.last_usage_complete is True
         client.client.embeddings.create.assert_called_once_with(
             model="text-embedding-3-small",
             input=texts,
@@ -947,7 +955,29 @@ class TestOpenAIEmbedBatch:
 
         # 应该调用 3 次（100 + 100 + 50）
         assert client.client.embeddings.create.call_count == 3
+        assert client.last_usage is not None
+        assert client.last_usage.embedding_input_tokens == 2500
+        assert client.last_usage_complete is True
         assert len(embeddings) == 250
+
+    def test_embed_batch_keeps_partial_usage_non_priceable(self, client):
+        """One omitted batch field must not be disguised as a complete total."""
+
+        first = Mock(
+            data=[_embedding_item([0.1] * 1536)],
+            usage=Mock(prompt_tokens=10, total_tokens=10),
+        )
+        second = Mock(
+            data=[_embedding_item([0.2] * 1536)],
+            usage=Mock(prompt_tokens=None, total_tokens=None),
+        )
+        client.client.embeddings.create = Mock(side_effect=[first, second])
+
+        client.embed_batch(["first", "second"], batch_size=1)
+
+        assert client.last_usage is not None
+        assert client.last_usage.embedding_input_tokens == 10
+        assert client.last_usage_complete is False
 
     def test_embed_batch_rejects_dimension_mismatch(self, client):
         """测试批量返回错维度时抛出异常。"""

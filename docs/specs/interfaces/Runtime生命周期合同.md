@@ -49,7 +49,7 @@ Provider 的 structural validation 只验证本地配置结构。实际 LLM/Embe
 ```yaml
 schema_version: 1
 database:
-  schema_version: "1.2.5" # bundled migration chain 的 canonical semver
+  schema_version: "1.2.6" # bundled migration chain 的 canonical semver
 embedding:
   provider: openai_compatible
   fingerprint:
@@ -129,6 +129,27 @@ append audit 前，都必须验证当前 task/thread 持有同一 `RuntimeLayout
 不获取 lease；`pkv.log` 为 delayed、layout+immutable-Config binding 的 handler，只有匹配
 binding 的 mutation scope 才能触发打开、轮转或追加。reload 会替换新的 binding，同时保留
 仍在飞行的旧 binding handler 至其 mutation 排空，避免旧写入混入新 snapshot。
+
+## R4 内部内容与自动 AI 生命周期
+
+schema `1.2.6` 在不改变公开 CLI/MCP/Kernel capability 的前提下增加私有 Q0→Q1′→Q2
+状态机。它是 archive 输入的实现细节，不是可由 adapter 直接调用的后台 daemon：
+
+- Q0 先在 writer lease 内接受 ingress identity/hash，再在 lease 外运行 crawler、文本或已授权
+  文件前处理；它只保存 private spool 引用，且所有完成/失败 transition 都受 claim token、expiry
+  和 owner fence 约束。
+- Q1′ 是 Markdown、SQLite metadata/chunks 和 `DerivationPatch` 的唯一内容 writer。每个已证明
+  core commit 同事务登记可恢复 handoff，先发布 non-ready generation binding，后激活 Q2。
+- Q2 在重新捕获 source/target、确认当前 automation policy、not-before/retry 与 token/可选金额
+  reservation 后才可创建 Provider。Provider 输出不能直接写内容：summary/tag 只能经 immutable
+  patch 回送 Q1′；generation 仍遵守 staged validation + pointer CAS。
+
+公开 archive 结果在 Q0/Q1′ 未完成时投影为“前处理中/入库中”；只有 `core_committed` 后才可称
+文档已保存。Q2 的 `processing`、`retry_required`、`budget_paused` 与
+`authorization_required` 是可操作的降级状态，不可被 adapter 重写为成功或空检索。
+
+价格卡是 bundled、审阅的可选资源；无 card 时只记录 token，Provider 未报告的 usage 字段保持
+`NULL`。任何 policy、model 或 card digest 变化都要求重新确认，绝不能复用旧 reservation。
 
 ## 后续边界
 

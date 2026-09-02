@@ -39,6 +39,7 @@ def load_test_urls() -> List[Dict[str, Any]]:
 
     if not fixtures_path.exists():
         print(f"[WARN] 未找到测试配置文件: {fixtures_path}")
+        print("       请复制 test_urls.example.json 后仅在本地填写真实 URL")
         return []
 
     with open(fixtures_path, "r", encoding="utf-8") as f:
@@ -81,7 +82,12 @@ def load_test_urls() -> List[Dict[str, Any]]:
             })
             break
 
-    return selected
+    # Never turn the tracked synthetic template into a live outbound test.
+    return [
+        case
+        for case in selected
+        if not case["url"].startswith("https://example.com/")
+    ]
 
 
 async def test_single_url(engine: WorkflowEngine, test_case: Dict[str, Any], index: int) -> Dict[str, Any]:

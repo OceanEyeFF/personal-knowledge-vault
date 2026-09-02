@@ -168,7 +168,7 @@ def _r2_base(config: Config) -> dict[str, object]:
     assert config.embedding_dim is not None
     return {
         "schema_version": 1,
-        "database": {"schema_version": "1.2.5"},
+        "database": {"schema_version": "1.2.6"},
         "embedding": {
             "provider": config.embd_provider,
             "fingerprint": config.embedding_index_fingerprint(config.embedding_dim),
@@ -314,7 +314,7 @@ def test_successful_generation_preserves_r2_snapshot_and_redacts_audit(
     assert pointer["source_digest"] == execution.inspection.source.digest
     assert pointer["active_generation"] == execution.generation_id
     assert pointer["previous_generation"] is None
-    assert snapshot["database"] == {"schema_version": "1.2.5"}
+    assert snapshot["database"] == {"schema_version": "1.2.6"}
     assert snapshot["embedding"] == _r2_base(config_b)["embedding"]
     assert (layout.vector_index_dir / "generations" / execution.generation_id).is_dir()
     assert not (layout.vector_index_dir / "doc_vectors.idx").exists()

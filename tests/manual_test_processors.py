@@ -30,6 +30,7 @@ def load_test_urls():
 
     if not config_path.exists():
         print(f"[!] 配置文件不存在: {config_path}")
+        print("    请复制 tests/fixtures/test_urls.example.json 后仅在本地填写真实 URL")
         return None
 
     try:

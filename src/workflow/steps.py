@@ -56,6 +56,20 @@ def _grant_cli_local_file_import(input_data: Dict[str, Any], source: str) -> Non
     )
 
 
+def _has_cli_local_file_import_capability(
+    input_data: Dict[str, Any], source: str
+) -> bool:
+    """Check the one-shot CLI file grant without serializing or consuming it."""
+
+    capability = input_data.get(_CLI_LOCAL_FILE_IMPORT_KEY)
+    return (
+        type(capability) is tuple
+        and len(capability) == 2
+        and capability[0] is _CLI_LOCAL_FILE_IMPORT_TOKEN
+        and capability[1] == source
+    )
+
+
 def _consume_cli_local_file_import(context: WorkflowContext, source: str) -> bool:
     """Consume the one-shot CLI capability without publishing it in results."""
 

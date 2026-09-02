@@ -1,0 +1,42 @@
+{
+  "description": "Synthetic template for opt-in manual URL tests; replace locally before use",
+  "version": "1.0",
+  "test_cases": {
+    "wechat": [
+      {
+        "url": "https://example.com/wechat/example",
+        "description": "Replace with a public WeChat article URL",
+        "expected": {
+          "has_title": true,
+          "has_author": true,
+          "has_publish_time": true,
+          "has_content": true,
+          "min_content_length": 500
+        }
+      }
+    ],
+    "zhihu": [
+      {
+        "url": "https://example.com/zhihu/12345678",
+        "description": "Replace with a public Zhihu answer or article URL",
+        "expected": {
+          "has_title": true,
+          "has_author": true,
+          "has_content": true,
+          "min_content_length": 500
+        }
+      }
+    ],
+    "generic": [
+      {
+        "url": "https://example.com/article",
+        "description": "Replace with a public generic article URL",
+        "expected": {
+          "has_title": true,
+          "has_content": true,
+          "min_content_length": 300
+        }
+      }
+    ]
+  }
+}

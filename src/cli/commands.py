@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import os
 import re
 import stat
@@ -155,6 +154,9 @@ _ARCHIVE_STATUSES = frozenset(
     {"ready", "degraded", "repair_required", "rejected", "deleted", "error"}
 )
 _COMPLETED_ARCHIVE_STATUSES = frozenset({"ready", "degraded"})
+_R4_INGRESS_STATUSES = frozenset(
+    {"accepted", "processing", "prepared", "submitted", "retry_required"}
+)
 _WORKFLOW_TERMINALS = frozenset({"success", "degraded", "error"})
 _MISSING_TERMINAL = object()
 _ARCHIVE_REPAIR_ACTIONS = frozenset(
@@ -931,6 +933,27 @@ def _valid_archive_result_data(value: Any, *, terminal: str) -> bool:
     )
 
 
+def _valid_archive_pending_data(value: Any, *, terminal: str) -> bool:
+    """Validate an accepted Q0/Q1′ request that has no committed entry yet."""
+
+    if type(value) is not dict or terminal != "degraded":
+        return False
+    ingress = value.get("ingress")
+    operation_id = value.get("operation_id")
+    return (
+        type(ingress) is dict
+        and set(ingress) == {"status"}
+        and ingress["status"] in _R4_INGRESS_STATUSES
+        and type(operation_id) is str
+        and _PUBLIC_OPERATION_ID.fullmatch(operation_id) is not None
+        and value.get("do_not_retry") is True
+        and value.get("core_committed") is not True
+        and "knowledge_id" not in value
+        and "status" not in value
+        and "entry" not in value
+    )
+
+
 def _workflow_public_notices(
     result: Any,
     *,
@@ -1486,6 +1509,24 @@ def _archive_text_result_payload(
     return payload
 
 
+def _archive_pending_result_payload(
+    result: Any,
+    *,
+    data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Create the shared CLI projection for an admitted, uncommitted request."""
+
+    return {
+        "terminal": "degraded",
+        "status": "processing",
+        "ingress_status": data["ingress"]["status"],
+        "operation_id": data["operation_id"],
+        "core_committed": False,
+        "do_not_retry": True,
+        "issues": _workflow_public_notices(result, error=False),
+    }
+
+
 def _archive_text_error_payload(
     result: Any | None,
     *,
@@ -1745,9 +1786,9 @@ def archive(url_or_path: str, skip_sharpen: bool, tags: Optional[str], quiet: bo
 
         terminal, terminal_valid = _resolve_workflow_terminal(result)
         raw_result_data = getattr(result, "data", None)
-        if terminal != "error" and not _valid_archive_result_data(
-            raw_result_data,
-            terminal=terminal,
+        pending = _valid_archive_pending_data(raw_result_data, terminal=terminal)
+        if terminal != "error" and not pending and not _valid_archive_result_data(
+            raw_result_data, terminal=terminal
         ):
             safe_data = raw_result_data if type(raw_result_data) is dict else {}
             logger.error(
@@ -1773,6 +1814,19 @@ def archive(url_or_path: str, skip_sharpen: bool, tags: Optional[str], quiet: bo
             sys.exit(1)
 
         data = raw_result_data
+        if pending:
+            pending_payload = _archive_pending_result_payload(result, data=data)
+            if quiet:
+                console.print(pending_payload["operation_id"])
+            else:
+                console.print("[yellow]请求已接受，归档仍在处理中[/yellow]")
+                console.print(
+                    f"[dim]Ingress 状态: {pending_payload['ingress_status']}[/dim]"
+                )
+                console.print(f"[dim]操作 ID: {pending_payload['operation_id']}[/dim]")
+            _print_workflow_notices(result)
+            return
+
         entry = data.get("entry")
         knowledge_id = data["knowledge_id"]
         file_path = _safe_archive_file_path(data.get("file_path"))
@@ -1886,9 +1940,9 @@ def archive_text(text: str, title: str, output_format: str) -> None:
         )
         terminal, terminal_valid = _resolve_workflow_terminal(result)
         raw_result_data = getattr(result, "data", None)
-        if terminal != "error" and not _valid_archive_result_data(
-            raw_result_data,
-            terminal=terminal,
+        pending = _valid_archive_pending_data(raw_result_data, terminal=terminal)
+        if terminal != "error" and not pending and not _valid_archive_result_data(
+            raw_result_data, terminal=terminal
         ):
             terminal = "error"
             terminal_valid = False
@@ -1912,6 +1966,17 @@ def archive_text(text: str, title: str, output_format: str) -> None:
             sys.exit(1)
 
         data = raw_result_data
+        if pending:
+            payload = _archive_pending_result_payload(result, data=data)
+            if output_format == "json":
+                click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            else:
+                console.print("[yellow]请求已接受，文本归档仍在处理中[/yellow]")
+                console.print(f"[dim]Ingress 状态: {payload['ingress_status']}[/dim]")
+                console.print(f"[dim]操作 ID: {payload['operation_id']}[/dim]")
+                _print_workflow_notices(result)
+            return
+
         payload = _archive_text_result_payload(result, terminal=terminal, data=data)
         if output_format == "json":
             click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))

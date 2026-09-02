@@ -695,6 +695,154 @@ async def test_archive_issue_identifiers_are_allowlisted_direct_and_fastmcp():
 
 
 @pytest.mark.asyncio
+async def test_archive_processing_envelope_is_preserved_direct_and_fastmcp():
+    operation_id = "0123456789abcdef0123456789abcdef"
+    result = WorkflowResult(
+        success=True,
+        terminal="degraded",
+        data={
+            "ingress": {"status": "processing"},
+            "operation_id": operation_id,
+            "do_not_retry": True,
+        },
+        warnings=["请求已接受，正在前处理。"],
+        issues=[
+            {
+                "code": ErrorCode.EMBEDDING_PROCESSING.value,
+                "message": "请求已接受，正在前处理。",
+                "stage": "r4_ingress",
+                "severity": "warning",
+                "recoverable": True,
+            }
+        ],
+    )
+    application = MagicMock()
+    application.archive_url = AsyncMock(return_value=result)
+    with patch.object(tools, "get_application", return_value=application):
+        direct = await tools.archive_url("https://example.com/article")
+        fastmcp_raw = await server.mcp.call_tool(
+            "archive_url",
+            {"url": "https://example.com/article"},
+        )
+
+    for payload in (direct, _parse_fastmcp_tool_result(fastmcp_raw)):
+        assert payload["success"] is True
+        assert payload["terminal"] == "degraded"
+        assert payload["status"] == "processing"
+        assert payload["ingress_status"] == "processing"
+        assert payload["operation_id"] == operation_id
+        assert payload["core_committed"] is False
+        assert payload["do_not_retry"] is True
+        assert payload["issues"][0]["code"] == ErrorCode.EMBEDDING_PROCESSING.value
+        assert "knowledge_id" not in payload
+        assert "entry_locator" not in payload
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"ingress": {"status": "processing"}, "do_not_retry": True},
+        {
+            "ingress": {"status": "unknown"},
+            "operation_id": "0" * 32,
+            "do_not_retry": True,
+        },
+        {
+            "ingress": {"status": "processing"},
+            "operation_id": "0" * 32,
+            "do_not_retry": False,
+        },
+        {
+            "ingress": {"status": "processing"},
+            "operation_id": "0" * 32,
+            "do_not_retry": True,
+            "knowledge_id": 1,
+        },
+    ],
+)
+def test_archive_processing_envelope_rejects_incoherent_identity(data):
+    result = tools._workflow_result_payload(
+        WorkflowResult(
+            success=True,
+            terminal="degraded",
+            data=data,
+            warnings=["pending"],
+            issues=[
+                {
+                    "code": ErrorCode.EMBEDDING_PROCESSING.value,
+                    "message": "pending",
+                    "severity": "warning",
+                    "recoverable": True,
+                }
+            ],
+        )
+    )
+
+    assert result["success"] is False
+    assert result["terminal"] == "error"
+    assert result["issues"][0]["stage"] == "workflow_result"
+
+
+def test_archive_committed_r4_envelope_accepts_submitted_ingress_identity():
+    operation_id = "0123456789abcdef0123456789abcdef"
+    result = tools._workflow_result_payload(
+        WorkflowResult(
+            success=True,
+            terminal="degraded",
+            data={
+                "ingress": {"status": "submitted"},
+                "operation_id": operation_id,
+                "knowledge_id": 17,
+                "status": "ready",
+                "core_committed": True,
+                "do_not_retry": True,
+            },
+            warnings=["AI automation is pending"],
+            issues=[
+                {
+                    "code": ErrorCode.EMBEDDING_PROCESSING.value,
+                    "message": "AI automation is pending",
+                    "stage": "r4_q2",
+                    "severity": "warning",
+                    "recoverable": True,
+                }
+            ],
+        )
+    )
+
+    assert result["success"] is True
+    assert result["terminal"] == "degraded"
+    assert result["knowledge_id"] == 17
+    assert result["operation_id"] == operation_id
+    assert result["storage_status"] == "ready"
+
+
+def test_archive_failed_r4_ingress_preserves_specific_public_issue():
+    result = tools._workflow_result_payload(
+        WorkflowResult(
+            success=False,
+            terminal="error",
+            data={
+                "ingress": {"status": "retry_required"},
+                "operation_id": "fedcba9876543210fedcba9876543210",
+            },
+            issues=[
+                {
+                    "code": ErrorCode.SSRF_TARGET_FORBIDDEN.value,
+                    "stage": "safe_fetch",
+                    "severity": "error",
+                    "recoverable": False,
+                }
+            ],
+        )
+    )
+
+    assert result["success"] is False
+    assert result["terminal"] == "error"
+    assert result["issues"][0]["code"] == ErrorCode.SSRF_TARGET_FORBIDDEN.value
+
+
+@pytest.mark.asyncio
 async def test_archive_url_degrades_on_workflow_exception():
     application = MagicMock()
     application.archive_url = AsyncMock(side_effect=RuntimeError("workflow unavailable"))
@@ -1569,47 +1717,35 @@ def test_readonly_service_failures_never_echo_exception_details(caplog):
 async def test_archive_text_committed_repair_failure_exposes_id_and_do_not_retry():
     """A committed-needs-repair workflow failure still exposes ID/locator/status."""
     operation_id = "1234567890abcdef1234567890abcdef"
-    processor = MagicMock()
-    processor.process_text = AsyncMock(return_value=_archive_entry())
-    workflow = MagicMock()
-    workflow.execute_async = AsyncMock(
-        return_value=WorkflowResult(
-            success=False,
-            terminal="error",
-            errors=["storage_repair_required: 核心存储已提交但操作日志更新失败"],
-            issues=[
-                {
-                    "code": ErrorCode.STORAGE_REPAIR_REQUIRED.value,
-                    "message": "核心存储已提交但操作日志更新失败",
-                    "severity": "error",
-                    "stage": "store_entry",
-                    "recoverable": False,
-                }
+    workflow_result = WorkflowResult(
+        success=False,
+        terminal="error",
+        errors=["storage_repair_required: 核心存储已提交但操作日志更新失败"],
+        issues=[
+            {
+                "code": ErrorCode.STORAGE_REPAIR_REQUIRED.value,
+                "message": "核心存储已提交但操作日志更新失败",
+                "severity": "error",
+                "stage": "store_entry",
+                "recoverable": False,
+            }
+        ],
+        data={
+            "knowledge_id": 42,
+            "status": "repair_required",
+            "operation_id": operation_id,
+            "core_committed": True,
+            "do_not_retry": True,
+            "repair_actions": ["repair_operation_journal"],
+            "storage_errors": [
+                {"code": "storage_repair_required", "message": "x"}
             ],
-            data={
-                "knowledge_id": 42,
-                "status": "repair_required",
-                "operation_id": operation_id,
-                "core_committed": True,
-                "do_not_retry": True,
-                "repair_actions": ["repair_operation_journal"],
-                "storage_errors": [
-                    {"code": "storage_repair_required", "message": "x"}
-                ],
-            },
-        )
+        },
     )
+    application = MagicMock()
+    application.archive_text = AsyncMock(return_value=workflow_result)
 
-    with (
-        patch(
-            "src.processors.text_fallback_processor.TextFallbackProcessor",
-            return_value=processor,
-        ),
-        patch(
-            "src.workflow.engine.WorkflowEngine",
-            return_value=workflow,
-        ),
-    ):
+    with patch.object(tools, "get_application", return_value=application):
         result = await tools.archive_text("Offline content")
 
     assert result["success"] is False
@@ -1624,10 +1760,8 @@ async def test_archive_text_committed_repair_failure_exposes_id_and_do_not_retry
 
 @pytest.mark.asyncio
 async def test_archive_text_reports_workflow_failure():
-    processor = MagicMock()
-    processor.process_text = AsyncMock(return_value=_archive_entry())
-    workflow = MagicMock()
-    workflow.execute_async = AsyncMock(
+    application = MagicMock()
+    application.archive_text = AsyncMock(
         return_value=WorkflowResult(
             success=False,
             terminal="error",
@@ -1635,16 +1769,7 @@ async def test_archive_text_reports_workflow_failure():
         )
     )
 
-    with (
-        patch(
-            "src.processors.text_fallback_processor.TextFallbackProcessor",
-            return_value=processor,
-        ),
-        patch(
-            "src.workflow.engine.WorkflowEngine",
-            return_value=workflow,
-        ),
-    ):
+    with patch.object(tools, "get_application", return_value=application):
         result = await tools.archive_text("Offline content")
 
     assert result == {
@@ -1666,13 +1791,10 @@ async def test_archive_text_reports_workflow_failure():
 
 @pytest.mark.asyncio
 async def test_archive_text_degrades_on_processor_exception():
-    processor = MagicMock()
-    processor.process_text = AsyncMock(side_effect=RuntimeError("parse failed"))
+    application = MagicMock()
+    application.archive_text = AsyncMock(side_effect=RuntimeError("parse failed"))
 
-    with patch(
-        "src.processors.text_fallback_processor.TextFallbackProcessor",
-        return_value=processor,
-    ):
+    with patch.object(tools, "get_application", return_value=application):
         result = await tools.archive_text("Offline content")
 
     assert result == {

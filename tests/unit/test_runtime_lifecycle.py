@@ -68,7 +68,7 @@ def _configured(
 def _runtime_snapshot_payload(
     config: Config,
     *,
-    database_schema_version: str = "1.2.5",
+    database_schema_version: str = "1.2.6",
 ) -> dict[str, object]:
     """Return the smallest strict v1 runtime snapshot for lifecycle fixtures."""
 
@@ -755,7 +755,7 @@ def test_runtime_snapshot_secret_is_rejected_without_serializing_it(tmp_path: Pa
         {"schema_version": 1},
         {
             "schema_version": 1,
-            "database": {"schema_version": "1.2.5"},
+            "database": {"schema_version": "1.2.6"},
             "embedding": {
                 "provider": "openai_compatible",
                 "fingerprint": {
@@ -767,7 +767,7 @@ def test_runtime_snapshot_secret_is_rejected_without_serializing_it(tmp_path: Pa
         },
         {
             "schema_version": 1,
-            "database": {"schema_version": "1.2.5"},
+            "database": {"schema_version": "1.2.6"},
             "embedding": {
                 "provider": "openai_compatible",
                 "fingerprint": {

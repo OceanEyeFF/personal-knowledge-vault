@@ -461,6 +461,9 @@ class TestDeepSeekAPICall:
 
             assert result == "API 响应内容"
             mock_client.post.assert_called_once()
+        assert client.last_usage is not None
+        assert client.last_usage.uncached_input_tokens == 10
+        assert client.last_usage.generated_tokens == 20
 
     def test_success_usage_log_rejects_untrusted_remote_values(self, client, caplog):
         sentinel = "usage-api-key-secret\r\nInjected-Header"
@@ -488,6 +491,7 @@ class TestDeepSeekAPICall:
         assert "total_tokens=unknown" in caplog.text
         assert "usage-api-key-secret" not in caplog.text
         assert "Injected-Header" not in caplog.text
+        assert client.last_usage is None
 
     def test_api_call_appends_resource_to_path_and_drops_fragment(self, mock_config):
         """资源路径追加在 path 后，query 保留而 fragment 不进入 HTTP。"""

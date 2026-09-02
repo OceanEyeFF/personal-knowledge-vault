@@ -15,6 +15,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 import math
+from pathlib import Path
 from threading import RLock
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -141,6 +142,13 @@ class KnowledgeApplication:
         :attr:`readonly_vector_store` so it cannot create lock sidecars.
         """
 
+        if self._uses_internal_ai_automation():
+            raise PKVRuntimeError(
+                ErrorCode.EMBEDDING_REBUILD_REQUIRED,
+                "R4 产品路径不允许打开或写入历史 flat vector 索引。",
+                stage="embedding_index",
+                recoverable=True,
+            )
         if self._vector_store is None:
             from src.runtime.writer_inventory import require_active_data_root_writer
 
@@ -575,10 +583,17 @@ class KnowledgeApplication:
         data.setdefault("skip_sharpen", True)
         data.setdefault("skip_review", True)
         if self._uses_internal_ai_automation():
-            # Archive persists the primary Markdown/SQLite facts first.  AI
-            # analysis and Embedding become one internal lifecycle task after
-            # that commit, so a Provider is never created in this request.
-            data["defer_ai_automation"] = True
+            from src.storage.ingress_lifecycle import IngressKind, IngressRequest
+
+            return await self._run_r4_ingress_request(
+                IngressRequest.create(
+                    IngressKind.URL,
+                    url,
+                    provenance=self._r4_ingress_provenance(data),
+                ),
+                audit_operation="archive_url",
+                audit_context={"input": {"url": url}},
+            )
 
         async def operation() -> WorkflowResult:
             return await self._new_workflow().execute_async("archive-url", data)
@@ -622,7 +637,24 @@ class KnowledgeApplication:
         data.setdefault("skip_sharpen", True)
         data.setdefault("skip_review", True)
         if self._uses_internal_ai_automation():
-            data["defer_ai_automation"] = True
+            from src.storage.ingress_lifecycle import IngressKind, IngressRequest
+            from src.workflow.steps import _has_cli_local_file_import_capability
+
+            if source.lower().startswith(("http://", "https://")):
+                kind = IngressKind.URL
+            elif _has_cli_local_file_import_capability(data, source):
+                kind = IngressKind.FILE
+            else:
+                kind = IngressKind.TEXT
+            return await self._run_r4_ingress_request(
+                IngressRequest.create(
+                    kind,
+                    source,
+                    provenance=self._r4_ingress_provenance(data),
+                ),
+                audit_operation="archive_cli_input",
+                audit_context={"input": {"source_kind": kind.value}},
+            )
 
         async def operation() -> WorkflowResult:
             return await self._new_workflow().execute_async("archive-url", data)
@@ -658,6 +690,24 @@ class KnowledgeApplication:
             )
         title_clean = title.strip() if isinstance(title, str) else ""
 
+        if self._uses_internal_ai_automation():
+            from src.storage.ingress_lifecycle import IngressKind, IngressRequest
+
+            return await self._run_r4_ingress_request(
+                IngressRequest.create(
+                    IngressKind.TEXT,
+                    text,
+                    title_override=title_clean,
+                    provenance={
+                        "origin": "archive_text",
+                        "skip_sharpen": str(bool(skip_sharpen)).lower(),
+                        "skip_review": str(bool(skip_review)).lower(),
+                    },
+                ),
+                audit_operation="archive_text",
+                audit_context={"input": {"title": title_clean}},
+            )
+
         async def operation() -> WorkflowResult:
             # Processor construction is intentionally inside the lease.  A
             # contending archive must not consume Provider/processor work before
@@ -689,6 +739,317 @@ class KnowledgeApplication:
                 }
             },
             operation,
+        )
+
+    @staticmethod
+    def _r4_ingress_provenance(input_data: Mapping[str, Any]) -> dict[str, str]:
+        """Keep stable, non-body Q0 provenance out of the SQLite task ledger."""
+
+        result: dict[str, str] = {"origin": "adapter"}
+        raw_tags = input_data.get("tags")
+        if isinstance(raw_tags, (list, tuple)) and all(
+            isinstance(tag, str) and tag.strip() for tag in raw_tags
+        ):
+            # Preserve existing adapter intent without storing the source body in
+            # the ledger.  Q0 consumes this compact provenance after parsing.
+            result["manual_tags"] = "\u001f".join(tag.strip() for tag in raw_tags)
+        return result
+
+    def _r4_committed_archive_projection(
+        self,
+        *,
+        knowledge_id: int,
+        status: str,
+    ) -> dict[str, Any]:
+        """Re-read Q1′ truth for the established archive-result envelope.
+
+        Q0/Q1′/Q2 deliberately exchange small lifecycle DTOs rather than the
+        historical workflow's mutable ``Entry`` object.  Adapters, however,
+        still have a public archive contract that requires the final committed
+        entry.  Read it back only after Q1′ has proven its cross-store commit so
+        CLI and MCP never turn a real archive into a synthetic contract error.
+        """
+
+        from src.storage.markdown_store import Entry
+
+        if type(knowledge_id) is not int or knowledge_id <= 0:
+            raise PKVRuntimeError(
+                ErrorCode.STORAGE_REPAIR_REQUIRED,
+                "Q1′ 已提交但未获得有效 knowledge_id。",
+                stage="r4_result_projection",
+                recoverable=True,
+            )
+        if status not in {"ready", "degraded"}:
+            raise ValueError("R4 archive projection status 无效")
+        try:
+            row = self.sqlite_store.query_by_id(knowledge_id)
+            relative_file_path = row.get("file_path") if isinstance(row, Mapping) else None
+            if not isinstance(relative_file_path, str) or not relative_file_path:
+                raise ValueError("committed knowledge row lacks file_path")
+            entry = self.markdown_store.load(Path(relative_file_path))
+        except PKVRuntimeError:
+            raise
+        except Exception as exc:
+            raise PKVRuntimeError(
+                ErrorCode.STORAGE_REPAIR_REQUIRED,
+                "Q1′ 已提交内容无法重新读取，需执行存储修复。",
+                stage="r4_result_projection",
+                recoverable=True,
+            ) from exc
+        if not isinstance(entry, Entry):
+            raise PKVRuntimeError(
+                ErrorCode.STORAGE_REPAIR_REQUIRED,
+                "Q1′ 已提交内容不符合 Entry 读取契约。",
+                stage="r4_result_projection",
+                recoverable=True,
+            )
+        return {
+            "status": status,
+            "knowledge_id": knowledge_id,
+            "entry": entry,
+            "file_path": relative_file_path,
+            "title": entry.title,
+            "tags": entry.tags,
+            "summary_one_sentence": entry.summary_one_sentence,
+        }
+
+    @staticmethod
+    def _r4_projection_failure(
+        error: PKVRuntimeError,
+        *,
+        knowledge_id: int | None,
+        operation_id: str,
+    ) -> WorkflowResult:
+        """Expose a committed-but-unreadable archive as a repair terminal."""
+
+        data: dict[str, Any] = {
+            "status": "repair_required",
+            "core_committed": True,
+            "do_not_retry": True,
+            "operation_id": operation_id,
+        }
+        if type(knowledge_id) is int and knowledge_id > 0:
+            data["knowledge_id"] = knowledge_id
+        issue = error.to_dict()
+        issue["severity"] = "error"
+        return WorkflowResult(
+            success=False,
+            data=data,
+            errors=[str(error)],
+            issues=[issue],
+            terminal="error",
+        )
+
+    async def _run_r4_ingress_request(
+        self,
+        request: Any,
+        *,
+        audit_operation: str,
+        audit_context: Mapping[str, Any],
+    ) -> WorkflowResult:
+        """Project the persistent Q0→Q1′ pipeline into the existing envelope.
+
+        Admission takes the root lease before a crawler, text processor, audit,
+        or Provider can be constructed.  The Q0 parser then runs outside that
+        lease, and Q1′ reacquires it only for durable content work.
+        """
+
+        from src.application.r4_ingress_lifecycle import R4IngressLifecycle
+
+        del audit_operation, audit_context
+        lifecycle = R4IngressLifecycle(self)
+        try:
+            result = await lifecycle.submit_and_drain(request)
+        except PKVRuntimeError as error:
+            if error.stage == "write_lease":
+                return self._workflow_failure(error, stage="write_lease")
+            return self._workflow_failure(error, stage=error.stage or "r4_ingress")
+
+        if result.error is not None:
+            issue = result.error.to_dict()
+            issue["severity"] = "error"
+            return WorkflowResult(
+                success=False,
+                data={
+                    "ingress": {"status": result.task.state.value},
+                    "operation_id": result.task.operation_id,
+                },
+                errors=[str(result.error)],
+                issues=[issue],
+                terminal="error",
+            )
+
+        q1 = result.q1_result
+        if q1 is None:
+            return WorkflowResult(
+                success=True,
+                data={
+                    "ingress": {"status": result.task.state.value},
+                    "operation_id": result.task.operation_id,
+                    "do_not_retry": True,
+                },
+                warnings=["请求已接受，正在前处理或等待内容提交。"],
+                issues=[
+                    {
+                        "code": ErrorCode.EMBEDDING_PROCESSING.value,
+                        "message": "请求已接受，正在前处理或等待内容提交。",
+                        "severity": "warning",
+                        "stage": "r4_ingress",
+                        "recoverable": True,
+                    }
+                ],
+                terminal="degraded",
+            )
+
+        try:
+            journal = self.storage_coordinator.journal.read(q1.task.operation_id)
+        except (OSError, ValueError, PKVRuntimeError):
+            journal = {}
+        knowledge_id = journal.get("knowledge_id")
+        if not isinstance(knowledge_id, int) or isinstance(knowledge_id, bool):
+            knowledge_id = None
+        from src.application.r4_derivation_lifecycle import R4DerivationLifecycle
+
+        q2_lifecycle = R4DerivationLifecycle(self)
+        # A new allowed archive mutation is also the bounded internal trigger
+        # that resumes expired Q2 work.  It runs only *after* Q0 admission, so a
+        # competing caller still receives write_busy before any Provider work.
+        try:
+            await q2_lifecycle.recover_and_drain(max_tasks=8)
+        except PKVRuntimeError:
+            # An unrelated recovery item must never retract this request's
+            # already-proven Q1′ content commit.  Its durable task remains the
+            # authority for a later trigger.
+            pass
+
+        derivation_state = q1.derivation_state
+        current_q2 = q2_lifecycle.store.get_derivation_task(q1.task.operation_id)
+        if current_q2 is not None:
+            derivation_state = current_q2.state.value
+        q2_error = None
+        if derivation_state == "pending":
+            try:
+                q2 = await q2_lifecycle.drain_for_operation(q1.task.operation_id)
+            except PKVRuntimeError as error:
+                q2 = None
+                derivation_state = "retry_required"
+                q2_error = error
+            else:
+                q2_error = q2.error
+                if q2.task is not None:
+                    derivation_state = q2.task.state.value
+        status_by_state = {
+            "pending": "processing",
+            "processing": "processing",
+            "retry_required": "retry_required",
+            "budget_paused": "budget_paused",
+            "authorization_required": "authorization_required",
+            "completed": "ready",
+            "superseded": "processing",
+        }
+        automation_status = status_by_state.get(derivation_state or "", "processing")
+        if derivation_state == "authorization_required":
+            # Disabled automation publishes a rebuild-required binding while its
+            # durable Q2 child waits for a later explicit policy confirmation.
+            from src.runtime.ai_automation_policy import (
+                AutomationPolicyState,
+                inspect_ai_automation_policy,
+            )
+
+            if inspect_ai_automation_policy(self.config).state is AutomationPolicyState.DISABLED:
+                automation_status = "rebuild_required"
+        if not q1.core_committed:
+            return WorkflowResult(
+                success=True,
+                data={
+                    "ingress": {"status": result.task.state.value},
+                    "operation_id": q1.task.operation_id,
+                    "do_not_retry": True,
+                },
+                warnings=["请求已接受，内容提交仍在恢复。"],
+                issues=[
+                    {
+                        "code": ErrorCode.EMBEDDING_PROCESSING.value,
+                        "message": "请求已接受，内容提交仍在恢复。",
+                        "severity": "warning",
+                        "stage": "r4_q1",
+                        "recoverable": True,
+                    }
+                ],
+                terminal="degraded",
+            )
+        try:
+            archive_projection = self._r4_committed_archive_projection(
+                knowledge_id=knowledge_id if knowledge_id is not None else 0,
+                # ``status`` remains the proven Q1′ storage outcome.  A Q2
+                # warning makes the workflow terminal degraded, but must not
+                # relabel already-committed Markdown/SQLite content as a
+                # degraded storage commit.
+                status="ready",
+            )
+        except PKVRuntimeError as error:
+            return self._r4_projection_failure(
+                error,
+                knowledge_id=knowledge_id,
+                operation_id=q1.task.operation_id,
+            )
+        if automation_status == "ready":
+            return WorkflowResult(
+                success=True,
+                data={
+                    **archive_projection,
+                    "core_committed": True,
+                    "operation_id": q1.task.operation_id,
+                    "ingress": {"status": result.task.state.value},
+                    "ai_automation": {
+                        "status": automation_status,
+                        "task_state": derivation_state,
+                    },
+                    "do_not_retry": True,
+                },
+                terminal="success",
+            )
+        message = "文档已入库，AI 派生正在等待内部生命周期处理。"
+        code = ErrorCode.EMBEDDING_PROCESSING
+        if automation_status == "rebuild_required":
+            message = "文档已入库；AI 自动化尚未启用，Embedding 等待后续内部处理。"
+            code = ErrorCode.EMBEDDING_REBUILD_REQUIRED
+        elif automation_status == "authorization_required":
+            message = "文档已入库，自动 AI 任务等待当前策略确认。"
+            code = ErrorCode.EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED
+        elif automation_status == "budget_paused":
+            message = "文档已入库；自动 AI 任务因预算暂停。"
+            code = ErrorCode.EMBEDDING_BUDGET_PAUSED
+        elif automation_status == "retry_required":
+            message = "文档已入库，自动 AI 任务需要重试。"
+            code = ErrorCode.EMBEDDING_RETRY_REQUIRED
+        if q2_error is not None and automation_status == "retry_required":
+            message = "文档已入库，自动 AI 任务需要重试。"
+            code = q2_error.code
+        return WorkflowResult(
+            success=True,
+            data={
+                **archive_projection,
+                "core_committed": True,
+                "operation_id": q1.task.operation_id,
+                "ingress": {"status": result.task.state.value},
+                "ai_automation": {
+                    "status": automation_status,
+                    "task_state": derivation_state,
+                },
+                "do_not_retry": True,
+            },
+            warnings=[message],
+            issues=[
+                {
+                    "code": code.value,
+                    "message": message,
+                    "severity": "warning",
+                    "stage": "r4_q2",
+                    "recoverable": True,
+                }
+            ],
+            terminal="degraded",
         )
 
     async def _run_archive_write(

@@ -244,7 +244,7 @@ def test_apply_migration_rolls_back_and_raises_on_sql_error(tmp_path: Path) -> N
 def test_apply_all_pending_publishes_only_a_valid_complete_chain(tmp_path: Path) -> None:
     manager = MigrationManager(tmp_path / "test.db", SOURCE_MIGRATIONS_DIR)
 
-    assert manager.apply_all_pending(auto_backup=False) == 10
+    assert manager.apply_all_pending(auto_backup=False) == 11
     assert manager.inspect_database().state is DatabaseState.READY
     assert manager.apply_all_pending(auto_backup=False) == 0
 
@@ -282,6 +282,7 @@ def test_apply_all_pending_rolls_back_fts_versions_when_rebuild_fails(
     assert "1.2.3" not in versions
     assert "1.2.4" not in versions
     assert "1.2.5" not in versions
+    assert "1.2.6" not in versions
 
 
 def test_check_and_prompt_upgrade_prints_pending_summary(

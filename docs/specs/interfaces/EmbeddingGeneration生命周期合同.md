@@ -1,8 +1,8 @@
 # Embedding Generation 生命周期合同（R4 staged core）
 
-状态：runtime-internal staged core 已实现并以隔离、fake-only 回归验证；它尚未成为
-CLI、MCP 或 Kernel 的公开动作。未来适配器必须显式采用本合同，不能把历史平铺
-`vectors/` 目录当作回退路径。
+状态：runtime-internal staged core 与内部 R4 Q0→Q1′→Q2 生命周期已实现并以隔离、
+fake-only 回归验证。它仍未成为新的 CLI、MCP 或 Kernel *直接重建*动作；既有归档适配器
+只投影稳定处理状态，不能把历史平铺 `vectors/` 目录当作回退路径。
 
 ## 边界与前置条件
 
@@ -63,9 +63,9 @@ schema v2 把 binding 状态和 ready pointer 置于同一无密钥 extension。
 fingerprint，且不产生 sidecar。binding 永远指向
 `vectors/generations/<generation-id>`，不存在 flat-index fallback。
 
-当前 Application 的 readonly vector port 仍需一个后续 adapter gate：它必须在每个读操作
-开始时解析此 binding 并以 `VectorStore.open_readonly(binding.index_dir, ...)` 打开，不能
-重新指向 writer store 或 `<data-root>/vectors`。
+启用内部自动化的当前 Application 读路径会在每个操作开始时解析此 binding，并以
+`VectorStore.open_readonly(binding.index_dir, ...)` 打开；它不会重新指向 writer store 或
+`<data-root>/vectors`。轻量 legacy test graph 的注入 seam 不构成产品 flat-index 回退。
 
 ## 自动化授权与 token 用量（R4 P0）
 
@@ -77,8 +77,36 @@ policy inspect 不创建数据根、Provider、网络、日志或 snapshot。可
 所有后续 usage ledger 至少区分（Provider 适用且已报告时）
 `uncached_input_tokens`、`cached_input_tokens`、`generated_tokens` 与
 `embedding_input_tokens`。Provider 未报告的字段保存 unknown，而不是零。任务 claim、token
-reservation、usage settlement 与 binding state publish 是 P1 的 lease-protected owner 写入；本
-P0 只冻结 parser/DTO/reader 投影，不启动 Provider 或自动任务。
+reservation、usage settlement 与 binding state publish 都是 lease-protected owner 写入。
+
+### 内部 Q0→Q1′→Q2 自动生命周期
+
+既有 archive 输入在已启用且已确认自动化时遵循以下私有链路；它不新增 CLI/MCP Tool，也不
+允许外部调用者直接调度 Provider：
+
+```text
+Q0 ingress admission + private spool
+  -> fenced crawler/parser produces PreparedDocument
+  -> Q1′ sole content writer + durable handoff/non-ready binding
+  -> Q2 source/policy/budget fence + reservation
+  -> private DerivationPatch
+  -> Q1′ apply_ai_patch
+  -> confirmed generation stage/validation/pointer CAS
+```
+
+- Q0 在 crawler、文件解析或 Provider 之前持久化最小 request identity/hash；慢速前处理在
+  根 writer lease 外执行，但完成/失败只接受当前 claim token 与 fence。URL、文本和已授权
+  文件均交付同一版本化 `PreparedDocument`；正文只在私有 spool，不进入 task ledger、日志或
+  runtime snapshot。
+- Q1′ 是 Markdown + SQLite 内容和 patch 的唯一提交者，绝不导入 crawler/processor 或创建
+  Provider。其 core proof、handoff、non-ready binding 和 Q2 activation 可在重启后幂等续接。
+- Q2 在 Provider construction 前重新验证 source、target revision、policy、retry/not-before 和
+  token/可选金额 reservation。过期或 superseded claim 不能发布 patch、binding 或 generation；
+  已经启动的 Provider reservation 只可按原 token/fence 保守结算。
+- 摘要/标签先写为不可变 `DerivationPatch`，再由 Q1′ 原子应用。记录的 patch 在 Q1′ 失败后
+  会复用而不重复调用 LLM；所有要求的 patch 成功后才会重新捕获 source 并执行 generation。
+- 没有已确认 price card 时只进行 token 控制和记录，不展示或写入推测金额；Provider usage 的
+  缺失维度保持 `NULL`，本地估算、reservation 与 Provider facts 以不同账本记录保存。
 
 ## Confirmed rebuild
 
@@ -112,9 +140,8 @@ public rollback action are deliberately not part of this phase.
 `PreChunkedEmbeddingAdapter` is the explicit bridge for the existing
 `src.ai.embedder.Embedder`: it calls `embed_document(text)` and the underlying
 `client.embed_batch_numpy(stored_chunks)`, never historical `embed_chunks(text)`.
-The caller that creates that historical embedder is a future confirmed mutation
-adapter and must bind it to the captured explicit Config; R4 itself constructs no
-Provider.
+内部 Q2 owner 只能在完成 source/policy/budget fence 后创建该 embedder，且必须绑定已捕获的
+显式 Config；公开 adapter 仍不得绕过 inspect → plan → confirm 边界自行构造 Provider。
 
 ## Failure and audit semantics
 
