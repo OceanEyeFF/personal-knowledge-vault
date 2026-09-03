@@ -119,30 +119,15 @@ db_path = config.db_path
 
 **用途**: 归档网页内容的工作流定义
 
-**步骤**:
-1. `fetch_content` - 获取网页内容
-2. `ai_analyze` - AI 分析 (摘要/标签/关键词)
-3. `store_entry` - 存储到三层存储
+**遗留 WorkflowEngine 配置**:
 
-```yaml
-name: archive-url
-description: "归档网页内容到知识库"
-steps:
-  - id: fetch
-    type: fetch_content
-    config:
-      timeout: 30
+`archive-url.yaml` 是版本化 WorkflowEngine 的兼容/characterization 合同，不是 R4 公开
+archive 的执行配置。真实 CLI/MCP `archive_url` 由 `KnowledgeApplication` 直接进入
+`R4IngressLifecycle` 的 Q0 admission/PreparedDocument，随后由 Q1′/Q2 完成内容提交和派生。
+该路径不执行 YAML 声明的 `ai_analyze` / `store_entry` step list。
 
-  - id: analyze
-    type: ai_analyze
-    config:
-      use_deepseek: true
-
-  - id: store
-    type: store_entry
-    config:
-      generate_embedding: true
-```
+因此，YAML 的 schema 与兼容 step 行为仍必须由各自测试维护，但不得把它们的直接
+Markdown/SQLite/vector 写入当成 R4 的产品行为或 source acceptance 证据。
 
 ---
 
@@ -150,39 +135,13 @@ steps:
 
 **用途**: 归档纯文本内容的工作流定义 (MCP `archive_text` Tool 专用)
 
-**与 archive-url 的区别**:
-- 跳过 `fetch_content` 步骤（无需抓取,文本由 MCP Tool 层传入）
-- 跳过 `idea_sharpen` 步骤（MCP 场景无终端交互能力）
-- Entry 由 MCP Tool 层调用 `TextFallbackProcessor` 预构建
+**与 archive-url 的区别（仅 WorkflowEngine 兼容合同）**:
+- `archive-text` 的 YAML 不含 URL fetch step；`archive-url` 含 `fetch_content`
+- 它们保留旧 Engine 的 `Entry`/step 行为，不能代表真实 R4 CLI/MCP archive 的调用链
 
-**步骤**:
-1. `ai_analyze` - AI 分析 (摘要/标签),失败时使用 TextFallbackProcessor 的默认摘要
-2. `store_entry` - 存储到三层存储 (Markdown + SQLite + Vector)
-
-```yaml
-name: archive-text
-description: "归档纯文本内容工作流（MCP 专用）"
-steps:
-  - id: ai_analyze
-    type: ai_analyze
-    config:
-      model: deepseek-chat
-      max_tokens: 2000
-      temperature: 0.7
-      tasks:
-        - summarize
-        - extract_tags
-    on_error: continue      # AI 失败则跳过
-
-  - id: store_entry
-    type: store_entry
-    config:
-      targets:
-        - markdown
-        - sqlite
-        - vector_index
-    on_error: fail
-```
+真实 R4 `archive_text` 由 `KnowledgeApplication` 直接将字面文本送入 Q0；路径形状文本不读取
+本地文件，之后由 Q1′/Q2 处理 core mutation、AI patch、usage/reservation 和 generation。
+`archive-text.yaml` 的严格 schema 仍受测试保护，但它不控制这条公开 R4 路径。
 
 ---
 
@@ -421,6 +380,12 @@ $env:PKV_DATA_ROOT = "D:\PKV\temporary-data"
 
 ## 变更记录 (Changelog)
 
+### 2026-09-03 (R4)
+- 明确 `ai.automation` 只配置无密钥 policy authorization、token hard cap、retry 与可选
+  reviewed price-card reference；无 price card 时只记录 token，不估价。
+- workflow YAML 是遗留 Engine 的兼容合同；真实 R4 public archive 不执行它的 step list。
+  R4 不新增 public rebuild/resume 配置项。
+
 ### 2026-08-20 (R1)
 - 配置拆为 bundled defaults、`%USERPROFILE%/.pkv/config.yaml` 用户业务配置和 data-root runtime snapshot 三个平面
 - 统一默认数据根为 `%USERPROFILE%/.pkv/data`；仅 `PKV_DATA_ROOT` / `PKV_LOG_LEVEL` 是产品环境变量
@@ -443,6 +408,6 @@ $env:PKV_DATA_ROOT = "D:\PKV\temporary-data"
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-08-20
+**最后更新**: 2026-09-03
 
 *本文档由 Claude Code 自动生成*

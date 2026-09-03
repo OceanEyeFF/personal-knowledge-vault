@@ -92,6 +92,11 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；�
 | `archive_url` | `url` | `{success, knowledge_id, title, ...}` | 归档网页 (含 SSRF 防护) |
 | `archive_text` | `text`, `title?` | `{success, knowledge_id, title, ...}` | 归档纯文本 (含长度验证) |
 
+两种写入 Tool 均只进入 `KnowledgeApplication` 的 R4 Q0 → Q1′ → Q2 内部生命周期：
+Q0/Q1′ 未完成时返回稳定 processing 投影，只有 `core_committed` 后才称文档已保存；
+Q2 的 retry/budget/authorization 状态保持可操作的 degraded 信息。Tool 不暴露 resume、
+rebuild 或后台 daemon，也不直接调用 Storage/AI lifecycle。
+
 共享数据根实行**一写多读**：CLI、MCP 与未来 GUI 可并行读取，但不允许两个写操作
 并行。若 MCP 写入 Tool 发现其他应用持有数据根 write lease，它立即返回失败终态，至少含：
 
@@ -280,7 +285,7 @@ transport
 | **Layer 1** | `tests/unit/test_mcp_security.py` | ~30 | 安全验证函数测试 (URL/IP/文本/Auth) |
 | **Layer 2** | `tests/integration/test_mcp_functional.py` | ~50 | FastMCP 进程内集成测试 |
 | **Layer 2** | `tests/integration/test_mcp_integration.py` | ~15 | 真实 SQLiteStore 集成测试 |
-| **Layer 3** | `tests/blackbox/test_mcp_blackbox.py` | ~40 | stdio 子进程黑盒测试 (JSON-RPC) |
+| **Layer 3** | `tests/blackbox/test_mcp_blackbox.py` / `test_r4_mcp_fullflow.py` | stdio 子进程黑盒测试（含 R4 archive → restart → vector/hybrid） |
 
 用例数以当前受控收集结果为准，不在模块文档中维护静态总数。
 
@@ -294,7 +299,7 @@ transport
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-layer2 -Command @("pytest", "tests/integration", "-k", "mcp", "-v")
 
 # Layer 3: stdio 黑盒测试 (最慢,启动子进程)
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-layer3 -Command @("pytest", "tests/blackbox/test_mcp_blackbox.py", "-v")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-layer3 -Command @("pytest", "tests/blackbox/test_mcp_blackbox.py", "tests/blackbox/test_r4_mcp_fullflow.py", "-v")
 
 # 正式 MCP 覆盖率门禁：固定版本化目标集、离线 selector 与 95% 阈值
 .\scripts\test-conda.ps1 -EnvironmentName py311-private -Suite MCP
@@ -369,6 +374,7 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 | `tests/integration/test_mcp_functional.py` | 进程内功能测试 (Layer 2) |
 | `tests/integration/test_mcp_integration.py` | 真实 SQLiteStore 集成测试 |
 | `tests/blackbox/test_mcp_blackbox.py` | stdio 协议级黑盒测试 (Layer 3) |
+| `tests/blackbox/test_r4_mcp_fullflow.py` | 真正 `archive_text`、关闭 server 后重启并 vector/hybrid 命中的 R4 source blackbox |
 
 ### 配置文件
 
@@ -412,6 +418,6 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-08-20
+**最后更新**: 2026-09-03
 
 *本文档由 Claude Code 自动生成*

@@ -20,6 +20,7 @@ from src.ai.provider_factory import (
 )
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.runtime.layout import RuntimeLayout
+from src.runtime.write_lease import write_lease_scope
 from src.storage.vector_store import VectorStore
 from src.utils.config import Config
 
@@ -353,12 +354,13 @@ def test_auto_dimension_sink_persists_exactly_once_and_feeds_new_index(
     restarted = Config(config_path=str(config_path), layout=layout)
     assert restarted.embedding_dim == 3
 
-    with patch("src.storage.vector_store.get_config", return_value=config):
-        vector_store = VectorStore(
-            layout.vector_index_dir,
-            dim=embedder.dim,
-            layout=layout,
-        )
+    with write_lease_scope(layout):
+        with patch("src.storage.vector_store.get_config", return_value=config):
+            vector_store = VectorStore(
+                layout.vector_index_dir,
+                dim=embedder.dim,
+                layout=layout,
+            )
     assert vector_store.dim == 3
 
 
@@ -554,12 +556,13 @@ def test_concurrent_auto_clients_use_durable_dimension_cas(
         config.set_runtime_embedding_dim(winner_dim)
     publish.assert_not_called()
 
-    with patch("src.storage.vector_store.get_config", return_value=config):
-        vector_store = VectorStore(
-            layout.vector_index_dir,
-            dim=winner_dim,
-            layout=layout,
-        )
+    with write_lease_scope(layout):
+        with patch("src.storage.vector_store.get_config", return_value=config):
+            vector_store = VectorStore(
+                layout.vector_index_dir,
+                dim=winner_dim,
+                layout=layout,
+            )
     assert vector_store.dim == winner_dim
 
 

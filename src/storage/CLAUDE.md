@@ -6,14 +6,14 @@
 
 ## 模块职责
 
-**三层存储架构**：提供 Markdown 主存储、SQLite 索引层、向量语义层的统一接口。
+**三层存储架构**：提供 Markdown 主存储、SQLite 索引层和 generation-bound 向量语义层的内部接口。
 
 ### 核心理念
 
 - **Markdown 主存储**: 人类可读，Git 友好，数据主权
 - **SQLite 索引层**: 元数据索引 + FTS5 全文检索
-- **向量语义层**: hnswlib HNSW 算法，语义检索
-- **数据一致性**: 所有辅助存储可从 Markdown 完全重建
+- **向量语义层**: hnswlib HNSW generation，只有经过验证并 pointer publish 的 generation 可读
+- **数据一致性**: Markdown/SQLite core mutation 由 Q1′ 的 operation proof 协调；向量是可派生层，但当前没有 public rebuild API/CLI/MCP Tool
 
 ---
 
@@ -43,33 +43,20 @@ vec_store = VectorStore(
 # 而不是把此依赖组合示例当作对真实数据根的直接初始化命令。
 ```
 
-### 存储一个条目
+### 产品归档的唯一写入路径
 
 ```python
-from src.storage.markdown_store import Entry
+from src.application import KnowledgeApplication
 
-entry = Entry(
-    title="示例文章",
-    source_type="wechat",
-    source_url="https://mp.weixin.qq.com/xxx",
-    content="# 正文内容...",
-    tags=["技术", "AI"],
-    keywords=["Claude", "Code"],
-    abstract="这是一篇关于 Claude Code 的文章",
-    summary_one_sentence="介绍 Claude Code 的核心功能",
-    summary_100_words="详细介绍...",
-    search_strategy="keyword",
-)
-
-# 1. 保存到 Markdown
-md_path = md_store.save(entry)
-
-# 2. 保存到 SQLite（元数据 + FTS5）
-sql_store.save_entry(entry)
-
-# 3. 保存到向量索引
-await vec_store.add_entry(entry)
+# CLI/MCP/Kernel 通过 Application 提交 archive；不要拼装三层 Store 写入。
+result = await KnowledgeApplication(config).archive_text("示例正文", title="示例文章")
 ```
+
+R4 中该调用先进入 Q0 admission/PreparedDocument；Q1′ 是唯一允许写 Markdown、SQLite、
+chunk 和 AI patch 的内容 writer，并以 StorageCoordinator 的 operation-bound proof 协调。
+Q2 只在 core commit/handoff 后处理 Provider、usage/reservation 和 staged generation，不能
+直接写 Markdown/SQLite 或平铺 vector 目录。上述 `MarkdownStore` / `SQLiteStore` /
+`VectorStore` 实例是内部组件或受控测试 seam，不是外部组合 API。
 
 ---
 
@@ -208,12 +195,13 @@ class VectorStore:
 ```
 
 **索引文件**:
-- `doc_vectors.idx`: 文档级向量索引（hnswlib 格式）
-- `chunk_vectors.idx`: 分块级向量索引
-- `doc_vectors_metadata.json`: knowledge_id <-> vector_id 映射
-- `chunk_vectors_metadata.json`: chunk_id <-> vector_id 映射
+- 活跃索引位于由 runtime snapshot 指向的 `vectors/generations/<generation-id>/`；其中的
+  index、metadata 和 manifest 必须先 stage/validate，再通过 pointer CAS 发布为 `READY`。
+- 根平铺 `doc_vectors.*` / `chunk_vectors.*` 仅可能作为历史组件遗留存在；R4 产品读取和写入
+  不会将其作为 fallback。
 
-**Embedding 提供者**: OpenAI `text-embedding-3-small` (1536 维)
+**Embedding 合同**: Provider、model、endpoint fingerprint 与 resolved dimension 由 generation
+binding 固定；并不假定固定模型或 1536 维。
 
 ---
 
@@ -300,18 +288,24 @@ class Entry:
 ### 1. 双重存储策略
 
 ```
-主存储层: Markdown + YAML Front Matter
-    ↓ (同步写入)
-索引层: SQLite (元数据 + FTS5)
-    ↓ (异步写入)
-语义层: hnswlib (向量索引)
+Q0: ingress identity / private request spool / task-fenced temporary assets（无内容写、无 Provider）
+    ↓
+Q1′: Markdown + SQLite + operation proof + durable AI handoff（唯一内容 writer）
+    ↓
+Q2: usage/reservation → DerivationPatch 回送 Q1′ → staged/validated generation pointer
 ```
 
 **优势**:
 - Markdown 可直接编辑、Git 版本控制
 - SQLite 快速查询、FTS5 全文检索
 - 向量索引支持语义搜索
-- 所有辅助存储可从 Markdown 重建
+- vector 是从已提交 source 派生，但 rebuild/public repair 必须经独立 lifecycle，不能绕过 Q1′ 或 runtime confirmation
+
+Q0 的 request payload 与临时 asset 都不是 Vault 内容：短 admission lease 先创建
+`runtime/r4/ingress/<task-id>/<owner-fence>/assets/`，随后慢速 parser 只持有该 task 的 claim-fenced
+temporary-image grant。它不能写 Markdown、SQLite、vector、日志、Config 或共享 `tmp/`；URL 原始网页
+只在内存处理，Q1′ core commit 或 Q0 terminal rejection 后安全地 best-effort 清理该 workspace。文件
+附件的长期归档语义尚未在此合同中定义。
 
 ### 2. FTS5 中文分词
 
@@ -392,22 +386,8 @@ Storage 层为 MCP Server 提供核心数据访问:
 
 ### 数据一致性测试
 
-验证从 Markdown 重建索引的能力:
-
-```python
-# 1. 清空 SQLite 和向量索引
-sql_store.clear_all()
-vec_store.clear_all()
-
-# 2. 从 Markdown 重建
-for md_file in md_store.list_all():
-    entry = md_store.load(md_file)
-    sql_store.save_entry(entry)
-    await vec_store.add_entry(entry)
-
-# 3. 验证一致性
-assert sql_store.count() == len(md_store.list_all())
-```
+在隔离 fault-injection tests 中验证 Q1′ proof 的 Markdown/SQLite revision 一致，以及 Q2
+的 staged generation 仅在 validate + pointer CAS 后被读取；这不是用户可执行的重建流程。
 
 ---
 
@@ -415,32 +395,10 @@ assert sql_store.count() == len(md_store.list_all())
 
 ### Q1: 如何从 Markdown 完全重建索引？
 
-```python
-from src.storage import MarkdownStore, SQLiteStore, VectorStore
-from src.utils.config import Config
-
-# 仅在已经通过生命周期确认的 data root 或隔离测试根中执行重建。
-config = Config()
-md_store = MarkdownStore(config.vault_dir)
-sql_store = SQLiteStore(config.db_path)
-vec_store = VectorStore(
-    config.vector_index_dir,
-    runtime_config=config,
-    layout=config.layout,
-)
-
-# 重建 SQLite
-sql_store.initialize()  # 重建表结构
-for md_file in md_store.list_all():
-    entry = md_store.load(md_file)
-    sql_store.save_entry(entry)
-
-# 重建向量索引
-vec_store.clear_all()
-for md_file in md_store.list_all():
-    entry = md_store.load(md_file)
-    await vec_store.add_entry(entry)
-```
+当前没有用户或 adapter 可调用的 rebuild API、CLI 命令或 MCP Tool。归档后的 R4 Q2 会在已
+确认的自动化 policy 下构建新 generation；更广泛的 repair/rebuild 必须先经
+`inspect → plan → confirm → execute` 的未来 public adapter。不要直接调用
+`clear_all()`、`save_entry()` 或 `add_entry()` 操作用户数据根。
 
 ### Q2: FTS5 查询为什么返回空结果？
 
@@ -529,6 +487,6 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-08-21
+**最后更新**: 2026-09-03
 
 *本文档由 Claude Code 自动生成*

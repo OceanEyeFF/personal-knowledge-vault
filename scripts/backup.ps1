@@ -1,4 +1,9 @@
 ﻿# Backup .data to a timestamped zip and keep recent archives.
+[Console]::Error.WriteLine(
+    "backup.ps1 已停用：历史 .data 备份脚本不属于当前 PKV 运行时，未读取配置、未打开数据根。"
+)
+exit 2
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 

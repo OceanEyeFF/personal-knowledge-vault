@@ -17,9 +17,14 @@ from src.runtime.bootstrap import bootstrap_runtime
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.runtime.layout import RuntimeLayout
 from src.runtime.runtime_snapshot import RuntimeSnapshotStore
-from src.runtime.write_lease import write_lease_scope
+from src.runtime.write_lease import has_active_write_lease, write_lease_scope
 from src.storage.content_lifecycle import ContentMutationState
-from src.storage.ingress_lifecycle import IngressKind, IngressRequest, IngressState
+from src.storage.ingress_lifecycle import (
+    IngressKind,
+    IngressRequest,
+    IngressState,
+    IngressTaskSpool,
+)
 from src.storage.markdown_store import Entry
 from src.utils.config import Config
 
@@ -480,3 +485,140 @@ def test_q0_submitted_q1_crash_recovers_on_next_internal_trigger(tmp_path: Path)
         ingress = connection.execute("SELECT state FROM ingress_tasks").fetchone()
     assert row == (ContentMutationState.COMPLETED.value,)
     assert ingress == (IngressState.SUBMITTED.value,)
+    submitted = recovering.store.list_submitted()
+    assert len(submitted) == 1
+    assert not (
+        reloaded_config.layout.runtime_state_dir
+        / "r4"
+        / "ingress"
+        / submitted[0].task_id
+    ).exists()
+
+
+def test_q0_task_assets_are_fence_scoped_and_released_after_core_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Slow Q0 work gets only a task-local asset grant, not shared ``tmp/``."""
+
+    config = _configured(tmp_path)
+    app = KnowledgeApplication(config)
+    grants = []
+    observed_relative_paths: list[str] = []
+    original_prepare_attempt = IngressTaskSpool.prepare_attempt
+
+    def capture_attempt(self: IngressTaskSpool, task):
+        grant = original_prepare_attempt(self, task)
+        grants.append(grant)
+        return grant
+
+    monkeypatch.setattr(IngressTaskSpool, "prepare_attempt", capture_attempt)
+
+    async def preparer(_: IngressRequest) -> Entry:
+        assert not has_active_write_lease(config.layout)
+        assert len(grants) == 1
+        with pytest.raises(ValueError, match="只允许临时图片"):
+            grants[0].write_image_asset("original-page.html", b"must-stay-in-memory")
+        asset = grants[0].write_image_asset("wechat_article.png", b"temporary-image")
+        observed_relative_paths.append(
+            asset.relative_to(config.layout.runtime_state_dir).as_posix()
+        )
+        assert asset.read_bytes() == b"temporary-image"
+        return Entry(title="task scoped", source_type="text", content="committed body")
+
+    request = IngressRequest.create(IngressKind.TEXT, "task-local source")
+    result = asyncio.run(R4IngressLifecycle(app, preparer=preparer).submit_and_drain(request))
+
+    assert result.core_committed
+    assert len(grants) == 1
+    assert observed_relative_paths == [
+        f"r4/ingress/{result.task.task_id}/1/assets/wechat_article.png"
+    ]
+    assert not (
+        config.layout.runtime_state_dir / "r4" / "ingress" / result.task.task_id
+    ).exists()
+    assert list(config.tmp_dir.glob("wechat_*")) == []
+    assert not (
+        config.layout.runtime_state_dir
+        / "r4"
+        / "ingress"
+        / f"{request.request_id}.json"
+    ).exists()
+
+
+def test_q0_task_asset_grant_fails_closed_after_claim_expiry(tmp_path: Path) -> None:
+    """An expired worker cannot publish into either its old or a future attempt."""
+
+    config = _configured(tmp_path)
+    lifecycle = R4IngressLifecycle(KnowledgeApplication(config))
+    request = IngressRequest.create(IngressKind.TEXT, "stale asset source")
+    with write_lease_scope(config.layout):
+        task = lifecycle.admit(request)
+        claimed = lifecycle.store.claim_task(task.task_id)
+        assert claimed is not None
+        grant = lifecycle.task_spool.prepare_attempt(claimed)
+
+    with sqlite3.connect(config.db_path) as connection:
+        connection.execute(
+            "UPDATE ingress_tasks SET claimed_until = datetime('now', '-1 second') "
+            "WHERE task_id = ?",
+            (task.task_id,),
+        )
+        connection.commit()
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        grant.write_image_asset("late.png", b"must-not-publish")
+
+    assert exc_info.value.code is ErrorCode.RUNTIME_PLAN_STALE
+    assets = (
+        config.layout.runtime_state_dir
+        / "r4"
+        / "ingress"
+        / task.task_id
+        / str(claimed.owner_fence)
+        / "assets"
+    )
+    assert list(assets.iterdir()) == []
+
+
+def test_q0_retry_reclaims_prior_fence_assets_before_task_cleanup(
+    tmp_path: Path,
+) -> None:
+    """Repeated expired claims never accumulate enough assets to retain Q0 space."""
+
+    config = _configured(tmp_path)
+    lifecycle = R4IngressLifecycle(KnowledgeApplication(config))
+    request = IngressRequest.create(IngressKind.TEXT, "retrying task assets")
+    with write_lease_scope(config.layout):
+        task = lifecycle.admit(request)
+
+    task_root = config.layout.runtime_state_dir / "r4" / "ingress" / task.task_id
+    for expected_fence in range(1, 10):
+        with write_lease_scope(config.layout):
+            if expected_fence > 1:
+                assert lifecycle.store.recover_expired_claims() == 1
+            claimed = lifecycle.store.claim_task(task.task_id)
+            assert claimed is not None
+            assert claimed.owner_fence == expected_fence
+            grant = lifecycle.task_spool.prepare_attempt(claimed)
+
+        grant.write_image_asset(
+            f"attempt-{expected_fence}.png",
+            b"temporary-image",
+        )
+        assert sorted(path.name for path in task_root.iterdir()) == [
+            str(expected_fence)
+        ]
+
+        if expected_fence < 9:
+            with sqlite3.connect(config.db_path) as connection:
+                connection.execute(
+                    "UPDATE ingress_tasks SET claimed_until = datetime('now', '-1 second') "
+                    "WHERE task_id = ?",
+                    (task.task_id,),
+                )
+                connection.commit()
+
+    with write_lease_scope(config.layout):
+        assert lifecycle.task_spool.discard_task(task.task_id)
+    assert not task_root.exists()

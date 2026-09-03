@@ -1,16 +1,13 @@
 # Archive Text Workflow Configuration
 # 归档文本工作流配置
 #
-# 用途: 归档纯文本/AI对话摘要等非URL内容
-# 触发方式: GUI 或 MCP Tool `archive_text(text, title)`
+# 用途: 遗留 WorkflowEngine 的纯文本兼容配置；不是公开 R4 archive 的执行配置
+# 触发方式: CLI 或 MCP Tool `archive_text(text, title)`
 #
-# 与 archive-url 的区别:
-#   - 跳过 fetch_content 步骤（无需抓取，文本由 MCP Tool 层传入）
-#   - 跳过 idea_sharpen 步骤（非交互调用无终端问答能力）
-#   - Entry 由调用 adapter 使用 TextFallbackProcessor 预构建
-#
-# 数据流:
-#   Adapter 构造 Entry → AI 分析（摘要/标签）→ 可选审核 → 持久化存储
+# 此 YAML 仅描述 WorkflowEngine 兼容步骤；该 Engine 路径可保留历史的 Analyze/Store 行为。
+# 真实 CLI/MCP `archive_text` 不执行该 step list：它由 KnowledgeApplication 直接进入
+# Q0 admission/PreparedDocument → Q1′ core commit/handoff → Q2 patch/generation。不要把 YAML
+# step 的直接 Store/Provider 行为当作 R4 source acceptance 证据。
 
 schema_version: 1
 name: archive-text

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
@@ -94,3 +95,42 @@ def test_legacy_setup_and_test_entrypoints_fence_before_config_network_or_data_r
     fence_index = source.index(fence)
     for marker in forbidden_markers:
         assert fence_index < source.index(marker.casefold())
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        Path("scripts/backup-data.ps1"),
+        Path("scripts/backup.ps1"),
+        Path("scripts/restore-data.ps1"),
+    ),
+)
+def test_historical_powershell_data_scripts_exit_before_legacy_data_access(
+    tmp_path: Path,
+    relative_path: Path,
+) -> None:
+    """Retained historical PowerShell names cannot touch a caller's checkout data."""
+
+    script = Path(__file__).resolve().parents[2] / relative_path
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "已停用" in completed.stderr
+    assert "未读取配置" in completed.stderr
+    assert "未打开数据根" in completed.stderr
+    assert not (tmp_path / ".data").exists()
+    assert not (tmp_path / ".data-backup").exists()
+    assert not (tmp_path / "backups").exists()

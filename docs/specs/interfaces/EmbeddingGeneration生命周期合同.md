@@ -1,7 +1,8 @@
 # Embedding Generation 生命周期合同（R4 staged core）
 
 状态：runtime-internal staged core 与内部 R4 Q0→Q1′→Q2 生命周期已实现并以隔离、
-fake-only 回归验证。它仍未成为新的 CLI、MCP 或 Kernel *直接重建*动作；既有归档适配器
+deterministic lifecycle 回归及真实 CLI/MCP 跨进程闭环验证。它仍未成为新的 CLI、MCP 或 Kernel
+*直接重建*动作；既有归档适配器
 只投影稳定处理状态，不能把历史平铺 `vectors/` 目录当作回退路径。
 
 ## 边界与前置条件
@@ -81,8 +82,9 @@ reservation、usage settlement 与 binding state publish 都是 lease-protected 
 
 ### 内部 Q0→Q1′→Q2 自动生命周期
 
-既有 archive 输入在已启用且已确认自动化时遵循以下私有链路；它不新增 CLI/MCP Tool，也不
-允许外部调用者直接调度 Provider：
+带真实 production `Config` 的既有 archive 输入均遵循以下私有链路；它不新增 CLI/MCP Tool，
+也不允许外部调用者直接调度 Provider。自动化 policy 只决定 Q2 的可计费 Provider stages：
+未启用或未确认时 Q0/Q1′/handoff 仍完成，Q2 投影 disabled/authorization 状态且零 Provider。
 
 ```text
 Q0 ingress admission + private spool
@@ -169,5 +171,6 @@ Before exposing rebuild to a user or external wrapper, the owner must add an
 explicit inspect → plan → confirm → execute adapter, inject an approved Provider
 through `PreChunkedEmbeddingAdapter`, project stable errors/warnings (including
 `audit_completion_pending`), and connect every vector read to the generation
-binding contract above. Tests remain fake-only with isolated `.data-test` roots;
-no R4 test permits real Provider credentials, real Vault data or migration.
+binding contract above. Tests use isolated `.data-test` roots and deterministic seams or an
+external harness through the formal Provider contract; no R4 test permits real Provider
+credentials, real Vault data or migration.

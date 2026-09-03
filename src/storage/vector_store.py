@@ -49,6 +49,7 @@ class _PathContract:
 
     layout: Any = None
     validator: Optional[Callable[..., Any]] = None
+    requires_writer_lease: bool = False
 
 
 @dataclass
@@ -224,26 +225,23 @@ class VectorStore:
         self._runtime_config = runtime_config
         self._allow_index_creation = allow_index_creation
         self._read_only = read_only
-        # A Config-bound writable VectorStore is a product data-root writer:
-        # construction itself may create the index directory, recover a pair
-        # transaction, migrate metadata, or create lock sidecars.  Standalone
-        # tmp-path fixtures intentionally omit runtime_config; they are listed
-        # separately in the R3 writer inventory and cannot become a product
-        # adapter merely by acquiring an ambient Config later.
-        bound_layout = getattr(runtime_config, "layout", None)
-        if not self._read_only and bound_layout is not None:
-            from src.runtime.writer_inventory import require_active_data_root_writer
-
-            require_active_data_root_writer(
-                bound_layout,
-                owner="vector_store",
-            )
         self._contract = self._resolve_path_contract(
             self.index_dir,
             runtime_config=runtime_config,
             layout=layout,
             path_validator=path_validator,
         )
+        # A writable store bound to a data-root contract is a product writer:
+        # construction itself may create the index directory, recover a pair
+        # transaction, migrate metadata, or create lock sidecars.  Validate
+        # containment first so an invalid explicit/config-bound path reports
+        # ``data_root_unsafe`` rather than masking it as a lease contention.
+        if not self._read_only and self._contract.requires_writer_lease:
+            self._contract.layout.validate_user_directory(
+                self.index_dir,
+                label="向量索引目录",
+            )
+            self._require_write_authority()
         if self._read_only:
             self._validate_read_only_directory()
         elif self._contract.layout is not None:
@@ -594,7 +592,11 @@ class VectorStore:
         则退化为本地链接/硬链接检查。
         """
         if layout is not None:
-            return _PathContract(layout=layout, validator=layout.writable_user_path)
+            return _PathContract(
+                layout=layout,
+                validator=layout.writable_user_path,
+                requires_writer_lease=True,
+            )
         if path_validator is not None:
             return _PathContract(layout=None, validator=path_validator)
         config = runtime_config if runtime_config is not None else get_config()
@@ -604,9 +606,17 @@ class VectorStore:
             and hasattr(candidate_layout, "user_data_root")
             and callable(getattr(candidate_layout, "writable_user_path", None))
         ):
-            candidate = Path(
-                os.path.abspath(os.path.normpath(os.fspath(index_dir)))
-            )
+            # An explicitly supplied runtime Config is an authority boundary,
+            # not an ambient test convenience.  Keep its layout attached even
+            # when the requested path is invalid, so the caller can fail closed
+            # instead of silently falling back to a raw-path writer.
+            if runtime_config is not None:
+                return _PathContract(
+                    layout=candidate_layout,
+                    validator=candidate_layout.writable_user_path,
+                    requires_writer_lease=True,
+                )
+            candidate = Path(os.path.abspath(os.path.normpath(os.fspath(index_dir))))
             if lexically_within(
                 candidate,
                 candidate_layout.user_data_root,
@@ -617,6 +627,18 @@ class VectorStore:
                     validator=candidate_layout.writable_user_path,
                 )
         return _PathContract(layout=None, validator=None)
+
+    def _require_write_authority(self) -> None:
+        """Require the active R3 lease immediately before any mutable path use."""
+
+        if self._read_only or not self._contract.requires_writer_lease:
+            return
+        from src.runtime.writer_inventory import require_active_data_root_writer
+
+        require_active_data_root_writer(
+            self._contract.layout,
+            owner="vector_store",
+        )
 
     def _validate_leaf(
         self,
@@ -1223,6 +1245,7 @@ class VectorStore:
                 stage="vector_index_read_only",
                 recoverable=True,
             )
+        self._require_write_authority()
         index_path = self.index_dir / f"{name}.idx"
         with self._metadata_write_lock(index_path, contract=self._contract):
             yield

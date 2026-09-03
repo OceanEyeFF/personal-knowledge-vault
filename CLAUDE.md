@@ -3,18 +3,52 @@
 > **AI-First Knowledge Workflow System**
 > 工作流驱动的个人知识管理系统
 
-**最后更新**: 2026-08-21
+**最后更新**: 2026-09-03
 
 ---
 
 ## 变更记录 (Changelog)
 
+### 2026-09-03（R4/R4-E 内部生命周期与 source acceptance）
+
+- R4 已实现 Q0 admission → Q1′ 内容提交 → Q2 fenced AI derivation 的持久内部回路：
+  Markdown/SQLite core commit 与 AI 派生分离，summary/tag 通过 immutable patch 回送 Q1′，
+  generation 只在 stage/validate/pointer CAS 后 READY。它不是 daemon，也不新增 public
+  rebuild API、CLI 命令或 MCP Tool。
+- 隔离的 deterministic lifecycle 测试（在明确的内部 seam 上）覆盖 snapshot/reload、lease
+  竞争、Q0/Q1′/Q2 crash/recovery、stale source、patch retry、generation pre/post-CAS 和 budget
+  pause/authorized resume。真实 CLI 与 MCP stdio 子进程黑盒进一步验证 archive → Q0/Q1′/Q2
+  → 新进程 vector/hybrid search。
+- 证据详见 [R4-E 源码验收记录](./docs/overview/R4-E-源码验收记录-2026-09.md)：P0
+  `3274 passed, 21 skipped, 219 deselected, 35 warnings`、MCP `779 passed, 5 deselected`
+  （`src.mcp 95.15%`）和 Phase C `thresholds_met=true`。全部使用 `.data-test` 和合成数据；
+  真实公开全流程另经进程外 deterministic harness；不改变 Artifact/release compliance hold。
+
+### 2026-09-03（R3.1 写入边界收口）
+
+- Q0 现可在 lease 下建立任务与 fence 私有的短生命周期 image workspace；解析在 writer
+  lease 外运行，但只持有受 durable Q0 claim 约束的 image-asset 写入能力。Q1′ core commit
+  后立即释放该 workspace，recovery 也会清扫已提交任务的残留。URL 的原始网页正文从不落盘；
+  通用图片/文件附件的持久化合同仍是独立后续工作。
+- 显式 Config/layout 绑定的向量写入必须同时满足 DataRoot containment 与当前 writer lease，
+  防止构造后跨 owner 复用。历史 `backup*` / `restore*` PowerShell 入口已 fail-closed，既不
+  读取配置也不触碰数据根；它们不是当前维护 API。只有实际使用需求稳定、并明确转向 Rust
+  长期支持时，才另立正式模块与公开 lifecycle 设计。
+- R3.1 收口后的最终默认离线回归为 `3284 passed, 21 skipped, 219 deselected, 35 warnings`
+  （exit 0）。该证据只覆盖源码与合成 `.data-test` 根；不新增 public rebuild/resume action，
+  也不改变 held Artifact 的 release/compliance hold。
+- 本收口是 source-level hardening，不公开向量 rebuild/resume，也不改变 held Artifact 的
+  release/compliance hold。
+
 ### 2026-08-21（K1a/K2/K1b 与 R1–R4 内部隔离验证）
 
 - K1a/K2/K1b 与 R1–R4 的定向回归及最终默认隔离全量回归均已通过：`3182 passed, 21 skipped, 219 deselected, 35 warnings`（exit 0）。K1b 只证明本地 wheel/source-free clean-install 兼容，不是 PyPI、安装器或 release 资格。
 - R2 的 CLI 适配层已补齐未创建嵌套 data root 的 fresh-root 回归，覆盖 setup plan、plan-only 零写、PLAN_ID 与 `--allow-network` 门禁；测试只使用合成 Config/fake executor，不触发 Provider、迁移或真实网络。
-- R3 已覆盖受支持的业务/数据写入路径：竞争写入返回 `write_busy`，读操作可继续；这不等同于所有文件系统写入均已串行化。运行时日志写入归属和遗留维护写入口仍是 R3.1 P1 hardening。
-- R4 仍仅为 runtime-internal staged core；公开 rebuild adapter、自动清理和公开 rollback 均属未来工作。所有验证只使用 `.data-test`、合成数据与 fake Provider，不改变 release hold、PyPI 或 stdio-only 合同。
+- 当时 R3 已覆盖受支持的业务/数据写入路径：竞争写入返回 `write_busy`，读操作可继续；这不等同于所有文件系统写入均已串行化。运行时日志写入归属和遗留维护写入口当时仍是 R3.1 P1；该历史欠账已由 2026-09-03 的 R3.1 收口记录取代。
+- 当时 R4 尚只记录为 staged-generation checkpoint；该历史口径已由 2026-09-03 的
+  Q0→Q1′→Q2 source acceptance 取代。公开 rebuild adapter、自动清理和公开 rollback 仍属
+  未来工作。所有验证只使用 `.data-test`、合成数据与 fake Provider，不改变 release hold、
+  PyPI 或 stdio-only 合同。
 
 ### 2026-08-18（GUI 剥离后的 Core 重测与路线重排）
 
@@ -407,7 +441,7 @@ conda activate py311-private
 
 1. 禁止直接操作用户数据根（当前有效 `<data-root>`；默认 `%USERPROFILE%\.pkv\data`）
 2. 强制使用测试环境 (`run-test.ps1`)
-3. 重要变更前必须备份 (`backup-data.ps1`)
+3. 历史 `.data` 备份/恢复脚本已 fail-closed；任何未来真实数据维护须另有用户确认的公开 lifecycle
 4. MCP: stdio-only + URL 全链路 SSRF 重校验 + 文本验证；HTTP/Bearer 不在 M13 发布面
 5. pytest 先经 offline pytest bootstrap，再使用根 conftest；CLI/MCP 使用 offline entrypoint
 6. Direct Python 不是通用仓库脚本运行器：只允许 pytest 及 `scripts/CLAUDE.md` 所列的显式离线测试目标（`src.cli.commands`、`src.mcp.server`、`src.utils.verify_setup`、`evals.mcp_quality`、`setup-test-db.py`、`rebuild-dev-vault.py` 和受控 consistency checker）；其余仓库模块/脚本会在创建 DataRoot 前拒绝。FT7 不是 OS sandbox；非 Python Direct 仍须经 wrapper，但不属于 Python G0、不保证离线
@@ -444,10 +478,10 @@ held test candidate 打包和 installed-Artifact 功能验证。该 W4 证据属
    snapshot/reload 与本地 wheel/source-free clean-install 已完成隔离验证；外部 Wrapper
    始终不得依赖相邻 checkout 或 `src.*`。这不授予 PyPI、发布或安装兼容承诺。
 4. **R1 → R4 限定运行时 checkpoint**：三平面配置与换根门禁、inspect/plan/confirm/execute、
-   受支持业务/数据写入的 lease、`write_busy`、审计和 Embedding staged generation 已通过最终
-   默认隔离全量回归。R3.1 的运行时日志写入归属与遗留维护 writer 仍是 P1；R4 仍仅是
-   runtime-internal 合同，不新增 Kernel、CLI 或 MCP 的公共重建动作。
-5. **随后：知识成果**：在 R3.1 与实际需要的 R4 public-adapter gate 明确收口后，从
+   受支持业务/数据写入的 lease、`write_busy`、审计、R3.1 的日志/历史 writer 收口、任务私有
+   Q0 临时 image workspace，以及 Q0 → Q1′ → Q2 的自动 AI lifecycle 已通过隔离 source
+   acceptance。R4 仍只作为 runtime-internal 合同，不新增 Kernel、CLI 或 MCP 的公共重建动作。
+5. **随后：知识成果**：在实际需要的 R4 public-adapter gate 明确收口后，从
    `Topic / Claim / Evidence / Outcome` 的最小合同开始，将现有证据和关系能力收束为可审阅、
    可追溯的成果工作流；`partial-v1` 仍须按真实场景逐 Tool 补 full 语义与专属评测。
 6. **Windows-first 与可选 Node / Docker**：当前自动化与内部验证只以 Windows 为支持基线；完整跨平台测试工程留待 Rust 代码版本再重新评估。桌面封包、Qt/OS smoke、生命周期和升级策略只在 `pkv-GUI` 仓库演进；只有后台任务、并发写入或资源复用出现可测需求，且单写者与持久任务前置完成后才评估 Node；Docker 与云端进一步后置。
@@ -458,8 +492,8 @@ held test candidate 打包和 installed-Artifact 功能验证。该 W4 证据属
 
 ---
 
-**文档版本**: v5.7
-**最近核验**: 2026-08-21
+**文档版本**: v5.8
+**最近核验**: 2026-09-03
 **项目代号**: Personal Knowledge Vault
 **当前版本**: 0.8.1
 

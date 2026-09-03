@@ -15,6 +15,7 @@ import pytest
 
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.runtime.layout import RuntimeLayout
+from src.runtime.write_lease import write_lease_scope
 from src.storage.vector_store import VectorStore
 from src.utils.config import endpoint_contract_sha256
 
@@ -2678,14 +2679,15 @@ def test_vector_store_explicit_layout_writes_inside_data_root(tmp_path: Path):
     layout = _runtime_layout(tmp_path)
     config = _fake_config("https://embd.example.com/v1", "model-a", 4)
 
-    with patch("src.storage.vector_store.get_config", return_value=config):
-        store = VectorStore(layout.vector_index_dir, dim=4, layout=layout)
-        store.add_doc_vector(1, np.ones(4, dtype=np.float32))
-        store.add_chunk_vector(1, 0, np.ones(4, dtype=np.float32))
+    with write_lease_scope(layout):
+        with patch("src.storage.vector_store.get_config", return_value=config):
+            store = VectorStore(layout.vector_index_dir, dim=4, layout=layout)
+            store.add_doc_vector(1, np.ones(4, dtype=np.float32))
+            store.add_chunk_vector(1, 0, np.ones(4, dtype=np.float32))
 
-        reopened = VectorStore(layout.vector_index_dir, dim=4, layout=layout)
-        assert reopened.get_index_stats()["doc_count"] == 1
-        assert reopened.get_chunk_indices_for_entry(1) == [0]
+            reopened = VectorStore(layout.vector_index_dir, dim=4, layout=layout)
+            assert reopened.get_index_stats()["doc_count"] == 1
+            assert reopened.get_chunk_indices_for_entry(1) == [0]
     assert list(layout.vector_index_dir.glob(".*.tmp")) == []
     assert list(layout.vector_index_dir.glob(".*.rollback")) == []
 
@@ -2698,8 +2700,9 @@ def test_vector_store_atomic_write_rejects_link_swap_before_replace(
 
     layout = _runtime_layout(tmp_path)
     config = _fake_config("https://embd.example.com/v1", "model-a", 4)
-    with patch("src.storage.vector_store.get_config", return_value=config):
-        store = VectorStore(layout.vector_index_dir, dim=4, layout=layout)
+    with write_lease_scope(layout):
+        with patch("src.storage.vector_store.get_config", return_value=config):
+            store = VectorStore(layout.vector_index_dir, dim=4, layout=layout)
 
     outside = tmp_path / "outside.bin"
     outside.write_bytes(b"attacker")
@@ -2743,11 +2746,12 @@ def test_vector_store_atomic_write_rejects_link_swap_before_replace(
             side_effect=evil_publish,
         ):
             with pytest.raises(PKVRuntimeError) as exc_info:
-                store._atomic_write_json(
-                    target,
-                    {"generation": 1},
-                    contract=store._contract,
-                )
+                with write_lease_scope(layout):
+                    store._atomic_write_json(
+                        target,
+                        {"generation": 1},
+                        contract=store._contract,
+                    )
 
         assert exc_info.value.code is ErrorCode.DATA_ROOT_UNSAFE
         assert outside.read_bytes() == b"attacker"

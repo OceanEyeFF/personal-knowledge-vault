@@ -19,6 +19,10 @@
   校验与渲染，不自行装配 Store、Workflow、Retriever 或 Provider。
 - `archive` 调用 `application.archive_cli_input()`；`archive-text` 始终按字面
   纯文本调用 `application.archive_text()`，路径形状文本不会触发本地文件读取。
+- 两个 archive 命令在内部走 R4 Q0 admission → Q1′ core commit/handoff → Q2 AI
+  derivation。只有 `core_committed` 后才投影为已保存；Q2 的
+  `retry_required` / `budget_paused` / `authorization_required` 是可观察的
+  degraded 状态。CLI 不直接 drain、resume 或 rebuild。
 - `search` 调用 `application.search()`，并原样消费五态 `SearchResponse`；BM25
   路径不提前创建 Provider。
 - `show`、`list`、`tags`、`stats` 与 `related` 都通过 application 的领域操作；
@@ -48,7 +52,7 @@
 | 命令 | 主要参数/选项 | 当前接线与稳定边界 |
 |---|---|---|
 | `archive URL_OR_PATH` | `--skip-sharpen`、`--tags`、`--quiet`、`--type auto\|webpage\|chat\|news` | 经 `KnowledgeApplication.archive_cli_input()`；真实网络/Provider 仅后续显式 live 流程 |
-| `archive-text TEXT` | `--title`、`--format table\|json` | 字面纯文本 → `KnowledgeApplication.archive_text()`；完成时 JSON 输出严格的存储终态与条目定位 |
+| `archive-text TEXT` | `--title`、`--format table\|json` | 字面纯文本 → `KnowledgeApplication.archive_text()`；Q0/Q1′ 未完成时明确 processing，core commit 后输出条目定位，Q2 状态不伪装为完整成功 |
 | `search QUERY` | `--strategy auto\|bm25\|vector\|hybrid`、`--limit`、`--format table\|json\|markdown` | 输出公开实际执行策略及 `success/no_hits/invalid/error/degraded`；JSON 含 `query/status/strategy/total/issues/results` |
 | `show [ID_OR_URL]` | `--url`、`--raw` | ID 或 URL 至少提供一个；`--raw` 经 `MarkdownStore.load()` 做 Vault containment 校验，不直接读取 DB 中的任意路径 |
 | `list` | `--tag`、`--sort time\|title\|id`、`--desc`、`--limit` | 从 SQLite 查询并以 Rich 表格输出；排序/tie 与非法 limit 仍需目标合同 |
@@ -117,7 +121,7 @@
 ### Subprocess blackbox
 
 ```powershell
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\cli-blackbox -Command @("python", "-m", "pytest", "tests/blackbox/test_cli_basic.py", "tests/blackbox/test_cli_blackbox.py", "-m", "not network and not manual", "-v")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\cli-blackbox -Command @("python", "-m", "pytest", "tests/blackbox/test_cli_basic.py", "tests/blackbox/test_cli_blackbox.py", "tests/blackbox/test_r4_cli_fullflow.py", "-m", "not network and not manual", "-v")
 ```
 
 黑盒用例只经 `tests/offline_entrypoint.py cli` 启动真实子进程，主责退出码、stdout/stderr、JSON 边界和临时存储副作用；不使用进程内 `CliRunner` 代替协议边界。
@@ -128,6 +132,10 @@
 - `show --raw` 的 TestCase 应继续用外部 sentinel 锁定 `MarkdownStore.load()` 的 canonical containment，防止后续回归成任意路径读取。
 - `archive` 的真实网页、真实 Provider 和费用不进入默认回归；离线 integration 只能计为 adapter seam，不能冒充真实工作流 E2E。
 - `archive-text`、`tags` 和 `related` 必须有真实离线子进程覆盖：至少验证 `archive-text → tags` 串联、无向量索引的明确降级、固定本地向量的自排除近邻结果，以及 `related` 前后向量树零改写。
+- R4 public-process 用例还必须验证真实 `archive-text` 后的 Q0/Q1′/Q2 durable ledger、
+  settled reservation/provider-reported usage、READY generation，以及关闭原 CLI 后由新 CLI
+  执行 vector/hybrid search 命中同一条目；不得用 `CliRunner`、Application patch 或旧 flat
+  vector 目录伪造该闭环。
 - `config set`、生产数据查询和开发 Vault 重建不作为 pytest fixture 或完成定义。
 - CLI help/Click validation 与生命周期命令必须在未 READY 根仍可执行；stats/search 等业务命令的黑盒 fixture 必须先写入匹配的无密钥 runtime snapshot，不能以隐式 bootstrap 绕过门禁。若归档已留下 `DEGRADED` journal，黑盒应验证读取仍可用、后续写入仍被 readiness 门禁拒绝。
 
@@ -140,4 +148,4 @@
 
 **当前版本**：`0.8.1`
 
-**最后核对**：2026-08-13（以当前源码公开符号为准）
+**最后核对**：2026-09-03（含 R4 source blackbox 合同）

@@ -8,11 +8,12 @@
 
 > **M13 发布边界**：运行时只加载磁盘上的真实、版本化 YAML，目前仅支持 `archive-url.yaml` 与 `archive-text.yaml`。缺失、未知、版本错误或 schema 非法的配置必须在构造任何步骤前失败；不允许内嵌字典、`config.raw.workflows` 或默认工作流回退，`search.yaml` 不受支持。默认验证使用临时配置、替身 Provider 与合成数据，禁止真实密钥、真实 Provider 和真实 Vault 数据。
 >
-> **R4 内部 lifecycle 边界（2026-09-01）**：本规范中的 `FetchStep`/`StoreStep` 仍是历史
-> workflow compatibility 合同。已启用且已确认 R4 自动化的 production archive 先走 Q0
-> ingress，再由 Q1′ 独占 Markdown/SQLite 写入；workflow 不得绕过该链路直接创建 Q2 Provider、
-> 写 `DerivationPatch`、写 usage ledger 或写历史 flat vector。既有 CLI/MCP 只投影结果状态，
-> 不因此新增 workflow 名称或 Tool。
+> **R4 内部 lifecycle 边界（2026-09-03）**：本规范中的 `FetchStep`/`StoreStep` 是历史
+> WorkflowEngine compatibility 合同。带真实 production `Config` 的 R4 archive 不执行该 YAML
+> pipeline（无论自动化 policy 是否已启用/确认），而是先走 Application-owned Q0 ingress，再由 Q1′ 独占 Markdown/SQLite
+> 写入并由 Q2 完成派生。Q0 可复用 FetchStep 的抓取实现；直接 WorkflowEngine 的 Analyze/Store
+> 行为不能冒充 R4，亦不是 Q2 Provider、`DerivationPatch`、usage ledger 或 generation 的证据。
+> 既有 CLI/MCP 只投影 R4 结果状态，不因此新增 workflow 名称或 Tool。
 
 ---
 

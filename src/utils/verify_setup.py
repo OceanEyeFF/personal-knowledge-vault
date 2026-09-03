@@ -189,6 +189,7 @@ def test_vector_store(index_dir: Path | None = None, dim: int | None = None):
     store = VectorStore(
         index_dir=index_dir or config.vector_index_dir,
         dim=resolved_dim,
+        runtime_config=config,
     )
 
     # 添加测试向量

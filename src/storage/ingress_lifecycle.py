@@ -36,8 +36,14 @@ from src.storage.sqlite_connection import connect_existing_sqlite
 _ID_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _ERROR_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,95}\Z")
+_TASK_ASSET_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+_OWNER_FENCE_DIR_PATTERN = re.compile(r"[1-9][0-9]{0,18}\Z")
+_TEMPORARY_IMAGE_SUFFIXES = frozenset(
+    {".avif", ".bmp", ".gif", ".img", ".jfif", ".jpeg", ".jpg", ".png", ".webp"}
+)
 _SPOOL_SCHEMA_VERSION = 1
 _STAGE = "r4_ingress_lifecycle"
+_MAX_TASK_SPOOL_NODES = 256
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -372,6 +378,349 @@ class IngressRequestSpool:
 
 
 @dataclass(frozen=True)
+class IngressTaskSpoolGrant:
+    """Narrow Q0 capability for one claimed task-attempt's temporary assets.
+
+    The grant is deliberately not a general data-root writer.  It can publish
+    only regular temporary-image leaves below ``<task_id>/<owner_fence>/assets``
+    and rechecks the durable Q0 claim at the atomic-publication boundary.  A
+    stale worker can therefore never write into a newer attempt's workspace.
+    """
+
+    _spool: "IngressTaskSpool"
+    task_id: str
+    claim_token: str
+    owner_fence: int
+
+    def validate(self) -> None:
+        """Fail closed when the fenced Q0 claim is no longer active."""
+
+        self._spool._verify_active_claim(
+            self.task_id,
+            self.claim_token,
+            self.owner_fence,
+        )
+
+    def write_image_asset(self, name: str, data: bytes) -> Path:
+        """Atomically publish one temporary image without a root writer lease."""
+
+        return self._spool._write_image_asset(
+            self.task_id,
+            self.claim_token,
+            self.owner_fence,
+            name,
+            data,
+        )
+
+
+class IngressTaskSpool:
+    """Task-private Q0 temporary workspace under the private ingress spool.
+
+    Request payloads remain immutable ``<request_id>.json`` leaves.  Slow Q0
+    work may additionally need transient local artifacts (currently processor
+    image downloads).  Those artifacts use the opaque durable task identity,
+    never a content hash or source URL, and are scoped by the claim fence:
+
+    ``runtime/r4/ingress/<task_id>/<owner_fence>/assets/<name>``
+
+    The task/attempt directories are created while the short root writer lease
+    is held.  The returned grant is the sole narrow exception that permits an
+    already-claimed Q0 worker to publish an asset while parsing without that
+    root lease.  It stores no raw webpage body; callers must keep fetched HTML
+    in memory and pass only explicitly supported temporary images here.  File
+    attachment retention is deliberately a separate future contract.
+    """
+
+    def __init__(self, layout: Any) -> None:
+        self._layout = layout
+        self._root = Path(layout.runtime_state_dir) / "r4" / "ingress"
+
+    @staticmethod
+    def _require_owner_fence(value: object) -> int:
+        if type(value) is not int or value <= 0:
+            raise ValueError("owner_fence 必须是正整数")
+        return value
+
+    @staticmethod
+    def _asset_name(value: object) -> str:
+        if not isinstance(value, str) or _TASK_ASSET_NAME_PATTERN.fullmatch(value) is None:
+            raise ValueError("Q0 临时 asset 名称无效")
+        return value
+
+    @classmethod
+    def _image_asset_name(cls, value: object) -> str:
+        name = cls._asset_name(value)
+        if Path(name).suffix.lower() not in _TEMPORARY_IMAGE_SUFFIXES:
+            raise ValueError("Q0 当前只允许临时图片 asset")
+        return name
+
+    def _root_for_write(self) -> Path:
+        require_active_data_root_writer(self._layout, owner="r4_ingress_task_spool")
+        self._layout.validate_user_directory(
+            self._root,
+            label="R4 ingress task spool",
+        )
+        return ensure_safe_directory(self._root, label="R4 ingress task spool")
+
+    def _task_dir(self, root: Path, task_id: str) -> Path:
+        return root / _require_id(task_id, label="task_id")
+
+    def _attempt_dir(self, root: Path, task_id: str, owner_fence: int) -> Path:
+        return self._task_dir(root, task_id) / str(self._require_owner_fence(owner_fence))
+
+    def _assets_dir(self, root: Path, task_id: str, owner_fence: int) -> Path:
+        return self._attempt_dir(root, task_id, owner_fence) / "assets"
+
+    def _ensure_task_dir(self, path: Path, *, label: str) -> Path:
+        self._layout.validate_user_directory(path, label=label)
+        return ensure_safe_directory(path, label=label)
+
+    def ensure_task(self, task_id: str) -> Path:
+        """Reserve the opaque task workspace during short Q0 admission."""
+
+        root = self._root_for_write()
+        return self._ensure_task_dir(
+            self._task_dir(root, task_id),
+            label="R4 ingress task workspace",
+        )
+
+    def _verify_active_claim(
+        self,
+        task_id: str,
+        claim_token: str,
+        owner_fence: int,
+    ) -> None:
+        IngressTaskStore(self._layout).require_active_claim(
+            task_id,
+            claim_token=claim_token,
+            owner_fence=owner_fence,
+        )
+
+    def prepare_attempt(self, task: "IngressTask") -> IngressTaskSpoolGrant:
+        """Create the claim-fenced assets directory while the root lease is held."""
+
+        if not isinstance(task, IngressTask):
+            raise TypeError("task 必须是 IngressTask")
+        if task.state is not IngressState.PROCESSING or task.claim_token is None:
+            raise PKVRuntimeError(
+                ErrorCode.RUNTIME_PLAN_STALE,
+                "只有当前 processing Q0 task 可以取得临时工作区。",
+                stage=_STAGE,
+                recoverable=True,
+            )
+        self._verify_active_claim(task.task_id, task.claim_token, task.owner_fence)
+        root = self._root_for_write()
+        # An expired worker cannot publish after its claim has been replaced.
+        # Reclaiming its bounded per-fence directory here keeps retries from
+        # accumulating enough otherwise-valid image leaves to defeat the task
+        # cleanup node limit after a later Q1′ core commit.
+        self._discard_stale_attempts(
+            root,
+            task.task_id,
+            keep_from_owner_fence=task.owner_fence,
+        )
+        self._ensure_task_dir(
+            self._assets_dir(root, task.task_id, task.owner_fence),
+            label="R4 ingress task attempt assets",
+        )
+        return IngressTaskSpoolGrant(
+            self,
+            task.task_id,
+            task.claim_token,
+            task.owner_fence,
+        )
+
+    def _write_image_asset(
+        self,
+        task_id: str,
+        claim_token: str,
+        owner_fence: int,
+        name: str,
+        data: bytes,
+    ) -> Path:
+        if type(data) is not bytes:
+            raise TypeError("Q0 临时 asset 内容必须是 bytes")
+        task_id = _require_id(task_id, label="task_id")
+        claim_token = _require_id(claim_token, label="claim_token")
+        owner_fence = self._require_owner_fence(owner_fence)
+        name = self._image_asset_name(name)
+        self._verify_active_claim(task_id, claim_token, owner_fence)
+        root = validate_directory_components(self._root, label="R4 ingress task spool")
+        assets_dir = self._assets_dir(root, task_id, owner_fence)
+        self._layout.validate_user_directory(
+            assets_dir,
+            label="R4 ingress task attempt assets",
+            allow_missing=False,
+        )
+        target = assets_dir / name
+        self._layout.atomic_publish_user_file(
+            target,
+            label="R4 ingress temporary asset",
+            data=data,
+            # The claim must still be live at publication, rather than merely
+            # at the beginning of an arbitrarily slow asset download.
+            pre_replace=lambda: self._verify_active_claim(
+                task_id,
+                claim_token,
+                owner_fence,
+            ),
+        )
+        return target
+
+    @staticmethod
+    def _is_link_or_reparse(info: os.stat_result) -> bool:
+        attributes = getattr(info, "st_file_attributes", 0)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        return stat.S_ISLNK(info.st_mode) or bool(attributes & reparse_flag)
+
+    @staticmethod
+    def _same_identity(before: os.stat_result, after: os.stat_result) -> bool:
+        return (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
+
+    def _snapshot_tree(
+        self,
+        root: Path,
+    ) -> list[tuple[Path, os.stat_result]] | None:
+        """Capture a bounded, regular-file-only tree before best-effort cleanup."""
+
+        pending = [root]
+        snapshots: list[tuple[Path, os.stat_result]] = []
+        while pending:
+            path = pending.pop()
+            try:
+                info = os.lstat(path)
+            except OSError:
+                return None
+            if self._is_link_or_reparse(info):
+                return None
+            if stat.S_ISREG(info.st_mode):
+                if info.st_nlink > 1:
+                    return None
+                snapshots.append((path, info))
+                if len(snapshots) > _MAX_TASK_SPOOL_NODES:
+                    return None
+                continue
+            if not stat.S_ISDIR(info.st_mode):
+                return None
+            snapshots.append((path, info))
+            if len(snapshots) > _MAX_TASK_SPOOL_NODES:
+                return None
+            try:
+                with os.scandir(path) as entries:
+                    for entry in entries:
+                        pending.append(path / entry.name)
+            except OSError:
+                return None
+        return snapshots
+
+    def _discard_tree(self, target: Path, *, label: str) -> bool:
+        """Best-effort no-follow cleanup for one bounded, owned tree.
+
+        The caller already owns the root writer lease.  This helper deliberately
+        treats every malformed or concurrently replaced path as retained repair
+        material rather than deleting it by name.
+        """
+
+        if not os.path.lexists(target):
+            return True
+        try:
+            self._layout.validate_user_directory(
+                target,
+                label=label,
+                allow_missing=False,
+            )
+        except PKVRuntimeError:
+            return False
+        snapshots = self._snapshot_tree(target)
+        if snapshots is None:
+            return False
+        # Files first, then the deepest directories.  Every identity is
+        # rechecked immediately before mutation; a concurrent replacement is
+        # preserved rather than deleted by name.
+        ordered = sorted(
+            snapshots,
+            key=lambda item: (stat.S_ISDIR(item[1].st_mode), -len(item[0].parts)),
+        )
+        try:
+            for path, before in ordered:
+                current = os.lstat(path)
+                if not self._same_identity(before, current):
+                    return False
+                if stat.S_ISREG(before.st_mode):
+                    path.unlink()
+                else:
+                    path.rmdir()
+        except OSError:
+            return False
+        return not os.path.lexists(target)
+
+    def _discard_stale_attempts(
+        self,
+        root: Path,
+        task_id: str,
+        *,
+        keep_from_owner_fence: int | None = None,
+    ) -> bool:
+        """Reclaim lower, fenced attempts without traversing unknown children.
+
+        A newer claimant owns a higher durable fence.  It is safe to attempt
+        cleanup of lower attempts after the claim transition, because grants
+        from those attempts revalidate their task/token/fence at publication.
+        Unknown, malformed, or newer directory names are left untouched and
+        make this best-effort sweep report failure rather than being deleted.
+        """
+
+        task_dir = self._task_dir(root, task_id)
+        if not os.path.lexists(task_dir):
+            return True
+        try:
+            info = os.lstat(task_dir)
+            if self._is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
+                return False
+            with os.scandir(task_dir) as entries:
+                names = sorted(entry.name for entry in entries)
+        except OSError:
+            return False
+
+        complete = True
+        for name in names:
+            if _OWNER_FENCE_DIR_PATTERN.fullmatch(name) is None:
+                complete = False
+                continue
+            owner_fence = int(name)
+            if (
+                keep_from_owner_fence is not None
+                and owner_fence >= keep_from_owner_fence
+            ):
+                continue
+            if not self._discard_tree(
+                task_dir / name,
+                label="R4 ingress stale task attempt",
+            ):
+                complete = False
+        return complete
+
+    def discard_task(self, task_id: str) -> bool:
+        """Safely release all transient assets for a completed/rejected Q0 task.
+
+        A malformed/replaced tree is intentionally retained for repair rather
+        than recursively deleting an unknown path.  This method is idempotent:
+        an already-released workspace counts as successfully released.
+        """
+
+        root = self._root_for_write()
+        target = self._task_dir(root, task_id)
+        if self._discard_tree(target, label="R4 ingress task workspace"):
+            return True
+        # The whole task is bounded in ordinary operation.  If a process was
+        # interrupted through many retries before this hardening existed, first
+        # reclaim each independently bounded fence subtree, then retry the
+        # task-level cleanup.  Unknown or unsafe children remain fail-closed.
+        self._discard_stale_attempts(root, task_id)
+        return self._discard_tree(target, label="R4 ingress task workspace")
+
+
+@dataclass(frozen=True)
 class IngressTask:
     task_id: str
     operation_id: str
@@ -592,6 +941,60 @@ class IngressTaskStore:
         operation_id = _require_id(operation_id, label="operation_id")
         with self._read_connection() as connection:
             return self._load_by_operation(connection, operation_id)
+
+    def require_active_claim(
+        self,
+        task_id: str,
+        *,
+        claim_token: str,
+        owner_fence: int,
+    ) -> IngressTask:
+        """Return one live Q0 claim or fail closed without taking a root lease.
+
+        This read-only predicate is the authority behind the deliberately narrow
+        task-spool grant.  It does not authorize metadata, Vault, vector, log,
+        or configuration writes; it merely proves that a worker still owns its
+        own pre-created temporary attempt directory at the moment it publishes
+        an asset.
+        """
+
+        task_id = _require_id(task_id, label="task_id")
+        token = _require_id(claim_token, label="claim_token")
+        if type(owner_fence) is not int or owner_fence <= 0:
+            raise ValueError("owner_fence 必须是正整数")
+        with self._read_connection() as connection:
+            row = connection.execute(
+                f"SELECT {self._COLUMNS} FROM ingress_tasks "
+                "WHERE task_id = ? AND state = ? AND claim_token = ? "
+                "AND owner_fence = ? AND claimed_until > CURRENT_TIMESTAMP",
+                (
+                    task_id,
+                    IngressState.PROCESSING.value,
+                    token,
+                    owner_fence,
+                ),
+            ).fetchone()
+        if row is None:
+            raise PKVRuntimeError(
+                ErrorCode.RUNTIME_PLAN_STALE,
+                "Q0 ingress 临时工作区 claim 已失效。",
+                stage=_STAGE,
+                recoverable=True,
+            )
+        return _task_from_row(row)
+
+    def list_submitted(self, *, limit: int = 8) -> tuple[IngressTask, ...]:
+        """Return a bounded, deterministic slice of Q0 tasks handed to Q1′."""
+
+        if type(limit) is not int or limit <= 0:
+            raise ValueError("limit 必须是正整数")
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                f"SELECT {self._COLUMNS} FROM ingress_tasks WHERE state = ? "
+                "ORDER BY created_at ASC, task_id ASC LIMIT ?",
+                (IngressState.SUBMITTED.value, limit),
+            ).fetchall()
+        return tuple(_task_from_row(row) for row in rows)
 
     def list_recoverable(self) -> tuple[IngressTask, ...]:
         states = (
@@ -899,6 +1302,8 @@ __all__ = [
     "IngressRequestSpool",
     "IngressState",
     "IngressTask",
+    "IngressTaskSpool",
+    "IngressTaskSpoolGrant",
     "IngressTaskStore",
     "PreparedReference",
 ]

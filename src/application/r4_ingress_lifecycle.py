@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from src.application.r4_lifecycle import R4ContentLifecycle, R4Q1Result
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.storage.content_lifecycle import (
+    ContentMutationState,
     PreparedDocument,
     PreparedDocumentReference,
     PreparedDocumentSpool,
@@ -22,10 +23,11 @@ from src.storage.content_lifecycle import (
 from src.storage.ingress_lifecycle import (
     IngressKind,
     IngressRequest,
-    IngressRequestReference,
     IngressRequestSpool,
     IngressState,
     IngressTask,
+    IngressTaskSpool,
+    IngressTaskSpoolGrant,
     IngressTaskStore,
     PreparedReference,
 )
@@ -72,6 +74,10 @@ class R4IngressLifecycle:
         return IngressRequestSpool(self._application.config.layout)
 
     @property
+    def task_spool(self) -> IngressTaskSpool:
+        return IngressTaskSpool(self._application.config.layout)
+
+    @property
     def prepared_spool(self) -> PreparedDocumentSpool:
         return PreparedDocumentSpool(self._application.config.layout)
 
@@ -79,7 +85,12 @@ class R4IngressLifecycle:
         """Persist a Q0 request while the caller owns the writer lease."""
 
         reference = self.spool.write(request)
-        return self.store.enqueue(request, reference)
+        task = self.store.enqueue(request, reference)
+        # The opaque task workspace is created while admission owns the root
+        # lease.  The later parser receives only a claim-fenced asset grant,
+        # never ambient authority over ``tmp/`` or another task's directory.
+        self.task_spool.ensure_task(task.task_id)
+        return task
 
     async def submit_and_drain(self, request: IngressRequest) -> R4IngressResult:
         """Admit once, then run one bounded Q0→Q1′ foreground continuation."""
@@ -115,6 +126,7 @@ class R4IngressLifecycle:
         # permitted foreground trigger also gives it one bounded continuation.
         with self._application._write_lease_scope():
             await self._q1.recover_and_drain(max_tasks=max_tasks)
+            self._discard_committed_task_spools_under_lease(max_tasks=max_tasks)
         return tuple(results)
 
     async def drain_task(self, task_id: str) -> R4IngressResult:
@@ -141,18 +153,23 @@ class R4IngressLifecycle:
                         stage=_STAGE,
                         recoverable=True,
                     )
-                return R4IngressResult(task, await self._q1.drain_task(q1_task.task_id))
+                result = R4IngressResult(task, await self._q1.drain_task(q1_task.task_id))
+                self._discard_task_spool_if_core_committed(result)
+                return result
             if task.state not in {IngressState.ACCEPTED, IngressState.RETRY_REQUIRED}:
                 return R4IngressResult(task)
             claimed = self.store.claim_task(task_id)
             if claimed is None:
                 return R4IngressResult(task)
+            task_spool = self.task_spool.prepare_attempt(claimed)
 
         # Q0's potentially slow operation deliberately has no root writer
-        # lease.  A prior admission is the durable authority for this work.
+        # lease.  A prior admission is the durable authority for this work;
+        # ``task_spool`` is a much narrower claim-fenced capability for
+        # temporary assets only.
         try:
             request = self.spool.read(claimed.request_reference)
-            entry = await self._prepare(request)
+            entry = await self._prepare(request, task_spool=task_spool)
             document = PreparedDocument.for_archive(
                 entry,
                 provenance={
@@ -165,7 +182,7 @@ class R4IngressLifecycle:
             )
         except PKVRuntimeError as error:
             return self._mark_prepare_failure(claimed, error)
-        except Exception as exc:
+        except Exception:
             return self._mark_prepare_failure(
                 claimed,
                 PKVRuntimeError(
@@ -212,6 +229,7 @@ class R4IngressLifecycle:
                 # durable state/code for diagnostics while removing the private
                 # source payload (which may contain URL credentials).
                 self.spool.discard(task.request_reference)
+                self.task_spool.discard_task(task.task_id)
             else:
                 # Bounded backoff is intentionally simple at Q0: every retry
                 # carries an explicit state and is not immediately re-crawled by
@@ -250,9 +268,40 @@ class R4IngressLifecycle:
         # request content is unnecessary; this placement also covers recovery
         # after a crash between ``prepared`` and ``submitted``.
         self.spool.discard(task.request_reference)
-        return R4IngressResult(task, await self._q1.drain_task(q1_task.task_id))
+        result = R4IngressResult(task, await self._q1.drain_task(q1_task.task_id))
+        self._discard_task_spool_if_core_committed(result)
+        return result
 
-    async def _prepare(self, request: IngressRequest) -> Entry:
+    def _discard_task_spool_if_core_committed(self, result: R4IngressResult) -> None:
+        """Release Q0 assets once Markdown+SQLite core commit is durable."""
+
+        if result.core_committed:
+            self.task_spool.discard_task(result.task.task_id)
+
+    def _discard_committed_task_spools_under_lease(self, *, max_tasks: int) -> None:
+        """Sweep bounded Q0 workspaces after Q1′ crash recovery.
+
+        Q1′ owns the final Markdown+SQLite proof.  This is cleanup only: no
+        task is selected by a caller-facing ambiguity and no provider work is
+        started here.
+        """
+
+        committed_states = {
+            ContentMutationState.CORE_COMMITTED,
+            ContentMutationState.AI_HANDOFF_PENDING,
+            ContentMutationState.COMPLETED,
+        }
+        for task in self.store.list_submitted(limit=max_tasks):
+            q1_task = self._q1.store.get_task_by_operation(task.operation_id)
+            if q1_task is not None and q1_task.state in committed_states:
+                self.task_spool.discard_task(task.task_id)
+
+    async def _prepare(
+        self,
+        request: IngressRequest,
+        *,
+        task_spool: IngressTaskSpoolGrant | None = None,
+    ) -> Entry:
         if self._preparer is not None:
             entry = await self._preparer(request)
         elif request.kind is IngressKind.TEXT:
@@ -262,7 +311,7 @@ class R4IngressLifecycle:
                 request.source
             )
         else:
-            entry = await self._fetch_request(request)
+            entry = await self._fetch_request(request, task_spool=task_spool)
         if not isinstance(entry, Entry):
             raise PKVRuntimeError(
                 ErrorCode.WORKFLOW_STEP_FAILED,
@@ -277,7 +326,12 @@ class R4IngressLifecycle:
             entry.tags = [tag for tag in manual_tags.split("\u001f") if tag]
         return entry
 
-    async def _fetch_request(self, request: IngressRequest) -> Entry:
+    async def _fetch_request(
+        self,
+        request: IngressRequest,
+        *,
+        task_spool: IngressTaskSpoolGrant | None = None,
+    ) -> Entry:
         """Use the existing safe fetch selectors without entering a workflow store step."""
 
         from src.workflow.models import WorkflowContext
@@ -300,6 +354,7 @@ class R4IngressLifecycle:
                 "timeout": 30,
             },
             runtime_config=self._application.config,
+            task_spool=task_spool,
         ).execute(context)
         entry = result.get("entry")
         if isinstance(entry, Entry):

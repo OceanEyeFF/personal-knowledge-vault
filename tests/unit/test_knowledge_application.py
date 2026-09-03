@@ -594,6 +594,11 @@ def test_writer_vector_store_binds_application_config_not_ambient_global(
     import src.storage.vector_store as vector_store_module
 
     config_b = _config(tmp_path)
+    # A writable VectorStore is a declared RuntimeLayout surface.  Bind this
+    # explicit application fixture to B's contained vector path rather than
+    # the legacy ad-hoc sibling path returned by the generic lightweight
+    # config fixture.
+    config_b.vector_index_dir = config_b.layout.vector_index_dir
     config_b.embedding_dim = 4
     config_b.embd_base_url = "https://embedding-b.example/v1"
     config_b.embd_model = "embedding-model-b"

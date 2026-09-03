@@ -6,12 +6,12 @@
 
 ## 模块职责
 
-**运维与自动化**:提供环境搭建、数据备份恢复、数据库迁移、测试环境管理等运维脚本。
+**运维与自动化**:提供环境搭建、隔离测试与受控诊断脚本；当前不提供公开的数据备份、恢复或旧库迁移命令。
 
 ### 核心理念
 
-- **自动化优先**: 一键完成环境搭建和数据管理
-- **安全第一**: 备份/恢复/迁移前强制确认
+- **自动化优先**: 一键完成环境搭建和隔离测试
+- **安全第一**: 未来真实维护能力必须先有 inspect/plan/confirm/execute 合同
 - **测试隔离**: 自动化运行路径锁定到 `.data-test`；Python guard 不是文件系统或 OS sandbox
 - **增量升级**: 数据库版本化管理,支持增量迁移
 
@@ -106,6 +106,9 @@
 # 直接运行 pytest（仍使用同一套测试路径隔离）
 .\scripts\run-test.ps1 -Direct -Command @("pytest", "tests\unit", "-q")
 
+# R4 source blackbox：真实 CLI/MCP 子进程仍只使用本次独立 DataRoot
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\r4-blackbox -Command @("python", "-m", "pytest", "tests/blackbox/test_r4_cli_fullflow.py", "tests/blackbox/test_r4_mcp_fullflow.py", "-q")
+
 # 运行仓库 Direct Python（只允许仓库 -m module 或 .py）
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\rebuild-dev -Command @("python", "scripts\rebuild-dev-vault.py", "--root", ".data-test/rebuild-dev", "--check-only", "--json")
 ```
@@ -115,6 +118,7 @@
 - 支持 `-DataRoot` 创建彼此隔离的测试场景
 - 默认 CLI、MCP 离线子进程由 `tests/offline_entrypoint.py` 启动；pytest 由同一入口的 `pytest` 目标在 pytest/plugin 导入前建立 G0，根 `tests/conftest.py` 再维持逐用例隔离
 - Direct Python（FT7）只允许显式 test-safe target：pytest、`setup-test-db.py`、`rebuild-dev-vault.py`、受控 consistency checker、`src.cli.commands`、`src.mcp.server`、`src.utils.verify_setup` 和固定 MCP 评测；其他仓库脚本/模块（含 build helper）在创建 DataRoot 前拒绝，`-c`、stdin 和解释器 flags 同样拒绝；同进程 `runpy` 在产品导入前清理 live/secret/proxy，并安装 base-only Config、网络及子进程 guard
+- R4 外置 deterministic Provider harness 只能由 pytest fixture 启动并通过正式 Provider 配置接入；它绑定随机 numeric-loopback endpoint。运行器不放宽产品 SSRF/SafeFetcher，也不允许真实 DNS、真实 URL、用户 Vault 或真实 Provider 凭据。
 - 隔离测试数据到 `.data-test/` 目录
 - 自动创建测试目录结构
 - 显示测试环境状态(绿色提示)
@@ -213,7 +217,7 @@ symlink/reparse 或竞态变化必须失败并保留现场。
 
 建议:
   ✓ 使用 .\scripts\run-test.ps1 进行测试
-  ✓ 重要变更前先备份: .\scripts\backup-data.ps1
+  ✓ 当前没有公开的备份/恢复命令；历史 `.data` 脚本已 fail-closed
 ```
 
 **使用场景**:
@@ -229,88 +233,14 @@ symlink/reparse 或竞态变化必须失败并保留现场。
 > 不构成当前默认运行时布局，也不会被 `setup-conda.ps1` 自动接管或迁移。任何旧目录迁移都须先
 > 展示影响、保留原目录并由用户明确确认。
 
-本节脚本会读取或替换生产 `.data/`，只供用户明确授权后的人工 runbook；AI 不执行。
+**当前状态：已停用。** `backup-data.ps1`、`backup.ps1` 和 `restore-data.ps1` 均在读取配置、
+打开数据根或访问历史 `.data/` 前以 exit `2` 失败。下面保留的历史说明只用于解释旧 checkout，
+不是可执行 runbook，也没有当前替代模块；只有在未来确认实际使用价值并以 Rust 设计长期支持时，
+才会重新定义公开维护能力。
 
-#### backup-data.ps1
+#### 已停用的 `backup*` / `restore-data.ps1`
 
-**用途**: 备份生产数据到 `.data-backup/` 目录
-
-**运行方式**:
-```powershell
-# 手动备份
-.\scripts\backup-data.ps1
-
-# 带说明的备份
-.\scripts\backup-data.ps1 -Message "重要更新前的备份"
-```
-
-**功能**:
-- 完整备份 `.data/` 目录
-- 生成备份信息文件(`backup-info.txt`):
-  - 时间戳
-  - 备份大小
-  - 文件数量
-  - 备份说明
-- 显示最近的 5 个备份
-- 自动计算备份大小和文件数
-
-**备份目录结构**:
-```
-.data-backup/
-└── 20260216-143000/
-    ├── backup-info.txt
-    └── .data/
-        ├── db/
-        ├── vectors/
-        ├── vault/
-        └── logs/
-```
-
-**最佳实践**:
-- 重要变更前先备份
-- 数据库 Schema 迁移前必须备份
-- 定期清理旧备份(手动)
-
----
-
-#### restore-data.ps1
-
-**用途**: 从备份恢复数据
-
-**运行方式**:
-```powershell
-# 交互式选择备份恢复
-.\scripts\restore-data.ps1
-
-# 恢复指定时间戳的备份
-.\scripts\restore-data.ps1 -BackupTimestamp "20260216-143000"
-```
-
-**功能**:
-- 列出所有可用备份(含详细信息)
-- 交互式选择备份版本
-- 安全确认机制(需输入 `YES`)
-- 自动验证恢复结果
-
-**交互流程**:
-```
-可用备份:
-  [1] 20260216-143000 (45.3 MB, 1250 files) - "重要更新前的备份"
-  [2] 20260216-120000 (42.1 MB, 1200 files)
-
-请选择要恢复的备份 [1-2]: 1
-
-⚠️ 警告: 恢复操作将完全替换当前 .data/ 目录!
-
-请输入 YES 确认恢复: YES
-
-恢复中...
-✓ 恢复完成
-```
-
-**警告**:
-- 恢复操作会**完全替换**当前 `.data/` 目录
-- 建议先备份当前数据再恢复
+这些名称仅保留为旧 checkout 的兼容围栏；调用必定在任何配置或数据路径访问前 exit `2`。它们没有可执行参数、没有当前替代命令，也不应被包装、推荐或作为迁移/恢复 runbook 引用。未来若真实使用需求稳定，必须以 Rust 长期模块重新定义数据范围、权限、备份留存、恢复验证和公开 lifecycle；在此之前，本仓库不提供这项能力。
 
 ---
 
@@ -334,22 +264,20 @@ symlink/reparse 或竞态变化必须失败并保留现场。
 - 执行迁移并记录到 `schema_version` 表
 - 显示迁移日志
 
-**迁移流程**:
+**历史流程（不可执行；不描述当前运行时行为）**:
 ```
 1. 检查当前版本: 1.0.0
 2. 扫描待迁移脚本:
    - 002_add_cli_tables.sql (v1.1.0)
    - ...（当前链的末端为 012_add_r4_content_submission.sql，v1.2.6）
-3. 自动备份到 .data-backup/
+3. 旧实现可选地写入 `.data-backup/`
 4. 执行迁移脚本
 5. 更新 schema_version 表
 6. 完成!
 ```
 
-**安全机制**:
-- 默认自动备份(可用 `--no-backup` 跳过)
-- 交互式确认(除非使用 `--auto`)
-- 失败自动回滚(如果可能)
+**历史机制**:
+- 旧实现曾有可选备份、交互确认与失败回滚；这些能力均未迁移为当前 API。
 
 详见: [docs/operations/数据库迁移指南.md](../docs/operations/数据库迁移指南.md)
 
@@ -479,33 +407,17 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ### Q3: 数据库迁移失败如何回滚?
 
-恢复会替换生产 `.data/`，必须取得用户明确授权并由用户执行；AI 不运行以下命令。
-
-1. **如果自动备份存在**:
-```powershell
-.\scripts\restore-data.ps1
-# 选择迁移前的备份
-```
-
-2. **如果没有备份**:
-- 迁移脚本中的"向下迁移"SQL 可以手动执行
-- 或从 Git 历史恢复数据库文件
-
-**最佳实践**: 迁移前**必须**先备份!
+当前没有可执行的旧库迁移、备份或恢复 runbook。`backup*` / `restore-data.ps1` 和 `migrate.py`
+都已 fail-closed；不得把 Git 历史或手工 SQL 当成当前产品恢复 API。真实维护仍受
+FT5、U1/G8 与用户明确授权阻塞，且只有未来正式 lifecycle 模块交付后才可定义回滚路径。
 
 ---
 
 ### Q4: 如何定期清理旧备份?
 
-```powershell
-# 列出所有备份(按日期排序)
-Get-ChildItem .data-backup | Sort-Object LastWriteTime
-
-# 保留最近 5 个备份,删除其他
-Get-ChildItem .data-backup | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Recurse -Force
-```
-
-**建议**: 保留至少 3-5 个备份
+当前不存在 PKV 管理的备份目录或清理命令。不要对历史 `.data-backup/` 套用递归删除示例；
+它属于用户资产时只能由用户在其自身流程中核对处理。未来 Rust 维护模块会另行定义 retention
+和安全清理合同。
 
 ---
 
@@ -563,17 +475,9 @@ git status --short
 
 ### 场景 4: 数据恢复
 
-```powershell
-# 1. 以下恢复流程会操作生产数据：必须由用户明确授权并执行，AI 不执行
-# 列出可用备份
-.\scripts\restore-data.ps1
-
-# 2. 选择要恢复的备份并确认
-
-# 3. 生产验证由用户执行；AI 不读取 .data/
-.\scripts\run-windows.ps1 python -m src.cli.commands stats
-.\scripts\run-windows.ps1 python -m src.cli.commands list --limit 5
-```
+当前没有数据恢复场景的产品 runbook。历史 `restore-data.ps1` 立即 exit `2`，不读取任何数据。
+真实恢复必须等待独立 Rust lifecycle 模块及用户授权；AI 不读取或操作用户 Vault、旧 `.data/`
+或备份目录。
 
 ---
 
@@ -630,8 +534,8 @@ U1/G8/FT5 user-only gate 尚未交付
 | `test-conda.ps1` | Conda 环境验证测试 |
 | `run-test.ps1` | 测试环境运行脚本 |
 | `check-environment.ps1` | 环境检测脚本 |
-| `backup-data.ps1` | 数据备份脚本 |
-| `restore-data.ps1` | 数据恢复脚本 |
+| `backup-data.ps1` | 已停用的历史 `.data` 备份入口（exit 2） |
+| `restore-data.ps1` | 已停用的历史 `.data` 恢复入口（exit 2） |
 
 ### Python 脚本
 
@@ -672,6 +576,10 @@ U1/G8/FT5 user-only gate 尚未交付
 
 ## 变更记录 (Changelog)
 
+### 2026-09-03 (R4-E)
+- 补充 R4 CLI/MCP source blackbox 的标准 wrapper 用法与 external harness 边界；P0、MCP
+  coverage 和 Phase C 都继续通过 `run-test.ps1` 的隔离入口执行。
+
 ### 2026-02-16 18:51
 - 生成 Scripts 模块 CLAUDE.md 文档
 - 添加导航面包屑
@@ -689,6 +597,6 @@ U1/G8/FT5 user-only gate 尚未交付
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-08-13
+**最后更新**: 2026-09-03
 
 *本文档由 Claude Code 自动生成*

@@ -16,7 +16,7 @@ from typing import Literal
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 
 
-WRITER_INVENTORY_VERSION = 3
+WRITER_INVENTORY_VERSION = 4
 
 WriterKind = Literal["product", "test_fixture", "historical_fenced"]
 
@@ -52,14 +52,15 @@ DATA_ROOT_WRITER_INVENTORY: tuple[DataRootWriter, ...] = (
             "vault/",
             "db/knowledge_vault.db",
             "runtime/operations/",
-            "runtime/r4/ingress/",
+            "runtime/r4/ingress/<request-id>.json",
+            "runtime/r4/ingress/<task-id>/<owner-fence>/assets/",
             "runtime/r4/prepared/",
             "vectors/",
             "tmp/",
         ),
         "KnowledgeApplication archive mutation",
         "product",
-        "read adapters open existing artifacts only",
+        "Q0 request/attempt directories are created under the lease; a live claim may publish only its own temporary assets while parsing outside it",
     ),
     DataRootWriter(
         "kernel_mutations",
@@ -119,7 +120,15 @@ DATA_ROOT_WRITER_INVENTORY: tuple[DataRootWriter, ...] = (
     ),
     DataRootWriter(
         "historical_maintenance",
-        ("scripts/legacy/**", "scripts/backfill_*.py", "scripts/init_db.py", "scripts/migrate.py"),
+        (
+            "scripts/legacy/**",
+            "scripts/backfill_*.py",
+            "scripts/init_db.py",
+            "scripts/migrate.py",
+            "scripts/backup-data.ps1",
+            "scripts/backup.ps1",
+            "scripts/restore-data.ps1",
+        ),
         "none (fenced)",
         "historical_fenced",
         "entrypoints fail closed before Config, network, or data-root access",

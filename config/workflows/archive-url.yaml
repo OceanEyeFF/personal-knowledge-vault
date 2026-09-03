@@ -1,18 +1,20 @@
 # Archive URL Workflow Configuration
 # 归档 URL 工作流配置
 #
-# 用途: 自动抓取、分析、优化并存储网页内容
+# 用途: 遗留 WorkflowEngine 的网页兼容配置；不是公开 R4 archive 的执行配置
 # 触发方式: CLI 命令 `pkv archive <url>`
 #
-# 数据流:
-#   输入 URL → 内容抓取 → AI 分析 → idea Sharpen → 持久化存储
+# 此 YAML 仅描述 WorkflowEngine 兼容步骤；该 Engine 路径可保留历史的 Analyze/Store 行为。
+# 真实 CLI/MCP `archive_url` 不执行该 step list：它由 KnowledgeApplication 直接进入
+# Q0 admission/PreparedDocument → Q1′ core commit/handoff → Q2 patch/generation。不要把 YAML
+# step 的直接 Store/Provider 行为当作 R4 source acceptance 证据。
 #
 # 工作流步骤说明:
 # 1. fetch_content: 使用 processors 抓取网页内容
-# 2. ai_analyze: 使用 DeepSeek 生成摘要和标签
+# 2. ai_analyze: 遗留 Engine step；真实 R4 summary/tag 由 Q2 patch 回送 Q1′
 # 3. idea_sharpen: 人机交互优化（可选，根据触发规则）
 # 4. review_entry: CLI 人工审核；GUI/MCP 通过 skip_review 显式跳过
-# 5. store_entry: 存储到 Markdown + SQLite + Vector
+# 5. store_entry: 遗留 Engine step；真实 R4 产品路径由 Q1′/Q2 协调 storage/generation
 
 schema_version: 1
 name: archive-url

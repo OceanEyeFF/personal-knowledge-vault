@@ -279,59 +279,12 @@ symlink/reparse 或目录竞态，会保留 workspace 并失败。
 
 ---
 
-#### `backup-data.ps1` - 数据备份脚本
+#### 已停用的历史数据脚本
 
-**用途**: 备份生产数据到 `.data-backup/` 目录
-
-**运行方式**:
-
-```powershell
-# 手动备份
-.\scripts\backup-data.ps1
-
-# 带说明的备份
-.\scripts\backup-data.ps1 -Message "重要更新前的备份"
-```
-
-**功能**:
-
-- ✅ 完整备份 `.data/` 目录
-- ✅ 生成备份信息文件（时间戳、大小、说明）
-- ✅ 显示最近的 5 个备份
-- ✅ 自动计算备份大小和文件数
-
-**最佳实践**:
-
-- 重要变更前先备份
-- 定期清理旧备份（手动）
-
----
-
-#### `restore-data.ps1` - 数据恢复脚本
-
-**用途**: 从备份恢复数据
-
-**运行方式**:
-
-```powershell
-# 交互式选择备份恢复
-.\scripts\restore-data.ps1
-
-# 恢复指定时间戳的备份
-.\scripts\restore-data.ps1 -BackupTimestamp "20260216-143000"
-```
-
-**功能**:
-
-- ✅ 列出所有可用备份（含详细信息）
-- ✅ 交互式选择备份版本
-- ✅ 安全确认机制（需输入 YES）
-- ✅ 自动验证恢复结果
-
-**警告**:
-
-- ⚠️ 恢复操作会**完全替换**当前 `.data/` 目录
-- ⚠️ 建议先备份当前数据再恢复
+`backup-data.ps1`、`backup.ps1` 与 `restore-data.ps1` 不是当前产品命令：三者在读取配置或
+触碰数据根前均 exit `2`。不要将它们用于备份、恢复、迁移或清理，也不要把它们包装进自动化。
+目前没有公开 backup/restore API；若将来证明实际使用稳定，必须以 Rust 长期模块重新设计
+权限、数据范围、留存、恢复验证和 inspect → plan → confirm → execute lifecycle。
 
 如需并行隔离多个测试场景，可显式指定数据根目录：
 

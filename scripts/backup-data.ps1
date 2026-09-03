@@ -9,6 +9,11 @@ param(
     [string]$Message = "手动备份"
 )
 
+[Console]::Error.WriteLine(
+    "backup-data.ps1 已停用：历史 .data 备份脚本不属于当前 PKV 运行时，未读取配置、未打开数据根。"
+)
+exit 2
+
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $backup_dir = ".data-backup/$timestamp"
 

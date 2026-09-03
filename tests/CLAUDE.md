@@ -416,6 +416,19 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 
 ## 变更记录 (Changelog)
 
+### 2026-09-03 (R4-E source acceptance)
+
+- R4 lifecycle 回归覆盖 Q0/Q1′/Q2 reload、fenced lease、handoff crash、stale source、
+  patch retry、generation pre/post-CAS 和 budget pause/authorized resume；这些是隔离、
+  seam-owned 的 deterministic 内部 lifecycle 证据，不以进程内 mock 替代公开边界。
+- `test_r4_cli_fullflow.py` 与 `test_r4_mcp_fullflow.py` 各自经真实 CLI/MCP stdio 子进程、
+  正式 Provider 配置和 payload 外 deterministic loopback harness 验证 archive → Q2 completed
+  → READY generation → 关闭 → 新进程 vector/hybrid retrieval。harness barrier 而非 sleep
+  协调调用，telemetry 不记录正文或凭据。
+- 该测试资产仅代表 source acceptance；P0、MCP coverage 与 Phase C 的运行记录见
+  `docs/overview/R4-E-源码验收记录-2026-09.md`。它不构成 Artifact/release acceptance，
+  compliance hold 不变。
+
 ### 2026-08-11 (M13 W3 打包链与 W4 held-candidate Artifact E2E)
 
 - W3 交付可复现 Windows test candidate 与 release payload 外 deterministic loopback harness；W2 registry 中仅 `chat.loopback_harness.v1` 升为 `packaging_contract_verified`，仍为 deferred、无产品 surface。
@@ -502,6 +515,6 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-08-07
+**最后更新**: 2026-09-03
 
 *本文档由 Claude Code 自动生成*

@@ -183,9 +183,21 @@ class FetchStep(BaseStep):
         config: Dict[str, Any],
         *,
         runtime_config: Any | None = None,
+        task_spool: Any | None = None,
     ) -> None:
         super().__init__(step_id, config)
         self._runtime_config = runtime_config
+        # R4 Q0 can pass a claim-fenced temporary-asset capability here.  This
+        # is a production processing contract, not a test mode: processors
+        # that do not need local temporary artifacts simply ignore it.
+        self._task_spool = task_spool
+
+    def _bind_task_spool(self, processor: Any) -> Any:
+        if self._task_spool is not None:
+            binder = getattr(processor, "bind_task_spool", None)
+            if callable(binder):
+                binder(self._task_spool)
+        return processor
 
     async def execute(self, context: WorkflowContext) -> Dict[str, Any]:
         """
@@ -234,6 +246,7 @@ class FetchStep(BaseStep):
                                 url,
                                 runtime_config=self._runtime_config,
                             )
+                    processor = self._bind_task_spool(processor)
                     process_file = getattr(processor, "process_file", None)
                     if not callable(process_file):
                         raise PKVRuntimeError(
@@ -255,6 +268,7 @@ class FetchStep(BaseStep):
                             url,
                             runtime_config=self._runtime_config,
                         )
+                    processor = self._bind_task_spool(processor)
                     process_text = getattr(processor, "process_text", None)
                     if not callable(process_text):
                         raise PKVRuntimeError(
@@ -276,6 +290,7 @@ class FetchStep(BaseStep):
                             processor_name,
                             config=self._runtime_config,
                         )
+                    processor = self._bind_task_spool(processor)
                     entry = await asyncio.wait_for(
                         processor.process(url),
                         timeout=timeout,
@@ -285,6 +300,7 @@ class FetchStep(BaseStep):
                         processor = get_processor(url)
                     else:
                         processor = get_processor(url, config=self._runtime_config)
+                    processor = self._bind_task_spool(processor)
                     entry = await asyncio.wait_for(
                         processor.process(url),
                         timeout=timeout,

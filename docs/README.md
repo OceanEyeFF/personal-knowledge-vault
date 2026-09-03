@@ -16,6 +16,7 @@
 - [当前事实基线-2026-03.md](./overview/当前事实基线-2026-03.md)
 - [阶段开发路线与依赖-2026-03.md](./overview/阶段开发路线与依赖-2026-03.md)
 - [后M13开发路线-2026-08.md](./overview/后M13开发路线-2026-08.md)（内部自测封包、知识成果与可选 Node）
+- [R4-E-源码验收记录-2026-09.md](./overview/R4-E-源码验收记录-2026-09.md)（R4 恢复矩阵与 source acceptance）
 - [PhaseB-推理型MCP路线图-2026-03.md](./overview/PhaseB-推理型MCP路线图-2026-03.md)
 - [文档与代码差异清单-2026-03.md](./overview/文档与代码差异清单-2026-03.md)
 - [personal-knowledge-vault-prd.md](./overview/personal-knowledge-vault-prd.md)

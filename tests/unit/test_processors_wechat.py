@@ -233,6 +233,51 @@ async def test_wechat_download_image_uses_contract(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_wechat_task_spool_avoids_shared_tmp_without_root_lease(tmp_path: Path):
+    """R4 Q0 may download a transient image through its fenced task workspace."""
+
+    processor, layout = _processor_with_layout(tmp_path)
+
+    class RecordingTaskSpool:
+        def __init__(self) -> None:
+            self.validations = 0
+            self.writes: list[tuple[str, bytes]] = []
+
+        def validate(self) -> None:
+            self.validations += 1
+
+        def write_image_asset(self, name: str, data: bytes) -> Path:
+            self.writes.append((name, data))
+            return tmp_path / "task-private-assets" / name
+
+    task_spool = RecordingTaskSpool()
+    processor.bind_task_spool(task_spool)
+    fetcher = MagicMock()
+    fetcher.fetch = AsyncMock(
+        return_value=SafeResponse(
+            url="https://mp.weixin.qq.com/s/article/image.png",
+            status_code=200,
+            headers={"content-type": "image/png"},
+            content=b"task-private-image",
+        )
+    )
+    processor._safe_fetcher = fetcher
+
+    uri = await processor._download_image(
+        "https://mp.weixin.qq.com/s/article/image.png"
+    )
+
+    assert uri is not None and "/task-private-assets/" in uri.replace("\\", "/")
+    assert len(task_spool.writes) == 1
+    asset_name, asset_bytes = task_spool.writes[0]
+    assert asset_name.startswith("wechat_") and asset_name.endswith(".png")
+    assert asset_bytes == b"task-private-image"
+    assert task_spool.validations >= 1
+    assert not layout.tmp_dir.exists()
+    fetcher.fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_wechat_entry_content_never_publishes_tmp_file_uri(tmp_path: Path):
     private_root = tmp_path / "PRIVATE_TMP_CANARY"
     private_root.mkdir()

@@ -775,10 +775,11 @@ python -m src.main archive "https://example.com" --quiet
 - `input_data` 键名：`url`, `skip_sharpen`, `manual_tags`
 - 返回 `WorkflowResult` 包含 `knowledge_id`, `file_path`
 
-启用且已确认 R4 内部自动化时，公开命令和 MCP Tool 名称不变，但实现会先持久化 Q0 ingress
-再运行 crawler/parser，并由 Q1′ 单独提交内容。此时 `degraded` 可表示“前处理中/入库中”或
-“文档已入库、AI 派生 processing/retry/budget/authorization 中”；只有 `core_committed` 才能
-称文档已保存，adapter 不得把这些状态重写为普通成功或空结果。
+带真实 production `Config` 的公开命令和 MCP Tool 名称不变，但实现始终先持久化 Q0 ingress
+再运行 crawler/parser，并由 Q1′ 单独提交内容。自动化 policy 只决定 Q2 Provider stages：
+未启用或未确认时 Q2 投影 disabled/authorization 且零 Provider。`degraded` 可表示“前处理中/
+入库中”或“文档已入库、AI 派生 processing/retry/budget/authorization 中”；只有
+`core_committed` 才能称文档已保存，adapter 不得把这些状态重写为普通成功或空结果。
 
 ---
 
@@ -800,11 +801,11 @@ python -m src.main archive-text "一条可归档的离线笔记" --format json
 
 **集成接口**:
 
-- 非 R4 compatibility 路径先调用 TextFallbackProcessor.process_text(text)，再调用
-  WorkflowEngine.execute_async("archive-text", input_data)，并固定
-  skip_review=true、skip_sharpen=true。
-- 已启用且已确认 R4 自动化时，文本先进入 private Q0 spool，生成版本化
-  `PreparedDocument` 后才由 Q1′ 写入 Markdown/SQLite；Q2 不能直接写内容或 flat vector。
+- `TextFallbackProcessor → WorkflowEngine.execute_async("archive-text", ...)` 是遗留
+  compatibility 测试/内部路径，不是当前 CLI/MCP public R4 archive。
+- 带真实 production `Config` 的文本始终先进入 private Q0 spool，生成版本化
+  `PreparedDocument` 后才由 Q1′ 写入 Markdown/SQLite；无论 policy 是否启用，Q2 都不能直接写
+  内容或 flat vector。只有已启用且已确认的 policy 才允许 Q2 创建 Provider。
 - success 一定已完成核心 Markdown/SQLite 归档；`degraded` 只有在
   `core_committed: true` 时保留该终态，否则表示已接受但仍在 Q0/Q1′ 前处理/提交。其余终态为错误。
 

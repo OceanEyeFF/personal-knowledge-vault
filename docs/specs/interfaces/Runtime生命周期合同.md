@@ -1,6 +1,8 @@
 # Runtime 生命周期合同（R2 基础）
 
-状态：R2 核心合同已实现并有隔离回归；CLI/MCP 等适配器只能投影本合同，不能重新解释或绕过它。
+状态：R2 核心合同与其上的 R4 Q0→Q1′→Q2 内部生命周期均已完成 source acceptance；
+CLI/MCP 等适配器只能投影本合同，不能重新解释或绕过它。R4 证据不提升 Artifact/release
+状态，见 [R4-E 源码验收记录](../../overview/R4-E-源码验收记录-2026-09.md)。
 
 ## 决策
 
@@ -116,28 +118,33 @@ embedding contract，因此 key rotation 本身不触发 vector rebuild。写入
 ## R3.1 writer inventory
 
 `src.runtime.writer_inventory.DATA_ROOT_WRITER_INVENTORY` 是版本化的
-data-root 持久写入清单（当前版本 `2`）。它明确区分：
+data-root 持久写入清单（当前版本 `4`）。它明确区分：
 
 - 产品 mutation owner：已确认 lifecycle、Application archive、Kernel delete/chat、
   Embedding generation、内部自动 AI lifecycle（task/用量/generation）、audit 与 runtime file logging；
 - `.data-test` 下的 offline fixture；
 - 必须在入口 fail-closed 的历史 maintenance/setup 脚本。
 
-产品 sink 在创建目录、打开可写文件、发布 snapshot、创建/恢复 writable VectorStore 或
-append audit 前，都必须验证当前 task/thread 持有同一 `RuntimeLayout` 的 R3 lease。缺失
-能力一律为 `write_busy` / `write_lease`，不是隐式取锁、更不是静默写入。只读/status 路径
-不获取 lease；`pkv.log` 为 delayed、layout+immutable-Config binding 的 handler，只有匹配
-binding 的 mutation scope 才能触发打开、轮转或追加。reload 会替换新的 binding，同时保留
-仍在飞行的旧 binding handler 至其 mutation 排空，避免旧写入混入新 snapshot。
+产品 sink 在创建目录、打开可写文件、发布 snapshot、创建/恢复显式 Config-bound 的 writable
+`VectorStore` 或 append audit 前，都必须验证当前 task/thread 持有同一 `RuntimeLayout` 的 R3
+lease。缺失能力一律为 `write_busy` / `write_lease`，不是隐式取锁、更不是静默写入。唯一窄例外
+是已被 Q0 claim 的 task-private temporary asset grant：其父目录在 lease 内创建，发布时复核
+task/token/fence/expiry，且当前只能写自己的 temporary-image 叶子；它不授权 Vault、SQLite、vector、日志、
+config 或其他任务目录。只读/status 路径不获取 lease；`pkv.log` 为 delayed、layout+immutable-
+Config binding 的 handler，只有匹配 binding 的 mutation scope 才能触发打开、轮转或追加。reload
+会替换新的 binding，同时保留仍在飞行的旧 binding handler 至其 mutation 排空，避免旧写入混入
+新 snapshot。
 
 ## R4 内部内容与自动 AI 生命周期
 
 schema `1.2.6` 在不改变公开 CLI/MCP/Kernel capability 的前提下增加私有 Q0→Q1′→Q2
 状态机。它是 archive 输入的实现细节，不是可由 adapter 直接调用的后台 daemon：
 
-- Q0 先在 writer lease 内接受 ingress identity/hash，再在 lease 外运行 crawler、文本或已授权
-  文件前处理；它只保存 private spool 引用，且所有完成/失败 transition 都受 claim token、expiry
-  和 owner fence 约束。
+- Q0 先在 writer lease 内接受 ingress identity/hash，并创建以 opaque `task_id` 和 `owner_fence`
+  命名的 private temporary workspace；再在 lease 外运行 crawler、文本或已授权文件前处理。它只保存
+  private spool 引用，且所有完成/失败 transition 都受 claim token、expiry 和 owner fence 约束。URL
+  抓取的原始 HTML 只在内存中处理，不落本地副本；当前 workspace 仅允许显式 temporary-image，文件
+  附件另待独立合同，Q1′ core commit 或 Q0 terminal rejection 后 best-effort 安全释放。
 - Q1′ 是 Markdown、SQLite metadata/chunks 和 `DerivationPatch` 的唯一内容 writer。每个已证明
   core commit 同事务登记可恢复 handoff，先发布 non-ready generation binding，后激活 Q2。
 - Q2 在重新捕获 source/target、确认当前 automation policy、not-before/retry 与 token/可选金额

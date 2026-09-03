@@ -13,6 +13,38 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### R4 自动 AI 生命周期与 R4-E source acceptance（2026-09-03）
+
+- R4 已从单独的 staged Embedding 内部合同收敛为 Q0 admission → Q1′ Markdown/SQLite
+  content commit → durable handoff → Q2 AI derivation → generation stage/validate/pointer CAS
+  的持久生命周期。摘要/标签只能以 `DerivationPatch` 回送 Q1′，Provider 调用在 writer
+  lease 外执行，reservation/actual usage 与 generation binding 均为 durable ledger。
+- 新增真实公开边界的离线黑盒：CLI `archive-text` 与 MCP stdio `archive_text` 各自经外置、
+  deterministic OpenAI-compatible Provider harness 完成 Q0/Q1′/Q2，关闭原进程后由全新
+  CLI/MCP 进程以 vector/hybrid search 命中刚归档内容。harness 只使用随机 numeric-loopback
+  端口、正式 Provider 配置和 barrier，不进入产品源码或 Artifact payload。
+- R4-E source evidence：定向 lifecycle 回归 `103 passed`、CLI/MCP 全流程黑盒 `2 passed`
+  （另一次独立重复运行也通过）、P0 `3274 passed, 21 skipped, 219 deselected, 35 warnings`、
+  MCP `779 passed, 5 deselected`（`src.mcp 95.15%`）、Phase C
+  `thresholds_met: true`。详情见
+  [R4-E 源码验收记录](../overview/R4-E-源码验收记录-2026-09.md)。
+- 这只完成 source acceptance；不新增 public rebuild API/CLI/MCP Tool、不授权真实
+  Provider/Vault/迁移，也不改变 Artifact/release compliance hold。
+
+### R3.1 writer/path hardening（2026-09-03）
+
+- `pkv.log` 已收敛为 delayed、layout/snapshot-bound 的 lease-owned writer：只读/status
+  路径不创建日志，只有已授权 mutation scope 才可打开、轮转或追加。
+- Q0 在 lease 内建立 opaque task/fence 私有 temporary-image workspace；慢解析在 lease 外
+  只能持有活跃 Q0 claim 的窄 asset capability。Q1′ commit/recovery/rejection 清理该空间，URL
+  原始 HTML 不落盘，通用附件持久化仍是独立后续合同。
+- 显式 Config/layout-bound writable `VectorStore` 复核 DataRoot containment 与当前 writer
+  lease；历史 `backup*` / `restore*` PowerShell 入口在读取 Config、网络或 data root 前
+  fail-closed（exit 2）。它们不再是当前维护 API；只有需求稳定并明确选择 Rust 长期支持时，
+  才另立正式模块与公开 lifecycle 设计。
+- 最终默认离线 P0 为 `3284 passed, 21 skipped, 219 deselected, 35 warnings`（exit 0）。该
+  source hardening 不新增 public rebuild/resume，不改变 Artifact/release compliance hold。
+
 ### 后 M13 最终隔离回归刷新与 R2 CLI adapter（2026-08-21）
 
 - 当前工作树的最终默认隔离全量回归通过：`3182 passed, 21 skipped, 219 deselected, 35 warnings`（exit 0）。该结果替代活动真相源中的上一轮当前全量计数，不改变 release hold、PyPI、默认数据根或 MCP stdio-only 合同。
@@ -20,7 +52,7 @@
 
 ### 后 M13 K1a/K2/K1b 与 R1–R4：限定内部验证（2026-08-21）
 
-- K1a/K2/K1b 与 R1–R4 的定向隔离回归和最终默认隔离全量回归均已通过：`3101 passed, 21 skipped, 219 deselected, 35 warnings`（exit 0）。本轮证据覆盖用户配置/数据布局、runtime lifecycle、受支持业务/数据写入的数据根 lease 与 `write_busy`、本地审计和 staged Embedding generation。
+- K1a/K2/K1b 与 R1–R4 的定向隔离回归和最终默认隔离全量回归均已通过：`3101 passed, 21 skipped, 219 deselected, 35 warnings`（exit 0）。这是当时的 checkpoint，覆盖用户配置/数据布局、runtime lifecycle、受支持业务/数据写入的数据根 lease 与 `write_busy`、本地审计和 staged Embedding generation；其后 R4 已扩展为上方记录的 Q0→Q1′→Q2 source acceptance。
 - K1b 只证明本地 wheel/source-free clean-install 兼容；R3 不宣称所有文件系统写入均已串行化，运行时日志写入归属和遗留维护 writer 仍是 R3.1 P1 hardening。
 - R4 仍是 runtime-internal staged core，不新增 `pkv_kernel`、CLI 或 MCP 的公共重建接口；public rebuild adapter、自动清理和公开 rollback 均属未来工作。
 - 所有验证只使用 `.data-test`、合成数据与 fake Provider；不改变 M13 release hold、PyPI 状态或 MCP stdio-only 合同。

@@ -20,6 +20,12 @@
 边界消费检索能力。默认离线验证不会连接真实 Embedding Provider、读取真实
 API key 或真实 Vault。
 
+R4 的 vector/hybrid/related 读取只经 Application-owned generation binding 解析已验证的
+`READY` generation；不得把根平铺 vector 文件作为 fallback，也不得将 binding 不一致伪装为
+`no_hits`。BM25 不依赖 generation，仍可严格只读；非 READY 的语义分支必须返回稳定的
+`degraded` / `error` issue。查询 Embedding Provider 仍按需创建，且只用于查询，不触发 R4
+task drain、retry 或任何 data-root 写入。
+
 ---
 
 ## 入口与启动
@@ -380,6 +386,8 @@ def _select_strategy(self, query: str) -> str:
 - ✅ `test_query_router_contract.py`: 策略路由与 lazy Provider
 - ✅ `test_retrievers_integration.py`: 三种检索器集成
 - ✅ `test_retrieval_integration.py`: 端到端集成
+- ✅ `tests/blackbox/test_r4_cli_fullflow.py` / `test_r4_mcp_fullflow.py`: archive 后关闭原
+  进程、从全新 CLI/MCP stdio 进程执行 vector/hybrid 并命中 READY generation
 
 ---
 
@@ -514,6 +522,6 @@ response = vector.search("deep learning")
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-08-07
+**最后更新**: 2026-09-03
 
 *本文档由 Claude Code 自动生成*

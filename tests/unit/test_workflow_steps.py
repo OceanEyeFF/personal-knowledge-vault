@@ -2,6 +2,11 @@
 Workflow steps unit tests.
 """
 
+# ruff: noqa: E402
+# This module deliberately establishes the repository import root before it
+# imports product modules, so it remains directly runnable as a legacy unit
+# module as well as through the project pytest entrypoint.
+
 import asyncio
 import logging
 import sys
@@ -168,6 +173,33 @@ async def test_fetch_step_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "entry" in result
     assert result["content"] == "Hello world"
     assert result["title"] == "Dummy Title"
+
+
+@pytest.mark.asyncio
+async def test_fetch_step_binds_q0_task_spool_only_to_opt_in_processor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Q0 workspace is an explicit processor capability, not ambient IO."""
+
+    class TaskSpoolAwareProcessor(DummyProcessor):
+        def __init__(self) -> None:
+            self.bound_task_spool = None
+
+        def bind_task_spool(self, task_spool: object) -> None:
+            self.bound_task_spool = task_spool
+
+    processor = TaskSpoolAwareProcessor()
+    task_spool = object()
+    monkeypatch.setattr("src.workflow.steps.get_processor", lambda _url: processor)
+
+    result = await FetchStep(
+        step_id="fetch",
+        config={"timeout": 1},
+        task_spool=task_spool,
+    ).execute(WorkflowContext({"url": "https://example.com"}))
+
+    assert result["title"] == "Dummy Title"
+    assert processor.bound_task_spool is task_spool
 
 
 @pytest.mark.asyncio

@@ -15,13 +15,20 @@
 - **错误处理**: 自动重试和降级策略
 - **配置驱动**: API Key 和参数来自不可变 `Config` snapshot；生产调用通过统一 Provider factory 构造
 
-W2 新增 `provider_factory.py` 与 `chat_provider.py`：Embedding 和 Chat 都从显式、不可变的配置快照构造，固定使用 `openai_compatible`，并传递 model/endpoint/timeout/retry/dimensions 等关键字段。Retrieval 的语义分支使用 lazy `embedder_factory`，BM25 或参数拒绝路径不会提前构造 Provider。默认自动化只注入 doubles，不连接真实 Provider、不读取真实 key 或真实 Vault；release 中不存在内置 fake/test mode。
+W2 新增 `provider_factory.py` 与 `chat_provider.py`：Embedding 和 Chat 都从显式、不可变的配置快照构造，固定使用 `openai_compatible`，并传递 model/endpoint/timeout/retry/dimensions 等关键字段。Retrieval 的语义分支使用 lazy `embedder_factory`，BM25 或参数拒绝路径不会提前构造 Provider。默认 unit/integration 自动化只注入 doubles；R4 公开黑盒经正式配置指向进程外 deterministic harness。两者均不连接真实 Provider、不读取真实 key 或真实 Vault。R4 harness/fake Provider 不在 product source 或 Artifact；既有 runner-constrained `PKV_TEST_OFFLINE` 隔离 seam 不是 Provider substitute，也不能由公开入口启用。
 
 内部组合使用 bundled `config/config.yaml` 与唯一可编辑的
 `%USERPROFILE%\\.pkv\\config.yaml` 构造 `Config`。`PKV_DATA_ROOT` 只选择
 数据根；`<data-root>/config/local.yaml` 只保存 PKV 管理的无密钥 runtime snapshot，
 不是 Provider 配置来源。外部 Wrapper 只使用 `pkv_kernel`，不得导入本目录的 `src.*`
 实现。
+
+R4 将 Provider 调用收敛到 Q2：Q0 不创建 Provider，Q1′ 不创建 Provider，Q2 只在
+policy/source/config re-check、token/optional-price reservation 与 task fence 通过后创建
+正式 Provider。summary/tag 的结果不能直接写内容，而是形成 immutable `DerivationPatch`
+回送 Q1′；Embedding 必须在 patch 完成后 stage/validate/pointer-CAS generation。默认测试的
+deterministic harness 只是产品进程外的正式 Provider 配置目标，不是源码或 Artifact 内的
+fake/test mode。
 
 ---
 
@@ -329,32 +336,16 @@ response = await self._call_api(prompt)
 
 ## 成本与性能
 
-### API 成本估算
+### R4 成本合同
 
-#### DeepSeek API
+产品不在模块文档或公开 envelope 中维护固定 Provider 单价、单次金额或月度估算。每次 Q2
+attempt 先以合并 token estimate 在 writer lease 内建立一条 reservation；各 stage 仍分别记录
+local estimate 和 Provider usage。Provider 成功后再记录其明确报告的 usage。未报告的
+uncached/cached/generated/embedding token 字段保持 `NULL`，绝不以零补齐。
 
-```
-定价: $0.14 / 1M tokens (输入)
-      $0.28 / 1M tokens (输出)
-
-示例: 2000 字文章生成摘要
-- 输入: ~3000 tokens × $0.14 / 1M = $0.00042
-- 输出: ~500 tokens × $0.28 / 1M = $0.00014
-- 总计: ~$0.00056 / 次
-
-月度估算: 1000 次/月 × $0.00056 = $0.56/月
-```
-
-#### OpenAI Embedding API
-
-```
-定价: $0.02 / 1M tokens (text-embedding-3-small)
-
-示例: 2000 字文章向量化
-- 输入: ~3000 tokens × $0.02 / 1M = $0.00006
-
-月度估算: 10,000 次/月 × $0.00006 = $0.60/月
-```
+货币金额在用户已确认 bundled、审阅过的 price card 与 currency 后即可计算和结算；日/月金额
+hard cap 是可选的附加阻断。没有 price card 时只记录 token，不推测、不显示金额。模型、Provider
+contract、token policy、price-card digest 或金额 policy 变化都会使自动化授权失效，必须重新确认。
 
 ### 性能优化策略
 
@@ -585,6 +576,6 @@ summary = await deepseek.summarize(content)
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-08-21
+**最后更新**: 2026-09-03
 
 *本文档由 Claude Code 自动生成*

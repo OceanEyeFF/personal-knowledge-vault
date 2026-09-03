@@ -1,7 +1,7 @@
 # ADR：知识变更与 Embedding Generation 一致性
 
-**状态：R4 内部生命周期实施中；公开 rebuild/release 仍为 held gate**
-**初始日期：2026-08-23；本次更新：2026-09-01**
+**状态：R4 内部生命周期已完成 source acceptance；公开 rebuild/release 仍为 held gate**
+**初始日期：2026-08-23；本次更新：2026-09-03**
 
 ## 决策
 
@@ -33,6 +33,11 @@ Q2 fenced 派生：核心 Markdown/SQLite 提交、durable handoff、AI patch �
 彼此分离。启用内部自动化时 Application 的 vector/related 读路径解析 ready generation，
 archive/delete 的历史 flat-vector 写入被拒绝或隔离；非 ready 状态不能被 `no_hits` 掩盖。
 
+R4-E 已以隔离、deterministic 的内部 lifecycle tests 和真实 CLI/MCP 子进程闭环验证上述 source
+合同：公开 archive 经过 Q0/Q1′/Q2 后，新的 CLI/MCP 进程可通过 READY generation 执行
+vector/hybrid retrieval。完整证据与未覆盖的公开 resume、强杀和 URL-fetch 边界见
+[R4-E 源码验收记录](./R4-E-源码验收记录-2026-09.md)。
+
 历史 workflow、flat store 和轻量 injected test graph 仍因兼容/characterization 存在，但它们
 不是 R4 产品路径或发布证据。R4 也不因此新增 rebuild CLI/MCP/Kernel capability，Developer
 Preview Artifact 继续保持 held，直至独立合规与发布 gate 关闭。
@@ -49,9 +54,10 @@ Preview Artifact 继续保持 held，直至独立合规与发布 gate 关闭。
 - archive/delete 的业务 mutation、binding 状态转换、任务 claim、用量/金额 reservation、实际
   用量结算、stage/pointer publish、审计和 runtime file log 都是产品 data-root writer，均须
   由同一 `RuntimeLayout` 的有效 R3 writer lease 保护。
-- 任何可能创建 Provider/网络客户端的自动任务都遵循：获得 writer lease → 重检任务、来源、
-  Config snapshot 与授权 → 用量配额预留（有价格卡时再预留金额）→ 创建 Provider。竞争者先得到 `write_busy`，不会先
-  构造 Provider 或发起网络。
+- 任何可能创建 Provider/网络客户端的自动任务都遵循：在 writer lease 内 claim、重检任务/来源/
+  Config snapshot/授权并建立 reservation（有价格卡时计算金额）→ **释放 lease** → 创建和调用
+  Provider；随后每次 durable transition 都以同一 claim/fence 重新取得 lease。竞争者先得到
+  `write_busy`，不会先构造 Provider 或发起网络。
 - 一个运行中的任务绑定其捕获的 Application snapshot；reload 不会把新 Config/Provider/
   Layout 混入旧任务。若重检发现 source、授权或 Config revision 漂移，旧任务持久化为
   stale/retry 状态，由新 snapshot 重新计划。
@@ -70,7 +76,7 @@ Preview Artifact 继续保持 held，直至独立合规与发布 gate 关闭。
 | `rebuild_required` | 核心 mutation 已提交，任务尚未 claim | 已授权并入队时为 `embedding_processing`；未授权时为 `embedding_automation_authorization_required` |
 | `processing` | worker 已 claim，且正重检、执行 AI 或构建 generation | `embedding_processing` |
 | `retry_required` | 可恢复的 Provider、stage 或 stale-plan 失败已持久化 | `embedding_retry_required`，带不泄密的下一步/重试原因 |
-| `budget_paused` | 用量配额或（有价格卡时的）金额 reservation 会超过日/月上限 | `embedding_budget_paused`，不得创建 Provider |
+| `budget_paused` | token 配额或（已配置金额 cap 时的）金额 reservation 会超过日/月上限 | `embedding_budget_paused`，不得创建 Provider |
 | `repair_required` | source、pointer、manifest 或账本不可验证 | `repair_required` |
 
 删除也必须先把 binding 置为非 ready，再由同一内部流程构建 successor generation。即使
@@ -141,7 +147,8 @@ daemon、Docker 或 GUI 代码带回 Core。
   confirm → execute upgrade 路径升级；R4 不执行真实迁移，也不隐式修改用户 Vault。
 - 不修改默认数据根、release hold、历史 release/install 合同或 MCP stdio-only 合同；不得
   重新引入 `src/gui`、PySide6、qasync、GUI 测试、`pkv-gui.exe`、Docker 或跨平台 CI parity。
-- 所有实现和验证仅使用 `scripts/run-test.ps1`、隔离 `.data-test`、合成数据与 fake Provider；
+- 所有实现和验证仅使用 `scripts/run-test.ps1`、隔离 `.data-test` 与合成数据；内部 recovery
+  测试使用受控 seam，公开全流程使用经正式 Provider 配置接入的进程外 deterministic harness。
   不读取真实 Vault、`%USERPROFILE%\\.pkv\\config.yaml` 或真实凭据。
 
 ## 持续实施确认点

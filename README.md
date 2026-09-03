@@ -16,19 +16,19 @@
 > 2026-08-07 M13 W2 收口：Workflow、Retrieval、MCP 与当时的 GUI Chat 源代码合同均已 `source_verified`；GUI 后续已从本仓库拆出。
 > 2026-08-11 M13 W3/W4：可复现打包链、payload 外 deterministic loopback harness 与 installed-Artifact 全矩阵已完成。外部 artifact-only 运行 `w4-53a45ed` 得到 10 个 scenario / 11 行 matrix / 10 verified / 0 failed / 0 pending，`functional_verified=true`；这是拆分前 held candidate 的历史证据。当前 headless payload 仍为 `test_candidate`，当前合规合同的 3 项 blocker 使其保持 `release_eligible=false`、`decision=hold`，不得作为正式发布。
 > 2026-08-19 K1a/K2/K1b：`pkv_kernel` 已冻结公开 API、版本/能力握手和 reload snapshot 合同，并完成本地离线 wheel/clean-install 验证；仓库外 clean venv 仅通过已安装的 `pkv_kernel` 启动，资源与合成数据根均受合同约束。默认离线全量为 `2954 passed, 21 skipped, 219 deselected`；这不是 PyPI 或正式发布结论。
-> 2026-08-21 R1–R4：个人配置/数据布局、inspect → plan → confirm → execute、受支持业务/数据写入的 lease / `write_busy` / 审计，以及 staged Embedding generation 的限定内部合同已由最终隔离全量 `3182 passed, 21 skipped, 219 deselected, 35 warnings` 验证。R2 CLI 已补 nested fresh-root adapter 回归，覆盖 setup plan、plan-only 零写及 PLAN_ID / `--allow-network` gate；R4 不公开 rebuild action；R3.1 与 public rebuild adapter 仍为后续 P1 gate，不改变 M13 release hold、PyPI、默认数据根或 MCP stdio-only 合同。
+> 2026-09-03 R4/R4-E：R4 已收敛为内部 Q0 admission → Q1′ Markdown + SQLite commit → Q2 AI derivation → staged generation/READY 的持久回路。真实 CLI 与 MCP stdio 黑盒均验证了归档、重启后 vector/hybrid 命中及 durable usage/reservation ledger；本轮 P0 为 `3274 passed, 21 skipped, 219 deselected, 35 warnings`，MCP 为 `779 passed, 5 deselected`（`src.mcp 95.15%`），Phase C `thresholds_met=true`。这是 source acceptance，不新增 public rebuild action，也不改变 M13 release hold、PyPI、默认数据根或 MCP stdio-only 合同。
 
 ## ✨ 核心特点
 
 - 🤖 **AI-First 设计**: 以 Claude Code/CodeX 作为智能协作伙伴，支持人机协作的知识处理
 - 🔌 **MCP 服务**: 标准 MCP 协议集成，AI Agent 可直接搜索、归档、浏览知识库
 - 🔍 **智能混合检索**: 自动路由 BM25/向量/混合检索策略，精确高效零成本浪费
-- ⚡ **工作流驱动归档**: 真实版本化 YAML 编排归档，终态与问题可观测
+- ⚡ **应用生命周期归档**: 公开归档由 Application 的 Q0→Q1′→Q2 生命周期协调；版本化 YAML 保留为遗留 WorkflowEngine 兼容合同
 - 🔒 **本地优先**: 数据完全掌控，Markdown 主存储，SQLite+向量辅助索引
-- 💰 **成本可控**: BM25 路径不构造 Provider，语义能力按需启用
+- 💰 **成本可控**: BM25 路径不构造 Provider；R4 先做 token budget/reservation，只有已确认 price card 时才计算金额
 - 🛡️ **AI 安全**: 内置安全规范，测试环境完全隔离，数据备份自动化
 
-> **当前支持边界**：本仓库的发布面只包含 Windows-first 的 CLI 与 MCP stdio；桌面 GUI 是单独仓库中的外部 Kernel Wrapper。向量/混合检索属于 CLI/MCP 的显式策略能力并依赖正常 Provider 配置。MCP HTTP transport 与 Bearer 合同不在本次发布面。默认自动化全程离线，只使用合成数据和可控 doubles，不读取真实 API key、真实 Provider 或真实 Vault。
+> **当前支持边界**：本仓库的发布面只包含 Windows-first 的 CLI 与 MCP stdio；桌面 GUI 是单独仓库中的外部 Kernel Wrapper。向量/混合检索属于 CLI/MCP 的显式策略能力并依赖正常 Provider 配置。MCP HTTP transport 与 Bearer 合同不在本次发布面。默认 unit/integration 自动化全程离线，只使用合成数据和可控 doubles；R4 公开全流程黑盒使用同样离线的进程外 deterministic harness，不读取真实 API key、真实 Provider 或真实 Vault。
 
 ## 🎯 核心功能
 
@@ -51,8 +51,8 @@
 - **智能摘要**: 三层摘要（一句话/100字/详细版）
 - **标签提取**: 自动生成标签和关键词
 - **内容分析**: 识别内容类型、评估字数复杂度
-- **Embedding**: 默认 OpenAI text-embedding-3-small；模型/维度与向量索引绑定，不建议随意更换
-- **成本控制**: DeepSeek API 低成本方案
+- **Embedding**: 模型/维度与 generation binding 绑定；变更必须经 inspect → plan → confirm → execute，不会静默替换活动 generation
+- **成本控制**: 自动化默认关闭；启用时需要 token hard cap 和 policy authorization。没有已确认 price card 时只记录 token，不展示推测价格
 
 ### 💻 CLI 命令
 
@@ -195,8 +195,8 @@ personal-knowledge-vault/
 ├── scripts/                           # 运维脚本 (v0.6.0)
 │   ├── setup-conda.ps1                # Conda 环境安装
 │   ├── test-conda.ps1                 # 环境验证
-│   ├── backup-data.ps1                # 数据备份
-│   ├── restore-data.ps1               # 数据恢复
+│   ├── backup-data.ps1                # 已停用的历史 .data 备份入口（fail-closed）
+│   ├── restore-data.ps1               # 已停用的历史 .data 恢复入口（fail-closed）
 │   ├── backfill_relations.py          # 已停用的历史关系回填入口（fail-closed）
 │   ├── migrate.py                     # 已停用的历史 Schema 迁移入口（fail-closed）
 │   ├── run-test.ps1                   # 默认隔离测试入口
@@ -431,7 +431,8 @@ steps:
 **测试环境完全隔离**:
 - 用户数据默认根：`%USERPROFILE%\.pkv\data`（`PKV_DATA_ROOT` 覆盖 `config.yaml` 的 `storage.data_root`）
 - 测试环境：`.data-test/`
-- 自动备份：`scripts/backup-data.ps1`
+- 当前没有公开的备份/恢复命令；历史 `.data` 脚本均 fail-closed，未来维护能力须另经
+  inspect → plan → confirm → execute 合同设计
 
 ### 🔄 数据库增量迁移 (v0.6.1)
 

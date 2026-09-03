@@ -67,6 +67,7 @@ class WechatProcessor(BaseProcessor):
             "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         )
         self.tmp_dir = runtime_config.tmp_dir
+        self._task_spool: Any | None = None
         self.max_images = _bounded_positive_int(
             max_images,
             hard_limit=MAX_WECHAT_IMAGES,
@@ -90,6 +91,18 @@ class WechatProcessor(BaseProcessor):
             return parse_http_target(url).hostname == "mp.weixin.qq.com"
         except Exception:
             return False
+
+    def bind_task_spool(self, task_spool: Any) -> None:
+        """Bind a claim-fenced Q0 temporary-asset workspace for this run.
+
+        Ordinary processor calls retain the established ``tmp/`` behavior.
+        R4 Q0 supplies this narrow capability so slow fetch/parsing does not
+        hold the root writer lease or write into the shared temporary directory.
+        """
+
+        if not callable(getattr(task_spool, "write_image_asset", None)):
+            raise TypeError("task_spool 必须提供 write_image_asset")
+        self._task_spool = task_spool
 
     async def process(self, url: str) -> Entry:
         """
@@ -335,9 +348,9 @@ class WechatProcessor(BaseProcessor):
             filename = f"wechat_{digest}{ext}"
 
             target_path = self.tmp_dir / filename
-            self._write_image_file(target_path, response.content)
+            stored_path = self._write_image_file(target_path, response.content)
 
-            return target_path.as_uri(), len(response.content), False
+            return stored_path.as_uri(), len(response.content), False
         except SafeFetchResponseLimitError:
             logger.warning(
                 "Failed to download image target=%s error_type=response_limit",
@@ -358,6 +371,14 @@ class WechatProcessor(BaseProcessor):
 
     def _prepare_tmp_dir(self) -> None:
         """通过统一目录合同准备微信图片临时目录。"""
+        if self._task_spool is not None:
+            # Task-spool parent directories were created during Q0 admission /
+            # claim while the root lease was held.  Here only the durable claim
+            # is rechecked; no shared ``tmp/`` directory is touched.
+            validator = getattr(self._task_spool, "validate", None)
+            if callable(validator):
+                validator()
+            return
         layout = getattr(self._config, "layout", None)
         if layout is not None:
             from src.runtime.writer_inventory import require_active_data_root_writer
@@ -370,12 +391,14 @@ class WechatProcessor(BaseProcessor):
             self.tmp_dir.mkdir(parents=True, exist_ok=True)
             validate_directory_components(self.tmp_dir, label="临时目录")
 
-    def _write_image_file(self, target_path: Path, content: bytes) -> None:
+    def _write_image_file(self, target_path: Path, content: bytes) -> Path:
         """写完整临时文件后原子发布；链接/硬链接叶子在任何写入前拒绝。"""
         # Keep this leaf operation safe when called directly as well as through
         # ``_download_images``; the atomic publisher deliberately requires an
         # already-created, validated parent directory.
         self._prepare_tmp_dir()
+        if self._task_spool is not None:
+            return self._task_spool.write_image_asset(target_path.name, content)
         layout = getattr(self._config, "layout", None)
         if layout is not None:
             layout.atomic_publish_user_file(
@@ -389,6 +412,7 @@ class WechatProcessor(BaseProcessor):
                 label="微信图片临时文件",
                 data=content,
             )
+        return target_path
 
 
 def _bounded_positive_int(value: int, *, hard_limit: int, label: str) -> int:

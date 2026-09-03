@@ -17,6 +17,17 @@
 
 M13 当前只支持 `archive-url.yaml` 与 `archive-text.yaml`。`search.yaml` 不受支持；搜索由 Retrieval 层及其 CLI/MCP adapter 直接执行。YAML 缺失、版本/字段非法、未知 step 或不可执行 condition 会在任何 step 副作用前 fail-closed。
 
+R4 的真实公开 archive **不执行**这些 YAML step list：CLI/MCP 由 `KnowledgeApplication`
+直接进入 `R4IngressLifecycle`，完成 Q0 admission/PreparedDocument，再由 Q1′/Q2 处理
+core mutation、Provider、patch 和 generation。Q0 URL 路径可复用 `FetchStep` 的抓取实现，并可
+传入 claim-fenced task-private temporary-asset spool 给愿意消费它的 processor；它不是通用写入
+能力，不能触及共享 `tmp/` 或其他产品路径。该路径不执行 `archive-url.yaml` 的 `AnalyzeStep` /
+`StoreStep` 管线。
+
+因此本模块和两个 YAML 是保留的 WorkflowEngine 兼容/characterization 合同。直接执行
+`AnalyzeStep` / `StoreStep` 仍可能走其遗留的 Provider/三层存储行为；它们不是 R4 产品路径，
+也不能用作 R4 source acceptance 的替代证据。
+
 ---
 
 ## 入口与启动
@@ -35,7 +46,7 @@ from pkv_kernel import get_kernel
 # 外部 Wrapper：只在 runtime lifecycle 已报告 READY 后取得公开 Kernel。
 kernel = get_kernel()
 
-# 归档会在 Application 边界内选择并执行 archive-url workflow。
+# 归档在 Application 的 R4 Q0 → Q1′ → Q2 lifecycle 中执行；不会执行 archive-url.yaml。
 result = await kernel.archive_url({"url": "https://mp.weixin.qq.com/xxx"})
 
 if result.terminal in {"success", "degraded"}:
@@ -139,7 +150,10 @@ class FetchStep(BaseStep):
     抓取内容步骤
 
     输入: context.state["url"]
-    输出: context.state["entry"] (Entry 数据类)
+    WorkflowEngine 兼容路径输出: Entry。
+
+    R4 Q0 可复用抓取实现后再构造 PreparedDocument，但不会执行 YAML 中后续的
+    AnalyzeStep / StoreStep。
     """
     async def execute(self, context: WorkflowContext) -> Dict[str, Any]:
         url = context.state.get("url")
@@ -155,10 +169,9 @@ class FetchStep(BaseStep):
 ```python
 class AnalyzeStep(BaseStep):
     """
-    AI 分析步骤（可选）
+    兼容组件步骤；不是 R4 archive 的 Provider 写入路径。
 
-    输入: context.state["entry"]
-    输出: 更新 entry 的 tags, abstract, summary_* 字段
+    R4 中摘要/标签由 Q2 产生 immutable DerivationPatch，再由 Q1′ 原子应用。
     """
     async def execute(self, context: WorkflowContext) -> Dict[str, Any]:
         entry = context.state.get("entry")
@@ -213,27 +226,21 @@ class IdeaSharpenStep(BaseStep):
 ```python
 class StoreStep(BaseStep):
     """
-    存储步骤
+    遗留 WorkflowEngine 组件；不是 R4 公开 archive 的存储实现。
 
-    输入: context.state["entry"]
-    输出: 保存到 Markdown + SQLite + Vector
+    直接执行本 step 会保留 Markdown/SQLite/flat-vector 的历史行为。R4 中 Q1′
+    通过 StorageCoordinator 提交 Markdown + SQLite，Q2 仅在 patch 完成后
+    stage/validate/pointer-CAS generation；公开 R4 archive 不调用本 step。
     """
     async def execute(self, context: WorkflowContext) -> Dict[str, Any]:
         entry = context.state.get("entry")
 
-        # 1. 保存到 Markdown
+        # Legacy component interface. It is intentionally not a public R4
+        # archive path; Application owns Q1′/Q2 for the real product flow.
         md_path = md_store.save(entry)
-
-        # 2. 保存到 SQLite
         sql_store.save_entry(entry)
-
-        # 3. 保存到向量索引
         await vec_store.add_entry(entry)
-
-        return {
-            "markdown_path": str(md_path),
-            "knowledge_id": entry.knowledge_id
-        }
+        return {"markdown_path": str(md_path), "knowledge_id": entry.knowledge_id}
 ```
 
 ---
@@ -251,19 +258,21 @@ class StoreStep(BaseStep):
 
 配置文件位置: `config/workflows/<workflow-name>.yaml`
 
-当前已有 2 个受支持工作流配置:
+当前已有 2 个受支持的**遗留 WorkflowEngine**配置:
 
 | 工作流 | 配置文件 | 用途 | 调用者 |
 |--------|---------|------|--------|
-| `archive-url` | `archive-url.yaml` | 归档网页 | CLI `archive` + MCP `archive_url` |
-| `archive-text` | `archive-text.yaml` | 归档纯文本 (M9 新增) | MCP `archive_text` |
+| `archive-url` | `archive-url.yaml` | 兼容网页流程 | 直接 WorkflowEngine/兼容测试 |
+| `archive-text` | `archive-text.yaml` | 兼容纯文本流程 | 直接 WorkflowEngine/兼容测试 |
 
 每个文件必须包含受支持的 `schema_version`、与文件名一致的 `name` 和非空 `steps`。schema 对顶层、step、config、condition 与 trigger 字段执行严格校验；未知字段不会被静默忽略。
 
-**archive-text 与 archive-url 的区别**:
-- `archive-text` 跳过 `fetch_content` 步骤(文本由 MCP Tool 层预构建 Entry)
-- `archive-text` 跳过 `idea_sharpen` 步骤(MCP 场景无终端交互)
-- `archive-text` 的 `ai_analyze` 设置 `on_error: continue`(AI 失败不阻断)
+**YAML 兼容流程的区别**:
+- `archive-text` 不含 URL fetch step；`archive-url` 包含 `fetch_content`
+- 这些配置不等于真实 R4 Q0/Q1′/Q2 路径，且不能证明 public archive 的 lease、usage 或 generation 合同
+
+真实 R4 `archive_text` 将字面文本作为 Q0 输入（路径形状文本不读取本地文件）；`archive_url`
+在 admission 后经 SafeFetcher/processor。两者随后进入 Q1′ core commit/handoff 和 Q2 lifecycle。
 
 ---
 
@@ -329,28 +338,21 @@ class State:
 
 ---
 
-## 工作流编排示例
+## 遗留 WorkflowEngine 编排示例
 
-### 归档工作流 (archive-url)
+### `archive-url.yaml`（不是公开 R4 archive）
 
 ```
 输入: {"url": "https://mp.weixin.qq.com/xxx"}
 
-步骤 1: FetchStep
-  → 调用 WechatProcessor
-  → 输出: {"entry": Entry(...)}
+步骤 1: FetchStep / Processor
+  → 输出 legacy Entry
 
-步骤 2: AnalyzeStep (可选)
-  → 调用 DeepSeek 生成摘要
-  → 输出: {"entry": Entry(...)} (更新 tags/abstract)
+步骤 2: AnalyzeStep / IdeaSharpenStep（按 YAML）
+  → 兼容行为
 
-步骤 3: IdeaSharpenStep (条件触发)
-  → 如果 word_count > 3000，触发交互对话
-  → 输出: {"user_notes": "..."}
-
-步骤 4: StoreStep
-  → 保存到 Markdown/SQLite/Vector
-  → 输出: {"markdown_path": "...", "knowledge_id": "..."}
+步骤 3: StoreStep
+  → 遗留 Markdown/SQLite/vector 写入
 
 最终输出: WorkflowResult(
     success=True,
@@ -368,18 +370,16 @@ class State:
 )
 ```
 
-### 归档文本工作流 (archive-text, M9 新增)
+### `archive-text.yaml`（不是公开 R4 archive）
 
 ```
-输入: {"entry": Entry(...)}  # MCP Tool 层已构建好 Entry
+输入: {"text": "..."}
 
-步骤 1: AnalyzeStep (on_error: continue)
-  → 调用 DeepSeek 生成摘要和标签
-  → 失败时保留 TextFallbackProcessor 的默认摘要
+步骤 1: AnalyzeStep（按 YAML）
+  → 兼容行为
 
 步骤 2: StoreStep
-  → 保存到 Markdown/SQLite/Vector
-  → 输出: {"markdown_path": "...", "knowledge_id": "..."}
+  → 遗留 Markdown/SQLite/vector 写入
 
 最终输出: WorkflowResult(
     success=True,
@@ -493,7 +493,7 @@ print("日志:", result.logs)
 
 配置级别的错误处理 (`on_error`):
 - `fail`: 步骤失败则终止整个工作流
-- `continue`: 步骤失败时记录稳定 warning/issue，继续后续步骤，并以 `degraded` 终态返回（archive-text 的 ai_analyze 使用此策略）
+- `continue`: 兼容 workflow step 失败时记录稳定 warning/issue，继续后续步骤，并以 `degraded` 终态返回；R4 的 Provider retry/budget 状态由 Q2 durable lifecycle 而不是 YAML `on_error` 决定
 
 ### Q4: 如何在步骤间传递数据？
 
@@ -510,12 +510,12 @@ class Step2(BaseStep):
         return {"result": data.upper()}
 ```
 
-### Q5: MCP 写入 Tool 如何调用工作流?
+### Q5: MCP 写入 Tool 如何调用 WorkflowEngine?
 
-MCP `archive_url` 和 `archive_text` Tool 调用共享的 `KnowledgeApplication`；只有
-Application 才在同一 Config snapshot 下组合 `WorkflowEngine`、steps、Provider 和
-Store。它会在 Processor/Provider 工作前取得 data-root writer lease，竞争时将
-`write_busy` 投影给 MCP，而不是让 Tool 直接创建 Engine：
+不会。MCP `archive_url` 和 `archive_text` Tool 调用共享的 `KnowledgeApplication`，但真实
+R4 archive 直接进入 `R4IngressLifecycle`，不构造或执行 `WorkflowEngine` 的 YAML pipeline。
+Application 在短 Q0 admission 和持久 transition 时取 data-root writer lease；crawler/processor
+和 Provider 都在该长时 lease 外执行。竞争时将 `write_busy` 投影给 MCP：
 
 ```python
 # archive_url Tool (简化示意)
@@ -545,8 +545,8 @@ result = await application.archive_text(text, title=title)
 
 | 文件 | 说明 |
 |------|------|
-| `config/workflows/archive-url.yaml` | 归档网页工作流配置 |
-| `config/workflows/archive-text.yaml` | 归档文本工作流配置 (M9 新增) |
+| `config/workflows/archive-url.yaml` | 遗留网页 WorkflowEngine 配置 |
+| `config/workflows/archive-text.yaml` | 遗留纯文本 WorkflowEngine 配置 (M9 新增) |
 
 ### 测试文件
 
@@ -570,6 +570,12 @@ result = await application.archive_text(text, title=title)
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-09-03 (R4)
+- 明确公开 archive 的实际路径为 Application-owned Q0 → Q1′ → Q2；WorkflowEngine/YAML
+  仍是遗留兼容合同，其直接 Analyze/Store 行为不能冒充该产品路径。
+- Q2 Provider、usage/reservation、DerivationPatch 和 generation READY 保持 Application
+  内部合同，不新增 daemon、public rebuild 或 MCP resume Tool。
 
 ### 2026-08-21 (K2/R3)
 - 明确 WorkflowEngine 仅由 Core Application 组合；外部 Wrapper 仅使用
@@ -599,6 +605,6 @@ result = await application.archive_text(text, title=title)
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-02-19 00:58:06
+**最后更新**: 2026-09-03
 
 *本文档由 Claude Code 自动生成*
