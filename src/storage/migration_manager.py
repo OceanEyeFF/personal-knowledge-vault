@@ -82,6 +82,13 @@ EXPECTED_TABLES_BY_VERSION = {
         "ai_derivation_reservations",
         "ai_derivation_usage",
     ),
+    "1.2.7": (
+        "outcome_topics",
+        "outcome_evidence",
+        "outcome_claims",
+        "outcome_claim_evidence",
+        "outcome_briefs",
+    ),
 }
 APPLICATION_TABLES_BY_MIGRATION = {
     "001_initial_schema.sql": frozenset(
@@ -118,6 +125,15 @@ APPLICATION_TABLES_BY_MIGRATION = {
             "ai_derivation_usage",
         }
     ),
+    "013_add_traceable_outcomes.sql": frozenset(
+        {
+            "outcome_topics",
+            "outcome_evidence",
+            "outcome_claims",
+            "outcome_claim_evidence",
+            "outcome_briefs",
+        }
+    ),
 }
 FTS_REBUILD_VERSIONS = {"1.2.2", "1.2.3"}
 LATEST_REQUIRED_TABLES = frozenset(
@@ -146,6 +162,11 @@ LATEST_REQUIRED_TABLES = frozenset(
         "ingress_tasks",
         "ai_derivation_reservations",
         "ai_derivation_usage",
+        "outcome_topics",
+        "outcome_evidence",
+        "outcome_claims",
+        "outcome_claim_evidence",
+        "outcome_briefs",
     }
 )
 

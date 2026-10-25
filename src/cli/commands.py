@@ -1740,6 +1740,572 @@ def repair(apply: bool, confirm: str | None, allow_network: bool) -> None:
     )
 
 
+@cli.group("embedding")
+def embedding() -> None:
+    """检查或显式重建 generation-based Embedding 索引。"""
+
+
+def _embedding_rebuild_payload(
+    inspection: object,
+    plan: object | None,
+    *,
+    execution: object | None = None,
+) -> dict[str, object]:
+    """Build the stable, source/path-free foreground rebuild envelope."""
+
+    serialize_inspection = getattr(inspection, "to_dict", None)
+    serialize_plan = getattr(plan, "to_dict", None) if plan is not None else None
+    if not callable(serialize_inspection) or (
+        plan is not None and not callable(serialize_plan)
+    ):
+        raise TypeError("Embedding rebuild Kernel 返回了无效公共 DTO")
+    payload: dict[str, object] = {
+        "terminal": "success",
+        "status": "success",
+        "operation": "embedding_rebuild",
+        "inspection": serialize_inspection(),
+        "plan": serialize_plan() if callable(serialize_plan) else None,
+    }
+    if execution is not None:
+        serialize_execution = getattr(execution, "to_dict", None)
+        if not callable(serialize_execution):
+            raise TypeError("Embedding rebuild Kernel 返回了无效执行 DTO")
+        payload["execution"] = serialize_execution()
+    return payload
+
+
+def _embedding_rebuild_failure(exc: BaseException) -> None:
+    """Project a foreground rebuild failure without local paths or source text."""
+
+    payload = project_bootstrap_error(
+        exc,
+        adapter="cli",
+        stage="embedding_rebuild",
+    )
+    payload["terminal"] = "error"
+    payload["operation"] = "embedding_rebuild"
+    _emit_lifecycle_payload(payload, error=True)
+    raise click.exceptions.Exit(1)
+
+
+def _run_embedding_rebuild(
+    *,
+    action: str,
+    force: bool = False,
+    apply: bool = False,
+    confirm: str | None = None,
+    allow_network: bool = False,
+) -> None:
+    """Project the public Kernel rebuild lifecycle onto one CLI invocation."""
+
+    try:
+        from pkv_kernel import embedding as kernel_embedding
+
+        config = _load_config()
+        inspection = kernel_embedding.inspect_embedding_rebuild(config)
+        if action == "inspect":
+            _emit_lifecycle_payload(_embedding_rebuild_payload(inspection, None))
+            return
+        plan = kernel_embedding.plan_embedding_rebuild(inspection, force=force)
+        if not apply:
+            if confirm is not None or allow_network:
+                raise PKVRuntimeError(
+                    ErrorCode.CONFIRMATION_REQUIRED,
+                    "--confirm 和 --allow-network 只能与 --apply 一起使用。",
+                    stage="embedding_rebuild",
+                    recoverable=True,
+                )
+            _emit_lifecycle_payload(_embedding_rebuild_payload(inspection, plan))
+            return
+        if not confirm:
+            raise PKVRuntimeError(
+                ErrorCode.CONFIRMATION_REQUIRED,
+                "执行 Embedding 重建需要 --confirm PLAN_ID。",
+                stage="embedding_rebuild",
+                recoverable=True,
+            )
+        if confirm != plan.plan_id:
+            raise PKVRuntimeError(
+                ErrorCode.RUNTIME_PLAN_STALE,
+                "确认不属于当前 Embedding 重建计划。",
+                stage="embedding_rebuild",
+                recoverable=True,
+            )
+        execution = kernel_embedding.execute_embedding_rebuild(
+            plan,
+            kernel_embedding.confirm_embedding_rebuild(
+                plan,
+                approved=True,
+                allow_network=allow_network,
+            ),
+        )
+        _emit_lifecycle_payload(
+            _embedding_rebuild_payload(inspection, plan, execution=execution)
+        )
+    except click.exceptions.Exit:
+        raise
+    except PKVRuntimeError as exc:
+        _embedding_rebuild_failure(exc)
+    except Exception as exc:
+        _embedding_rebuild_failure(exc)
+
+
+@embedding.command("inspect")
+def embedding_inspect() -> None:
+    """无副作用检查 generation binding 和手动重建预算。"""
+
+    _run_embedding_rebuild(action="inspect")
+
+
+@embedding.command("rebuild")
+@click.option(
+    "--force",
+    is_flag=True,
+    help="即使当前 generation 已就绪也生成一份新的显式重建计划。",
+)
+@_lifecycle_apply_options
+def embedding_rebuild(
+    force: bool,
+    apply: bool,
+    confirm: str | None,
+    allow_network: bool,
+) -> None:
+    """展示或执行确认后的 generation rebuild，默认只展示计划。"""
+
+    _run_embedding_rebuild(
+        action="rebuild",
+        force=force,
+        apply=apply,
+        confirm=confirm,
+        allow_network=allow_network,
+    )
+
+
+_OUTCOME_PUBLIC_MESSAGES = {
+    ErrorCode.OUTCOME_NOT_FOUND: "请求的研究成果对象不存在。",
+    ErrorCode.OUTCOME_INVALID: "研究成果参数无效。",
+    ErrorCode.OUTCOME_STATE_CONFLICT: "研究成果状态已变化，请重新读取后再操作。",
+    ErrorCode.OUTCOME_EVIDENCE_STALE: "证据来源已变化或不可用，需要重新核对。",
+    ErrorCode.OUTCOME_APPROVAL_BLOCKED: "研究成果尚未满足批准条件。",
+    ErrorCode.DATABASE_UPGRADE_REQUIRED: "知识库需要先升级后才能使用研究成果。",
+    ErrorCode.WRITE_BUSY: "另一个应用正在写入知识库，请稍后重试。",
+    ErrorCode.DATA_ROOT_UNSAFE: "成果输出目录未通过安全检查。",
+    ErrorCode.PATH_STATE_UNDETERMINED: "无法安全确认成果输出目录状态。",
+}
+
+
+def _emit_outcome_payload(payload: dict[str, object], *, error: bool = False) -> None:
+    """Write one deterministic JSON envelope for the P1-B CLI surface."""
+
+    click.echo(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        err=error,
+    )
+
+
+def _outcome_failure(exc: BaseException, *, operation: str) -> None:
+    """Project outcome errors without echoing an input locator, path, or body."""
+
+    if isinstance(exc, PKVRuntimeError):
+        code = exc.code
+        message = _OUTCOME_PUBLIC_MESSAGES.get(code, "研究成果操作未能完成。")
+        recoverable = exc.recoverable
+    elif isinstance(exc, (TypeError, ValueError)):
+        code = ErrorCode.OUTCOME_INVALID
+        message = _OUTCOME_PUBLIC_MESSAGES[code]
+        recoverable = False
+    else:
+        code = ErrorCode.OUTCOME_INVALID
+        message = "研究成果操作暂时不可用。"
+        recoverable = True
+    _emit_outcome_payload(
+        {
+            "status": "error",
+            "operation": operation,
+            "issues": [
+                {
+                    "code": code.value,
+                    "message": message,
+                    "stage": "outcome",
+                    "recoverable": recoverable,
+                }
+            ],
+        },
+        error=True,
+    )
+    raise click.exceptions.Exit(1)
+
+
+def _outcome_result_payload(*, operation: str, result: object) -> dict[str, object]:
+    serializer = getattr(result, "to_dict", None)
+    if not callable(serializer):
+        raise TypeError("研究成果服务返回无效结果")
+    payload = serializer()
+    if not isinstance(payload, dict):
+        raise TypeError("研究成果服务返回无效结果")
+    return {"status": "success", "operation": operation, "result": payload}
+
+
+@cli.group("outcome")
+def outcome() -> None:
+    """维护可追溯 Topic、Evidence、Claim 和 research brief。"""
+
+
+@outcome.command("create-topic")
+@click.option("--title", required=True, help="具体研究主题标题")
+@click.option("--question", required=True, help="需要回答的具体问题")
+def outcome_create_topic(title: str, question: str) -> None:
+    """创建一个不触发检索、Provider 或网络的研究主题。"""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        _emit_outcome_payload(
+            _outcome_result_payload(
+                operation="create_topic",
+                result=kernel_outcomes.create_topic(title=title, question=question),
+            )
+        )
+    except click.exceptions.Exit:
+        raise
+    except BaseException as exc:
+        _outcome_failure(exc, operation="create_topic")
+
+
+@outcome.command("get")
+@click.argument("topic_id")
+def outcome_get(topic_id: str) -> None:
+    """读取一份 revalidated 研究成果视图，不写入状态。"""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        bundle = kernel_outcomes.get_outcome(topic_id)
+        _emit_outcome_payload(_outcome_result_payload(operation="get", result=bundle))
+    except click.exceptions.Exit:
+        raise
+    except BaseException as exc:
+        _outcome_failure(exc, operation="get")
+
+
+@outcome.command("list")
+@click.option("--limit", type=int, default=100, show_default=True)
+@click.option("--offset", type=int, default=0, show_default=True)
+def outcome_list(limit: int, offset: int) -> None:
+    """列出研究主题，不依赖随机时间排序。"""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        topics = kernel_outcomes.list_topics(limit=limit, offset=offset)
+        _emit_outcome_payload(
+            {
+                "status": "success",
+                "operation": "list_topics",
+                "topics": [topic.to_dict() for topic in topics],
+            }
+        )
+    except click.exceptions.Exit:
+        raise
+    except BaseException as exc:
+        _outcome_failure(exc, operation="list_topics")
+
+
+@outcome.command("attach-evidence")
+@click.argument("topic_id")
+@click.argument("locator")
+@click.option(
+    "--acquisition-method",
+    type=click.Choice(["user_selected", "bm25", "relation"], case_sensitive=True),
+    default="user_selected",
+    show_default=True,
+)
+@click.option(
+    "--retrieval-status",
+    type=click.Choice(["not_requested", "success", "degraded"], case_sensitive=True),
+    default="not_requested",
+    show_default=True,
+)
+@click.option("--limitation-code", "limitation_codes", multiple=True)
+def outcome_attach_evidence(
+    topic_id: str,
+    locator: str,
+    acquisition_method: str,
+    retrieval_status: str,
+    limitation_codes: tuple[str, ...],
+) -> None:
+    """绑定用户选择的 entry/chunk/relation locator 和其版本摘要。"""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        _emit_outcome_payload(
+            _outcome_result_payload(
+                operation="attach_evidence",
+                result=kernel_outcomes.attach_evidence(
+                    topic_id=topic_id,
+                    locator=locator,
+                    acquisition_method=acquisition_method,
+                    retrieval_status=retrieval_status,
+                    limitation_codes=limitation_codes,
+                ),
+            )
+        )
+    except click.exceptions.Exit:
+        raise
+    except BaseException as exc:
+        _outcome_failure(exc, operation="attach_evidence")
+
+
+@outcome.command("detach-evidence")
+@click.argument("evidence_id")
+def outcome_detach_evidence(evidence_id: str) -> None:
+    """解除一条显式证据绑定；不会推断或改绑替代来源。"""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        kernel_outcomes.detach_evidence(evidence_id)
+        _emit_outcome_payload(
+            {
+                "status": "success",
+                "operation": "detach_evidence",
+                "result": {"evidence_id": evidence_id},
+            }
+        )
+    except click.exceptions.Exit:
+        raise
+    except BaseException as exc:
+        _outcome_failure(exc, operation="detach_evidence")
+
+
+@outcome.command("suggest-evidence")
+@click.argument("topic_id")
+@click.argument("query")
+@click.option("--limit", type=int, default=10, show_default=True)
+def outcome_suggest_evidence(topic_id: str, query: str, limit: int) -> None:
+    """仅用严格 BM25 产生仍需用户确认绑定的候选。"""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        _emit_outcome_payload(
+            _outcome_result_payload(
+                operation="suggest_evidence",
+                result=kernel_outcomes.suggest_evidence(
+                    topic_id=topic_id,
+                    query=query,
+                    limit=limit,
+                ),
+            )
+        )
+    except click.exceptions.Exit:
+        raise
+    except BaseException as exc:
+        _outcome_failure(exc, operation="suggest_evidence")
+
+
+@outcome.command("create-claim")
+@click.argument("topic_id")
+@click.argument("statement")
+@click.option(
+    "--state",
+    type=click.Choice(
+        ["draft", "supported", "contested", "insufficient", "withdrawn"],
+        case_sensitive=True,
+    ),
+    default="draft",
+    show_default=True,
+)
+@click.option("--limitation-code", "limitation_codes", multiple=True)
+def outcome_create_claim(
+    topic_id: str,
+    statement: str,
+    state: str,
+    limitation_codes: tuple[str, ...],
+) -> None:
+    """记录显式主张状态，不执行自动判断。"""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        _emit_outcome_payload(
+            _outcome_result_payload(
+                operation="create_claim",
+                result=kernel_outcomes.create_claim(
+                    topic_id=topic_id,
+                    statement=statement,
+                    state=state,
+                    limitation_codes=limitation_codes,
+                ),
+            )
+        )
+    except click.exceptions.Exit:
+        raise
+    except BaseException as exc:
+        _outcome_failure(exc, operation="create_claim")
+
+
+@outcome.command("revise-claim")
+@click.argument("claim_id")
+@click.option("--statement")
+@click.option(
+    "--state",
+    type=click.Choice(
+        ["draft", "supported", "contested", "insufficient", "withdrawn"],
+        case_sensitive=True,
+    ),
+)
+@click.option("--limitation-code", "limitation_codes", multiple=True)
+@click.option("--expected-revision", type=int)
+def outcome_revise_claim(
+    claim_id: str,
+    statement: str | None,
+    state: str | None,
+    limitation_codes: tuple[str, ...],
+    expected_revision: int | None,
+) -> None:
+    """修改主张，并可按其 revision 防止覆盖并发编辑。"""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        supplied_limits = limitation_codes if limitation_codes else None
+        _emit_outcome_payload(
+            _outcome_result_payload(
+                operation="revise_claim",
+                result=kernel_outcomes.revise_claim(
+                    claim_id=claim_id,
+                    statement=statement,
+                    state=state,
+                    limitation_codes=supplied_limits,
+                    expected_revision=expected_revision,
+                ),
+            )
+        )
+    except click.exceptions.Exit:
+        raise
+    except BaseException as exc:
+        _outcome_failure(exc, operation="revise_claim")
+
+
+@outcome.command("link-evidence")
+@click.argument("claim_id")
+@click.argument("evidence_id")
+@click.option(
+    "--polarity",
+    type=click.Choice(["support", "counter"], case_sensitive=True),
+    required=True,
+)
+def outcome_link_evidence(claim_id: str, evidence_id: str, polarity: str) -> None:
+    """声明一条 support 或 counter 的 Claim→Evidence 关系。"""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        _emit_outcome_payload(
+            _outcome_result_payload(
+                operation="link_evidence",
+                result=kernel_outcomes.link_claim_evidence(
+                    claim_id=claim_id,
+                    evidence_id=evidence_id,
+                    polarity=polarity,
+                ),
+            )
+        )
+    except click.exceptions.Exit:
+        raise
+    except BaseException as exc:
+        _outcome_failure(exc, operation="link_evidence")
+
+
+@outcome.command("unlink-evidence")
+@click.argument("claim_id")
+@click.argument("evidence_id")
+def outcome_unlink_evidence(claim_id: str, evidence_id: str) -> None:
+    """解除一条 Claim→Evidence 关系，不改变任何其他绑定。"""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        result = kernel_outcomes.unlink_claim_evidence(
+            claim_id=claim_id,
+            evidence_id=evidence_id,
+        )
+        _emit_outcome_payload(
+            _outcome_result_payload(operation="unlink_evidence", result=result)
+        )
+    except click.exceptions.Exit:
+        raise
+    except BaseException as exc:
+        _outcome_failure(exc, operation="unlink_evidence")
+
+
+@outcome.command("render")
+@click.argument("topic_id")
+def outcome_render(topic_id: str) -> None:
+    """复核所有绑定后，发布新的 immutable research brief revision。"""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        _emit_outcome_payload(
+            _outcome_result_payload(
+                operation="render_research_brief",
+                result=kernel_outcomes.render_research_brief(topic_id=topic_id),
+            )
+        )
+    except click.exceptions.Exit:
+        raise
+    except BaseException as exc:
+        _outcome_failure(exc, operation="render_research_brief")
+
+
+@outcome.command("approve")
+@click.argument("topic_id")
+def outcome_approve(topic_id: str) -> None:
+    """显式批准一份当前证据完整的 research brief。"""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        _emit_outcome_payload(
+            _outcome_result_payload(
+                operation="approve_research_brief",
+                result=kernel_outcomes.approve_research_brief(topic_id=topic_id),
+            )
+        )
+    except click.exceptions.Exit:
+        raise
+    except BaseException as exc:
+        _outcome_failure(exc, operation="approve_research_brief")
+
+
+@outcome.command("return")
+@click.argument("topic_id")
+def outcome_return(topic_id: str) -> None:
+    """退回一份 research brief，等待新的明确修订和渲染。"""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        _emit_outcome_payload(
+            _outcome_result_payload(
+                operation="return_research_brief",
+                result=kernel_outcomes.return_research_brief(topic_id=topic_id),
+            )
+        )
+    except click.exceptions.Exit:
+        raise
+    except BaseException as exc:
+        _outcome_failure(exc, operation="return_research_brief")
+
+
 @cli.command("archive")
 @click.argument("url_or_path")
 @click.option("--skip-sharpen", is_flag=True, help="跳过 idea Sharpen 交互")

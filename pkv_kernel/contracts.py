@@ -50,6 +50,8 @@ KERNEL_CAPABILITIES = frozenset(
         "kernel.entries.v1",
         "kernel.chat-sessions.v1",
         "kernel.configuration-snapshot-reload.v1",
+        "kernel.embedding-rebuild.v1",
+        "kernel.traceable-outcomes.v1",
     }
 )
 

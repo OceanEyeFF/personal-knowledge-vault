@@ -3,11 +3,42 @@
 > **AI-First Knowledge Workflow System**
 > 工作流驱动的个人知识管理系统
 
-**最后更新**: 2026-09-03
+**最后更新**: 2026-10-25（W2 根身份、Q1 与 CLI 门禁修复；W3–W5 未推进）
 
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-10-25（W2 身份、队列与 CLI 修复）
+
+- R-01 公共确认绑定根和同次已验证的完整 runtime snapshot；保留 v1 durable replay
+  算法，以免既有活跃操作失去围栏。R-07 统一 Q1 本地动作、恢复和有界进展；R-08 将
+  readiness gate 下移到成功解析的显式叶子路径。
+- 最终联合 `120 passed, 7 failed`：原 W1 对应的 12 项红例全部转绿，剩余七项仅属于
+  未实施的 W3–W5。组合后的公开 CLI/MCP 回归 `9 passed`；组件回归和指纹见
+  [W2 修复记录](./docs/overview/W2-身份队列与CLI门禁修复记录-2026-10.md)。
+- 产品仅改四个文件；Outcome、manual rebuild 恢复/预算模型、迁移 SQL、SDK/API/capability
+  不变。未执行用户数据迁移、真实 Provider 或发布，也未以跳过红例宣称全量通过。
+
+### 2026-10-24（W1 红测试与协议迁移冻结）
+
+- 八项缺陷已固化为四份普通回归测试，联合运行 `19 failed, 15 passed`、exit 1；失败均为
+  已知产品行为，未使用 skip/xfail。完整 nodeid、oracle、运行命令与指纹见
+  [W1 记录](./docs/overview/W1-红测试与协议迁移冻结记录-2026-10.md)。
+- 已冻结 v2 SDK/CLI/MCP 签名、DTO、错误与兼容过程，以及未来 014/schema 1.2.8、独立
+  ledger v3、grant v2/proof。只修改测试和文档，产品实现、SQL、当前 SDK/API/capabilities 不变。
+- W1 不代表修复通过；下一实现阶段是 W2，W3/W4 的迁移、公开恢复和 W5 major 切换仍未执行。
+
+### 2026-10-24（生命周期一致性设计与验收收敛）
+
+- 对当前工作树的八项复审缺口建立
+  [生命周期一致性修复设计与分阶段计划](./docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md)。
+  补齐根/snapshot 确认绑定、A/D 争锁与 publish-only 继续、预算周期 replay、Outcome
+  输入事务/任意版本发布/版本审批、Q1 恢复进展和嵌套 CLI 门禁。
+- 本轮只更新设计、验收与路线文档；产品代码、测试实现、schema、SDK/API 版本与能力清单
+  均未变。v2/API-major-2 是后续兼容迁移目标，不是当前已发布能力。
+- 当前已有 R4-P1/P1-B 实现及历史 source 证据，但已知缺口未因文档修订关闭；历史“未发现
+  P0/P1”与测试计数仅属于各自冻结时点。默认全量复审运行被环境中断，不能记录为通过。
 
 ### 2026-09-03（R4/R4-E 内部生命周期与 source acceptance）
 
@@ -214,7 +245,7 @@ CLI/MCP 是本仓库的外围适配器；外部 GUI Wrapper 也只经 `pkv_kerne
 │  + Rich 终端界面 (进度条/表格/面板)      │
 ├─────────────────────────────────────────┤
 │  MCP 服务层 (src/mcp/)        [M8+M9]  │
-│  + 15 Tools (13只读 + 2写入)            │
+│  + 18 Tools (15只读 + 3写入)            │
 │  + 9 Resources (正文/chunk/关系/统计等)  │
 │  + 3 Prompts (搜索总结/知识问答/思想磨砺)│
 │  + 安全层 (SSRF 重校验/文本验证)        │
@@ -311,7 +342,7 @@ graph TD
 | **无头 Kernel** | `src/kernel/` | 稳定产品操作与外围 Wrapper 端口 | [CLAUDE.md](./src/kernel/CLAUDE.md) |
 | **Application 组合** | `src/application/` | 同一 validated config 下的惰性依赖与工作流组装 | [CLAUDE.md](./src/application/CLAUDE.md) |
 | **CLI 交互层** | `src/cli/` | Click 命令行界面、Rich 终端 UI | [CLAUDE.md](./src/cli/CLAUDE.md) |
-| **MCP 服务层** | `src/mcp/` | MCP stdio -- 15 Tool（13 只读 + 2 写入）+ 9 Resource + 3 Prompt + 安全加固 | [CLAUDE.md](./src/mcp/CLAUDE.md) |
+| **MCP 服务层** | `src/mcp/` | MCP stdio -- 30 Tool（17 只读 + 13 写入）+ 9 Resource + 3 Prompt + 安全加固 | [CLAUDE.md](./src/mcp/CLAUDE.md) |
 | **工作流引擎** | `src/workflow/` | 编排步骤、进度追踪、错误处理 | [CLAUDE.md](./src/workflow/CLAUDE.md) |
 | **内容处理器** | `src/processors/` | 插件化内容抓取与解析(微信/知乎/聊天/AI 聊天/文本回退) | [CLAUDE.md](./src/processors/CLAUDE.md) |
 | **检索引擎** | `src/retrieval/` | BM25/向量/混合检索与智能路由 | [CLAUDE.md](./src/retrieval/CLAUDE.md) |
@@ -481,9 +512,12 @@ held test candidate 打包和 installed-Artifact 功能验证。该 W4 证据属
    受支持业务/数据写入的 lease、`write_busy`、审计、R3.1 的日志/历史 writer 收口、任务私有
    Q0 临时 image workspace，以及 Q0 → Q1′ → Q2 的自动 AI lifecycle 已通过隔离 source
    acceptance。R4 仍只作为 runtime-internal 合同，不新增 Kernel、CLI 或 MCP 的公共重建动作。
-5. **随后：知识成果**：在实际需要的 R4 public-adapter gate 明确收口后，从
-   `Topic / Claim / Evidence / Outcome` 的最小合同开始，将现有证据和关系能力收束为可审阅、
-   可追溯的成果工作流；`partial-v1` 仍须按真实场景逐 Tool 补 full 语义与专属评测。
+5. **当前优先：生命周期一致性修复**：R4-P1 public rebuild 与 P1-B 知识成果已在当前
+   工作树形成实现；其八项复审缺口按
+   [W0–W5 分阶段计划](./docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md)
+   收敛。W0/W1 已完成，W2 身份/Q1/CLI 已完成修复与相关回归，W3–W5 尚未实施；旧 R4 内部 source acceptance 不替代
+   public adapter、Outcome 或 v2 协议的新验收。之后再推进已确认但未实现的 AI 原子发布/
+   URL 谱系；`partial-v1` 的 full 语义仍按真实场景逐 Tool 补专属评测。
 6. **Windows-first 与可选 Node / Docker**：当前自动化与内部验证只以 Windows 为支持基线；完整跨平台测试工程留待 Rust 代码版本再重新评估。桌面封包、Qt/OS smoke、生命周期和升级策略只在 `pkv-GUI` 仓库演进；只有后台任务、并发写入或资源复用出现可测需求，且单写者与持久任务前置完成后才评估 Node；Docker 与云端进一步后置。
 7. **个人运行布局**：唯一用户配置是 `%USERPROFILE%\\.pkv\\config.yaml`，默认 data
    root 是 `%USERPROFILE%\\.pkv\\data`；`PKV_DATA_ROOT`/`PKV_LOG_LEVEL` 是正式环境
@@ -492,8 +526,8 @@ held test candidate 打包和 installed-Artifact 功能验证。该 W4 证据属
 
 ---
 
-**文档版本**: v5.8
-**最近核验**: 2026-09-03
+**文档版本**: v5.11
+**最近文档核验**: 2026-10-25（W2 修复与分阶段验收；不宣称八项缺陷全部关闭）
 **项目代号**: Personal Knowledge Vault
 **当前版本**: 0.8.1
 

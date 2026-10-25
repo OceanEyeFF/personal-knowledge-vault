@@ -25,7 +25,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 from src.runtime.layout import (
@@ -1027,7 +1027,9 @@ class ContentLifecycleStore:
         with self._read_connection() as connection:
             rows = connection.execute(
                 f"SELECT {self._TASK_COLUMNS} FROM content_mutation_tasks "
-                f"WHERE state IN ({placeholders}) ORDER BY created_at ASC, task_id ASC",
+                f"WHERE state IN ({placeholders}) "
+                "AND (not_before IS NULL OR not_before <= CURRENT_TIMESTAMP) "
+                "ORDER BY created_at ASC, rowid ASC",
                 states,
             ).fetchall()
         return tuple(_content_task_from_row(row) for row in rows)
@@ -1044,29 +1046,119 @@ class ContentLifecycleStore:
             ).fetchall()
         return tuple(_content_task_from_row(row) for row in rows)
 
-    def claim_next(self, *, lease_seconds: int = 120) -> ContentMutationTask | None:
-        """Claim one safe-to-run Q1′ task under the already-held root lease."""
+    def claim_next(
+        self,
+        *,
+        lease_seconds: int = 120,
+        actions: Iterable[ContentMutationAction] = tuple(ContentMutationAction),
+        excluded_task_ids: Iterable[str] = (),
+    ) -> ContentMutationTask | None:
+        selected = self._next_task(
+            lease_seconds=lease_seconds, actions=actions,
+            excluded_task_ids=excluded_task_ids, include_recovery=False,
+        )
+        return selected[0] if selected is not None else None
+
+    def next_drain_task(
+        self,
+        *,
+        actions: Iterable[ContentMutationAction],
+        excluded_task_ids: Iterable[str],
+    ) -> tuple[ContentMutationTask, bool] | None:
+        """Select recovery and new claims from one fair, dependency-safe queue."""
+
+        return self._next_task(
+            lease_seconds=120, actions=actions,
+            excluded_task_ids=excluded_task_ids, include_recovery=True,
+        )
+
+    def get_target_blocker(self, task_id: str) -> ContentMutationTask | None:
+        """Read the unresolved predecessor that prevents this target advancing."""
+
+        task_id = _require_id(task_id, label="task_id")
+        with self._read_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT prior.task_id FROM content_mutation_tasks AS prior
+                JOIN content_mutation_tasks AS candidate
+                  ON prior.target_knowledge_id = candidate.target_knowledge_id
+                WHERE candidate.task_id = ?
+                  AND prior.state NOT IN ('completed', 'rejected', 'superseded')
+                  AND (prior.created_at < candidate.created_at OR
+                       (prior.created_at = candidate.created_at AND prior.rowid < candidate.rowid))
+                ORDER BY prior.created_at, prior.rowid LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+            return self._load_task(connection, row["task_id"]) if row is not None else None
+
+    def _next_task(
+        self,
+        *,
+        lease_seconds: int,
+        actions: Iterable[ContentMutationAction],
+        excluded_task_ids: Iterable[str],
+        include_recovery: bool,
+    ) -> tuple[ContentMutationTask, bool] | None:
+        """Claim eligible work without overtaking an unresolved target mutation.
+
+        Exclusions bound one drain independently of elapsed wall time.  A
+        predecessor's backoff does not permit dependent work to pass it, while
+        unrelated targets remain eligible.
+        """
 
         if type(lease_seconds) is not int or not 1 <= lease_seconds <= 3600:
             raise ValueError("lease_seconds 必须是 1..3600 的整数")
+        eligible_actions = tuple(actions)
+        if not eligible_actions or any(
+            not isinstance(action, ContentMutationAction) for action in eligible_actions
+        ):
+            raise ValueError("actions 必须包含合法 Q1′ action")
+        excluded = tuple(_require_id(value, label="excluded_task_id") for value in excluded_task_ids)
+        action_slots = ", ".join("?" for _ in eligible_actions)
+        excluded_clause = (
+            "AND candidate.task_id NOT IN (" + ", ".join("?" for _ in excluded) + ")"
+            if excluded else ""
+        )
         modifier = f"+{lease_seconds} seconds"
+        states = [ContentMutationState.ACCEPTED.value, ContentMutationState.RETRY_REQUIRED.value]
+        if include_recovery:
+            states.extend((
+                ContentMutationState.PROCESSING.value,
+                ContentMutationState.CORE_COMMITTED.value,
+                ContentMutationState.AI_HANDOFF_PENDING.value,
+            ))
+        state_slots = ", ".join("?" for _ in states)
         with self._write_transaction() as connection:
             row = connection.execute(
-                """
-                SELECT task_id FROM content_mutation_tasks
-                WHERE state IN (?, ?)
-                  AND (not_before IS NULL OR not_before <= CURRENT_TIMESTAMP)
-                ORDER BY created_at ASC, task_id ASC
+                f"""
+                SELECT candidate.task_id FROM content_mutation_tasks AS candidate
+                WHERE candidate.state IN ({state_slots})
+                  AND candidate.action IN ({action_slots})
+                  {excluded_clause}
+                  AND (candidate.not_before IS NULL OR candidate.not_before <= CURRENT_TIMESTAMP)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM content_mutation_tasks AS prior
+                      WHERE prior.target_knowledge_id = candidate.target_knowledge_id
+                        AND prior.state NOT IN ('completed', 'rejected', 'superseded')
+                        AND (prior.created_at < candidate.created_at OR
+                             (prior.created_at = candidate.created_at AND prior.rowid < candidate.rowid))
+                  )
+                ORDER BY COALESCE(candidate.not_before, candidate.created_at) ASC, candidate.rowid ASC
                 LIMIT 1
                 """,
                 (
-                    ContentMutationState.ACCEPTED.value,
-                    ContentMutationState.RETRY_REQUIRED.value,
+                    *states,
+                    *(action.value for action in eligible_actions),
+                    *excluded,
                 ),
             ).fetchone()
             if row is None:
                 return None
             task_id = _require_id(row["task_id"], label="task_id")
+            task = self._load_task(connection, task_id)
+            if task.state not in {ContentMutationState.ACCEPTED, ContentMutationState.RETRY_REQUIRED}:
+                return task, False
             token = uuid.uuid4().hex
             changed = connection.execute(
                 """
@@ -1094,6 +1186,55 @@ class ContentLifecycleStore:
                     stage=_STAGE,
                     recoverable=True,
                 )
+            return self._load_task(connection, task_id), True
+
+    def reclaim_processing_task(self, task_id: str) -> ContentMutationTask:
+        """Fence a dead owner's claim before journal-proven local recovery.
+
+        The caller holds the root lease, so a previous Q1 worker cannot still
+        be writing.  Ordinary commit validation continues to require a live
+        token/fence; recovery obtains a fresh one instead of bypassing it.
+        """
+
+        task_id = _require_id(task_id, label="task_id")
+        with self._write_transaction() as connection:
+            task = self._load_task(connection, task_id)
+            if task.state is not ContentMutationState.PROCESSING:
+                return task
+            connection.execute(
+                """
+                UPDATE content_mutation_tasks
+                SET claim_token = ?, claimed_until = datetime('now', '+120 seconds'),
+                    owner_fence = owner_fence + 1, updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = ? AND state = ?
+                """,
+                (uuid.uuid4().hex, task_id, ContentMutationState.PROCESSING.value),
+            )
+            return self._load_task(connection, task_id)
+
+    def mark_recovery_blocked(self, task_id: str, *, error_code: str) -> ContentMutationTask:
+        """Keep uncertain recovery evidence while releasing unrelated targets."""
+
+        task_id = _require_id(task_id, label="task_id")
+        code = _require_error_code(error_code)
+        assert code is not None
+        with self._write_transaction() as connection:
+            task = self._load_task(connection, task_id)
+            if task.state not in {
+                ContentMutationState.PROCESSING, ContentMutationState.CORE_COMMITTED,
+                ContentMutationState.AI_HANDOFF_PENDING,
+            }:
+                return task
+            connection.execute(
+                """
+                UPDATE content_mutation_tasks
+                SET claim_token = NULL, claimed_until = NULL,
+                    owner_fence = owner_fence + 1, not_before = datetime('now', '+30 seconds'),
+                    last_error_code = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = ?
+                """,
+                (code, task_id),
+            )
             return self._load_task(connection, task_id)
 
     def recover_processing_task(self, task_id: str, *, error_code: str = "worker_restarted") -> ContentMutationTask:
@@ -1152,6 +1293,7 @@ class ContentLifecycleStore:
         claim_token: str,
         owner_fence: int,
         error_code: str,
+        retry_delay_seconds: int = 0,
     ) -> ContentMutationTask:
         return self._finish_claim(
             task_id,
@@ -1159,6 +1301,15 @@ class ContentLifecycleStore:
             owner_fence=owner_fence,
             state=ContentMutationState.RETRY_REQUIRED,
             error_code=error_code,
+            retry_delay_seconds=retry_delay_seconds,
+        )
+
+    def mark_repair_required(
+        self, task_id: str, *, claim_token: str, owner_fence: int, error_code: str,
+    ) -> ContentMutationTask:
+        return self._finish_claim(
+            task_id, claim_token=claim_token, owner_fence=owner_fence,
+            state=ContentMutationState.REPAIR_REQUIRED, error_code=error_code,
         )
 
     def _finish_claim(
@@ -1169,6 +1320,7 @@ class ContentLifecycleStore:
         owner_fence: int,
         state: ContentMutationState,
         error_code: str,
+        retry_delay_seconds: int = 0,
     ) -> ContentMutationTask:
         task_id = _require_id(task_id, label="task_id")
         token = _require_id(claim_token, label="claim_token")
@@ -1176,12 +1328,15 @@ class ContentLifecycleStore:
             raise ValueError("owner_fence 必须是正整数")
         code = _require_error_code(error_code)
         assert code is not None
+        if type(retry_delay_seconds) is not int or not 0 <= retry_delay_seconds <= 3600:
+            raise ValueError("retry_delay_seconds 必须是 0..3600 的整数")
         with self._write_transaction() as connection:
             changed = connection.execute(
                 """
                 UPDATE content_mutation_tasks
                 SET state = ?, claim_token = NULL, claimed_until = NULL,
                     last_error_code = ?,
+                    not_before = CASE WHEN ? > 0 THEN datetime('now', ?) ELSE NULL END,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE task_id = ? AND state = ? AND claim_token = ? AND owner_fence = ?
                   AND claimed_until > CURRENT_TIMESTAMP
@@ -1189,6 +1344,8 @@ class ContentLifecycleStore:
                 (
                     state.value,
                     code,
+                    retry_delay_seconds,
+                    f"+{retry_delay_seconds} seconds",
                     task_id,
                     ContentMutationState.PROCESSING.value,
                     token,
@@ -1460,10 +1617,13 @@ class ContentLifecycleStore:
         operation_id: str,
         *,
         error_code: str,
+        retry_delay_seconds: int = 0,
     ) -> ContentAIHandoff:
         operation_id = _require_id(operation_id, label="operation_id")
         error_code = _require_error_code(error_code)
         assert error_code is not None
+        if type(retry_delay_seconds) is not int or not 0 <= retry_delay_seconds <= 3600:
+            raise ValueError("retry_delay_seconds 必须是 0..3600 的整数")
         with self._write_transaction() as connection:
             handoff = self._load_handoff(connection, operation_id)
             if handoff is None:
@@ -1488,6 +1648,21 @@ class ContentLifecycleStore:
                     ContentAIHandoffState.RETRY_REQUIRED.value,
                     error_code,
                     operation_id,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE content_mutation_tasks
+                SET not_before = CASE WHEN ? > 0 THEN datetime('now', ?) ELSE NULL END,
+                    last_error_code = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE operation_id = ? AND state = ?
+                """,
+                (
+                    retry_delay_seconds,
+                    f"+{retry_delay_seconds} seconds",
+                    error_code,
+                    operation_id,
+                    ContentMutationState.AI_HANDOFF_PENDING.value,
                 ),
             )
             updated = self._load_handoff(connection, operation_id)

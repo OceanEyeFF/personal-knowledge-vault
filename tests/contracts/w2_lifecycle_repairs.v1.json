@@ -1,0 +1,617 @@
+{
+  "schema_version": "pkv.lifecycle.w2-repairs.v1",
+  "truth_source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+  "purpose": "W2 source repair acceptance for R-01/R-07/R-08; W3-W5 unchanged",
+  "lane": "source",
+  "default_collection": true,
+  "skip_or_xfail_added": false,
+  "provenance": {
+    "git_commit": "6d6d43554d35278b8bf92e77cb6c2d09f001016d",
+    "worktree": "dirty; pre-existing product edits retained",
+    "tracked_product_diff_git_blob": "e77fd0d778c60aa51ab919d134491dc9a066516c",
+    "tracked_product_diff": ".data-test/w2-20261024-evidence/reports/final-product.diff",
+    "untracked_product_sha256_manifest": ".data-test/w2-20261024-evidence/reports/final-untracked-product.sha256",
+    "untracked_product_manifest_sha256": "6c85d45ef5ce612b93d17e2b60121fb2fb3e2eeecbe85a62681a96438ccd5f65",
+    "final_file_manifest": ".data-test/w2-20261024-evidence/reports/final-files.sha256",
+    "final_file_manifest_sha256": "74ad5abaf90cf0589ac94727dcfe7bcc149db7c43e1377b5406835067d358082",
+    "component_provenance": "components may precede other disjoint W2 edits; final-contracts, final-public and Q1 regression executed after all four product files were frozen",
+    "w2_product_files": [
+      "pkv_kernel/embedding.py",
+      "src/application/r4_lifecycle.py",
+      "src/storage/content_lifecycle.py",
+      "src/main.py"
+    ],
+    "scope_check": "all baseline W3-W5 product hashes, W1 unit files and W1 JSON unchanged; W1 CLI file intentionally extended from 16 to 30 cases",
+    "scope_baseline": ".data-test/w2-20261024-evidence/reports/w3-w5-and-w1-baseline.sha256",
+    "diff_check": "passed",
+    "w2_only_diff": ".data-test/w2-20261024-evidence/reports/w2-only-product.diff",
+    "w2_only_diff_sha256": "3408812044196d3962befefb9b54a968b99fa8ae5c64a0c59d84cd5e20907b71",
+    "diff_check_command": "git diff --check (repository line-ending configuration)"
+  },
+  "runs": [
+    {
+      "id": "w2-final-contracts-20261025",
+      "date": "2026-10-25",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w2-final-contracts-20261025 pytest tests/unit/test_w1_embedding_regressions.py tests/unit/test_w1_outcome_regressions.py tests/unit/test_w1_q1_regressions.py tests/blackbox/test_w1_cli_parse_regressions.py tests/unit/test_w2_embedding_identity.py tests/unit/test_w2_q1_lifecycle.py tests/unit/test_w2_q1_process.py tests/unit/test_w2_cli_leaf_gate.py tests/unit/test_cli_runtime_gate.py -vv --tb=short",
+      "data_root": ".data-test/w2-final-contracts-20261025",
+      "log": ".data-test/w2-20261024-evidence/reports/final-contracts.log",
+      "log_sha256": "9cfd000fa503cf363b3cc8c52b6c06e83fd3faf84201a976e816d44bb79693d8",
+      "exit_code": 1,
+      "passed": 120,
+      "failed": 7,
+      "skipped": 0,
+      "duration_seconds": 440.44,
+      "collected": 127,
+      "xfail": 0,
+      "collection_errors": 0,
+      "interpretation": "all W2 cases passed; only seven unchanged W3-W5 known-gap assertions failed"
+    },
+    {
+      "id": "w2-final-public-20261025",
+      "date": "2026-10-25",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w2-final-public-20261025 pytest tests/blackbox/test_r4_cli_fullflow.py tests/blackbox/test_r4_mcp_fullflow.py tests/blackbox/test_embedding_rebuild_cli_blackbox.py tests/blackbox/test_embedding_rebuild_mcp_blackbox.py -vv --tb=short",
+      "data_root": ".data-test/w2-final-public-20261025",
+      "log": ".data-test/w2-20261024-evidence/reports/final-public.log",
+      "log_sha256": "667274ced33069f0442f1d496c27d638c0cd9f65aac40e6a56219c0cbc7b6af2",
+      "exit_code": 0,
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 306.09
+    },
+    {
+      "id": "w2-identity-unit-20261024",
+      "date": "2026-10-24",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w2-identity-unit-20261024 pytest tests/unit/test_w2_embedding_identity.py tests/unit/test_kernel_embedding_rebuild.py tests/unit/test_embedding_lifecycle.py tests/unit/test_embedding_rebuild_ledger.py tests/unit/test_kernel_wrapper_boundary.py tests/unit/test_w1_embedding_regressions.py -q -k \"not r02 and not r06\"",
+      "data_root": ".data-test/w2-identity-unit-20261024",
+      "log": ".data-test/w2-20261024-evidence/reports/identity-unit.log",
+      "log_sha256": "43c130a4c4fb59ec41ecab59453bf0eaaeeba77bb85c1593ced1ef4ce870eba2",
+      "exit_code": 0,
+      "passed": 49,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 165.34,
+      "deselected": 7,
+      "interpretation": "focused selection only; final-contracts executes excluded known-gap tests without skip/xfail"
+    },
+    {
+      "id": "w2-identity-blackbox-20261024",
+      "date": "2026-10-24",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w2-identity-blackbox-20261024 pytest tests/blackbox/test_embedding_rebuild_cli_blackbox.py tests/blackbox/test_embedding_rebuild_mcp_blackbox.py -q",
+      "data_root": ".data-test/w2-identity-blackbox-20261024",
+      "log": ".data-test/w2-20261024-evidence/reports/identity-blackbox.log",
+      "log_sha256": "d76fb5eb4d81eb5254ca96fed88067650ff61166b94eb5b94a51559253bbd273",
+      "exit_code": 0,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 235.51
+    },
+    {
+      "id": "w2-cli-20261024-focused",
+      "date": "2026-10-24",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w2-cli-20261024-focused pytest tests/unit/test_w2_cli_leaf_gate.py tests/unit/test_cli_runtime_gate.py tests/blackbox/test_w1_cli_parse_regressions.py -vv --tb=short",
+      "data_root": ".data-test/w2-cli-20261024-focused",
+      "log": ".data-test/w2-cli-20261024-focused/pytest.log",
+      "log_sha256": "16961dcfbbc0f7e833eb227c514f23d2c1e61afb8974973262921527902977ed",
+      "exit_code": 0,
+      "passed": 80,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 168.69
+    },
+    {
+      "id": "w2-cli-20261024-regression",
+      "date": "2026-10-24",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w2-cli-20261024-regression pytest tests/unit/test_cli_commands.py tests/integration/test_cli_inprocess.py tests/blackbox/test_cli_basic.py tests/blackbox/test_cli_blackbox.py tests/blackbox/test_outcome_cli_blackbox.py tests/blackbox/test_r4_cli_fullflow.py -vv --tb=short",
+      "data_root": ".data-test/w2-cli-20261024-regression",
+      "log": ".data-test/w2-cli-20261024-regression/pytest.log",
+      "log_sha256": "6b3bdc447cc172fd9b8ee3cf7d5abd3af2b9770835e120d3c85c216beb77b485",
+      "exit_code": 0,
+      "passed": 282,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 336.29
+    },
+    {
+      "id": "w2-q1-regression",
+      "date": "2026-10-25",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w2-q1-regression pytest tests/unit/test_w1_q1_regressions.py tests/unit/test_w2_q1_lifecycle.py tests/unit/test_w2_q1_process.py tests/unit/test_r4_content_lifecycle.py tests/unit/test_r4_derivation_patch.py tests/unit/test_r4_ingress_lifecycle.py tests/unit/test_r4_derivation_lifecycle.py tests/unit/test_storage_coordinator.py tests/unit/test_write_lease.py tests/unit/test_knowledge_application.py -q --tb=short",
+      "data_root": ".data-test/w2-q1-regression",
+      "log": ".data-test/w2-q1-regression/reports/q1-unit-regression.log",
+      "log_sha256": "b2dde904e004159910374e1d46072086cbdfcb614d3ff564c107422782cd4d32",
+      "exit_code": 0,
+      "passed": 137,
+      "failed": 0,
+      "skipped": 1,
+      "duration_seconds": 495.04,
+      "skip_reason": "existing storage coordinator directory-symlink test: Windows privilege unavailable; all 31 W1/W2 Q1 cases passed"
+    }
+  ],
+  "requirements": [
+    {
+      "requirement": "R-01",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "embedding",
+      "case_ids": [
+        "ER-01"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "public SDK plan",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "两个根的内容与配置相同，分别 inspect/plan",
+      "oracle": "plan_id 必须区分根",
+      "observed": "different roots produce different confirmation identities; same-root new-process execution works",
+      "current_status": "passed",
+      "defect_status": "resolved_in_w2",
+      "run_evidence": "w2-final-contracts-20261025",
+      "nodeids": [
+        "tests/unit/test_w1_embedding_regressions.py::test_r01_er01_public_plan_confirmation_identity_is_bound_to_data_root"
+      ],
+      "previous_status": "failed"
+    },
+    {
+      "requirement": "R-02",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "embedding",
+      "case_ids": [
+        "ER-04"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "Core execute with real writer contention",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "Provider 和 stage 完成后，Event barrier 让另一线程持有 D 所需 lease",
+      "oracle": "共享 ledger/pointer 不写，返回原 operation 的 awaiting_publish 安全投影",
+      "observed": "返回 write_busy 且 details 缺失",
+      "current_status": "failed",
+      "defect_status": "known_gap",
+      "run_evidence": "w2-final-contracts-20261025",
+      "nodeids": [
+        "tests/unit/test_w1_embedding_regressions.py::test_r02_er04_completed_stage_contention_exposes_publish_only_recovery"
+      ],
+      "previous_status": "failed"
+    },
+    {
+      "requirement": "R-03",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "outcomes",
+      "case_ids": [
+        "OC-01"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "Application mutation + SQLite authorizer",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "已批准 brief；SQLite 拒绝状态 UPDATE，重新建立 Application 读取",
+      "oracle": "输入和 brief 失效一起回滚",
+      "observed": "新 Claim 已提交而旧 brief 仍 approved",
+      "current_status": "failed",
+      "defect_status": "known_gap",
+      "run_evidence": "w2-final-contracts-20261025",
+      "nodeids": [
+        "tests/unit/test_w1_outcome_regressions.py::test_r03_input_and_brief_invalidation_roll_back_together"
+      ],
+      "previous_status": "failed"
+    },
+    {
+      "requirement": "R-04",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "outcomes",
+      "case_ids": [
+        "OC-07",
+        "OC-10b"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "public SDK legacy review",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "用户看过 r1，另一 Application 改输入并生成 r2，原用户调用旧 approve/return",
+      "oracle": "旧无版本入口拒绝且 r2 保持 awaiting_review；W5 才关闭",
+      "observed": "公共旧入口将 r2 改成 approved/returned",
+      "current_status": "failed",
+      "defect_status": "known_gap",
+      "run_evidence": "w2-final-contracts-20261025",
+      "nodeids": [
+        "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[approve]",
+        "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[return]"
+      ],
+      "previous_status": "failed"
+    },
+    {
+      "requirement": "R-05",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "outcomes",
+      "case_ids": [
+        "OC-05"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "Application render / pointer seam",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "r2 Markdown 已发布而 pointer 前中断；更改输入后重试",
+      "oracle": "生成新 publication，推进到 r2，旧文件保留",
+      "observed": "不可覆盖的旧 r2 文件导致 outcome_state_conflict",
+      "current_status": "failed",
+      "defect_status": "known_gap",
+      "run_evidence": "w2-final-contracts-20261025",
+      "nodeids": [
+        "tests/unit/test_w1_outcome_regressions.py::test_r05_second_revision_orphan_does_not_block_recovery[changed_input_regression]"
+      ],
+      "previous_status": "failed"
+    },
+    {
+      "requirement": "R-06",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "embedding",
+      "case_ids": [
+        "ER-07"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "durable manual ledger clock seam",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "配额用尽而零 Provider 拒绝；跨日/月后以新确认重申同一 material transition",
+      "oracle": "恢复额度允许新 operation，活跃 replay 仍阻断",
+      "observed": "预算拒绝记录使新提交仍 runtime_plan_stale",
+      "current_status": "failed",
+      "defect_status": "known_gap",
+      "run_evidence": "w2-final-contracts-20261025",
+      "nodeids": [
+        "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[day]",
+        "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[month]"
+      ],
+      "previous_status": "failed"
+    },
+    {
+      "requirement": "R-07",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "q1",
+      "case_ids": [
+        "Q1-01",
+        "Q1-03"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "persistent Q1 / Kernel delete",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "完整 patch 在队首，重建 Application 后同步删除同一或独立目标；单轮 drain",
+      "oracle": "patch 正常处理或有限退避；删除有界推进；无进展任务单轮不重复领取",
+      "observed": "all four sync patch/delete combinations and bounded drain now pass",
+      "current_status": "passed",
+      "defect_status": "resolved_in_w2",
+      "run_evidence": "w2-final-contracts-20261025",
+      "nodeids": [
+        "tests/unit/test_w1_q1_regressions.py::test_q1_01_sync_delete_progresses_past_materialized_patch[same_target-accepted]",
+        "tests/unit/test_w1_q1_regressions.py::test_q1_01_sync_delete_progresses_past_materialized_patch[same_target-retry_required]",
+        "tests/unit/test_w1_q1_regressions.py::test_q1_01_sync_delete_progresses_past_materialized_patch[independent_target-accepted]",
+        "tests/unit/test_w1_q1_regressions.py::test_q1_01_sync_delete_progresses_past_materialized_patch[independent_target-retry_required]",
+        "tests/unit/test_w1_q1_regressions.py::test_q1_03_single_drain_does_not_repeat_one_no_progress_task"
+      ],
+      "previous_status": "failed"
+    },
+    {
+      "requirement": "R-08",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "cli",
+      "case_ids": [
+        "CLI-01",
+        "CLI-02",
+        "CLI-04"
+      ],
+      "layer": "L1 real subprocess",
+      "entry": "real offline CLI child",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "公开 inspect 证明 absent-root；执行叶子 help / 参数错误，并比较数据树指纹",
+      "oracle": "Click exit 0/2 优先，零运行数据写入",
+      "observed": "all six original unready nested parse failures now pass",
+      "current_status": "passed",
+      "defect_status": "resolved_in_w2",
+      "run_evidence": "w2-final-contracts-20261025",
+      "nodeids": [
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-01-read-leaf-help]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-01-mutation-leaf-help]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-01-unsupported-leaf-version]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-02-missing-required-argument]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-02-invalid-integer-option]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-02-unknown-leaf-option]"
+      ],
+      "previous_status": "failed"
+    }
+  ],
+  "additional_coverage": [
+    {
+      "case_ids": [
+        "ER-01",
+        "ER-02"
+      ],
+      "owner": "embedding",
+      "layer": "L1",
+      "entry": "public SDK inspect/plan",
+      "fixture": "synthetic, wrapper-owned isolated .data-test; no real Provider or user Vault",
+      "sequence": "capture validated snapshot; change extension/raw bytes; rotate secret; compare plans and legacy active replay",
+      "oracle": "snapshot drift invalidates confirmation; private key rotation does not become public verifier; old active replay remains fenced",
+      "current_status": "passed",
+      "nodeids": [
+        "tests/unit/test_w1_embedding_regressions.py::test_r01_er02_unchanged_same_root_reinspection_keeps_public_plan_identity",
+        "tests/unit/test_w2_embedding_identity.py::test_er02_full_snapshot_change_invalidates_public_confirmation[mapping_extension]",
+        "tests/unit/test_w2_embedding_identity.py::test_er02_full_snapshot_change_invalidates_public_confirmation[raw_bytes]",
+        "tests/unit/test_w2_embedding_identity.py::test_key_rotation_does_not_enter_public_identity_or_disclose_private_material",
+        "tests/unit/test_w2_embedding_identity.py::test_secret_bearing_runtime_snapshot_cannot_be_hashed_into_public_plan",
+        "tests/unit/test_w2_embedding_identity.py::test_strengthened_confirmation_preserves_existing_v1_active_replay_fence"
+      ],
+      "run_evidence": [
+        "w2-final-contracts-20261025"
+      ]
+    },
+    {
+      "case_ids": [
+        "ER-01",
+        "ER-02"
+      ],
+      "owner": "embedding",
+      "layer": "L3 real OS processes",
+      "entry": "public CLI and MCP stdio",
+      "fixture": "synthetic, wrapper-owned isolated .data-test; no real Provider or user Vault",
+      "sequence": "create identical A/B roots; submit A confirmation to B; then submit A confirmation through a new A process",
+      "oracle": "B refuses before Provider/ledger/stage/generation/pointer writes; A executes after restart",
+      "current_status": "passed",
+      "nodeids": [
+        "tests/blackbox/test_embedding_rebuild_cli_blackbox.py::test_public_cli_rebuild_confirmation_is_root_bound_and_process_stable",
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_rebuild_confirmation_is_root_bound_across_fresh_servers"
+      ],
+      "run_evidence": [
+        "w2-final-public-20261025"
+      ]
+    },
+    {
+      "case_ids": [
+        "Q1-01"
+      ],
+      "owner": "application/storage",
+      "layer": "L3 real OS processes",
+      "entry": "public Kernel delete",
+      "fixture": "synthetic, wrapper-owned isolated .data-test; no real Provider or user Vault",
+      "sequence": "persist accepted or retry_required patch; fresh OS child bootstraps public Kernel then requests same/independent target delete",
+      "oracle": "first Q1 drain in child applies the existing patch at most once or validly supersedes it only for same-target deletion; delete commits once without new Provider work",
+      "current_status": "passed",
+      "nodeids": [
+        "tests/unit/test_w2_q1_process.py::test_q1_01_new_process_kernel_delete_after_persisted_patch[same_target-accepted]",
+        "tests/unit/test_w2_q1_process.py::test_q1_01_new_process_kernel_delete_after_persisted_patch[same_target-retry_required]",
+        "tests/unit/test_w2_q1_process.py::test_q1_01_new_process_kernel_delete_after_persisted_patch[independent_target-accepted]",
+        "tests/unit/test_w2_q1_process.py::test_q1_01_new_process_kernel_delete_after_persisted_patch[independent_target-retry_required]"
+      ],
+      "run_evidence": [
+        "w2-final-contracts-20261025"
+      ]
+    },
+    {
+      "case_ids": [
+        "Q1-02",
+        "Q1-03"
+      ],
+      "owner": "application/storage",
+      "layer": "L1",
+      "entry": "shared sync/async executor and recovery",
+      "fixture": "synthetic, wrapper-owned isolated .data-test; no real Provider or user Vault",
+      "sequence": "inject patch RuntimeError/OSError; retry through sync/async/recovery consumer; follow by healthy independent delete",
+      "oracle": "persistent backoff; healthy work progresses; retry does not erase accepted ordering or core facts",
+      "current_status": "passed",
+      "nodeids": [
+        "tests/unit/test_w2_q1_lifecycle.py::test_local_patch_failure_backs_off_without_blocking_independent_delete[runtime_error-sync]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_local_patch_failure_backs_off_without_blocking_independent_delete[runtime_error-async]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_local_patch_failure_backs_off_without_blocking_independent_delete[runtime_error-recovery]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_local_patch_failure_backs_off_without_blocking_independent_delete[io_error-sync]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_local_patch_failure_backs_off_without_blocking_independent_delete[io_error-async]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_local_patch_failure_backs_off_without_blocking_independent_delete[io_error-recovery]",
+        "tests/unit/test_w1_q1_regressions.py::test_q1_02_async_control_applies_same_patch_once_then_sync_delete[accepted]",
+        "tests/unit/test_w1_q1_regressions.py::test_q1_02_async_control_applies_same_patch_once_then_sync_delete[retry_required]"
+      ],
+      "run_evidence": [
+        "w2-final-contracts-20261025"
+      ]
+    },
+    {
+      "case_ids": [
+        "Q1-03"
+      ],
+      "owner": "application/storage",
+      "layer": "L1",
+      "entry": "bounded drain and claim",
+      "fixture": "synthetic, wrapper-owned isolated .data-test; no real Provider or user Vault",
+      "sequence": "fail more tasks than per-round budget; expire backoff within one drain; filter actions with unresolved same-target predecessor",
+      "oracle": "no repeated task in one drain; later independent work cannot starve; same-target order uses durable insertion order",
+      "current_status": "passed",
+      "nodeids": [
+        "tests/unit/test_w2_q1_lifecycle.py::test_expired_failures_cannot_consume_every_later_drain[claim]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_expired_failures_cannot_consume_every_later_drain[handoff]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_expired_backoff_during_one_drain_does_not_repeat_a_task",
+        "tests/unit/test_w2_q1_lifecycle.py::test_claim_action_filter_does_not_bypass_same_target_predecessor"
+      ],
+      "run_evidence": [
+        "w2-final-contracts-20261025"
+      ]
+    },
+    {
+      "case_ids": [
+        "Q1-04"
+      ],
+      "owner": "application/storage",
+      "layer": "L1 controlled fault and reopened objects",
+      "entry": "Storage proof/journal recovery then sync delete",
+      "fixture": "synthetic, wrapper-owned isolated .data-test; no real Provider or user Vault",
+      "sequence": "interrupt after commit with processing expired/core_committed/proof before journal; also make recovery unverifiable",
+      "oracle": "recover with new fence; old claim cannot write; committed patch not reapplied; uncertain fact preserved and independent work progresses",
+      "current_status": "passed",
+      "nodeids": [
+        "tests/unit/test_w2_q1_lifecycle.py::test_sync_delete_recovers_patch_commit_without_reapplying[processing_expired]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_sync_delete_recovers_patch_commit_without_reapplying[core_committed]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_sync_delete_recovers_patch_commit_without_reapplying[proof_before_journal]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_unverifiable_recovery_preserves_commit_and_independent_progress",
+        "tests/unit/test_w2_q1_lifecycle.py::test_uncertain_patch_blocks_dependents_but_not_independent_work[journal]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_uncertain_patch_blocks_dependents_but_not_independent_work[repair_result]"
+      ],
+      "run_evidence": [
+        "w2-final-contracts-20261025"
+      ]
+    },
+    {
+      "case_ids": [
+        "Q1-05"
+      ],
+      "owner": "application/storage",
+      "layer": "L1",
+      "entry": "local Q1 patch/delete",
+      "fixture": "synthetic, wrapper-owned isolated .data-test; no real Provider or user Vault",
+      "sequence": "combine complete/missing patch with Q2 retry_required/unknown processing attempts",
+      "oracle": "Q2 rows unchanged; no extra usage/reservation/Provider; missing patch returns repair and blocks dependent while healthy independent work proceeds",
+      "current_status": "passed",
+      "nodeids": [
+        "tests/unit/test_w2_q1_lifecycle.py::test_local_q1_work_never_resumes_pending_or_unknown_q2_attempts[complete_patch-retry_required]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_local_q1_work_never_resumes_pending_or_unknown_q2_attempts[complete_patch-processing]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_local_q1_work_never_resumes_pending_or_unknown_q2_attempts[missing_patch-retry_required]",
+        "tests/unit/test_w2_q1_lifecycle.py::test_local_q1_work_never_resumes_pending_or_unknown_q2_attempts[missing_patch-processing]"
+      ],
+      "run_evidence": [
+        "w2-final-contracts-20261025"
+      ]
+    },
+    {
+      "case_ids": [
+        "CLI-01",
+        "CLI-02",
+        "CLI-04"
+      ],
+      "owner": "cli",
+      "layer": "L3 real OS processes",
+      "entry": "python -m src.cli.commands via offline_entrypoint",
+      "fixture": "synthetic, wrapper-owned isolated .data-test; no real Provider or user Vault",
+      "sequence": "run group/leaf help, root version, unsupported leaf version and invalid arguments on absent/damaged runtime snapshot/READY roots",
+      "oracle": "Click exits without runtime creation or writes; public inspect separately proves damaged snapshot status",
+      "current_status": "passed",
+      "nodeids": [
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-01-group-help]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-01-read-leaf-help]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-01-mutation-leaf-help]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-01-root-version]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-01-unsupported-leaf-version]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-02-missing-required-argument]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-02-invalid-integer-option]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-02-unknown-leaf-option]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[damaged-runtime-snapshot-CLI-01-group-help]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[damaged-runtime-snapshot-CLI-01-read-leaf-help]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[damaged-runtime-snapshot-CLI-01-mutation-leaf-help]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[damaged-runtime-snapshot-CLI-01-root-version]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[damaged-runtime-snapshot-CLI-01-unsupported-leaf-version]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[damaged-runtime-snapshot-CLI-02-missing-required-argument]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[damaged-runtime-snapshot-CLI-02-invalid-integer-option]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[damaged-runtime-snapshot-CLI-02-unknown-leaf-option]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-01-group-help]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-01-read-leaf-help]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-01-mutation-leaf-help]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-01-root-version]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-01-unsupported-leaf-version]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-02-missing-required-argument]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-02-invalid-integer-option]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-02-unknown-leaf-option]"
+      ],
+      "run_evidence": [
+        "w2-final-contracts-20261025"
+      ]
+    },
+    {
+      "case_ids": [
+        "CLI-03",
+        "CLI-04"
+      ],
+      "owner": "cli",
+      "layer": "L3 real OS processes",
+      "entry": "valid Outcome read/mutation leaves",
+      "fixture": "synthetic, wrapper-owned isolated .data-test; no real Provider or user Vault",
+      "sequence": "valid read/mutation on absent/damaged runtime snapshot/READY roots",
+      "oracle": "not-ready and repair are denied; READY reaches business callback",
+      "current_status": "passed",
+      "nodeids": [
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_valid_outcome_leaf_observes_runtime_readiness[unready-absent-root-CLI-03-read-leaf]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_valid_outcome_leaf_observes_runtime_readiness[unready-absent-root-CLI-03-mutation-leaf]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_valid_outcome_leaf_observes_runtime_readiness[damaged-runtime-snapshot-CLI-03-read-leaf]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_valid_outcome_leaf_observes_runtime_readiness[damaged-runtime-snapshot-CLI-03-mutation-leaf]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_valid_outcome_leaf_observes_runtime_readiness[ready-control-CLI-03-read-leaf]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_valid_outcome_leaf_observes_runtime_readiness[ready-control-CLI-03-mutation-leaf]"
+      ],
+      "run_evidence": [
+        "w2-final-contracts-20261025"
+      ]
+    },
+    {
+      "case_ids": [
+        "CLI-01",
+        "CLI-02",
+        "CLI-03",
+        "CLI-04"
+      ],
+      "owner": "cli",
+      "layer": "L1",
+      "entry": "recursive command tree, broken Config loader and real invocation paths",
+      "fixture": "synthetic, wrapper-owned isolated .data-test; no real Provider or user Vault",
+      "sequence": "deep tree help/parse; unclassified leaf; shared alias; each read/write readiness combination",
+      "oracle": "no Config on parse; explicit leaf policy; alias cannot borrow another path permission; degraded read allowlist unchanged",
+      "current_status": "passed",
+      "nodeids": [
+        "tests/unit/test_w2_cli_leaf_gate.py::test_shared_command_resolves_each_invocation_path_before_degraded_access",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_all_product_leaves_have_explicit_policies_and_degraded_reads_stay_narrow",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_unclassified_leaf_fails_closed_after_successful_parsing[outcome]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_unclassified_leaf_fails_closed_after_successful_parsing[config]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_unclassified_leaf_fails_closed_after_successful_parsing[embedding]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_leaf_uses_its_policy_and_one_config_snapshot[ready-read]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_leaf_uses_its_policy_and_one_config_snapshot[ready-mutation]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_leaf_uses_its_policy_and_one_config_snapshot[degraded-read]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_leaf_uses_its_policy_and_one_config_snapshot[degraded-mutation]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_leaf_uses_its_policy_and_one_config_snapshot[setup_required-read]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_leaf_uses_its_policy_and_one_config_snapshot[setup_required-mutation]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_help_and_validation_never_load_even_a_broken_config[arguments0-0-Commands:]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_help_and_validation_never_load_even_a_broken_config[arguments1-0-version]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_help_and_validation_never_load_even_a_broken_config[arguments2-0-Commands:]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_help_and_validation_never_load_even_a_broken_config[arguments3-0-Commands:]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_help_and_validation_never_load_even_a_broken_config[arguments4-0-TOPIC_ID]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_help_and_validation_never_load_even_a_broken_config[arguments5-2-No such option]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_help_and_validation_never_load_even_a_broken_config[arguments6-2-Missing argument]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_help_and_validation_never_load_even_a_broken_config[arguments7-2-Invalid value]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_help_and_validation_never_load_even_a_broken_config[arguments8-2-No such option]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_help_and_validation_never_load_even_a_broken_config[arguments9-2-No such command]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_help_and_validation_never_load_even_a_broken_config[arguments10-2-No such command]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_help_and_validation_never_load_even_a_broken_config[arguments11-2-No such command]",
+        "tests/unit/test_w2_cli_leaf_gate.py::test_deep_help_and_validation_never_load_even_a_broken_config[arguments12-2-Commands:]"
+      ],
+      "run_evidence": [
+        "w2-final-contracts-20261025"
+      ]
+    }
+  ],
+  "known_gap_nodeids": [
+    "tests/unit/test_w1_embedding_regressions.py::test_r02_er04_completed_stage_contention_exposes_publish_only_recovery",
+    "tests/unit/test_w1_outcome_regressions.py::test_r03_input_and_brief_invalidation_roll_back_together",
+    "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[approve]",
+    "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[return]",
+    "tests/unit/test_w1_outcome_regressions.py::test_r05_second_revision_orphan_does_not_block_recovery[changed_input_regression]",
+    "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[day]",
+    "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[month]"
+  ],
+  "original_w1_transition": {
+    "historical_run": "w1-lifecycle-20261024-final",
+    "historical_total": 34,
+    "historical_failed": 19,
+    "historical_passed": 15,
+    "now_failed": 7,
+    "now_passed": 27,
+    "original_red_to_green": 12,
+    "history_registry_unchanged": "tests/contracts/w1_lifecycle_regressions.v1.json"
+  },
+  "not_covered": [
+    "W3 Outcome transaction/review/publication changes; W4 publish-only and budget-period replay; W5 API-major-2/compatibility closeout",
+    "No new default P0 full-suite, MCP coverage gate, Phase C or wheel/release acceptance run; evidence is W2 scoped source regression",
+    "Broken user-config YAML real child startup is stopped by G0 before product parser; broken loader unit and broken runtime-snapshot blackbox are distinct evidence",
+    "Q1-04 uses controlled storage seams and reopened objects, not external process kill; Q1-01 separately uses real OS child",
+    "No real Provider credentials, user Vault, live migration, Artifact release or next-mainline AI retry implementation"
+  ],
+  "versions_unchanged": {
+    "sdk": "0.8.1",
+    "api": "1.0.0",
+    "capabilities": "existing v1",
+    "release_hold": true
+  }
+}

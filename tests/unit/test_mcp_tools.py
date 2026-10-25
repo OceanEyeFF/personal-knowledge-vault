@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -85,6 +86,20 @@ class _DiagnosticAccessBombResult:
     def issues(self):
         self.diagnostic_accesses.append("issues")
         raise AssertionError("must not read workflow issues")
+
+
+class _PublicEmbeddingDTO:
+    """Minimal public Kernel DTO used only to exercise the MCP projection."""
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def to_dict(self) -> dict[str, object]:
+        return dict(self._payload)
+
+    @property
+    def plan_id(self) -> object:
+        return self._payload.get("plan_id")
 
 
 BRIDGE_EVIDENCE_SOURCES = [
@@ -290,6 +305,7 @@ def _contrast_degraded_result(*, side, found):
 # utils.py 测试
 # ============================================================
 
+
 class TestParseTagsString:
     """parse_tags_string 测试。"""
 
@@ -394,14 +410,22 @@ MOCK_SEARCH_RESULTS = [
         title="AI 文章",
         score=0.9,
         highlight="人工智能概述",
-        metadata={"tags": "AI,ML", "source_type": "wechat", "archived_at": "2026-02-18"},
+        metadata={
+            "tags": "AI,ML",
+            "source_type": "wechat",
+            "archived_at": "2026-02-18",
+        },
     ),
     SearchResult(
         knowledge_id=2,
         title="NLP 指南",
         score=0.7,
         highlight="自然语言处理入门",
-        metadata={"tags": "NLP,AI", "source_type": "zhihu", "archived_at": "2026-02-17"},
+        metadata={
+            "tags": "NLP,AI",
+            "source_type": "zhihu",
+            "archived_at": "2026-02-17",
+        },
     ),
 ]
 
@@ -409,6 +433,7 @@ MOCK_SEARCH_RESULTS = [
 @dataclass
 class MockEntry:
     """Mock Entry 对象，模拟 MarkdownStore.load() 返回。"""
+
     content: str = "# 测试文章\n\n这是全文内容"
     title: str = "测试微信文章"
 
@@ -428,6 +453,7 @@ class TestSearchKnowledge:
 
         with patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import search_knowledge
+
             result = await search_knowledge(query="AI", strategy="auto", top_k=5)
 
         assert set(result) == {"status", "strategy", "total", "results", "issues"}
@@ -454,6 +480,7 @@ class TestSearchKnowledge:
 
         with patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import search_knowledge
+
             result = await search_knowledge(query="AI", strategy="bm25", top_k=3)
 
         assert result["total"] == 1
@@ -467,6 +494,7 @@ class TestSearchKnowledge:
     async def test_invalid_strategy(self):
         """无效策略应返回错误。"""
         from src.mcp.tools import search_knowledge
+
         result = await search_knowledge(query="AI", strategy="invalid")
         assert set(result) == {"status", "strategy", "total", "results", "issues"}
         assert result["status"] == "invalid"
@@ -479,9 +507,10 @@ class TestSearchKnowledge:
         secret = "api_key_CANARY"
         malicious_strategy = f"hybrid\r\n{secret}"
 
-        with caplog.at_level(logging.INFO, logger="pkv.mcp"), patch(
-            "src.mcp.tools.get_application"
-        ) as mock_application:
+        with (
+            caplog.at_level(logging.INFO, logger="pkv.mcp"),
+            patch("src.mcp.tools.get_application") as mock_application,
+        ):
             from src.mcp.tools import search_knowledge
 
             result = await search_knowledge(
@@ -553,10 +582,13 @@ class TestSearchKnowledge:
     async def test_top_k_clamped(self):
         """top_k 应被限制在 [1, 50] 范围内。"""
         mock_application = MagicMock()
-        mock_application.search.return_value = SearchResponse.completed((), strategy="bm25")
+        mock_application.search.return_value = SearchResponse.completed(
+            (), strategy="bm25"
+        )
 
         with patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import search_knowledge
+
             await search_knowledge(query="AI", top_k=200)
 
         mock_application.search.assert_called_once_with(
@@ -571,6 +603,7 @@ class TestSearchKnowledge:
 
         with patch("src.mcp.tools.get_application", return_value=mock_router):
             from src.mcp.tools import search_knowledge
+
             result = await search_knowledge(query="AI", source_type="wechat")
 
         assert result["total"] == 1
@@ -584,6 +617,7 @@ class TestSearchKnowledge:
 
         with patch("src.mcp.tools.get_application", return_value=mock_router):
             from src.mcp.tools import search_knowledge
+
             result = await search_knowledge(query="AI", tag="ML")
 
         assert result["total"] == 1
@@ -684,7 +718,9 @@ class TestSearchKnowledge:
         assert result["status"] == "degraded"
         assert result["strategy"] == "hybrid"
         assert result["total"] == 1
-        assert result["issues"][0]["code"] == ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE.value
+        assert (
+            result["issues"][0]["code"] == ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE.value
+        )
         assert result["issues"][0]["message"] == "检索索引不可用"
 
     @pytest.mark.asyncio
@@ -804,9 +840,12 @@ class TestGetEntry:
             content="# 测试文章\n\n这是全文内容",
         )
 
-        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.mcp.tools.get_markdown_store", return_value=mock_md_store):
+        with (
+            patch("src.mcp.tools.get_sqlite_store", return_value=mock_store),
+            patch("src.mcp.tools.get_markdown_store", return_value=mock_md_store),
+        ):
             from src.mcp.tools import get_entry
+
             result = await get_entry(knowledge_id="1")
 
         assert result["knowledge_id"] == 1
@@ -826,6 +865,7 @@ class TestGetEntry:
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store):
             from src.mcp.tools import get_entry
+
             result = await get_entry(knowledge_id="999")
 
         assert result["status"] == "no_hits"
@@ -835,6 +875,7 @@ class TestGetEntry:
     async def test_invalid_id(self):
         """非数字 ID 应返回 error。"""
         from src.mcp.tools import get_entry
+
         result = await get_entry(knowledge_id="abc")
         assert "error" in result
         assert result["status"] == "invalid"
@@ -906,9 +947,12 @@ class TestGetEntry:
         mock_md_store.vault_dir = vault_dir
         mock_md_store.load.side_effect = FileNotFoundError("文件不存在")
 
-        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.mcp.tools.get_markdown_store", return_value=mock_md_store):
+        with (
+            patch("src.mcp.tools.get_sqlite_store", return_value=mock_store),
+            patch("src.mcp.tools.get_markdown_store", return_value=mock_md_store),
+        ):
             from src.mcp.tools import get_entry
+
             result = await get_entry(knowledge_id="1")
 
         assert result["title"] == "测试微信文章"
@@ -930,8 +974,10 @@ class TestGetEntry:
         mock_md_store = MagicMock(vault_dir=vault_dir)
         mock_md_store.load.return_value = None
 
-        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.mcp.tools.get_markdown_store", return_value=mock_md_store):
+        with (
+            patch("src.mcp.tools.get_sqlite_store", return_value=mock_store),
+            patch("src.mcp.tools.get_markdown_store", return_value=mock_md_store),
+        ):
             from src.mcp.tools import get_entry
 
             result = await get_entry(knowledge_id="1")
@@ -958,12 +1004,15 @@ class TestGetEntry:
         }
         markdown_store = MarkdownStore(vault_dir)
 
-        with patch(
-            "src.mcp.tools.get_sqlite_store",
-            return_value=mock_store,
-        ), patch(
-            "src.mcp.tools.get_markdown_store",
-            return_value=markdown_store,
+        with (
+            patch(
+                "src.mcp.tools.get_sqlite_store",
+                return_value=mock_store,
+            ),
+            patch(
+                "src.mcp.tools.get_markdown_store",
+                return_value=markdown_store,
+            ),
         ):
             from src.mcp.tools import get_entry
 
@@ -1013,12 +1062,15 @@ class TestGetEntry:
         markdown_store = MagicMock(vault_dir=vault_dir)
         markdown_store.load.return_value = loaded_entry
 
-        with patch(
-            "src.mcp.tools.get_sqlite_store",
-            return_value=mock_store,
-        ), patch(
-            "src.mcp.tools.get_markdown_store",
-            return_value=markdown_store,
+        with (
+            patch(
+                "src.mcp.tools.get_sqlite_store",
+                return_value=mock_store,
+            ),
+            patch(
+                "src.mcp.tools.get_markdown_store",
+                return_value=markdown_store,
+            ),
         ):
             from src.mcp.tools import get_entry
 
@@ -1062,8 +1114,10 @@ class TestGetEntry:
             recoverable=False,
         )
 
-        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.mcp.tools.get_markdown_store", return_value=mock_md_store):
+        with (
+            patch("src.mcp.tools.get_sqlite_store", return_value=mock_store),
+            patch("src.mcp.tools.get_markdown_store", return_value=mock_md_store),
+        ):
             from src.mcp.tools import get_entry
 
             result = await get_entry(knowledge_id="1")
@@ -1093,8 +1147,10 @@ class TestGetEntry:
             f"decode failed secret={secret} C:\\Users\\private"
         )
 
-        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.mcp.tools.get_markdown_store", return_value=mock_md_store):
+        with (
+            patch("src.mcp.tools.get_sqlite_store", return_value=mock_store),
+            patch("src.mcp.tools.get_markdown_store", return_value=mock_md_store),
+        ):
             from src.mcp.tools import get_entry
 
             result = await get_entry(knowledge_id="1")
@@ -1121,6 +1177,7 @@ class TestListTags:
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store):
             from src.mcp.tools import list_tags
+
             result = await list_tags()
 
         assert result["status"] == "success"
@@ -1137,6 +1194,7 @@ class TestListTags:
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store):
             from src.mcp.tools import list_tags
+
             result = await list_tags()
 
         assert result["status"] == "no_hits"
@@ -1183,6 +1241,7 @@ class TestListTags:
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store):
             from src.mcp.tools import list_tags
+
             result = await list_tags()
 
         assert result["tags"][0]["name"] == "[redacted-local-reference]"
@@ -1213,6 +1272,7 @@ class TestListEntries:
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store):
             from src.mcp.tools import list_entries
+
             result = await list_entries()
 
         assert result["status"] == "success"
@@ -1232,6 +1292,7 @@ class TestListEntries:
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store):
             from src.mcp.tools import list_entries
+
             await list_entries(per_page=200)
 
         # 验证 limit 被限制为 100
@@ -1353,6 +1414,7 @@ class TestListEntries:
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store):
             from src.mcp.tools import list_entries
+
             result = await list_entries(per_page=10)
 
         assert result["total_pages"] == 3  # ceil(25/10) = 3
@@ -1374,6 +1436,7 @@ class TestGetStats:
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store):
             from src.mcp.tools import get_stats
+
             result = await get_stats()
 
         assert result["status"] == "success"
@@ -1434,6 +1497,7 @@ class TestGetStats:
 
         with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store):
             from src.mcp.tools import get_stats
+
             result = await get_stats()
 
         assert result["by_source_type"][0][0] == "[redacted-local-reference]"
@@ -1443,6 +1507,7 @@ class TestGetStats:
 # archive_url Tool 测试 (M9 新增)
 # ============================================================
 
+
 class TestArchiveUrl:
     """archive_url Tool 测试。"""
 
@@ -1450,6 +1515,7 @@ class TestArchiveUrl:
     async def test_reject_private_ip(self):
         """内网地址应被拒绝。"""
         from src.mcp.tools import archive_url
+
         result = await archive_url(url="http://127.0.0.1/admin")
         assert result["success"] is False
         assert result["terminal"] == "error"
@@ -1460,6 +1526,7 @@ class TestArchiveUrl:
     async def test_reject_localhost(self):
         """localhost 应被拒绝。"""
         from src.mcp.tools import archive_url
+
         result = await archive_url(url="http://localhost:8080/secret")
         assert result["success"] is False
 
@@ -1467,6 +1534,7 @@ class TestArchiveUrl:
     async def test_reject_invalid_url(self):
         """无效 URL 应被拒绝。"""
         from src.mcp.tools import archive_url
+
         result = await archive_url(url="not-a-url")
         assert result["success"] is False
         assert result["issues"][0]["code"] == ErrorCode.URL_INVALID.value
@@ -1475,6 +1543,7 @@ class TestArchiveUrl:
     async def test_reject_ftp_url(self):
         """FTP URL 应被拒绝。"""
         from src.mcp.tools import archive_url
+
         result = await archive_url(url="ftp://example.com/file")
         assert result["success"] is False
 
@@ -1498,6 +1567,7 @@ class TestArchiveUrl:
         application = _archive_application("archive_url", mock_result)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
+
             result = await archive_url(url="https://example.com/article")
 
         assert result["success"] is True
@@ -1537,6 +1607,7 @@ class TestArchiveUrl:
         application = _archive_application("archive_url", mock_result)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
+
             result = await archive_url(url="https://example.com/timeout")
 
         assert result["success"] is False
@@ -1622,6 +1693,7 @@ class TestArchiveUrl:
         application = _archive_application("archive_url", result_object)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
+
             result = await archive_url(url="https://example.com/article")
 
         assert result["terminal"] == "error"
@@ -1673,6 +1745,7 @@ class TestArchiveUrl:
         application = _archive_application("archive_url", malformed_result)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
+
             result = await archive_url(url="https://example.com/article")
 
         assert result["success"] is False
@@ -1705,15 +1778,14 @@ class TestArchiveUrl:
                 "core_committed": True,
                 "do_not_retry": True,
                 "repair_actions": ["rebuild_vector_index"],
-                "storage_errors": [
-                    {"code": ErrorCode.STORAGE_VECTOR_FAILED.value}
-                ],
+                "storage_errors": [{"code": ErrorCode.STORAGE_VECTOR_FAILED.value}],
             },
         )
 
         application = _archive_application("archive_url", mock_result)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
+
             result = await archive_url(url="https://example.com/article")
 
         assert result["success"] is True
@@ -1760,6 +1832,7 @@ class TestArchiveUrl:
         application = _archive_application("archive_url", mock_result)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
+
             result = await archive_url(url="https://example.com/article")
 
         rendered = repr(result)
@@ -1791,6 +1864,7 @@ class TestArchiveUrl:
         application = _archive_application("archive_url", result_object)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
+
             result = await archive_url(url="https://example.com/article")
 
         assert result["success"] is False
@@ -1813,6 +1887,7 @@ class TestArchiveUrl:
         application.archive_url = AsyncMock(side_effect=runtime_error)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_url
+
             result = await archive_url(url="https://example.com/article")
 
         assert result["success"] is False
@@ -1826,6 +1901,7 @@ class TestArchiveUrl:
 # archive_text Tool 测试 (M9 新增)
 # ============================================================
 
+
 class TestArchiveText:
     """archive_text Tool 测试。"""
 
@@ -1833,6 +1909,7 @@ class TestArchiveText:
     async def test_reject_empty_text(self):
         """空文本应被拒绝。"""
         from src.mcp.tools import archive_text
+
         result = await archive_text(text="")
         assert result["success"] is False
         assert result["terminal"] == "error"
@@ -1843,6 +1920,7 @@ class TestArchiveText:
     async def test_reject_too_long_text(self):
         """超长文本应被拒绝。"""
         from src.mcp.tools import archive_text
+
         result = await archive_text(text="A" * 100001)
         assert result["success"] is False
         assert result["error"] == "工作流配置无效"
@@ -1871,6 +1949,7 @@ class TestArchiveText:
         application = _archive_application("archive_text", mock_result)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_text
+
             result = await archive_text(text="这是一段测试文本内容")
 
         assert result["success"] is True
@@ -1911,6 +1990,7 @@ class TestArchiveText:
         application = _archive_application("archive_text", mock_result)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_text
+
             await archive_text(text="内容", title="自定义标题")
 
         application.archive_text.assert_awaited_once_with(
@@ -1950,6 +2030,7 @@ class TestArchiveText:
         application = _archive_application("archive_text", mock_result)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_text
+
             result = await archive_text(text="需要归档的内容")
 
         assert result["success"] is False
@@ -2007,6 +2088,7 @@ class TestArchiveText:
         application = _archive_application("archive_text", malformed_result)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_text
+
             result = await archive_text(text="需要归档的内容")
 
         assert result["success"] is False
@@ -2023,6 +2105,7 @@ class TestArchiveText:
         from unittest.mock import AsyncMock
         from src.mcp.resources import get_entry_content
         from src.mcp.tools import archive_text
+
         secret = "pkv-local-file-content-canary"
         external_file = tmp_path / "external-secret.txt"
         external_file.write_text(secret, encoding="utf-8")
@@ -2046,15 +2129,19 @@ class TestArchiveText:
             ),
         )
 
-        with patch("src.mcp.tools.get_application", return_value=application), patch.object(
-            Path,
-            "exists",
-            side_effect=AssertionError("unexpected local path lookup"),
-        ) as exists, patch.object(
-            Path,
-            "read_text",
-            side_effect=AssertionError("unexpected local file read"),
-        ) as read_text:
+        with (
+            patch("src.mcp.tools.get_application", return_value=application),
+            patch.object(
+                Path,
+                "exists",
+                side_effect=AssertionError("unexpected local path lookup"),
+            ) as exists,
+            patch.object(
+                Path,
+                "read_text",
+                side_effect=AssertionError("unexpected local file read"),
+            ) as read_text,
+        ):
             result = await archive_text(text=str(external_file))
 
         assert result["terminal"] == "success"
@@ -2081,12 +2168,15 @@ class TestArchiveText:
         }
         markdown_store = MagicMock(vault_dir=vault_dir)
         markdown_store.load.return_value = archived_entry
-        with patch(
-            "src.mcp.resources.get_sqlite_store",
-            return_value=store,
-        ), patch(
-            "src.mcp.resources.get_markdown_store",
-            return_value=markdown_store,
+        with (
+            patch(
+                "src.mcp.resources.get_sqlite_store",
+                return_value=store,
+            ),
+            patch(
+                "src.mcp.resources.get_markdown_store",
+                return_value=markdown_store,
+            ),
         ):
             resource_content = await get_entry_content("91")
 
@@ -2129,12 +2219,15 @@ class TestArchiveText:
         }
         markdown_store = MagicMock(vault_dir=vault_dir)
         markdown_store.load.return_value = archived_entry
-        with patch(
-            "src.mcp.resources.get_sqlite_store",
-            return_value=store,
-        ), patch(
-            "src.mcp.resources.get_markdown_store",
-            return_value=markdown_store,
+        with (
+            patch(
+                "src.mcp.resources.get_sqlite_store",
+                return_value=store,
+            ),
+            patch(
+                "src.mcp.resources.get_markdown_store",
+                return_value=markdown_store,
+            ),
         ):
             resource_content = await get_entry_content("92")
 
@@ -2160,6 +2253,7 @@ class TestArchiveText:
         application = _archive_application("archive_text", result_object)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_text
+
             result = await archive_text(text="需要归档的内容")
 
         assert result["success"] is False
@@ -2205,6 +2299,7 @@ class TestArchiveText:
         application = _archive_application("archive_text", mock_result)
         with patch("src.mcp.tools.get_application", return_value=application):
             from src.mcp.tools import archive_text
+
             result = await archive_text(text="需要归档的内容")
 
         rendered = repr(result)
@@ -2223,6 +2318,7 @@ class TestArchiveText:
 # get_related Tool 测试 (M9 新增)
 # ============================================================
 
+
 class TestGetRelated:
     """get_related Tool 测试。"""
 
@@ -2230,6 +2326,7 @@ class TestGetRelated:
     async def test_invalid_id(self):
         """非数字 ID 应返回 error。"""
         from src.mcp.tools import get_related
+
         result = await get_related(knowledge_id="abc")
         assert "error" in result
         assert result["status"] == "invalid"
@@ -2271,6 +2368,7 @@ class TestGetRelated:
 
         with patch("src.mcp.tools.get_application", return_value=mock_application):
             from src.mcp.tools import get_related
+
             result = await get_related(knowledge_id="999")
 
         assert result["status"] == "no_hits"
@@ -2283,8 +2381,9 @@ class TestGetRelated:
         mock_store = MagicMock()
         mock_store.query_by_id.return_value = None
 
-        with patch("src.mcp.tools.get_application", return_value=mock_application), patch(
-            "src.mcp.tools.get_sqlite_store", return_value=mock_store
+        with (
+            patch("src.mcp.tools.get_application", return_value=mock_application),
+            patch("src.mcp.tools.get_sqlite_store", return_value=mock_store),
         ):
             from src.mcp.tools import get_related
 
@@ -2318,9 +2417,10 @@ class TestGetRelated:
         mock_application.related.side_effect = RuntimeError(
             "legacy injected application failure"
         )
-        with patch(
-            "src.mcp.tools.get_application", return_value=mock_application
-        ), patch("src.mcp.tools.get_sqlite_store", side_effect=store_error):
+        with (
+            patch("src.mcp.tools.get_application", return_value=mock_application),
+            patch("src.mcp.tools.get_sqlite_store", side_effect=store_error),
+        ):
             from src.mcp.tools import get_related
 
             result = await get_related(knowledge_id="1")
@@ -2343,14 +2443,19 @@ class TestGetRelated:
         mock_application = MagicMock()
         mock_application.readonly_vector_store = None
 
-        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.mcp.tools.get_application", return_value=mock_application):
+        with (
+            patch("src.mcp.tools.get_sqlite_store", return_value=mock_store),
+            patch("src.mcp.tools.get_application", return_value=mock_application),
+        ):
             from src.mcp.tools import get_related
+
             result = await get_related(knowledge_id="1")
 
         assert result["results"] == []
         assert result["status"] == "degraded"
-        assert result["issues"][0]["code"] == ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE.value
+        assert (
+            result["issues"][0]["code"] == ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE.value
+        )
         assert "暂无向量索引" in result.get("message", "")
 
     @pytest.mark.asyncio
@@ -2364,14 +2469,19 @@ class TestGetRelated:
         mock_application = MagicMock()
         mock_application.readonly_vector_store = mock_vector_store
 
-        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.mcp.tools.get_application", return_value=mock_application):
+        with (
+            patch("src.mcp.tools.get_sqlite_store", return_value=mock_store),
+            patch("src.mcp.tools.get_application", return_value=mock_application),
+        ):
             from src.mcp.tools import get_related
+
             result = await get_related(knowledge_id="1", limit=100)
 
         # 结果应明确标记降级，而不是把缺失向量伪装成普通空命中。
         assert result["status"] == "degraded"
-        assert result["issues"][0]["code"] == ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE.value
+        assert (
+            result["issues"][0]["code"] == ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE.value
+        )
         mock_vector_store.get_doc_vector.assert_called_once_with(1)
 
     @pytest.mark.asyncio
@@ -2384,9 +2494,12 @@ class TestGetRelated:
         mock_application = MagicMock()
         mock_application.readonly_vector_store = mock_vector_store
 
-        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.mcp.tools.get_application", return_value=mock_application):
+        with (
+            patch("src.mcp.tools.get_sqlite_store", return_value=mock_store),
+            patch("src.mcp.tools.get_application", return_value=mock_application),
+        ):
             from src.mcp.tools import get_related
+
             result = await get_related(knowledge_id="1")
 
         assert result["results"] == []
@@ -2409,14 +2522,18 @@ class TestGetRelated:
         mock_application = MagicMock()
         mock_application.readonly_vector_store = mock_vector_store
 
-        with patch("src.mcp.tools.get_sqlite_store", return_value=mock_store), \
-             patch("src.mcp.tools.get_application", return_value=mock_application):
+        with (
+            patch("src.mcp.tools.get_sqlite_store", return_value=mock_store),
+            patch("src.mcp.tools.get_application", return_value=mock_application),
+        ):
             from src.mcp.tools import get_related
 
             result = await get_related(knowledge_id="1")
 
         assert result["status"] == "error"
-        assert result["issues"][0]["code"] == ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE.value
+        assert (
+            result["issues"][0]["code"] == ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE.value
+        )
         assert result["issues"][0]["stage"] == "vector_index_load"
 
 
@@ -2453,7 +2570,9 @@ class TestQuerySubgraph:
             truncated=False,
         )
 
-        with patch("src.mcp.tools.get_relation_query_service", return_value=mock_service):
+        with patch(
+            "src.mcp.tools.get_relation_query_service", return_value=mock_service
+        ):
             from src.mcp.tools import query_subgraph
 
             result = await query_subgraph(
@@ -2472,7 +2591,12 @@ class TestQuerySubgraph:
         assert result["evidence_count"] == 1
         assert "confidence" in result
         assert "coverage" in result
-        assert result["grouped_edges"][RelationType.REFERENCES.value][0]["target_knowledge_id"] == 2
+        assert (
+            result["grouped_edges"][RelationType.REFERENCES.value][0][
+                "target_knowledge_id"
+            ]
+            == 2
+        )
         mock_service.query_subgraph.assert_called_once()
 
 
@@ -2523,7 +2647,9 @@ class TestExplainRelation:
             ],
         )
 
-        with patch("src.mcp.tools.get_relation_query_service", return_value=mock_service):
+        with patch(
+            "src.mcp.tools.get_relation_query_service", return_value=mock_service
+        ):
             from src.mcp.tools import explain_relation
 
             result = await explain_relation(
@@ -2813,7 +2939,9 @@ class TestCollectEvidence:
             )
 
         assert result["status"] == "degraded"
-        assert result["issues"][0]["code"] == ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE.value
+        assert (
+            result["issues"][0]["code"] == ErrorCode.RETRIEVAL_INDEX_UNAVAILABLE.value
+        )
         assert result["found"] is True
         assert result["chunk_retrieval_status"] == "path_unavailable"
         assert (
@@ -3103,7 +3231,11 @@ class TestReadonlyRelationEnvelopeMatrix:
             (
                 "explain_relation",
                 "src.mcp.tools.get_relation_query_service",
-                {"source_knowledge_id": "1", "target_knowledge_id": "2", "max_depth": False},
+                {
+                    "source_knowledge_id": "1",
+                    "target_knowledge_id": "2",
+                    "max_depth": False,
+                },
             ),
             (
                 "collect_evidence",
@@ -3419,3 +3551,523 @@ class TestReadonlyRelationEnvelopeMatrix:
         assert result["status"] == "degraded"
         assert result["issues"][0]["code"] == ErrorCode.PROVIDER_UNAVAILABLE.value
         assert result["issues"][0]["stage"] == expected_stage
+
+
+class TestPublicEmbeddingRebuildTools:
+    """Unit-level projection coverage; real process semantics live in blackbox."""
+
+    @staticmethod
+    def _kernel(plan_id: str = "a" * 64) -> tuple[SimpleNamespace, MagicMock]:
+        inspection = _PublicEmbeddingDTO(
+            {
+                "index": {"state": "ready", "active_generation": "g-old"},
+                "policy": {"state": "ready"},
+            }
+        )
+        plan = _PublicEmbeddingDTO(
+            {
+                "plan_id": plan_id,
+                "force": True,
+                "requires_confirmation": True,
+                "requires_network": True,
+            }
+        )
+        execution = _PublicEmbeddingDTO(
+            {
+                "operation_id": "embedding-rebuild-" + "a" * 32,
+                "generation_id": "g-new",
+                "ledger": {"state": "completed"},
+            }
+        )
+        fake = SimpleNamespace(
+            inspect_embedding_rebuild=MagicMock(return_value=inspection),
+            plan_embedding_rebuild=MagicMock(return_value=plan),
+            confirm_embedding_rebuild=MagicMock(return_value=object()),
+            execute_embedding_rebuild=MagicMock(return_value=execution),
+        )
+        return fake, fake.execute_embedding_rebuild
+
+    @pytest.mark.asyncio
+    async def test_inspect_projects_only_the_public_kernel_dto(self) -> None:
+        from src.mcp import tools as mcp_tools
+        import pkv_kernel
+
+        kernel, _ = self._kernel()
+        config = object()
+        with (
+            patch.object(pkv_kernel, "embedding", kernel),
+            patch(
+                "src.mcp.tools.get_runtime_config_for_lifecycle",
+                return_value=config,
+            ) as get_config,
+        ):
+            result = await mcp_tools.inspect_embedding_rebuild()
+
+        assert result == {
+            "status": "success",
+            "terminal": "success",
+            "operation": "embedding_rebuild",
+            "inspection": {
+                "index": {"state": "ready", "active_generation": "g-old"},
+                "policy": {"state": "ready"},
+            },
+            "plan": None,
+            "issues": [],
+        }
+        get_config.assert_called_once_with(require_ready=False)
+        kernel.inspect_embedding_rebuild.assert_called_once_with(config)
+
+    @pytest.mark.asyncio
+    async def test_plan_rejects_non_boolean_force_before_kernel_access(self) -> None:
+        from src.mcp import tools as mcp_tools
+
+        with patch("src.mcp.tools.get_runtime_config_for_lifecycle") as get_config:
+            result = await mcp_tools.plan_embedding_rebuild(force="true")
+
+        assert result["terminal"] == "error"
+        assert result["issues"][0]["code"] == ErrorCode.CONFIRMATION_REQUIRED.value
+        get_config.assert_not_called()
+
+
+class TestPublicOutcomeTools:
+    """MCP adapter coverage; process-level behavior remains in blackbox tests."""
+
+    @staticmethod
+    def _kernel_patch(module: object):
+        """Patch only the supported Kernel facade after resolving its lazy export."""
+
+        import pkv_kernel
+
+        _ = pkv_kernel.outcomes
+        return patch.object(pkv_kernel, "outcomes", module)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        (
+            "handler_name, service_method, kwargs, expected_operation, "
+            "expected_args, expected_kwargs"
+        ),
+        [
+            (
+                "create_outcome_topic",
+                "create_topic",
+                {"title": "Topic", "question": "Question?"},
+                "create_topic",
+                (),
+                {"title": "Topic", "question": "Question?"},
+            ),
+            (
+                "get_outcome",
+                "get_outcome",
+                {"topic_id": "topic-1"},
+                "get_outcome",
+                ("topic-1",),
+                {},
+            ),
+            (
+                "suggest_outcome_evidence",
+                "suggest_evidence",
+                {"topic_id": "topic-1", "query": "query", "limit": 3},
+                "suggest_outcome_evidence",
+                (),
+                {"topic_id": "topic-1", "query": "query", "limit": 3},
+            ),
+            (
+                "attach_outcome_evidence",
+                "attach_evidence",
+                {
+                    "topic_id": "topic-1",
+                    "locator": "entry:42",
+                    "acquisition_method": "user_selected",
+                    "retrieval_status": "not_requested",
+                    "limitation_codes": ["limited"],
+                },
+                "attach_outcome_evidence",
+                (),
+                {
+                    "topic_id": "topic-1",
+                    "locator": "entry:42",
+                    "acquisition_method": "user_selected",
+                    "retrieval_status": "not_requested",
+                    "limitation_codes": ["limited"],
+                },
+            ),
+            (
+                "detach_outcome_evidence",
+                "detach_evidence",
+                {"evidence_id": "evidence-1"},
+                "detach_outcome_evidence",
+                ("evidence-1",),
+                {},
+            ),
+            (
+                "create_outcome_claim",
+                "create_claim",
+                {
+                    "topic_id": "topic-1",
+                    "statement": "Claim",
+                    "state": "supported",
+                    "limitation_codes": ["limited"],
+                },
+                "create_outcome_claim",
+                (),
+                {
+                    "topic_id": "topic-1",
+                    "statement": "Claim",
+                    "state": "supported",
+                    "limitation_codes": ["limited"],
+                },
+            ),
+            (
+                "revise_outcome_claim",
+                "revise_claim",
+                {
+                    "claim_id": "claim-1",
+                    "statement": "Revised",
+                    "state": "draft",
+                    "limitation_codes": ["limited"],
+                    "expected_revision": 2,
+                },
+                "revise_outcome_claim",
+                (),
+                {
+                    "claim_id": "claim-1",
+                    "statement": "Revised",
+                    "state": "draft",
+                    "limitation_codes": ["limited"],
+                    "expected_revision": 2,
+                },
+            ),
+            (
+                "link_outcome_claim_evidence",
+                "link_claim_evidence",
+                {
+                    "claim_id": "claim-1",
+                    "evidence_id": "evidence-1",
+                    "polarity": "support",
+                },
+                "link_outcome_claim_evidence",
+                (),
+                {
+                    "claim_id": "claim-1",
+                    "evidence_id": "evidence-1",
+                    "polarity": "support",
+                },
+            ),
+            (
+                "unlink_outcome_claim_evidence",
+                "unlink_claim_evidence",
+                {"claim_id": "claim-1", "evidence_id": "evidence-1"},
+                "unlink_outcome_claim_evidence",
+                (),
+                {"claim_id": "claim-1", "evidence_id": "evidence-1"},
+            ),
+            (
+                "render_outcome_research_brief",
+                "render_research_brief",
+                {"topic_id": "topic-1"},
+                "render_outcome_research_brief",
+                (),
+                {"topic_id": "topic-1"},
+            ),
+            (
+                "approve_outcome_research_brief",
+                "approve_research_brief",
+                {"topic_id": "topic-1"},
+                "approve_outcome_research_brief",
+                (),
+                {"topic_id": "topic-1"},
+            ),
+            (
+                "return_outcome_research_brief",
+                "return_research_brief",
+                {"topic_id": "topic-1"},
+                "return_outcome_research_brief",
+                (),
+                {"topic_id": "topic-1"},
+            ),
+        ],
+    )
+    async def test_projects_only_supported_kernel_outcome_contracts(
+        self,
+        handler_name: str,
+        service_method: str,
+        kwargs: dict[str, object],
+        expected_operation: str,
+        expected_args: tuple[object, ...],
+        expected_kwargs: dict[str, object],
+    ) -> None:
+        from src.mcp import tools as mcp_tools
+
+        kernel_result = _PublicEmbeddingDTO({"public_id": "outcome-result"})
+        method = MagicMock(return_value=kernel_result)
+        module = SimpleNamespace(**{service_method: method})
+        with (
+            self._kernel_patch(module),
+            patch(
+                "src.mcp.tools.get_application", return_value=object()
+            ) as get_application,
+        ):
+            result = await getattr(mcp_tools, handler_name)(**kwargs)
+
+        assert result["status"] == "success"
+        assert result["operation"] == expected_operation
+        if service_method == "detach_evidence":
+            assert result["result"] == {"evidence_id": "evidence-1"}
+        else:
+            assert result["result"] == {"public_id": "outcome-result"}
+        get_application.assert_called_once_with()
+        method.assert_called_once_with(*expected_args, **expected_kwargs)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "handler_name, service_method, kwargs",
+        [
+            (
+                "create_outcome_topic",
+                "create_topic",
+                {"title": "Topic", "question": "Question?"},
+            ),
+            ("get_outcome", "get_outcome", {"topic_id": "topic-1"}),
+            (
+                "suggest_outcome_evidence",
+                "suggest_evidence",
+                {"topic_id": "topic-1", "query": "query"},
+            ),
+            (
+                "attach_outcome_evidence",
+                "attach_evidence",
+                {"topic_id": "topic-1", "locator": "entry:42"},
+            ),
+            (
+                "detach_outcome_evidence",
+                "detach_evidence",
+                {"evidence_id": "evidence-1"},
+            ),
+            (
+                "create_outcome_claim",
+                "create_claim",
+                {"topic_id": "topic-1", "statement": "Claim"},
+            ),
+            (
+                "revise_outcome_claim",
+                "revise_claim",
+                {"claim_id": "claim-1"},
+            ),
+            (
+                "link_outcome_claim_evidence",
+                "link_claim_evidence",
+                {
+                    "claim_id": "claim-1",
+                    "evidence_id": "evidence-1",
+                    "polarity": "support",
+                },
+            ),
+            (
+                "unlink_outcome_claim_evidence",
+                "unlink_claim_evidence",
+                {"claim_id": "claim-1", "evidence_id": "evidence-1"},
+            ),
+            (
+                "render_outcome_research_brief",
+                "render_research_brief",
+                {"topic_id": "topic-1"},
+            ),
+            (
+                "approve_outcome_research_brief",
+                "approve_research_brief",
+                {"topic_id": "topic-1"},
+            ),
+            (
+                "return_outcome_research_brief",
+                "return_research_brief",
+                {"topic_id": "topic-1"},
+            ),
+        ],
+    )
+    async def test_maps_kernel_outcome_errors_without_echoing_diagnostics(
+        self,
+        handler_name: str,
+        service_method: str,
+        kwargs: dict[str, object],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from src.mcp import tools as mcp_tools
+
+        canary = "pkv-outcome-private-canary"
+        module = SimpleNamespace(
+            **{
+                service_method: MagicMock(
+                    side_effect=PKVRuntimeError(
+                        ErrorCode.OUTCOME_STATE_CONFLICT,
+                        f"secret={canary} path=C:/private/outcome.md",
+                        stage="outcome",
+                        recoverable=True,
+                    )
+                )
+            }
+        )
+        with (
+            self._kernel_patch(module),
+            patch("src.mcp.tools.get_application", return_value=object()),
+        ):
+            result = await getattr(mcp_tools, handler_name)(**kwargs)
+
+        assert result["status"] == "error"
+        assert result["issues"] == [
+            {
+                "code": ErrorCode.OUTCOME_STATE_CONFLICT.value,
+                "message": "研究成果状态已变化，请重新读取后再操作。",
+                "stage": "outcome",
+                "recoverable": True,
+            }
+        ]
+        assert canary not in repr(result)
+        assert canary not in caplog.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "kernel_result",
+        [
+            object(),
+            SimpleNamespace(to_dict=lambda: ["not-a-public-payload"]),
+        ],
+    )
+    async def test_rejects_invalid_kernel_public_result_contract(
+        self,
+        kernel_result: object,
+    ) -> None:
+        from src.mcp import tools as mcp_tools
+
+        module = SimpleNamespace(create_topic=MagicMock(return_value=kernel_result))
+        with (
+            self._kernel_patch(module),
+            patch("src.mcp.tools.get_application", return_value=object()),
+        ):
+            result = await mcp_tools.create_outcome_topic("Topic", "Question?")
+
+        assert result["status"] == "error"
+        assert result["issues"] == [
+            {
+                "code": ErrorCode.OUTCOME_INVALID.value,
+                "message": "研究成果参数无效。",
+                "stage": "outcome",
+                "recoverable": False,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("failure", "expected_message", "recoverable"),
+        [
+            (ValueError("pkv-outcome-value-canary"), "研究成果参数无效。", False),
+            (
+                RuntimeError("pkv-outcome-runtime-canary"),
+                "研究成果操作暂时不可用。",
+                True,
+            ),
+        ],
+    )
+    async def test_maps_validation_and_unexpected_kernel_failures_safely(
+        self,
+        failure: BaseException,
+        expected_message: str,
+        recoverable: bool,
+    ) -> None:
+        from src.mcp import tools as mcp_tools
+
+        module = SimpleNamespace(create_topic=MagicMock(side_effect=failure))
+        with (
+            self._kernel_patch(module),
+            patch("src.mcp.tools.get_application", return_value=object()),
+        ):
+            result = await mcp_tools.create_outcome_topic("Topic", "Question?")
+
+        assert result["issues"] == [
+            {
+                "code": ErrorCode.OUTCOME_INVALID.value,
+                "message": expected_message,
+                "stage": "outcome",
+                "recoverable": recoverable,
+            }
+        ]
+        assert str(failure) not in repr(result)
+
+
+class TestPublicEmbeddingRebuildExecutionTools:
+    """Execution-path projection coverage for the embedding rebuild tools."""
+
+    _kernel = staticmethod(TestPublicEmbeddingRebuildTools._kernel)
+
+    @pytest.mark.asyncio
+    async def test_execute_recomputes_then_projects_a_public_execution(self) -> None:
+        from src.mcp import tools as mcp_tools
+        import pkv_kernel
+
+        plan_id = "b" * 64
+        kernel, execute = self._kernel(plan_id)
+        config = object()
+        with (
+            patch.object(pkv_kernel, "embedding", kernel),
+            patch(
+                "src.mcp.tools.get_runtime_config_for_lifecycle",
+                return_value=config,
+            ) as get_config,
+        ):
+            result = await mcp_tools.execute_embedding_rebuild(
+                plan_id=plan_id,
+                approved=True,
+                allow_network=True,
+                force=True,
+            )
+
+        assert result["terminal"] == "success"
+        assert result["execution"]["generation_id"] == "g-new"
+        get_config.assert_called_once_with(require_ready=True)
+        kernel.inspect_embedding_rebuild.assert_called_once_with(config)
+        kernel.plan_embedding_rebuild.assert_called_once()
+        kernel.confirm_embedding_rebuild.assert_called_once()
+        execute.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_stale_plan_never_confirms_or_constructs_backend(
+        self,
+    ) -> None:
+        from src.mcp import tools as mcp_tools
+        import pkv_kernel
+
+        kernel, execute = self._kernel("c" * 64)
+        with (
+            patch.object(pkv_kernel, "embedding", kernel),
+            patch(
+                "src.mcp.tools.get_runtime_config_for_lifecycle",
+                return_value=object(),
+            ),
+        ):
+            result = await mcp_tools.execute_embedding_rebuild(
+                plan_id="d" * 64,
+                approved=True,
+                allow_network=True,
+                force=True,
+            )
+
+        assert result["terminal"] == "error"
+        assert result["issues"][0]["code"] == ErrorCode.RUNTIME_PLAN_STALE.value
+        kernel.confirm_embedding_rebuild.assert_not_called()
+        execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_execute_invalid_confirmation_never_uses_the_kernel(self) -> None:
+        from src.mcp import tools as mcp_tools
+
+        with patch("src.mcp.tools.get_runtime_config_for_lifecycle") as get_config:
+            result = await mcp_tools.execute_embedding_rebuild(
+                plan_id="not-a-plan",
+                approved=True,
+                allow_network=True,
+                force=True,
+            )
+
+        assert result["terminal"] == "error"
+        assert result["issues"][0]["code"] == ErrorCode.CONFIRMATION_REQUIRED.value
+        get_config.assert_not_called()

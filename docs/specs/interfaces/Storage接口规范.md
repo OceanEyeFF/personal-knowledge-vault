@@ -32,6 +32,91 @@ request、`PreparedDocument` 与 `DerivationPatch` 仅存在受身份/hash 校�
 
 ---
 
+## P1-B 可追溯成果边界
+
+schema `1.2.7` 的 `outcome_*` 表保存 Topic、Evidence、Claim、Claim↔Evidence 边与
+`research_brief` pointer。其 authority 与 R4 content ledger 分离：它不复制 Entry 正文、不进入
+FTS/vector generation，也不改变 archive 的 Q0/Q1′/Q2 写入顺序。
+
+- Evidence 仅保存受限 `pkv://entries/...`、`pkv://entries/.../chunks/...` 或
+  `pkv://relations/...` locator、captured source revision digest、状态和 limitation；删除/漂移
+  时不得自动改绑新 source。
+- `OutcomeStore` 是内部 SQLite port，所有 mutation 都需要 `knowledge_outcomes` writer lease；
+  它不迁移 schema、不解析 source、不读取正文或写 Markdown。
+- `OutcomeService` 先将 deterministic、不可覆盖的 Markdown revision 发布到 layout-owned
+  `outcomes/`，再将 relative path/digest 写入 `outcome_briefs`。reader 只跟随已提交 pointer，
+  因而 pre-commit orphan 不会被误报为有效成果。
+- source revalidation 的 read path 零写；显式 render/review mutation 才可以持久标记
+  stale/needs_review。全线无 Provider、Embedding、网络或隐藏 test mode。
+
+### 2026-10 一致性修复目标（尚未实现）
+
+上述 schema `1.2.7` 是现有持久化基线，不代表它已满足下列新合同。2026-10-24 复审确认输入
+mutation 与 brief 失效分开提交、r2+ orphan 阻塞重试、review 未绑定被审阅版本三项缺口。修复
+顺序由[生命周期一致性修复总计划](../../overview/生命周期一致性修复设计与分阶段计划-2026-10.md)
+控制；以下只规定目标 Store 边界，不修改产品代码、SQL migration 或当前公开 API。
+
+W1 的具体持久合同已冻结于
+[迁移冻结方案](../database/生命周期一致性迁移冻结方案-2026-10.md)：014/schema 1.2.8、
+canonical input/publication/receipt hash、完整列约束与合成迁移矩阵。公开签名与错误见
+[v2 接口冻结合同](./生命周期一致性v2接口冻结合同-2026-10.md)。这些目标尚未部署。
+
+**输入事务。** Topic 的 `input_revision/input_digest` 表示完整 body-free render input。所有
+实际改变 Topic/Evidence/Claim/边或其持久 binding state 的操作，必须在一个 SQLite 事务内
+完成输入修改、input revision 恰好递增一次、digest 更新及已有 brief=`needs_review`。
+Store 不得提前提交输入、再由另一次连接标记失效；root writer lease 与 audit 均不能替代这个
+原子提交点。规范化后的 no-op 不递增、不额外失效；render 与 review state 不属于 input mutation。
+
+digest 的 canonical 字段、排序和 renderer 合同版本已由 W1 冻结，包含 `input_revision` 与
+所有影响渲染字节的输入；不含 source body、绝对路径、审计/观察时间或 brief review state。
+模板/renderer 变化须显式更新 input binding。详见
+[P1-B 计划 3.5](../../overview/P1-B-可追溯知识成果最小合同实施计划-2026-09.md)。
+Topic 必须持久保存并在捕获输入中携带 `render_contract_version`；对应 renderer 不可用时拒绝
+发布，不能在重启/升级时静默选择新版本渲染器。
+普通 render 使用 Topic 绑定版本，render/read 不自行推进 input revision；升级后版本不可用
+必须明确拒绝并进入受控输入合同迁移/重新生成计划，不能更换 renderer 却沿用旧 digest。
+
+**发布事务。** Topic 创建时先持久保留稳定的 opaque `outcome_id`；这个身份不是成功 brief。
+render 从一致输入与已提交 pointer 计算 `candidate_revision = committed_revision + 1`，
+没有 pointer 时前者为 1。`publication_id` 由带域标识的 canonical
+`(outcome_id, candidate_revision, input_digest)` 决定；不可覆盖路径必须包含此 identity。
+对任意 r1/r2/rN，相同输入重试只可复用字节完全相同的文件；不同输入使用不同 identity，旧
+orphan 保留、不覆盖，不能因旧 orphan 占据 revision 名称而永久失败。
+
+文件发布后，在 writer lease 下复核 source/投影，再由一个 SQLite pointer CAS 事务比较旧
+pointer、捕获的 `input_revision/input_digest`，共同提交新 relative path、`publication_id`、
+`content_sha256`、`rendered_input_revision/rendered_input_digest`、`awaiting_review` 与新
+committed revision。仅该 commit 能推进 brief revision；失败时不改变当前已提交 pointer，
+包括竞争者已发布的版本，也不得退回捕获时的旧 pointer。文件保留；仅未被已提交 pointer 引用
+的 publication 才是 orphan，同输入竞争者已引用的同一 publication 仍是有效投影。pointer
+commit 后响应前中断，新进程直接读取已提交版本。
+
+**读取与 review。** bundle 必须来自同一个 SQLite read transaction；除 source 和投影复核外，
+还必须比较 rendered input binding 与当前 input binding。缺失或不匹配时 effective state 为
+`needs_review`，不更改 stored state 或文件，也不误报为投影字节损坏。外部 source 漂移不一定
+推进 Topic revision，故 source revalidation 仍是独立必需条件。
+
+review 的 Storage 请求必须携带 `outcome_id`、`expected_revision`、`content_sha256`、
+`expected_input_revision`。在同一 writer-owned SQLite 事务中核对这些字段、current/rendered
+input binding 与允许状态，再 CAS 更新 review state；不匹配一律零 review state 写入，不允许
+读取 latest 后代填 expected 字段。同一元组且当前仍为该动作目标状态时可幂等返回，不能撤销
+后来的状态转换。公开 major-2/v2 迁移
+与旧无版本入口的 fail-closed 策略由总计划和 Kernel SDK 合同规定，不能由 Store 另设兼容旁路。
+具体协议已在 W1 文档冻结；W3 的新协议/弃用准备不能证明旧入口已安全，必须到 W5 实际切换 major 2
+并通过 OC-10b 后，才能结合其他验收关闭 R04。
+`returned` 对同一 revision 保持终态，重新 render 后才可审阅下一版本；不允许同元组反复切换
+approved/returned，以免旧 review 重放改变后续决定。
+review state 与 `outcome_review_receipts` 在同一事务提交。receipt 保存精确确认元组、动作和
+稳定 reason_code；重复 return 的 reason 也必须相同。旧 brief 使用 `binding_state=legacy_unverified`，
+publication/rendered binding 保持 NULL，不为历史 state 合成有效 receipt。
+
+历史 brief 不能通过把当前 input binding 回填为 rendered binding 来保留 approved；无法证明
+时保留旧文件/pointer 并外显 `needs_review`，等待显式重新 render/review。迁移字段与约束见
+[SQLite Schema 目标设计](../database/SQLite_Schema完整规范.md)。实现验收必须覆盖 P1-B 计划中
+`OC-01`–`OC-12` 的事务故障、跨进程恢复、review 竞争与零写读取；这些新验收项当前均未通过。
+
+---
+
 ## 🔧 MarkdownStore
 
 ### 核心方法

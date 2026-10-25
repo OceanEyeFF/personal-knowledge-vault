@@ -10,7 +10,7 @@
 
 ### 核心能力
 
-- **15 个 Tool**: 13 只读 + 2 写入
+- **30 个 Tool**: 17 只读 + 13 写入
 - **9 个 Resource**: 条目全文/元数据、精确 chunk、时间字段、关系边、标签与统计
 - **3 个 Prompt 模板**: 搜索总结/知识问答/思想磨砺
 - **安全加固**: URL DNS/连接目标/重定向/子资源 SSRF 重校验 + 文本长度验证
@@ -65,13 +65,15 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；�
 
 ## 对外接口
 
-### Tools (15 个)
+### Tools (30 个)
 
 #### 只读 Tool (readOnlyHint=True)
 
 | Tool | 参数 | 返回 | 说明 |
 |------|------|------|------|
 | `get_runtime_status` | (无) | `{status, readiness, inspection, plan, issues}` | 只读检查运行时与下一步计划；未就绪数据根唯一可调用 Tool，不初始化/迁移/修复/Provider 探测 |
+| `inspect_embedding_rebuild` | (无) | `{terminal, inspection, plan: null, issues}` | 只读检查 generation binding 与独立手动重建预算；零写、零 Provider、零 task drain |
+| `plan_embedding_rebuild` | `force?` | `{terminal, inspection, plan, issues}` | 生成安全、无路径/正文/凭据的 public rebuild 计划；`ready` generation 需精确 `force=true` |
 | `search_knowledge` | `query`, `strategy?`, `top_k?`, `source_type?`, `tag?` | `{status, strategy, total, results[], issues[]}` | 搜索知识库，支持 auto/bm25/vector/hybrid 五态响应 |
 | `get_entry` | `knowledge_id` | `{knowledge_id, title, tags, content, ...}` | 获取条目完整内容(含 Markdown 全文) |
 | `list_tags` | (无) | `{total_tags, tags[{name, count}]}` | 列出所有标签及计数 |
@@ -84,6 +86,8 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；�
 | `find_bridges` | `seed_knowledge_id`, `top_k?`, `max_depth?` | `{items[], limitation_notes[]}` | 发现显式关系子图中的桥接候选及逐跳 evidence path（partial-v1） |
 | `timeline_of` | `topic`, `top_k?`, `sort_order?` | `{items[], inferred_time_field}` | 按 `event_time > published_at > archived_at` 重建弱时间线；无持久时间时以 `unavailable` + entry locator 诚实降级（partial-v1） |
 | `contrast` | `topic_a`, `topic_b`, `top_k?` | `{shared_tags, only_a_tags, only_b_tags, ...}` | 基于候选表面字段与来源 provenance 做主题对比（partial-v1） |
+| `get_outcome` | `topic_id` | `{status, operation, result:{topic,evidence,claims,brief}}` | 零写入地重验 evidence binding；drift 显示为 `stale/unavailable` 与 brief 的 effective `needs_review` |
+| `suggest_outcome_evidence` | `topic_id`, `query`, `limit?` | `{strategy:"bm25",status,suggestions,issues}` | 仅用严格 BM25 提供待显式 attach 的 entry locator；不构造 QueryRouter、Provider 或 vector generation |
 
 #### 写入 Tool
 
@@ -91,11 +95,29 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；�
 |------|------|------|------|
 | `archive_url` | `url` | `{success, knowledge_id, title, ...}` | 归档网页 (含 SSRF 防护) |
 | `archive_text` | `text`, `title?` | `{success, knowledge_id, title, ...}` | 归档纯文本 (含长度验证) |
+| `execute_embedding_rebuild` | `plan_id`, `approved`, `allow_network`, `force?` | `{terminal, inspection, plan, execution, issues}` | 重新核验同一 public plan 后执行一次 fenced generation rebuild；显式确认才允许构造 Provider |
+| `create_outcome_topic` | `title`, `question` | public Topic DTO | 创建一次明确 inquiry；不自动检索、联网或调用 Provider |
+| `attach_outcome_evidence` / `detach_outcome_evidence` | canonical locator / `evidence_id` | public Evidence DTO / stable id | 显式绑定或解除 entry/chunk/relation evidence；绝不自动重绑来源 |
+| `create_outcome_claim` / `revise_outcome_claim` | statement、state、revision | public Claim DTO | 记录用户明确的 Claim；无有效 evidence 时外显为 `insufficient` |
+| `link_outcome_claim_evidence` / `unlink_outcome_claim_evidence` | claim/evidence id、polarity | public Claim DTO | 显式维护 support/counter 边；跨 Topic 关系 fail-closed |
+| `render_outcome_research_brief` | `topic_id` | public brief DTO | current binding 下发布 immutable Markdown revision，再提交 SQLite pointer |
+| `approve_outcome_research_brief` / `return_outcome_research_brief` | `topic_id` | public brief DTO | 人工显式 review；批准不回写 Entry/关系/检索语料 |
 
-两种写入 Tool 均只进入 `KnowledgeApplication` 的 R4 Q0 → Q1′ → Q2 内部生命周期：
+两种 archive 写入 Tool 均只进入 `KnowledgeApplication` 的 R4 Q0 → Q1′ → Q2 内部生命周期：
 Q0/Q1′ 未完成时返回稳定 processing 投影，只有 `core_committed` 后才称文档已保存；
-Q2 的 retry/budget/authorization 状态保持可操作的 degraded 信息。Tool 不暴露 resume、
-rebuild 或后台 daemon，也不直接调用 Storage/AI lifecycle。
+Q2 的 retry/budget/authorization 状态保持可操作的 degraded 信息。它们不暴露 resume 或后台
+daemon，也不直接调用 Storage/AI lifecycle。
+
+P1-B outcome Tool 同样只投影公开 Kernel façade。它们读取或保存 SQLite-authoritative 的
+结构状态和相对 Markdown pointer，Evidence 只保留 canonical locator/captured digest/limitation；
+不返回 source body、私有路径、raw URL/credential、Store、lease 或 Provider。读 Tool 不写入；
+mutation 在 Application 的 root writer lease 下审计执行，且不构造 LLM、Embedding 或 QueryRouter。
+
+`execute_embedding_rebuild` 是独立的 `pkv_kernel.embedding` 前台维护路径，不是 Q2 resume：
+它只从已经提交的 Markdown + SQLite projection 生成新的向量 generation，Provider 调用位于
+root writer lease 之外，且不会重新抓取、重写正文、修改 `ai.automation` 或暴露 task drain/
+retry 接口。独立 `ai.embedding_rebuild` token hard cap 缺失或耗尽时，在 Provider/stage 前返回
+`embedding_rebuild_authorization_required` 或 `embedding_budget_paused`。
 
 共享数据根实行**一写多读**：CLI、MCP 与未来 GUI 可并行读取，但不允许两个写操作
 并行。若 MCP 写入 Tool 发现其他应用持有数据根 write lease，它立即返回失败终态，至少含：
@@ -223,8 +245,11 @@ Vector 检索按需打开已有索引，而不是每个 Tool 调用重新建索�
 只读 Tool  →  async def + anyio.to_thread.run_sync(_impl)
                └── 将同步 SQLite/文件 I/O 包装到线程池
 
-写入 Tool  →  async def + await application.archive_url/archive_text(...)
+archive 写入 Tool → async def + await application.archive_url/archive_text(...)
                └── application 保持 Workflow 原生 async,无需 threadpool
+
+P1-B 同步写入 Tool → async def + anyio.to_thread.run_sync(_impl)
+               └── 只经 `pkv_kernel.outcomes`，由 Application 取得 writer lease
 
 Resource   →  async def + anyio.to_thread.run_sync(_impl)
                └── 同只读 Tool
@@ -285,7 +310,7 @@ transport
 | **Layer 1** | `tests/unit/test_mcp_security.py` | ~30 | 安全验证函数测试 (URL/IP/文本/Auth) |
 | **Layer 2** | `tests/integration/test_mcp_functional.py` | ~50 | FastMCP 进程内集成测试 |
 | **Layer 2** | `tests/integration/test_mcp_integration.py` | ~15 | 真实 SQLiteStore 集成测试 |
-| **Layer 3** | `tests/blackbox/test_mcp_blackbox.py` / `test_r4_mcp_fullflow.py` | stdio 子进程黑盒测试（含 R4 archive → restart → vector/hybrid） |
+| **Layer 3** | `tests/blackbox/test_mcp_blackbox.py` / `test_r4_mcp_fullflow.py` / `test_outcome_mcp_blackbox.py` | stdio 子进程黑盒测试（含 R4 archive → restart → vector/hybrid，以及 P1-B Topic → review → fresh-process read） |
 
 用例数以当前受控收集结果为准，不在模块文档中维护静态总数。
 
@@ -299,7 +324,7 @@ transport
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-layer2 -Command @("pytest", "tests/integration", "-k", "mcp", "-v")
 
 # Layer 3: stdio 黑盒测试 (最慢,启动子进程)
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-layer3 -Command @("pytest", "tests/blackbox/test_mcp_blackbox.py", "tests/blackbox/test_r4_mcp_fullflow.py", "-v")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-layer3 -Command @("pytest", "tests/blackbox/test_mcp_blackbox.py", "tests/blackbox/test_r4_mcp_fullflow.py", "tests/blackbox/test_outcome_mcp_blackbox.py", "-v")
 
 # 正式 MCP 覆盖率门禁：固定版本化目标集、离线 selector 与 95% 阈值
 .\scripts\test-conda.ps1 -EnvironmentName py311-private -Suite MCP
@@ -358,7 +383,7 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 | `__init__.py` | 模块入口,描述模块结构 |
 | `__main__.py` | 支持 `python -m src.mcp.server` 启动 |
 | `server.py` | FastMCP 主入口,单例管理,注册子模块 |
-| `tools.py` | 15 个 Tool handler 实现 |
+| `tools.py` | 30 个 Tool handler 实现 |
 | `resources.py` | 9 个 Resource handler 实现 |
 | `prompts.py` | 3 个 Prompt 模板实现 |
 | `utils.py` | 辅助工具(序列化/安全验证/参数约束) |
@@ -375,6 +400,7 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 | `tests/integration/test_mcp_integration.py` | 真实 SQLiteStore 集成测试 |
 | `tests/blackbox/test_mcp_blackbox.py` | stdio 协议级黑盒测试 (Layer 3) |
 | `tests/blackbox/test_r4_mcp_fullflow.py` | 真正 `archive_text`、关闭 server 后重启并 vector/hybrid 命中的 R4 source blackbox |
+| `tests/blackbox/test_outcome_mcp_blackbox.py` | 真 stdio Topic → Evidence → Claim → research brief → restart read 的 P1-B blackbox |
 
 ### 配置文件
 
@@ -386,6 +412,18 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-09-04 (P1-B traceable outcomes)
+- 新增 10 个 outcome 写入 Tool 与 2 个只读 Tool，全部只通过 `pkv_kernel.outcomes`。
+- Topic/Evidence/Claim/research brief 使用 SQLite authority 与 immutable Markdown projection；
+  source drift 只显示 stale/needs_review，不会改绑或调用 Provider。
+- 本条只表述 source-level MCP adapter/blackbox acceptance，不解除 Artifact/release compliance hold。
+
+### 2026-09-04 (R4-P1 public Embedding rebuild)
+- 新增 public inspect/plan/execute 三个 stdio Tool；它们通过窄的 Kernel façade，而不绕过
+  Application/R4、Storage、Provider 或 writer lease 合同。
+- `execute_embedding_rebuild` 使用独立 token ledger 与 fenced private stage；Provider 保持在
+  root writer lease 外。该条目仅描述 source-level public adapter，不表示 Artifact/release 通过。
 
 ### 2026-07-29 (Phase B citation Resource 与透明性复核)
 - chunk、metadata field 与 relation locator 改为真实注册、可直接读取的 Resource URI。
@@ -418,6 +456,6 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-09-03
+**最后更新**: 2026-09-04
 
 *本文档由 Claude Code 自动生成*

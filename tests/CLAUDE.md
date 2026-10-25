@@ -119,10 +119,14 @@
 | `test_mcp_blackbox.py` | MCP stdio 协议级黑盒测试（Layer 3） |
 | `test_r4_cli_fullflow.py` | CLI → R4 → 重启 → vector/hybrid 的真实进程闭环 |
 | `test_r4_mcp_fullflow.py` | MCP stdio → R4 → 新 server → vector/hybrid 的真实进程闭环 |
+| `test_embedding_rebuild_cli_blackbox.py` | public CLI inspect/plan/apply、独立预算账本、重启后 vector/hybrid 的真实进程闭环 |
+| `test_embedding_rebuild_mcp_blackbox.py` | public MCP stdio rebuild Tool、fenced Provider barrier、全新 server 读取/检索闭环 |
+| `test_outcome_cli_blackbox.py` | public CLI Topic → Evidence → Claim → research brief → fresh-process read；验证 stale/missing projection 与路径脱敏 |
+| `test_outcome_mcp_blackbox.py` | real MCP stdio/JSON-RPC Topic → review → new-server read；严格 BM25/URL credential rejection 与 missing projection 合同 |
 
 **MCP 黑盒测试**: 仅经 `tests/offline_entrypoint.py mcp` 启动 base-only 子进程，并由 MCP SDK 经 JSON-RPC over stdio 端到端验证；不得直接启动默认配置入口。验证:
 - 服务启动与协议初始化(MCP 握手)
-- 功能发现（当前 manifest：`list_tools=15`，其中 13 个只读、2 个写入；`list_prompts=3`、2 个静态 Resource、7 个 Resource Template；后两者分别由 `list_resources` / `list_resource_templates` 发现）
+- 功能发现（当前 manifest：`list_tools=30`，其中 17 个只读、13 个写入；`list_prompts=3`、2 个静态 Resource、7 个 Resource Template；后两者分别由 `list_resources` / `list_resource_templates` 发现）
 - 只读 Tool 端到端调用 (含分页/过滤)
 - 写入 Tool 安全拦截 (SSRF/空文本/超长文本)
 - Prompt 端到端调用
@@ -139,6 +143,23 @@ loopback，但 DNS 与非 loopback 始终 fail-closed。真实用户配置与 Pr
 读取。harness 的 barrier 用于证明 Provider 调用时 writer lease 可取得，并替代 sleep
 同步。该证据只代表源码黑盒验收，不升级任何 Artifact/release 状态；既有 compliance
 hold 保持不变。
+
+**R4-P1 public rebuild source black-box 合同**：新增 CLI 与 MCP 用例只经过公开的
+`embedding inspect/rebuild` 命令或 MCP Tool；不 monkeypatch Application、R4 lifecycle、
+StorageCoordinator、Provider Tool 返回值或产品配置。harness 保持产品进程外并通过正式
+OpenAI-compatible 配置接入；manual Provider work 期间以 barrier 证明 root writer lease
+可被另一 owner 获取。预算/授权 gate 不等待或触发 Provider，durable ledger 只作为测试拥有
+DataRoot 的事后核验，绝不替代公开入口。
+
+**P1-B outcome source black-box 合同**：CLI 用例必须通过 `offline_entrypoint.py cli` 的真实
+子进程，MCP 用例必须通过 `offline_entrypoint.py mcp` 的真实 stdio 子进程与 MCP SDK/JSON-RPC。
+它们可用测试拥有的 Markdown/SQLite fixture 设置既有 Evidence source，但 Topic/Evidence/Claim/
+render/review 只能走 `pkv_kernel` 的公开 CLI/MCP adapter；不得 patch Application、OutcomeService、
+Store、writer lease 或 Tool 返回值。每个场景使用独立 DataRoot，断言 fresh process/server 可读取
+同一 revision，且 public envelope 不泄露 source body、绝对路径或 URL credentials。仅可直接确认的
+brief 文件缺失才是成功的 `projection_state=unavailable`；权限/I/O/路径不确定必须经安全 error
+envelope 失败。P1-B 不触发网络、LLM、Embedding 或 QueryRouter，也不构成 Artifact/release
+acceptance。
 
 ---
 
@@ -184,6 +205,7 @@ Layer 2: 进程内集成 (中速, FastMCP)
 Layer 3: stdio 黑盒 (最慢, 子进程)
     tests/blackbox/test_mcp_blackbox.py  -- stdio_client + ClientSession + JSON-RPC
     tests/blackbox/test_r4_mcp_fullflow.py -- 真实 R4 写入、重启与语义检索
+    tests/blackbox/test_outcome_mcp_blackbox.py -- P1-B Topic/Evidence/Claim/review 与新 server 读取
 ```
 
 **Layer 2 vs Layer 3 对比**:
@@ -415,6 +437,45 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-10-25（W2 生命周期修复验收）
+
+- 新增 W2 identity、Q1 恢复/新进程及 CLI 叶子门禁测试；扩展 W1 CLI 三状态矩阵，保留
+  原 16 个场景。其余 W1 红测试和历史 JSON 不改写。
+- 最终联合 `120 passed, 7 failed`，原 W2 对应 12 项红例全部转绿；七个失败仍是
+  W3–W5 的 R-02/03/04/05/06。没有 skip/xfail 或默认过滤，也没有全量通过声明。
+- 组合 CLI/MCP 黑盒 `9 passed`；组件回归、完整命令和冻结指纹见
+  [W2 记录](../docs/overview/W2-身份队列与CLI门禁修复记录-2026-10.md)与
+  [W2 JSON](./contracts/w2_lifecycle_repairs.v1.json)。所有运行只使用 wrapper 和合成 `.data-test`。
+
+### 2026-10-24（W1 生命周期红测试）
+
+- 新增 `test_w1_embedding_regressions.py`、`test_w1_outcome_regressions.py`、
+  `test_w1_q1_regressions.py` 与 `test_w1_cli_parse_regressions.py`；普通 source lane 收集，
+  不使用 skip/xfail。19 个业务失败覆盖八项缺陷，15 个控制通过，联合命令 exit 1。
+- 测试只使用包装器与合成 `.data-test`；没有产品实现、迁移脚本或 G0 修改。
+  [W1 证据记录](../docs/overview/W1-红测试与协议迁移冻结记录-2026-10.md) 区分已复现缺陷与
+  尚未运行的完整验收矩阵；[JSON 登记](./contracts/w1_lifecycle_regressions.v1.json) 固定 nodeid、oracle 和文件指纹。
+
+### 2026-09-04 (P1-B traceable outcome source verification)
+
+- 新增 `test_traceable_outcomes.py`：固定 SQLite authority、Markdown projection、严格 BM25、
+  Claim effective `insufficient`、source/brief-projection drift 的 `needs_review`、approval 与 explicit
+  unlink/detach 边界；仅确认缺失可降级为 `unavailable`，EACCES/EIO 必须 fail-closed。
+- 新增真实 CLI/MCP stdio 黑盒：每次命令/server 都是新的产品进程，使用测试拥有 source fixture，
+  经过 `Topic → Evidence → Claim → render → approve → fresh-process read` 验证 durable public
+  envelope，同时验证 malformed locator、Topic/Claim 私有路径或 credential URL 都不会回显；fresh
+  process/server 区分 stale/missing/non-file projection。
+- 这些是 Provider-free source test，不读取用户 Vault/config/URL/credential，不使用 test mode 或
+  monkeypatch 伪造 outcome 成功，也不作为 Artifact/release evidence。
+
+### 2026-09-04 (R4-P1 public Embedding rebuild source acceptance)
+
+- 新增真实 CLI 与 MCP stdio public rebuild 黑盒；它们从已归档的真实 Markdown/SQLite projection
+  生成新 generation，在独立 Provider barrier 中验证 lease 外网络调用，并在新进程/server
+  vector/hybrid 检索刚归档内容。
+- 新增独立手动 rebuild ledger、stage grant 与策略门禁回归；预算/授权阻塞不构造 Provider，
+  settlement 不重复计入本地 reservation。所有证据仍只属于 source acceptance。
 
 ### 2026-09-03 (R4-E source acceptance)
 

@@ -31,7 +31,7 @@ def _layout(tmp_path: Path) -> RuntimeLayout:
 
 
 def test_writer_inventory_is_versioned_and_classifies_every_declared_surface() -> None:
-    assert WRITER_INVENTORY_VERSION == 4
+    assert WRITER_INVENTORY_VERSION == 5
     names = [entry.name for entry in DATA_ROOT_WRITER_INVENTORY]
     assert len(names) == len(set(names))
     assert {

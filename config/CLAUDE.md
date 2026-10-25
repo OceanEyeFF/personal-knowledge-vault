@@ -69,6 +69,16 @@ ai:
     retry:
       max_attempts: 2
 
+  # 前台 public Embedding rebuild 的独立 token hard cap；它不启用、暂停或
+  # 复用 automation/Q2。CLI/MCP 的一次 approved + allow_network 确认才授权
+  # 一次网络 mutation；两个 cap 都为 null 时在构造 Provider 前拒绝。
+  embedding_rebuild:
+    schema_version: 1
+    token_budget:
+      timezone: "UTC"
+      daily_total_tokens: null
+      monthly_total_tokens: null
+
 # 检索配置
 retrieval:
   bm25:
@@ -211,6 +221,12 @@ ai:
     api_key: "..."
     model: "text-embedding-3-small"
     dim: auto
+  embedding_rebuild:
+    schema_version: 1
+    token_budget:
+      timezone: "UTC"
+      daily_total_tokens: 100000
+      monthly_total_tokens: 1000000
 ```
 
 `Config.update_user_config()` 是产品写入入口。`update_local_config()` 和
@@ -221,6 +237,12 @@ R4 的 `ai.automation` 也只属于用户业务配置：它保存是否启用、
 approval hash、token 配额、时区和可选 price-card reference。它不会存入 API key，也不会
 进入 `<data-root>/config/local.yaml`；后者只保存 PKV 管理的 generation binding/runtime
 state。自动化 policy inspect 是纯本地检查，不创建 Provider、网络连接、数据根或日志。
+
+`ai.embedding_rebuild` 是前台 public Embedding generation maintenance 的独立策略：它只有
+时区和至少一个 token hard cap，不接受 API key、URL、`enabled`、retry 或 Q2 task 字段。一次
+CLI/MCP `approved + allow_network` 确认只授权当次 rebuild，既不会开启 `ai.automation`，也不
+提供 Q2 的 resume/retry。缺少 hard cap 返回 `embedding_rebuild_authorization_required`，达到
+hard cap 返回 `embedding_budget_paused`，两者都在 Provider 或 stage 创建前发生。
 
 项目不加载 `.env`，旧 `PKV_LLM_*` / `PKV_EMBD_*` 变量不会覆盖 YAML。
 

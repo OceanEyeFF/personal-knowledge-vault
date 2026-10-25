@@ -11,7 +11,6 @@ PKV MCP Server 主入口
     npx @modelcontextprotocol/inspector python -m src.mcp.server
 """
 
-import json
 import logging
 from dataclasses import dataclass
 from threading import RLock
@@ -234,6 +233,96 @@ def get_runtime_status_payload() -> dict[str, object]:
         "issues": [issue.to_dict() for issue in inspection.issues],
     }
 
+
+def _reload_lifecycle_config_snapshot(config: Any) -> Any:
+    """Return one fresh, same-root Config snapshot for a maintenance request.
+
+    The normal MCP Application graph intentionally keeps its startup snapshot;
+    changing it mid-server would split caches and services.  The public
+    Embedding maintenance adapter does not use that graph, however.  Its
+    plan-id contract explicitly binds the *current* same-root policy and
+    Provider contract, so every request must reload a coherent successor before
+    inspection or confirmation comparison.
+    """
+
+    reload_snapshot = getattr(config, "reload_snapshot", None)
+    if not callable(reload_snapshot):
+        raise PKVRuntimeError(
+            ErrorCode.REPAIR_REQUIRED,
+            "运行时配置无法安全刷新，需要先修复。",
+            stage="embedding_rebuild_config",
+            recoverable=True,
+        )
+    try:
+        refreshed = reload_snapshot()
+    except PKVRuntimeError:
+        raise
+    except Exception as exc:
+        raise PKVRuntimeError(
+            ErrorCode.REPAIR_REQUIRED,
+            "运行时配置无法安全刷新，需要先修复。",
+            stage="embedding_rebuild_config",
+            recoverable=True,
+        ) from exc
+    if refreshed is None:
+        raise PKVRuntimeError(
+            ErrorCode.REPAIR_REQUIRED,
+            "运行时配置无法安全刷新，需要先修复。",
+            stage="embedding_rebuild_config",
+            recoverable=True,
+        )
+    return refreshed
+
+
+def get_runtime_config_for_lifecycle(*, require_ready: bool = False) -> Any:
+    """Return a current same-root Config snapshot for a public lifecycle adapter.
+
+    This is intentionally narrower than :func:`get_application`: inspection
+    and planning must not compose an Application, open a Store, initialize a
+    database, or construct a Provider merely to show an explicit maintenance
+    plan.  A managed stdio server reloads its captured Config source into a
+    request-local successor, so policy/Provider drift makes a submitted public
+    plan stale rather than executing with startup-time settings.  A mutation
+    caller may opt into the normal READY gate for that successor.
+    """
+
+    if type(require_ready) is not bool:
+        raise TypeError("require_ready 必须是 bool")
+    with _runtime_state_lock:
+        state = _runtime_state
+    if not state.managed:
+        config = get_config()
+        if require_ready:
+            inspection = inspect_runtime(config)
+            if inspection.readiness is not RuntimeReadiness.READY:
+                raise _readiness_error(inspection)
+        return config
+    if state.startup_error is not None:
+        raise state.startup_error
+    if state.config is None:
+        raise PKVRuntimeError(
+            ErrorCode.REPAIR_REQUIRED,
+            "运行时配置不可用，需要先修复。",
+            stage="runtime_readiness",
+            recoverable=True,
+        )
+    config = _reload_lifecycle_config_snapshot(state.config)
+    if require_ready:
+        try:
+            inspection = inspect_runtime(config)
+        except PKVRuntimeError:
+            raise
+        except Exception as exc:
+            raise PKVRuntimeError(
+                ErrorCode.REPAIR_REQUIRED,
+                "运行时状态无法安全确认，需要先修复。",
+                stage="runtime_readiness",
+                recoverable=True,
+            ) from exc
+        if inspection.readiness is not RuntimeReadiness.READY:
+            raise _readiness_error(inspection)
+    return config
+
 # ============================================================
 # FastMCP 实例（模块级单例）
 # ============================================================
@@ -241,14 +330,21 @@ def get_runtime_status_payload() -> dict[str, object]:
 mcp = FastMCP(
     name="Personal Knowledge Vault",
     instructions=(
-        "个人知识库 MCP 服务。支持知识搜索、归档、浏览、关联推荐、关系推理和统计。\n"
-        "只读工具：get_runtime_status（运行时状态）、search_knowledge（搜索）、get_entry（查看详情）、"
+        "个人知识库 MCP 服务。支持知识搜索、归档、浏览、关联推荐、关系推理、可追溯成果和统计。\n"
+        "只读工具：get_runtime_status（运行时状态）、inspect_embedding_rebuild（重建检查）、"
+        "plan_embedding_rebuild（重建计划）、search_knowledge（搜索）、get_entry（查看详情）、"
         "list_tags（标签列表）、list_entries（浏览条目）、get_stats（统计）、"
         "get_related（关联推荐）、query_subgraph（关系子图）、"
         "explain_relation（关系解释）、collect_evidence（证据聚合）、"
         "find_bridges（桥接发现）、timeline_of（弱时间线）、"
-        "contrast（主题对比）。\n"
-        "写入工具：archive_url（归档网页）、archive_text（归档文本）。\n"
+        "contrast（主题对比）、get_outcome（成果读取）、"
+        "suggest_outcome_evidence（严格 BM25 成果证据候选）。\n"
+        "写入工具：archive_url（归档网页）、archive_text（归档文本）、"
+        "execute_embedding_rebuild（执行已确认的 generation rebuild）、"
+        "create_outcome_topic、attach_outcome_evidence、detach_outcome_evidence、"
+        "create_outcome_claim、revise_outcome_claim、link_outcome_claim_evidence、"
+        "unlink_outcome_claim_evidence、render_outcome_research_brief、"
+        "approve_outcome_research_brief、return_outcome_research_brief。\n"
         "Prompt 模板：search_and_summarize、knowledge_qa、idea_sharpen。\n"
         "知识条目包含标题、摘要、标签、全文等信息。"
     ),
@@ -297,7 +393,6 @@ def get_application():
             # MCP startup, so an unready server remains status-only.
             configure_application(state.config)
             _runtime_state.configured_application = True
-        config = state.config
     # ``configure_application`` publishes the captured Config snapshot as the
     # one process-default graph.  Passing it back as an explicit argument would
     # deliberately create a fresh isolated application for every Tool call,

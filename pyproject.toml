@@ -44,6 +44,7 @@ include = [
     "src.ai*",
     "src.application*",
     "src.kernel*",
+    "src.outcomes*",
     "src.processors*",
     "src.relations*",
     "src.retrieval*",

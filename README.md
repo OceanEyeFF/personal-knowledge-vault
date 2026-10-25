@@ -74,6 +74,10 @@ python -m src.main related <knowledge_id> --format json
 # 只读配置与统计
 python -m src.main config show
 python -m src.main stats
+
+# 显式、确认式的 generation maintenance（不公开 Q2 task resume/retry）
+python -m src.main embedding inspect
+python -m src.main embedding rebuild --force
 ~~~
 
 ### 🔌 MCP 服务 (v0.7.0 新增)
@@ -87,12 +91,14 @@ AI Agent（Claude Code、Cursor 等）通过 MCP 协议直接操作知识库：
 
 M13 只支持 `stdio`。`streamable-http` 与 Bearer Token 认证均未发布；服务入口会在初始化配置、数据或监听端口前拒绝非 stdio transport。
 
-**15 个 Tool（13 个只读 + 2 个写入）**:
+**30 个 Tool（17 个只读 + 13 个写入）**:
 - `search_knowledge` — 智能搜索（BM25/向量/混合）
 - `get_entry` / `list_entries` / `list_tags` / `get_stats` — 只读浏览
 - `get_runtime_status` — 只读检查运行时 readiness 与下一步计划，不初始化、修复或探测 Provider
 - `archive_url` — 归档网页（SSRF 防护）
 - `archive_text` — 归档纯文本
+- `inspect_embedding_rebuild` / `plan_embedding_rebuild` — 只读检查并展示 generation rebuild 计划
+- `execute_embedding_rebuild` — 对精确 plan id 的显式确认式 generation rebuild；独立预算、无 public Q2 resume/retry
 - `get_related` — 关联知识推荐（向量相似度）
 - `query_subgraph` — 关系子图查询
 - `explain_relation` — 关系解释
@@ -100,6 +106,10 @@ M13 只支持 `stdio`。`streamable-http` 与 Bearer Token 认证均未发布；
 - `find_bridges` — 桥接候选发现（partial-v1）
 - `timeline_of` — 弱时间线重建（partial-v1）
 - `contrast` — 主题对比（partial-v1）
+- `get_outcome` / `suggest_outcome_evidence` — Provider-free 的可追溯成果读取（含 immutable Markdown pointer/digest 复核）与严格 BM25 候选；路径或带凭据 URL 输入会被拒绝
+- `create_outcome_topic` / `attach_outcome_evidence` / `detach_outcome_evidence` — 明确 Topic 与版本绑定 Evidence
+- `create_outcome_claim` / `revise_outcome_claim` / `link_outcome_claim_evidence` / `unlink_outcome_claim_evidence` — 显式 Claim 与 support/counter 关系
+- `render_outcome_research_brief` / `approve_outcome_research_brief` / `return_outcome_research_brief` — immutable research brief 的人工 review 闭环
 
 **3 个 Prompt 模板**: `search_and_summarize` / `knowledge_qa` / `idea_sharpen`
 
@@ -141,7 +151,7 @@ personal-knowledge-vault/
 │   ├── kernel/                        # 稳定的无头 Kernel facade
 │   ├── mcp/                           # MCP 服务 (v0.7.0)
 │   │   ├── server.py                  # FastMCP 主入口 (M13: stdio only)
-│   │   ├── tools.py                   # 15 个 Tool handler
+│   │   ├── tools.py                   # 30 个 Tool handler
 │   │   ├── resources.py               # 9 个 Resource handler
 │   │   ├── prompts.py                 # 3 个 Prompt 模板
 │   │   └── utils.py                   # 安全验证 + 序列化
@@ -578,7 +588,7 @@ live/secret/proxy 环境并安装 Python 级网络与子进程 guard，但它不
 [MCP 最小评测闭环](docs/operations/MCP最小评测闭环.md)。
 
 开发 vault 重建入口 `scripts/rebuild-dev-vault.py` 已完成合成演练：
-`rebuilt -> up_to_date -> checked`，目标 schema `1.2.6`、11 个迁移、3 条 seed。
+`rebuilt -> up_to_date -> checked`，目标 schema `1.2.7`、12 个迁移、3 条 seed。
 这只证明离线合成开发基线可重建；真实快照仍受 U1/G8 与迁移 FT5 阻塞，
 本轮未读取或执行真实数据。M13 W1/W2/W3 与 W4 installed-Artifact 功能验证均在该离线基线上完成；W4 候选仍受合规 hold，且这不等于真实数据验收。
 

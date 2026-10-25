@@ -13,6 +13,49 @@
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
 
+### P1-B traceable knowledge outcomes（2026-09-04，source implementation in progress）
+
+- 新增 schema `1.2.7` / migration `013_add_traceable_outcomes.sql`：SQLite authority 保存
+  Topic、version-bound Evidence、explicit Claim、Claim↔Evidence 与 `research_brief` pointer；
+  不复制 source body、raw URL、私有路径、Provider 响应或凭据。
+- 新增 `pkv_kernel.outcomes` / `kernel.traceable-outcomes.v1`，由 Application 在 root writer
+  lease 下执行 explicit mutation；read revalidation 保持零写、drift/delete 只显示
+  stale/unavailable、Claim `insufficient` 和 brief effective `needs_review`。SQLite brief pointer
+  还会在只读路径经 containment/no-follow + SHA-256 复核；仅确认缺失的文件或字节漂移分别显示为
+  `projection_state=unavailable|stale`，权限/I/O/路径状态不确定则安全失败，不会把数据库中旧的
+  approved state 当作仍可用投影。
+- CLI `outcome` 与 MCP stdio 新增 public Topic/Evidence/Claim/review 闭环。当前 MCP manifest
+  为 30 Tool（17 只读 + 13 写入）；strict BM25 suggestion 不构造 QueryRouter、LLM、Embedding
+  或 vector generation。真实 CLI/MCP fresh-process blackbox 仅使用 test-owned SQLite/Markdown
+  fixture 并断言公开 envelope 脱敏；Topic/Claim/BM25 查询或候选标题中的绝对路径、`file:` URI
+  与带凭据 URL 会在持久化或回显前 fail-closed。
+- 这是 source-level 功能收束，不引入 release/Artifact、真实 Provider、GUI、自动写作、Q2
+  public resume/retry 或隐藏 test mode；Artifact/release compliance hold 保持不变。
+
+### R4-P1 public Embedding generation rebuild（2026-09-04）
+
+- 新增 capability `kernel.embedding-rebuild.v1` 与受限 `pkv_kernel.embedding` façade；公开
+  `inspect → plan → confirm → execute` 的 opaque handles/安全 DTO，不接受 Provider、Store、
+  lease、路径、fake 或 test-mode 注入。
+- CLI 新增 `embedding inspect` / `embedding rebuild`；MCP stdio manifest 为 18 Tool（15 只读 +
+  3 写入），新增 `inspect_embedding_rebuild`、`plan_embedding_rebuild` 与
+  `execute_embedding_rebuild`。MCP 对每个 maintenance request 刷新同根 Config snapshot，policy/
+  contract drift 使提交的 public plan fail-closed。
+- 新增独立 `ai.embedding_rebuild` policy、lease-protected durable ledger、跨进程 material replay
+  fence 和 concrete private `GenerationStageGrant`。Provider 调用保持在 root writer lease 外；只有
+  validate + pointer CAS 后 generation 成为 READY。该 v1 不公开 Q2 resume/retry、rollback、
+  flat-vector fallback 或 stage cleanup。
+- source blackbox 使用 test-owned DataRoot 和外置 deterministic numeric-loopback Provider harness：
+  真实 CLI/MCP stdio 跨进程 archive → rebuild → restart → vector/hybrid retrieval，并覆盖 policy
+  drift、replay fence、usage/reservation、generation pointer/retention 与公开 DTO redaction。具体
+  当前验收记录以 [R4-P1 实施计划](../overview/R4-P1-公共Embedding重建适配器实施计划-2026-09.md)
+  和本轮验证输出为准；不改变 Artifact/release compliance hold。
+- R4-P1 source acceptance 已完成：新增 CLI/MCP 黑盒独立连续两次均为 `5 passed`，最终
+  P0 为 `3324 passed, 21 skipped, 219 deselected, 35 warnings`，MCP 为
+  `803 passed, 5 deselected`（`src.mcp 95.05%`），Phase C 为 `16/16`、
+  `overall=1.0`。独立 review 最终 P0/P1 为零；这不涵盖 Provider-in-flight 强杀恢复或
+  `archive_url` 成功离线 fetch harness，也不改变 held Artifact/release compliance hold。
+
 ### R4 自动 AI 生命周期与 R4-E source acceptance（2026-09-03）
 
 - R4 已从单独的 staged Embedding 内部合同收敛为 Q0 admission → Q1′ Markdown/SQLite
@@ -28,8 +71,9 @@
   MCP `779 passed, 5 deselected`（`src.mcp 95.15%`）、Phase C
   `thresholds_met: true`。详情见
   [R4-E 源码验收记录](../overview/R4-E-源码验收记录-2026-09.md)。
-- 这只完成 source acceptance；不新增 public rebuild API/CLI/MCP Tool、不授权真实
-  Provider/Vault/迁移，也不改变 Artifact/release compliance hold。
+- 这只完成当时的 R4-E source acceptance；当时不新增 public rebuild API/CLI/MCP Tool。该接口
+  状态已由上方 2026-09-04 的 R4-P1 条目 supersede；两者都不授权真实 Provider/Vault/迁移，
+  也不改变 Artifact/release compliance hold。
 
 ### R3.1 writer/path hardening（2026-09-03）
 

@@ -4,21 +4,18 @@
 >
 > **文档版本**: v1.2
 > **创建日期**: 2026-02-16
-> **最后更新**: 2026-09-01 (对齐当前 MCP runtime / R4 内部生命周期合同)
+> **最后更新**: 2026-09-04 (对齐当前 MCP runtime / R4-P1 public rebuild 合同)
 > **作者**: 幽浮喵 (猫娘工程师)
 > **目标版本**: v0.7.0
 
-> **当前代码补注（2026-08-07）**：
+> **当前代码补注（2026-09-04）**：
 > - 本文主体仍保留 `v0.7.0` 设计稿结构；当前代码真相以 `README.md`、`docs/overview/当前事实基线-2026-03.md` 与 `src/mcp/tools.py` 为准。
-> - 当前 MCP 代码基线为 `15` 个 Tool（13 个只读 + 2 个写入）；`get_runtime_status` 只读报告运行时 readiness 与下一步计划，不会初始化、修复或探测 Provider。`query_subgraph`、`explain_relation`、`collect_evidence`、`find_bridges`、`timeline_of`、`contrast` 已落地。
+> - 当前 MCP 代码基线为 `18` 个 Tool（15 个只读 + 3 个写入）；`get_runtime_status` 只读报告运行时 readiness 与下一步计划，不会初始化、修复或探测 Provider。`inspect_embedding_rebuild` / `plan_embedding_rebuild` / `execute_embedding_rebuild` 是唯一 public generation maintenance 路径：前两者零写入/零 Provider，后者需精确 plan id、`approved=true` 与 `allow_network=true`，并在当前同根 Config snapshot 上重算、用独立 policy/ledger/replay fence 执行。`query_subgraph`、`explain_relation`、`collect_evidence`、`find_bridges`、`timeline_of`、`contrast` 已落地。
 > - `find_bridges`、`timeline_of`、`contrast` 仍属于 `partial-v1`，公开 `implementation_level=partial`：当前分别补入 `graph_bridge_signal`、`structured_time_fields`、`relation_graph_signal` 等受限推理信号。
 > - 当前已注册 `9` 条 Resource；chunk、metadata field 和 relation locator 都可直接读取。公开 MCP 的结构化字段不返回本机文件路径，写入 Tool 以 `pkv://entries/{id}` locator 回传新条目；entry Markdown 正文保持原文，不做内容级路径替换。
 > - M13 Developer Preview 只发布 MCP stdio。HTTP transport、监听端口和 Bearer Token 均已从当前入口移除；非 stdio 请求会在读取应用配置、bootstrap 数据或 bind 前 fail-closed。
 > - 默认验证离线，只使用合成数据与 `.data-test` 隔离根，不连接真实 Provider、不读取真实 API key 或真实 Vault。
-> - R4 不增加 MCP Tool。已存在的 `archive_url` / `archive_text` 仅投影 Q0→Q1′→Q2 的稳定
->   envelope：Q0/Q1′ 未完成时为可恢复 processing，`core_committed` 后才称已保存；Q2 的
->   retry/budget/authorization 状态保持为 degraded issue，绝不触发 Tool 内的 direct Provider、
->   flat vector 或后台 daemon。
+> - R4-P1 增加上述三个 public rebuild Tool，但不公开 Q2 task 的 resume/retry、后台 daemon、flat-vector fallback 或 Store/Provider/lease 注入。`archive_url` / `archive_text` 仍只投影 Q0→Q1′→Q2 的稳定 envelope：Q0/Q1′ 未完成时为可恢复 processing，`core_committed` 后才称已保存；Q2 的 retry/budget/authorization 状态保持为 degraded issue。
 
 > **历史设计阅读边界（2026-08-20）**：第 3–6 节中 `src.*`、直接构造
 > `WorkflowEngine`、`SQLiteStore` 或 `QueryRouter` 的示例和映射是 v0.7.0 的历史设计
@@ -71,8 +68,11 @@ AI Agent 可调用的操作能力：
 | `find_bridges` | 发现局部图桥接候选 | seed_knowledge_id, top_k? | partial-v1 bridge 线索 | **P1** |
 | `timeline_of` | 查询弱时间线 | topic, top_k? | partial-v1 timeline 线索 | **P1** |
 | `contrast` | 比较两个主题 | topic_a, topic_b, top_k? | partial-v1 contrast 线索 | **P1** |
+| `inspect_embedding_rebuild` | 检查 generation binding 与独立 policy | - | 安全 inspection | **P1** |
+| `plan_embedding_rebuild` | 展示确认式 rebuild 计划 | force | 安全 plan | **P1** |
+| `execute_embedding_rebuild` | 执行精确确认的 rebuild | plan_id, approved, allow_network, force | public operation/generation 结果 | **P1** |
 
-历史 W2 adapter 合同仍覆盖原有 12 个内容访问只读 Tool：它们返回稳定 `status` 与 `issues`，不能把底层异常伪装成空结果。检索类状态使用 `success/no_hits/invalid/error/degraded`；`degraded` 可以携带仍可用的部分结果，但必须带机器可读 issue。新增的 `get_runtime_status` 遵循 [Runtime 生命周期合同](../../specs/interfaces/Runtime生命周期合同.md)，返回无敏感信息的 readiness、issue 与计划，不执行 bootstrap、repair 或 Provider probe。三个探索 Tool 的响应还必须保留 `implementation_level=partial` 和 `limitation_notes`，不得宣称 full。
+历史 W2 adapter 合同仍覆盖原有 12 个内容访问只读 Tool：它们返回稳定 `status` 与 `issues`，不能把底层异常伪装成空结果。检索类状态使用 `success/no_hits/invalid/error/degraded`；`degraded` 可以携带仍可用的部分结果，但必须带机器可读 issue。`get_runtime_status` 遵循 [Runtime 生命周期合同](../../specs/interfaces/Runtime生命周期合同.md)，返回无敏感信息的 readiness、issue 与计划，不执行 bootstrap、repair 或 Provider probe。三个 public rebuild Tool 只通过 `pkv_kernel.embedding` 投影安全 DTO，不能以 MCP 的 Store/Provider composition 替代 Kernel；三个探索 Tool 的响应还必须保留 `implementation_level=partial` 和 `limitation_notes`，不得宣称 full。
 
 ### 2.2 Resources（资源）
 
@@ -866,7 +866,7 @@ anyio>=4.0.0          # 异步 I/O 工具库（FastMCP 自身已依赖，通常�
 
 ## 10. 历史 M8/M9 实施路线
 
-> 下列 checkbox 是设计阶段留下的任务清单，不代表当前完成状态，也不是 M13 W2 验收证据。当前运行 manifest 为 15 Tool（13 只读 + 2 写入）、9 Resource、3 Prompt；历史 W2 的 14 Tool candidate surface 仍保留在其 release-evidence 文档中。当前状态以本文开头的现行补注、真实注册清单和离线门禁为准。
+> 下列 checkbox 是设计阶段留下的任务清单，不代表当前完成状态，也不是 M13 W2 验收证据。当前源码运行 manifest 为 30 Tool（17 只读 + 13 写入）、9 Resource、3 Prompt；其中 R4-P1 public Embedding rebuild 与 P1-B traceable outcome Tool 只具 source acceptance，历史 W2/W4 的 14 Tool candidate surface/evidence 不被追溯改写。当前状态以本文开头的现行补注、真实注册清单和离线门禁为准。
 
 ### M8: 只读服务 (v0.7.0-alpha)
 

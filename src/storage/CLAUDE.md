@@ -13,7 +13,10 @@
 - **Markdown 主存储**: 人类可读，Git 友好，数据主权
 - **SQLite 索引层**: 元数据索引 + FTS5 全文检索
 - **向量语义层**: hnswlib HNSW generation，只有经过验证并 pointer publish 的 generation 可读
-- **数据一致性**: Markdown/SQLite core mutation 由 Q1′ 的 operation proof 协调；向量是可派生层，但当前没有 public rebuild API/CLI/MCP Tool
+- **数据一致性**: Markdown/SQLite core mutation 由 Q1′ 的 operation proof 协调；向量是可派生层。受限 public rebuild 只可经 `pkv_kernel.embedding`、CLI `embedding` 或三个 MCP rebuild Tool 进入，Storage 本身不公开任何 rebuild/Provider/path 操作。
+- **可追溯成果**: P1-B 的 Topic/Evidence/Claim/research brief 结构状态由 SQLite
+  `outcome_*` 表权威保存；`outcomes/` 下的 Markdown 是 revisioned、可重建投影，
+  不是可编辑的第二真相源。
 
 ---
 
@@ -162,6 +165,30 @@ class SQLiteStore:
 - `knowledge_fts`: FTS5 虚拟表（全文检索）
 
 详细设计: [docs/specs/database/SQLite_Schema完整规范.md](../../docs/specs/database/SQLite_Schema完整规范.md)
+
+### OutcomeStore（内部 P1-B authority）
+
+`OutcomeStore` 仅使用已存在、已迁移的 SQLite 数据库，且所有 mutation 都要求
+`knowledge_outcomes` root writer lease。它不解析 source locator、不读取 Markdown body、
+不创建 schema，也不写 outcome Markdown；这些 policy 分别属于 OutcomeService 与
+Application。Evidence 保留 canonical `pkv://` locator、captured digest、状态和 limitation，
+而非网页正文、私有路径、Provider 请求/响应或凭据。
+
+对 entry/chunk Evidence，OutcomeService 只在该 Entry 的 Markdown 主记录与 SQLite/chunk
+projection 一致时绑定其 opaque digest；任一侧随后漂移都会在 readonly revalidation 中外显为
+`stale`，Markdown 缺失/不可读则为 `unavailable`。不一致的 source 不会被隐式修复或重绑。
+
+渲染时 Application 先以原子方式发布不可覆盖的 `outcomes/topic-<id>/<outcome>-rNNNN.md`，
+再在同一 writer-owned 操作中提交 SQLite pointer。进程在二者之间终止时，孤儿文件不被 reader
+跟随；相同 render input 才可收养字节完全相同的 orphan，已变更的首次输入会使用新的 immutable
+identity。不会出现指向未发布文件的成功 brief，也不会因旧 orphan 永久阻塞新输入。
+
+已发布 pointer 的每次只读解析都通过同一 containment/no-follow gateway 读取 Markdown 并核对
+`content_sha256`。只有可直接确认缺失的文件或字节已变时，SQLite 结构行仍保留，但 public DTO
+分别显示 `projection_state=unavailable` 或 `stale`，effective state 为 `needs_review`；权限、I/O
+或路径状态不确定必须安全失败。reader 不会隐式重写投影或把它作为仍然 approved 的可用内容。
+Topic/question/Claim 与 BM25 query/候选标题中的绝对路径、`file:` URI 或带凭据 URL 也在 Store 前
+fail-closed，不能进入 SQLite 或 Markdown projection。
 
 ---
 
@@ -395,10 +422,12 @@ Storage 层为 MCP Server 提供核心数据访问:
 
 ### Q1: 如何从 Markdown 完全重建索引？
 
-当前没有用户或 adapter 可调用的 rebuild API、CLI 命令或 MCP Tool。归档后的 R4 Q2 会在已
-确认的自动化 policy 下构建新 generation；更广泛的 repair/rebuild 必须先经
-`inspect → plan → confirm → execute` 的未来 public adapter。不要直接调用
-`clear_all()`、`save_entry()` 或 `add_entry()` 操作用户数据根。
+当前有一个受限 public generation rebuild：`pkv embedding inspect`、`pkv embedding
+rebuild --force`，以及 MCP 的 `inspect_embedding_rebuild` / `plan_embedding_rebuild` /
+`execute_embedding_rebuild`。它只经 `pkv_kernel.embedding` 的 `inspect → plan → confirm →
+execute` 合同运行，使用独立 token policy、fenced private stage 和 pointer CAS；它不公开
+Q2 task resume/retry、flat-vector fallback 或任意目录操作。不要直接调用 `clear_all()`、
+`save_entry()` 或 `add_entry()` 操作用户数据根。
 
 ### Q2: FTS5 查询为什么返回空结果？
 
@@ -441,6 +470,7 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 | `sqlite_store.py` | SQLite 索引层 (FTS5) |
 | `vector_store.py` | 向量语义层 (hnswlib) -- 含 `get_doc_vector()` |
 | `migration_manager.py` | 数据库增量迁移管理器 |
+| `outcome_store.py` | P1-B Topic/Evidence/Claim/research brief SQLite authority |
 
 ### 测试文件
 
@@ -487,6 +517,6 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-09-03
+**最后更新**: 2026-09-04
 
 *本文档由 Claude Code 自动生成*

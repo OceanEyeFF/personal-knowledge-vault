@@ -1,9 +1,18 @@
 # Embedding Generation 生命周期合同（R4 staged core）
 
 状态：runtime-internal staged core 与内部 R4 Q0→Q1′→Q2 生命周期已实现并以隔离、
-deterministic lifecycle 回归及真实 CLI/MCP 跨进程闭环验证。它仍未成为新的 CLI、MCP 或 Kernel
-*直接重建*动作；既有归档适配器
-只投影稳定处理状态，不能把历史平铺 `vectors/` 目录当作回退路径。
+deterministic lifecycle 回归及真实 CLI/MCP 跨进程闭环验证。后续 R4-P1 已增加 public rebuild
+v1 adapter；本文件中的内部 Core 函数仍不直接成为 Wrapper API，历史平铺 `vectors/` 目录
+仍不是回退路径。2026-10-24 复审确认公共计划跨根绑定、D 争锁和预算重入缺陷；其中
+R-01 已由 2026-10-25 W2 补齐根身份及完整已捕获 snapshot 的公共确认绑定。
+R-02 的 D 争锁恢复和 R-06 的预算重入仍为 known_gap；下文标为修复目标的恢复状态/v2 协议
+尚未实现，不把历史回归提升为修复完成证据。统一实施顺序见
+[生命周期一致性修复设计与分阶段计划](../../overview/生命周期一致性修复设计与分阶段计划-2026-10.md)。
+W1 已将签名/错误冻结到 [v2 接口合同](./生命周期一致性v2接口冻结合同-2026-10.md)，
+将 ledger/grant/proof 版本及 canonical 材料冻结到
+[迁移方案](../database/生命周期一致性迁移冻结方案-2026-10.md)；均待后续实现。
+W2 当前改动与独立运行证据见
+[身份、队列与 CLI 门禁修复记录](../../overview/W2-身份队列与CLI门禁修复记录-2026-10.md)。
 
 ## 边界与前置条件
 
@@ -116,13 +125,17 @@ Q0 ingress admission + private spool
 inspect (zero write)
   -> plan (contains opaque revision; requires confirmation + network)
   -> confirm(approved=True, allow_network=True)
-  -> acquire R3 root writer lease
-  -> re-inspect source/config/user-config-source revision/R2 base
-  -> private staging build + strict readonly validation
-  -> reserve retained generation directory without replacing an existing one
-  -> audit activation_intent
-  -> runtime snapshot pointer CAS
+  -> A: acquire root writer lease; re-inspect source/config/R2 base;
+        reserve budget and allocate private stage grant
+  -> B/C: release root lease; Provider work and private staging validation
+  -> D: acquire root lease again; revalidate and reserve retained generation;
+        audit activation_intent -> runtime snapshot pointer CAS
 ```
+
+The two lease acquisitions have different failure contracts. A is admission before
+Provider work. D follows work that may already be billable; it cannot claim the
+zero-side-effect admission semantics. The target `awaiting_publish` contract below
+adds a durable seal before attempting D; that recovery path is not implemented yet.
 
 Plan and confirmation booleans must be actual booleans, not truthy strings. An
 external edit to the loaded user `config.yaml` (including API-key rotation) changes
@@ -130,6 +143,32 @@ the opaque `Config.user_config_source_revision()` and rejects an already-approve
 plan before lease/Provider/write as `runtime_plan_stale`. A key rotation by itself
 does not change the stored Embedding contract; a provider/endpoint/model/dimension/
 pipeline change is visible as `embedding_rebuild_required`.
+
+W2 has corrected the existing v1 public cross-process confirmation identity to bind
+`data_root_identity_sha256`, `runtime_snapshot_sha256` (the complete secret-free
+snapshot raw-byte CAS revision captured by the same validated inspection), source digest/count, index state and active/previous
+pointer/manifest, Embedding contract, policy fingerprint, force, and the versioned
+v1 action. Root identity comes from that inspection's immutable Config; planning does
+not re-read a newer snapshot to rewrite the captured confirmation. Two different roots
+with identical content/configuration cannot share a confirmation, and any complete
+snapshot byte change invalidates the old confirmation. The process-private user-config HMAC remains an
+in-process execution fence; removing it from the public identity must not remove
+the stable root or snapshot bindings. A key rotation alone is excluded from the
+cross-process public identity, but an external edit during an in-flight execution
+still invalidates that execution's private config-source fence.
+
+W2 retains the original v1 durable replay material and encoding. Strengthening public
+confirmation must not bypass an existing processing operation by silently changing its
+replay key. Each root has its own ledger; retaining a snapshot-independent v1 replay
+key is conservative. The v2 domain-separated identity and ledger/grant upgrades remain
+unimplemented.
+
+Under the frozen v2 target, a new network plan also binds
+`budget_check_period = {timezone, local_day, local_month}`.
+A publish-only plan binds the original operation, sealed-stage
+identity and current publication conditions instead; it cannot authorize new
+Provider work or a new token reservation. These budget/recovery rules remain W4 work,
+not capabilities delivered by the W2 confirmation fix.
 
 The generation is assembled under `vectors/staging/.stage-*`, its four index
 artifacts plus manifest are verified, then materialized under
@@ -149,7 +188,13 @@ public rollback action are deliberately not part of this phase.
 
 Before pointer CAS, invalid source, Provider protocol/stage failure, config/source/
 snapshot drift, or `write_busy` leave the active pointer and existing generation
-bytes unchanged. The second writer is rejected before audit or Provider work.
+bytes unchanged. A competing writer rejected at A has no operation, reservation,
+business audit, stage, or Provider side effect. A D-stage contention must instead
+preserve a durable publish-ready proof and project effective `awaiting_publish`
+under the repair contract below; the shared ledger is reconciled only after a
+root lease is acquired, never while D is contended;
+it must not strand an exited request in `processing` or imply Provider work never
+happened. The current implementation does not yet satisfy this D-stage contract.
 
 After lease acquisition R4 records local AuditTrace events with complete article and
 stored-chunk provenance, while redacting configured keys, credential fields, inline
@@ -160,17 +205,83 @@ credentials and credential-bearing URLs. Audit context contains
 An `activation_intent` record is written before the irreversible pointer CAS. If the
 final audit completion append/fsync fails *after* CAS, execution returns success
 with `audit_completion_pending: true`, not a false rollback-like error. The intent
-record remains for reconciliation; a future adapter must surface this warning and
+record remains for reconciliation; public adapters must surface this warning and
 must not blindly retry the stale plan. Pre-CAS audit failures still prevent
 activation.
 
-## Deliberate adapter gate
+## Manual publication recovery and budget replay（2026-10-24 修复目标）
 
-This module is not exported as a new Kernel/CLI/MCP public action in this phase.
-Before exposing rebuild to a user or external wrapper, the owner must add an
-explicit inspect → plan → confirm → execute adapter, inject an approved Provider
-through `PreChunkedEmbeddingAdapter`, project stable errors/warnings (including
-`audit_completion_pending`), and connect every vector read to the generation
-binding contract above. Tests use isolated `.data-test` roots and deterministic seams or an
-external harness through the formal Provider contract; no R4 test permits real Provider
-credentials, real Vault data or migration.
+以下规则适用于独立的 manual rebuild operation，不改变内部 Q2 的 claim/resume 合同。
+
+### Durable publish-ready proof and effective awaiting_publish
+
+1. C 在已签发 private stage grant 的边界内封存完成凭据：原 operation/plan/root/source/
+   contract/snapshot identity、manifest 与 artifact 摘要、grant identity/fence 与有效期内
+   封存事实、已知 usage/unknown。它不得保存正文、密钥或原始 Provider 响应，也不得获得
+   写全局 ledger、audit、snapshot 或其他目录的权限。封存后禁止原 capability 继续改写。
+2. D 取锁失败时，全局 ledger 可能仍是 processing；持久 publish-ready proof 与尚未提交的
+   pointer 共同支持 effective `awaiting_publish` 的推导。只读 lookup 可以展示该事实，不能写回。
+   下一次取得 root lease 后才对齐 ledger/settlement，不能为修复状态而绕过 R3。
+3. 继续操作必须绑定原 operation identity 和重新检查后的当前 publish plan，并取得明确
+   确认。新 publish grant 只允许在 lease 下严格校验并发布原 sealed stage，零 Provider、
+   零新 reservation。旧 stage grant 到期仅禁止续写；若可证明合法封存且当前 strict
+   validation 通过，不得仅因其过期否决只读采用。operation id 或旧 confirmation 单独
+   均不能授权继续发布。
+4. root/source/contract/policy/snapshot 或目标 pointer 漂移、凭据/产物不可验证时，终结旧
+   发布或明确要求 repair；不自动重建。已发生 usage/保守估算在可持 lease 时按原 operation
+   结算，不能因尚未发布而释放成零消费。CAS 已提交但终态不完整时，以该 operation 的
+   pointer/generation proof 对齐成功，不重复调用 Provider。
+
+`awaiting_publish` 是 operation 状态，不是 reader 可解析的新 READY binding；读者始终
+遵守现有 active pointer 与 generation validation。此恢复合同包括正常 D 争锁以及完整
+sealed stage 跨宿主继续。B/C 尚无完整可信凭据、Provider 完成事实未知的强杀回收仍是
+独立后置项，不得用于豁免 D 正常失败路径，也不得把不确定旧记录自动转换成 sealed stage。
+
+### Replay and quota transitions
+
+确认用 plan identity 与并发去重的 material-transition replay key 分离。replay key 排除
+`force` 和 `budget_check_period`，防止跨午夜/月界绕过仍在 processing/awaiting_publish 的
+同一 transition 围栏；允许预算拒绝后重新申请靠状态与额度判断，不靠给活跃操作换 key。
+
+| 阶段 / 状态 | replay 与显式继续 | reservation / usage |
+| --- | --- | --- |
+| A 未取锁 | `write_busy` 后可重新计划确认 | 零 operation/reservation/Provider |
+| A budget_paused / 授权拒绝 | 不消费执行资格；新的显式提交重检授权及当前日/月额度 | 无 reservation，无 Provider 消费 |
+| Provider 明确未开始的已接受失败 | 原操作终结；新确认可建立新的 attempt | release 原 reservation |
+| B/C processing 或开始事实未知 | 禁止重复/并发 Provider；未知旧记录保持明确 repair 边界 | 保留原预留和已知 usage，不伪造零 |
+| C sealed / D awaiting_publish | 原 operation + 当前 publish plan 确认，复用 sealed stage | 原 reservation 只结算一次；不再次预留 |
+| D stale/repair | 拒绝旧 stage 发布；新的网络工作须重新计划确认 | 保留并结算已发生用量 |
+| activation_intent / CAS 待核验 | 只核验 pointer 并继续发布或对齐终态，不重调 Provider | 幂等 settlement，不重复预留 |
+| completed / completion pending | 执行资格已消费；只能对齐完成事实 | 不重复计费，保留 pending 警告 |
+
+预算按 policy timezone 的 local day/month 检查；新网络 attempt 在 A 内用当期已结算 +
+已预留 + 本次预估同时检查日/月 cap。新计划须展示预算检查期间，窗口或 policy 变化后
+重新 inspect/plan/confirm。`budget_paused` 没有调用 Provider，不能永久消耗 material
+transition 的执行资格：日/月额度恢复后允许重新申请；日界变化不能绕过仍耗尽的月额度。
+历史已发生 usage 不能因周期改变而删除，publish-only 重入沿用原 reservation/期间，不能
+在新周期再次收取同一工作的额度。stage 完成后等待发布不等于新的网络 attempt。
+
+## Public adapter and verification boundary
+
+现有 `kernel.embedding-rebuild.v1` 提供 public inspect/plan/confirm/execute，但不提供上述
+manual operation lookup/继续发布。修复目标随 API-major-2 与 `kernel.embedding-rebuild.v2`
+一并交付：只读 lookup、安全 publish-plan，以及绑定原 operation + 当前确认的 publish-only
+execute。具体签名、DTO 和错误码已在 W1 的
+[v2 接口合同](./生命周期一致性v2接口冻结合同-2026-10.md)冻结、尚未实现；
+不能把 v1 重放当作已存在的恢复入口。
+
+公开适配器仍须使用 `PreChunkedEmbeddingAdapter`，投影稳定错误和 completion-pending 警告，
+并让每个 vector read 绑定已验证 generation。内部 lifecycle/store/grant 均不直接暴露给
+Wrapper；Q2 public resume、后台 worker、rollback 和 stage cleanup 不由本次扩展隐式开放。
+
+修复验收以[R4-P1 计划的 ER-01–10 矩阵](../../overview/R4-P1-公共Embedding重建适配器实施计划-2026-09.md#6-验收矩阵)
+为准。W2 的 ER-01/02 身份修复已有 identity/Kernel `49 passed、7 deselected`、
+真实 CLI/MCP 身份黑盒 `7 passed` 和最终组合公共流程黑盒 `9 passed`，均 exit 0；
+运行范围及日志见 [W2 记录](../../overview/W2-身份队列与CLI门禁修复记录-2026-10.md)，
+三组不累加为全量计数。这些证据覆盖同内容跨根确认拒绝、同根跨进程身份与完整 snapshot 漂移，
+不关闭 R-02/R-06。A/D 竞争分离、完整 sealed stage 跨进程继续、
+stage grant 到期后的合法只读采用、日/月预算恢复、usage/settlement 幂等、CAS 前后核验均
+须独立覆盖。Core seam 测试不能代替真实 CLI/MCP 的公开继续协议黑盒；测试阶段/时钟
+基础设施或公开入口未交付时记录 pending，不能宣称 source acceptance 已关闭这些缺口。
+全部测试仍须经规定 wrapper 使用隔离 `.data-test`、确定性 seam 或正式 Provider 合同的
+进程外 harness；不得读取真实凭据/Vault、运行真实迁移，或添加产品测试后门。

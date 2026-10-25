@@ -99,7 +99,7 @@ def _configured(tmp_path: Path) -> Config:
             snapshot.read(),
             {
                 "schema_version": 1,
-                "database": {"schema_version": "1.2.6"},
+                "database": {"schema_version": "1.2.7"},
                 "embedding": {
                     "provider": config.embd_provider,
                     "fingerprint": config.embedding_index_fingerprint(

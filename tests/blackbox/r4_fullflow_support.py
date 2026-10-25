@@ -118,6 +118,45 @@ def _success_provider_script(scenario_id: str) -> dict[str, Any]:
     }
 
 
+def manual_embedding_rebuild_provider_script(scenario_id: str) -> dict[str, Any]:
+    """Extend the normal R4 script with two foreground rebuild Provider calls."""
+
+    script = _success_provider_script(scenario_id)
+    steps = script["steps"]
+    assert isinstance(steps, list)
+    vector = [0.26726124, 0.53452248, 0.80178373]
+
+    def embedding(step_id: str) -> dict[str, Any]:
+        return {
+            "step_id": step_id,
+            "endpoint": "/v1/embeddings",
+            "barrier": True,
+            "response": {
+                "kind": "success",
+                "vectors": [vector],
+                "usage": {"prompt_tokens": 17},
+            },
+        }
+
+    script["steps"] = [
+        *steps[:4],
+        embedding("embedding-rebuild-document"),
+        embedding("embedding-rebuild-chunks"),
+        *steps[4:],
+    ]
+    return script
+
+
+def archive_only_provider_script(scenario_id: str) -> dict[str, Any]:
+    """Return exactly the automatic archive steps, with no manual rebuild slot."""
+
+    script = _success_provider_script(scenario_id)
+    steps = script["steps"]
+    assert isinstance(steps, list)
+    script["steps"] = steps[:4]
+    return script
+
+
 class ProviderHarness:
     """Controller for the process-external deterministic Provider."""
 
@@ -129,25 +168,43 @@ class ProviderHarness:
         process: subprocess.Popen[str],
         events: Queue[dict[str, Any]],
         reader: threading.Thread,
+        expected_step_ids: tuple[str, ...],
     ) -> None:
         self.root = root
         self.scenario_id = scenario_id
         self.process = process
         self._events = events
         self._reader = reader
+        self._expected_step_ids = expected_step_ids
         self.base_url = ""
         self.observed_events: list[dict[str, Any]] = []
         self._closed = False
 
     @classmethod
-    def start(cls, root: Path, *, scenario_id: str) -> "ProviderHarness":
+    def start(
+        cls,
+        root: Path,
+        *,
+        scenario_id: str,
+        script: dict[str, Any] | None = None,
+    ) -> "ProviderHarness":
         root = root.resolve()
         root.mkdir(parents=True, exist_ok=False)
         script_path = root / "script.json"
         state_dir = root / "state"
+        effective_script = script or _success_provider_script(scenario_id)
+        steps = effective_script.get("steps")
+        if not isinstance(steps, list) or not all(
+            isinstance(step, dict) and isinstance(step.get("step_id"), str)
+            for step in steps
+        ):
+            raise ValueError("Provider harness script steps are invalid")
+        expected_step_ids = tuple(str(step["step_id"]) for step in steps)
+        if len(set(expected_step_ids)) != len(expected_step_ids):
+            raise ValueError("Provider harness script step ids must be unique")
         script_path.write_text(
             json.dumps(
-                _success_provider_script(scenario_id),
+                effective_script,
                 ensure_ascii=False,
                 sort_keys=True,
             ),
@@ -221,12 +278,13 @@ class ProviderHarness:
             process=process,
             events=events,
             reader=reader,
+            expected_step_ids=expected_step_ids,
         )
         ready = controller.await_event("ready", timeout=20)
         if (
             ready.get("port") is None
             or ready.get("base_url") != f"http://127.0.0.1:{ready['port']}/v1"
-            or ready.get("expected_step_count") != 6
+            or ready.get("expected_step_count") != len(expected_step_ids)
         ):
             controller.close(expect_completed=False)
             raise AssertionError(f"invalid Provider ready event: {ready!r}")
@@ -287,15 +345,8 @@ class ProviderHarness:
         requests = [
             record for record in records if record["event"] == "request_waiting"
         ]
-        assert {record["step_id"] for record in requests} == {
-            "chat-1",
-            "chat-2",
-            "embedding-archive-1",
-            "embedding-archive-2",
-            "embedding-query-1",
-            "embedding-query-2",
-        }
-        assert len(requests) == 6
+        assert {record["step_id"] for record in requests} == set(self._expected_step_ids)
+        assert len(requests) == len(self._expected_step_ids)
         assert all("request_sha256" in record for record in requests)
         assert all("content_sha256" in record for record in requests)
 
@@ -327,19 +378,12 @@ class ProviderHarness:
             assert return_code == 0, f"Provider harness exit={return_code}"
             assert stderr == "", "Provider harness wrote unexpected stderr"
             assert result == {
-                "completed_step_count": 6,
-                "completed_step_ids": [
-                    "chat-1",
-                    "chat-2",
-                    "embedding-archive-1",
-                    "embedding-archive-2",
-                    "embedding-query-1",
-                    "embedding-query-2",
-                ],
-                "expected_step_count": 6,
+                "completed_step_count": len(self._expected_step_ids),
+                "completed_step_ids": list(self._expected_step_ids),
+                "expected_step_count": len(self._expected_step_ids),
                 "harness_version": "1.0.0",
                 "outcome": "completed",
-                "request_count": 6,
+                "request_count": len(self._expected_step_ids),
                 "scenario_id": self.scenario_id,
                 "schema_version": "pkv.r4.openai-compatible-result.v1",
             }
@@ -399,6 +443,14 @@ class R4BlackboxRuntime:
                         "monthly_total_tokens": 1_000_000,
                     },
                     "retry": {"max_attempts": 2},
+                },
+                "embedding_rebuild": {
+                    "schema_version": 1,
+                    "token_budget": {
+                        "timezone": "UTC",
+                        "daily_total_tokens": 100_000,
+                        "monthly_total_tokens": 1_000_000,
+                    },
                 },
             }
         }
@@ -840,10 +892,18 @@ def assert_no_public_leak(
                 parsed.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
+    provider_base_url = getattr(runtime.config, "embd_base_url", None)
+    if not isinstance(provider_base_url, str):
+        raise AssertionError("blackbox runtime lacks a deterministic Provider endpoint")
     _assert_private_values_absent(
         payload_text,
         parsed,
-        (*private_values, BLACKBOX_API_KEY, str(runtime.root)),
+        (
+            *private_values,
+            BLACKBOX_API_KEY,
+            provider_base_url,
+            str(runtime.root),
+        ),
     )
 
 
@@ -894,8 +954,10 @@ __all__ = [
     "ProviderHarness",
     "R4BlackboxRuntime",
     "assert_no_public_leak",
+    "archive_only_provider_script",
     "assert_r4_success_ledger",
     "finish_process",
+    "manual_embedding_rebuild_provider_script",
     "operation_id_for_knowledge",
     "parse_mcp_tool_json",
     "stop_process",

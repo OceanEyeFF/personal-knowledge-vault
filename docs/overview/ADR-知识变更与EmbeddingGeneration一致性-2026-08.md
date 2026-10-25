@@ -1,9 +1,16 @@
 # ADR：知识变更与 Embedding Generation 一致性
 
-**状态：R4 内部生命周期已完成 source acceptance；公开 rebuild/release 仍为 held gate**
-**初始日期：2026-08-23；本次更新：2026-09-03**
+**状态：2026-09 R4 基线的历史 source acceptance 保留；2026-10 W2 本地 Q1 修复已通过列明的 source 验证**
+**初始日期：2026-08-23；本次更新：2026-10-25**
 
-## 决策
+本 ADR 保留 2026-09 的实现决策和证据语境，不能把旧自动 drain/retry 及费用策略当作下一
+主线的目标规则。已确认、待实现的替代规则见
+[AI 原子发布与 URL 版本谱系设计基线](./下一主线-AI原子发布与URL版本谱系设计基线-2026-09.md)：
+新 AI retry 必须显式 plan/confirm/execute，费用默认 `reference_only`。W2 已修复现有 Q1
+本地动作完整性与恢复进展；[生命周期一致性修复设计与分阶段计划](./生命周期一致性修复设计与分阶段计划-2026-10.md)
+继续统筹后续阶段。本次没有实现该下一主线、推进 W3–W5 或改变 release hold。
+
+## 2026-09 决策基线（历史）
 
 R4 采用**选项 2：mutation 后显式 `rebuild_required`** 作为内部一致性策略；但不把
 “显式”误解为每一份文档都要人工确认。一次性的 AI 自动化授权、Provider 授权与费用
@@ -126,16 +133,51 @@ enrichment 与 staged rebuild。它既不把旧 generation 当作正确答案，
 需要定义双层 ANN、一致性、删除屏蔽、压实、pointer CAS、崩溃恢复、费用核算与 reload 的
 全部组合。当前 staged core 没有这些原语，复杂度和错误面明显过高；不作为本轮实现。
 
-## 运行宿主边界
+## 运行宿主边界（2026-09 实现基线）
 
-当前 Core 是 headless、无 daemon 的 Windows-first 程序，Node/Docker 均仍是后置门禁。
-R4 v1 因而采用**持久任务 + 当前 Application 进程内自动 drain**：archive 在核心提交后自动
+Core 是 headless、无 daemon 的 Windows-first 程序，Node/Docker 均仍是后置门禁。
+2026-09 的 R4 v1 采用**持久任务 + 当前 Application 进程内自动 drain**：archive 在核心提交后自动
 尝试处理；可恢复失败被持久化为 `retry_required`，下一次允许写入的内部生命周期触发可继续
-drain。只读 status/related 不得为了重试而获取 lease、创建 Provider 或写 data root。
+drain。这是旧实现语义；下一主线不再由任意后续 mutation 自动批准新 Provider retry。
+只读 status/related 不得为了重试而获取 lease、创建 Provider 或写 data root。
 
 这保证没有“每文档手动确认”，但不承诺进程退出后存在独立后台服务继续运行。若产品随后
 要求“关闭所有宿主后仍自动重试”，必须先单独通过 Node/持久 worker 的门禁，不能暗中把
 daemon、Docker 或 GUI 代码带回 Core。
+
+## 2026-10 Q1 修复决策与 W2 checkpoint
+
+Q1 的唯一内容 writer 责任覆盖 `archive`、`delete`、`apply_ai_patch` 全部动作。同步 Kernel
+接口与异步 Application 接口必须共用完整执行语义；同步签名只约束调用方式，不能缩减它从
+全局队列可领取动作的实现范围。消费者只 claim 可执行 action，不以“当前 bridge 不支持”
+把合法 patch 无限转回 retry。
+
+bounded drain 的上限必须限制实际工作而不是掩盖无进展循环：同轮每个 task 最多一次无进展
+尝试；失败有可观察的阻塞/退避及下一步。独立 eligible task 在有限队列与持续允许 trigger 下
+须有限轮推进，同一 target 的 revision/operation 依赖仍须先解决。单个失败队首不能永久
+占满所有额度。原子提交与幂等证明继续复用 StorageCoordinator，不新建第二套内容 writer。
+
+本地恢复仅处理已经完整持久化、可验证的 patch/operation proof；可以提交或确认既有结果，
+不能构造 Provider、重新生成缺失产物或顺带自动重试 Q2。缺失/不完整 patch、未知外部效果
+必须保留明确状态；新 AI attempt 服从下一主线的显式批准。这也不授权把 legacy inline
+patch 无证明转成新的 immutable AI artifact，或改写下一主线的 core 不可变约束。
+
+可执行验收编号为 [R4 实施计划 §1.4](./R4-自动AI生命周期与费用控制实施计划-2026-08.md)
+中的 Q1-01..Q1-05：跨进程 patch→同步 delete、同步/异步三动作一致、退避与独立任务进展、
+patch 至多一次应用、零额外 Provider。历史 R4-E 通过记录不替代这些新增门禁。
+
+2026-10-25 W2 已让两种 bridge 共用完整 Q1 执行器，保留 async tracked worker 的取消/lease
+保护。claim/recovery 共用候选与额度，轮内 task 去重；本地失败持久退避并跨轮后移，同 target
+未解决前置不被越过。既有提交证明可在新 fence 下恢复，模糊结果保留修复阻挡而非伪造 rejected；
+独立任务可推进，公开同步 delete 对需修复的前置返回既有 `repair_required` 并保留后继。
+
+W1 原七例与 W2 新增二十四例全部通过，其中四例跨真实 OS 进程，二十例覆盖失败、公平、
+fence/proof、repair 与 Q2 不被唤醒。连同既有 R4、coordinator、writer lease 与 Application
+回归，同一冻结版本为 **137 passed, 1 skipped，exit 0**；唯一 skip 属于既有 Windows 目录
+symlink 权限限制。具体 Q1-01..05 场景、完整命令与指纹见
+[R4 实施计划 §1.5](./R4-自动AI生命周期与费用控制实施计划-2026-08.md)及
+[W2 修复记录](./W2-身份队列与CLI门禁修复记录-2026-10.md)。受控故障恢复不冒充进程外
+强杀，source checkpoint 不替代 Artifact/release 或真实数据验收。
 
 ## 实施约束与非目标
 
@@ -151,13 +193,17 @@ daemon、Docker 或 GUI 代码带回 Core。
   测试使用受控 seam，公开全流程使用经正式 Provider 配置接入的进程外 deterministic harness。
   不读取真实 Vault、`%USERPROFILE%\\.pkv\\config.yaml` 或真实凭据。
 
-## 持续实施确认点
+## 历史实施确认点与后续优先级
 
-用户已确认选项 2、“一次授权后的内部自动处理”与“无价格卡时只记录 token、不估价”的
-费用原则。后续实现和验证持续遵守随附实施计划的宿主边界：
+2026-09 实现采用选项 2、“一次授权后的内部自动处理”与“无价格卡时只记录 token、不估价”的
+费用原则；以下是该历史版本的行为记录，不是下一主线的 retry/费用授权：
 
 1. v1 是进程内自动 drain，不承诺独立后台 daemon；进程退出后的可恢复任务显示“待重试”，
    由下一次允许写入的内部生命周期恢复。
 自动化默认关闭；启用时必须明确提供计费时区和至少一个日/月 token hard cap。price card、
 币种和金额上限可选；没有 price card 时只记录 token、绝不推测价格。缺少 token 配额、超限或
 策略变更一律暂停，不存在隐式 unlimited usage。
+
+Q1 本地执行与进展的 W2 checkpoint 已按上述范围验证；其余生命周期修复继续按 W3–W5
+推进。涉及新 Provider attempt、费用策略和 AI 产物模型时，以上述下一主线已确认目标为准，
+不把本地 patch 恢复当作新收费许可。真实数据迁移与发布仍保持原有门禁。

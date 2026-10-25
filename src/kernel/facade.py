@@ -203,6 +203,54 @@ class KnowledgeKernel:
     def search(self, query: str, strategy: str = "auto", limit: int = 10, **kwargs: Any) -> Any:
         return self._application.search(query, strategy, limit, **kwargs)
 
+    # P1-B traceable outcomes remain Application-owned operations.  The Kernel
+    # only forwards the narrow public contract so adapters never compose a
+    # SQLite store, source resolver, writer lease, or Markdown output path.
+    def create_outcome_topic(self, *, title: str, question: str) -> Any:
+        return self._application.create_outcome_topic(title=title, question=question)
+
+    def get_outcome_topic(self, *, topic_id: str) -> Any:
+        return self._application.outcome_service.get_topic(topic_id)
+
+    def list_outcome_topics(self, *, limit: int = 100, offset: int = 0) -> Any:
+        return self._application.outcome_service.list_topics(limit=limit, offset=offset)
+
+    def get_outcome_bundle(self, *, topic_id: str) -> Any:
+        return self._application.get_outcome_bundle(topic_id=topic_id)
+
+    def attach_outcome_evidence(self, **kwargs: Any) -> Any:
+        return self._application.attach_outcome_evidence(**kwargs)
+
+    def detach_outcome_evidence(self, evidence_id: str) -> None:
+        self._application.detach_outcome_evidence(evidence_id)
+
+    def suggest_outcome_evidence(self, **kwargs: Any) -> Any:
+        return self._application.suggest_outcome_evidence(**kwargs)
+
+    def create_outcome_claim(self, **kwargs: Any) -> Any:
+        return self._application.create_outcome_claim(**kwargs)
+
+    def revise_outcome_claim(self, **kwargs: Any) -> Any:
+        return self._application.revise_outcome_claim(**kwargs)
+
+    def link_outcome_claim_evidence(self, **kwargs: Any) -> Any:
+        return self._application.link_outcome_claim_evidence(**kwargs)
+
+    def unlink_outcome_claim_evidence(self, **kwargs: Any) -> Any:
+        return self._application.unlink_outcome_claim_evidence(**kwargs)
+
+    def render_outcome_research_brief(self, *, topic_id: str) -> Any:
+        return self._application.render_outcome_research_brief(topic_id=topic_id)
+
+    def approve_outcome_research_brief(self, *, topic_id: str) -> Any:
+        return self._application.approve_outcome_research_brief(topic_id=topic_id)
+
+    def return_outcome_research_brief(self, *, topic_id: str) -> Any:
+        return self._application.return_outcome_research_brief(topic_id=topic_id)
+
+    def get_outcome_research_brief(self, **kwargs: Any) -> Any:
+        return self._application.get_outcome_research_brief(**kwargs)
+
     def chat_settings(self) -> Any:
         return self._application.chat_settings()
 

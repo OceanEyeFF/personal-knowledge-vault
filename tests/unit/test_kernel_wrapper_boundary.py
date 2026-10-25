@@ -26,6 +26,7 @@ _EXPECTED_WHEEL_CORE_INCLUDES = frozenset(
         "src.ai*",
         "src.application*",
         "src.kernel*",
+        "src.outcomes*",
         "src.processors*",
         "src.relations*",
         "src.retrieval*",
@@ -81,6 +82,7 @@ _PUBLIC_API_V1 = frozenset(
         "configure_kernel",
         "contracts",
         "describe_url_target",
+        "embedding",
         "get_config",
         "get_kernel",
         "get_kernel_capabilities",
@@ -90,6 +92,7 @@ _PUBLIC_API_V1 = frozenset(
         "is_supported_chat_finish_reason",
         "load_preview_with_store",
         "lifecycle",
+        "outcomes",
         "project_bootstrap_error",
         "redact_url_credentials",
         "reload_kernel",
@@ -129,6 +132,53 @@ _PUBLIC_LIFECYCLE_API_V1 = frozenset(
         "plan_runtime",
     }
 )
+_PUBLIC_EMBEDDING_API_V1 = frozenset(
+    {
+        "EmbeddingRebuildConfirmation",
+        "EmbeddingRebuildExecution",
+        "EmbeddingRebuildInspection",
+        "EmbeddingRebuildPlan",
+        "confirm_embedding_rebuild",
+        "execute_embedding_rebuild",
+        "inspect_embedding_rebuild",
+        "plan_embedding_rebuild",
+    }
+)
+_PUBLIC_OUTCOMES_API_V1 = frozenset(
+    {
+        "ClaimEvidenceLink",
+        "ClaimEvidencePolarity",
+        "ClaimRecord",
+        "ClaimState",
+        "EvidenceAcquisitionMethod",
+        "EvidenceLocator",
+        "EvidenceLocatorKind",
+        "EvidenceRecord",
+        "EvidenceState",
+        "EvidenceSuggestion",
+        "EvidenceSuggestionResult",
+        "OutcomeBundle",
+        "OutcomeState",
+        "ResearchBriefRecord",
+        "TopicRecord",
+        "TopicState",
+        "approve_research_brief",
+        "attach_evidence",
+        "create_claim",
+        "create_topic",
+        "detach_evidence",
+        "get_outcome",
+        "get_research_brief",
+        "get_topic",
+        "link_claim_evidence",
+        "list_topics",
+        "render_research_brief",
+        "return_research_brief",
+        "revise_claim",
+        "suggest_evidence",
+        "unlink_claim_evidence",
+    }
+)
 _KERNEL_CAPABILITIES_V1 = frozenset(
     {
         "kernel.lifecycle.v1",
@@ -138,6 +188,8 @@ _KERNEL_CAPABILITIES_V1 = frozenset(
         "kernel.entries.v1",
         "kernel.chat-sessions.v1",
         "kernel.configuration-snapshot-reload.v1",
+        "kernel.embedding-rebuild.v1",
+        "kernel.traceable-outcomes.v1",
     }
 )
 
@@ -209,6 +261,14 @@ def test_pkv_kernel_v1_public_api_is_exactly_frozen() -> None:
     assert frozenset(pkv_kernel.lifecycle.__all__) == _PUBLIC_LIFECYCLE_API_V1
     assert all(
         hasattr(pkv_kernel.lifecycle, name) for name in _PUBLIC_LIFECYCLE_API_V1
+    )
+    assert frozenset(pkv_kernel.embedding.__all__) == _PUBLIC_EMBEDDING_API_V1
+    assert all(
+        hasattr(pkv_kernel.embedding, name) for name in _PUBLIC_EMBEDDING_API_V1
+    )
+    assert frozenset(pkv_kernel.outcomes.__all__) == _PUBLIC_OUTCOMES_API_V1
+    assert all(
+        hasattr(pkv_kernel.outcomes, name) for name in _PUBLIC_OUTCOMES_API_V1
     )
 
 

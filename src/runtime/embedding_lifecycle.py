@@ -32,6 +32,7 @@ import frontmatter
 import numpy as np
 
 from src.runtime.errors import ErrorCode, PKVRuntimeError
+from src.runtime.generation_stage import GenerationStageGrant
 from src.runtime.layout import ensure_safe_directory
 from src.runtime.runtime_snapshot import (
     RuntimeSnapshotDocument,
@@ -551,18 +552,48 @@ class EmbeddingRebuildExecution:
     inspection: EmbeddingIndexInspection
     generation_id: str
     previous_generation: str | None
+    operation_id: str = ""
     audit_completion_pending: bool = False
+    ledger_completion_pending: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {
             "inspection": self.inspection.to_dict(),
             "generation_id": self.generation_id,
             "previous_generation": self.previous_generation,
+            "operation_id": self.operation_id,
             "audit_completion_pending": self.audit_completion_pending,
+            "ledger_completion_pending": self.ledger_completion_pending,
         }
 
 
 WriterLeaseFactory = Callable[[Any], AbstractContextManager[object]]
+
+
+class EmbeddingRebuildExecutionObserver(Protocol):
+    """Private lifecycle seam for independent foreground accounting.
+
+    The Core uses this only at its existing short lease boundaries.  It never
+    exposes the observer through a public DTO or gives it a Provider, Store, or
+    general writer capability.  The public Kernel adapter supplies the concrete
+    observer that owns the manual-rebuild policy and ledger.
+    """
+
+    def reserve(
+        self,
+        plan: EmbeddingRebuildPlan,
+        inspection: EmbeddingIndexInspection,
+    ) -> str:
+        """Reserve independent policy capacity and return an operation id."""
+
+    def mark_activation_intent(self, operation_id: str, generation_id: str) -> None:
+        """Persist an intent before active-generation pointer publication."""
+
+    def mark_completed(self, operation_id: str) -> None:
+        """Settle independent accounting after a successful pointer CAS."""
+
+    def mark_failed(self, operation_id: str, error: PKVRuntimeError) -> None:
+        """Settle or release independent accounting before pointer publication."""
 
 
 def _data_root_identity_sha256(config: Any) -> str:
@@ -1112,7 +1143,7 @@ def inspect_embedding_index(
             snapshot=snapshot,
         config_source_revision=config_source_revision,
         )
-    except Exception as exc:
+    except Exception:
         return _inspection(
             state=EmbeddingIndexState.REPAIR_REQUIRED,
             contract=contract,
@@ -1659,12 +1690,20 @@ def _build_generation(
     plan: EmbeddingRebuildPlan,
     captured: CapturedEmbeddingSource,
     embedder: RebuildEmbedder,
+    stage_grant: GenerationStageGrant,
 ) -> tuple[Path, str, str]:
-    """Build and validate a full private stage; it never flips an active pointer."""
+    """Build and validate a fenced private stage without a root writer lease.
+
+    The caller allocated ``stage_grant`` under a root lease and has released it
+    before Provider work begins.  Each VectorStore mutation revalidates the
+    grant, so this path cannot create a general data-root writer capability or
+    target a final generation directory.
+    """
 
     contract = plan.inspection.contract
     assert contract is not None
-    stage_dir = _new_staging_directory(config, plan.plan_id)
+    stage_dir = stage_grant.stage_dir
+    stage_grant.require_stage_write(config.layout, stage_dir)
     try:
         vector_config = _VectorRuntimeConfigSnapshot.capture(config, contract)
         store = VectorStore(
@@ -1672,6 +1711,7 @@ def _build_generation(
             dim=contract.dimension,
             runtime_config=vector_config,
             layout=config.layout,
+            stage_grant=stage_grant,
         )
         for record in captured.records:
             try:
@@ -1719,6 +1759,7 @@ def _build_generation(
             "source": captured.summary.to_dict(),
             "files": files,
         }
+        stage_grant.require_stage_write(config.layout, stage_dir)
         manifest_sha = _write_json_file(
             config.layout,
             stage_dir / _GENERATION_MANIFEST_NAME,
@@ -2035,15 +2076,21 @@ def execute_embedding_rebuild(
     plan: EmbeddingRebuildPlan,
     confirmation: EmbeddingRebuildConfirmation | None,
     *,
-    embedder: RebuildEmbedder,
+    embedder: RebuildEmbedder | None = None,
+    embedder_factory: Callable[[], RebuildEmbedder] | None = None,
     writer_lease_factory: WriterLeaseFactory | None = None,
+    execution_observer: EmbeddingRebuildExecutionObserver | None = None,
 ) -> EmbeddingRebuildExecution:
-    """Build, strictly validate, retain, and atomically activate one generation.
+    """Build, validate, retain, and atomically activate one generation.
 
-    No live provider is constructed here: callers must inject an approved
-    provider, while default tests inject deterministic fakes.  ``write_busy``
-    occurs before audit creation, leaving a competing writer's active index and
-    audit file untouched.
+    The mutation is intentionally split into short root-lease phases around
+    Provider work.  A lease-owned :class:`GenerationStageGrant` is the only
+    capability available while vectors are staged outside the root lease; it
+    cannot alter the active pointer, audit, snapshot, or a final generation.
+    No live Provider is constructed here: callers inject an approved adapter.
+    ``execution_observer`` is a private Application/Kernel accounting seam; it
+    is deliberately absent from the public façade and receives callbacks only
+    while this Core already owns a short root lease.
     """
 
     if not isinstance(plan, EmbeddingRebuildPlan):
@@ -2054,16 +2101,36 @@ def execute_embedding_rebuild(
             "Embedding 重建计划未绑定到原始显式配置与源。",
             stage="embedding_plan",
         )
-    if (
-        embedder is None
-        or not callable(getattr(embedder, "embed_document", None))
-        or not callable(getattr(embedder, "embed_stored_chunks", None))
-    ):
-        # The Protocol remains structural so normal adapters do not need to
-        # inherit a test-only base class.
-        raise TypeError(
-            "embedder 必须显式提供 embed_document 与 embed_stored_chunks"
+    if (embedder is None) == (embedder_factory is None):
+        raise TypeError("必须显式提供一个 embedder 或 embedder_factory")
+    if embedder_factory is not None and not callable(embedder_factory):
+        raise TypeError("embedder_factory 必须可调用")
+    if execution_observer is not None:
+        required_observer_methods = (
+            "reserve",
+            "mark_activation_intent",
+            "mark_completed",
+            "mark_failed",
         )
+        if not all(
+            callable(getattr(execution_observer, method, None))
+            for method in required_observer_methods
+        ):
+            raise TypeError("execution_observer 缺少 Embedding rebuild accounting 回调")
+
+    def _require_embedder(value: RebuildEmbedder | None) -> RebuildEmbedder:
+        if (
+            value is None
+            or not callable(getattr(value, "embed_document", None))
+            or not callable(getattr(value, "embed_stored_chunks", None))
+        ):
+            raise TypeError(
+                "embedder 必须显式提供 embed_document 与 embed_stored_chunks"
+            )
+        return value
+
+    if embedder is not None:
+        _require_embedder(embedder)
     _assert_confirmation(plan, confirmation)
 
     current = inspect_embedding_index(plan._config, source=plan._source)
@@ -2077,154 +2144,304 @@ def execute_embedding_rebuild(
     if writer_lease_factory is None:
         from src.runtime.write_lease import write_lease_scope
 
-        lease = write_lease_scope(plan._config.layout)
+        def lease_factory(config: Any):
+            return write_lease_scope(config.layout)
     else:
-        lease = writer_lease_factory(plan._config)
+        lease_factory = writer_lease_factory
 
     from src.runtime.file_logging import runtime_file_log_binding, runtime_file_log_scope
 
-    with lease, runtime_file_log_scope(
-        runtime_file_log_binding(
+    def _log_binding():
+        return runtime_file_log_binding(
             plan._config,
             snapshot_id=f"config-{id(plan._config)}",
-        ),
-        owner="embedding_generation",
-    ):
-        current = inspect_embedding_index(plan._config, source=plan._source)
-        if not _canonical_plan_matches(plan, current):
+        )
+
+    def _observer_failure(operation_id: str | None, error: PKVRuntimeError) -> None:
+        """Never replace the primary Core failure with best-effort accounting."""
+
+        if execution_observer is None or operation_id is None:
+            return
+        try:
+            execution_observer.mark_failed(operation_id, error)
+        except Exception:
+            pass
+
+    def _observer_activation(operation_id: str, generation_id: str) -> None:
+        if execution_observer is None:
+            return
+        try:
+            execution_observer.mark_activation_intent(operation_id, generation_id)
+        except PKVRuntimeError:
+            raise
+        except Exception as exc:
             raise _safe_runtime_error(
-                ErrorCode.RUNTIME_PLAN_STALE,
-                "等待写入权限期间 Embedding 源、配置或指针已变化。",
-                stage="embedding_plan",
-            )
-        assert current.contract is not None
-        assert current._snapshot is not None
-        assert current._captured_source is not None
+                ErrorCode.REPAIR_REQUIRED,
+                "Embedding rebuild 独立账本无法记录 activation intent。",
+                stage="embedding_rebuild_ledger",
+            ) from exc
 
-        # Audit starts only once the writer lease is held.  It deliberately
-        # retains full source articles/chunks locally while redacting configured
-        # Provider values, inline credentials and credential-bearing URLs.
-        from src.runtime.audit import AuditTrace, AuditTraceError
-
-        trace = AuditTrace(plan._config.layout, secret_values=_audit_secret_values(plan._config))
-        audit_context = {
-            "embedding_contract_sha256": _canonical_sha256(current.contract.to_dict()),
-            "config_source_revision": current._config_source_revision,
-            "data_root_identity_sha256": _data_root_identity_sha256(plan._config),
-            "plan_id": plan.plan_id,
-            "embedding_contract": current.contract.to_dict(),
-        }
-        with trace.operation("embedding_rebuild", context=audit_context) as audit:
+    # Phase A: revalidate and allocate the exact private stage while owning the
+    # root lease.  This is also the last point before Provider work where a
+    # competing writer may be rejected without any stage/audit side effect.
+    observer_operation_id: str | None = None
+    try:
+        with lease_factory(plan._config), runtime_file_log_scope(
+            _log_binding(), owner="embedding_generation"
+        ):
             try:
-                trace.append(
+                current = inspect_embedding_index(plan._config, source=plan._source)
+                if not _canonical_plan_matches(plan, current):
+                    raise _safe_runtime_error(
+                        ErrorCode.RUNTIME_PLAN_STALE,
+                        "等待写入权限期间 Embedding 源、配置或指针已变化。",
+                        stage="embedding_plan",
+                    )
+                assert current.contract is not None
+                assert current._captured_source is not None
+                assert current._config_source_revision is not None
+                if execution_observer is not None:
+                    try:
+                        observer_operation_id = execution_observer.reserve(plan, current)
+                    except PKVRuntimeError:
+                        raise
+                    except Exception as exc:
+                        raise _safe_runtime_error(
+                            ErrorCode.REPAIR_REQUIRED,
+                            "Embedding rebuild 独立账本无法预留 token。",
+                            stage="embedding_rebuild_ledger",
+                        ) from exc
+                    if not isinstance(observer_operation_id, str):
+                        raise _safe_runtime_error(
+                            ErrorCode.REPAIR_REQUIRED,
+                            "Embedding rebuild 独立账本返回了无效 operation identity。",
+                            stage="embedding_rebuild_ledger",
+                        )
+                stage_grant = GenerationStageGrant.allocate(
+                    plan._config,
+                    plan_id=plan.plan_id,
+                    source_revision=current._config_source_revision,
+                    operation_id=observer_operation_id,
+                )
+
+                from src.runtime.audit import AuditTrace
+
+                preflight_trace = AuditTrace(
+                    plan._config.layout,
+                    secret_values=_audit_secret_values(plan._config),
+                )
+                preflight_trace.append(
                     {
                         "operation": "embedding_rebuild",
-                        "phase": "source_captured",
+                        "phase": "stage_reserved",
+                        "operation_id": stage_grant.operation_id,
                         "plan_id": plan.plan_id,
                         "source": _audit_source_records(current._captured_source),
                     }
                 )
-                stage_dir, staged_generation_id, staged_manifest_sha = _build_generation(
-                    plan._config,
-                    plan=plan,
-                    captured=current._captured_source,
-                    embedder=embedder,
+                captured = current._captured_source
+                preflight_revision = current.revision
+            except PKVRuntimeError as error:
+                _observer_failure(observer_operation_id, error)
+                raise
+            except Exception as exc:
+                # A malformed observer identity or stage-allocation invariant
+                # must not strand the just-created foreground reservation in
+                # ``processing``.  This boundary is still before Provider
+                # construction, so the observer can safely release it while
+                # the same root writer lease is held.
+                error = _safe_runtime_error(
+                    ErrorCode.REPAIR_REQUIRED,
+                    "Embedding private staging 预检无法安全完成。",
+                    stage="embedding_stage_grant",
                 )
+                _observer_failure(observer_operation_id, error)
+                raise error from exc
+    except PKVRuntimeError:
+        raise
 
-                # A changed source/config/pointer during expensive Provider work
-                # may leave an unreferenced staging directory, but can never
-                # change the active generation.
-                before_publish = inspect_embedding_index(plan._config, source=plan._source)
-                if before_publish.revision != current.revision:
-                    raise _safe_runtime_error(
-                        ErrorCode.RUNTIME_PLAN_STALE,
-                        "Embedding 重建期间源、配置或指针已变化；未切换 active generation。",
-                        stage="embedding_plan",
-                    )
-                generation_id, manifest_sha = _publish_generation_directory(
-                    plan._config,
-                    stage_dir,
-                    expected_generation_id=staged_generation_id,
-                    expected_manifest_sha=staged_manifest_sha,
-                    expected_contract=current.contract,
-                    expected_source=current._captured_source.summary,
-                )
-                # This durable pre-activation record makes a later audit fsync
-                # failure reconcilable without claiming that the pointer flip
-                # rolled back.  Its append must succeed before the irreversible
-                # snapshot CAS; otherwise active remains unchanged.
-                trace.append(
+    # Phase B/C: the Provider and all mutable writes are outside the root lease.
+    # The only write capability is the exact private stage allocated above.
+    try:
+        if embedder_factory is not None:
+            try:
+                effective_embedder = _require_embedder(embedder_factory())
+            except PKVRuntimeError:
+                raise
+            except Exception as exc:
+                raise _safe_runtime_error(
+                    ErrorCode.PROVIDER_UNAVAILABLE,
+                    "Embedding Provider 无法安全创建。",
+                    stage="embedding_rebuild_provider",
+                ) from exc
+        else:
+            effective_embedder = _require_embedder(embedder)
+        stage_dir, staged_generation_id, staged_manifest_sha = _build_generation(
+            plan._config,
+            plan=plan,
+            captured=captured,
+            embedder=effective_embedder,
+            stage_grant=stage_grant,
+        )
+    except PKVRuntimeError as error:
+        # Failure telemetry is best effort and may only be appended while a new
+        # root lease is held.  It must never replace the typed Provider/staging
+        # error or invite an implicit retry.
+        try:
+            with lease_factory(plan._config), runtime_file_log_scope(
+                _log_binding(), owner="embedding_generation"
+            ):
+                from src.runtime.audit import AuditTrace
+
+                AuditTrace(
+                    plan._config.layout,
+                    secret_values=_audit_secret_values(plan._config),
+                ).append(
                     {
                         "operation": "embedding_rebuild",
-                        "phase": "activation_intent",
+                        "phase": "stage_failed",
+                        "operation_id": stage_grant.operation_id,
                         "plan_id": plan.plan_id,
-                        "generation_id": generation_id,
-                        "previous_generation": current.active_generation,
-                        "manifest_sha256": manifest_sha,
+                        "error_code": error.code.value,
+                        "error_stage": error.stage,
                     }
                 )
-                published_snapshot = _pointer_update(
-                    plan._config,
-                    current._snapshot,
-                    contract=current.contract,
-                    source_digest=current._captured_source.summary.digest,
-                    generation_id=generation_id,
-                    previous_generation=current.active_generation,
-                    manifest_sha=manifest_sha,
+                _observer_failure(stage_grant.operation_id, error)
+        except Exception:
+            pass
+        raise
+
+    # Phase D: fence/source/config recheck, then strictly validate and atomically
+    # publish.  A stale capture leaves the private stage unreferenced.
+    pointer_committed = False
+    with lease_factory(plan._config), runtime_file_log_scope(
+        _log_binding(), owner="embedding_generation"
+    ):
+        try:
+            current = inspect_embedding_index(plan._config, source=plan._source)
+            if not _canonical_plan_matches(plan, current) or current.revision != preflight_revision:
+                raise _safe_runtime_error(
+                    ErrorCode.RUNTIME_PLAN_STALE,
+                    "Embedding 重建期间源、配置或指针已变化；未切换 active generation。",
+                    stage="embedding_plan",
                 )
-                # Do not re-capture mutable source data after a successful CAS.
-                # The immediately preceding inspection was the activation
-                # guard under the root-wide writer lease; the manifest was
-                # validated after its move, and RuntimeSnapshotStore.publish
-                # re-reads the exact pointer bytes.  A later manual source edit
-                # is a *new* operation's drift, not a reason to report this
-                # already-activated generation as a failed build.
-                inspected_after = _inspection(
-                    state=EmbeddingIndexState.READY,
-                    contract=current.contract,
-                    source=current._captured_source,
-                    active_generation=generation_id,
-                    previous_generation=current.active_generation,
-                    manifest_sha=manifest_sha,
-                    issues=(),
-                    config=plan._config,
-                    source_reader=plan._source,
-                    snapshot=published_snapshot,
-                    config_source_revision=current._config_source_revision,
-                )
-                audit_completion_pending = False
+            assert current.contract is not None
+            assert current._snapshot is not None
+            assert current._captured_source is not None
+            stage_grant.consume_for_publish()
+
+            from src.runtime.audit import AuditTrace, AuditTraceError
+
+            trace = AuditTrace(
+                plan._config.layout,
+                secret_values=_audit_secret_values(plan._config),
+            )
+            audit_context = {
+                "embedding_contract_sha256": _canonical_sha256(current.contract.to_dict()),
+                "config_source_revision": current._config_source_revision,
+                "data_root_identity_sha256": _data_root_identity_sha256(plan._config),
+                "plan_id": plan.plan_id,
+                "operation_id": stage_grant.operation_id,
+                "embedding_contract": current.contract.to_dict(),
+            }
+            with trace.operation("embedding_rebuild", context=audit_context) as audit:
                 try:
-                    audit.complete(
+                    generation_id, manifest_sha = _publish_generation_directory(
+                        plan._config,
+                        stage_dir,
+                        expected_generation_id=staged_generation_id,
+                        expected_manifest_sha=staged_manifest_sha,
+                        expected_contract=current.contract,
+                        expected_source=current._captured_source.summary,
+                    )
+                    # This durable pre-activation record makes a later audit fsync
+                    # failure reconcilable without claiming that the pointer flip
+                    # rolled back.  Its append must succeed before the irreversible
+                    # snapshot CAS; otherwise active remains unchanged.
+                    trace.append(
                         {
+                            "operation": "embedding_rebuild",
+                            "phase": "activation_intent",
+                            "operation_id": stage_grant.operation_id,
+                            "plan_id": plan.plan_id,
                             "generation_id": generation_id,
                             "previous_generation": current.active_generation,
-                            "source": inspected_after.source.to_dict()
-                            if inspected_after.source is not None
-                            else None,
+                            "manifest_sha256": manifest_sha,
                         }
                     )
-                except AuditTraceError:
-                    # Pointer CAS already committed.  Return that fact rather
-                    # than a false failure/stale result; an adapter must surface
-                    # this warning and reconcile the preceding activation_intent
-                    # record before a future cleanup/rebuild decision.
-                    audit.mark_completion_pending_after_commit()
-                    audit_completion_pending = True
-                return EmbeddingRebuildExecution(
-                    inspection=inspected_after,
-                    generation_id=generation_id,
-                    previous_generation=current.active_generation,
-                    audit_completion_pending=audit_completion_pending,
-                )
-            except PKVRuntimeError as error:
-                try:
-                    audit.fail_runtime_error(error, details={"plan_id": plan.plan_id})
-                except AuditTraceError:
-                    # A diagnostic sink failure must not replace the original
-                    # typed no-activation error.  The context manager preserves
-                    # that business exception on its best-effort terminal path.
-                    pass
-                raise
+                    _observer_activation(stage_grant.operation_id, generation_id)
+                    published_snapshot = _pointer_update(
+                        plan._config,
+                        current._snapshot,
+                        contract=current.contract,
+                        source_digest=current._captured_source.summary.digest,
+                        generation_id=generation_id,
+                        previous_generation=current.active_generation,
+                        manifest_sha=manifest_sha,
+                    )
+                    pointer_committed = True
+                    inspected_after = _inspection(
+                        state=EmbeddingIndexState.READY,
+                        contract=current.contract,
+                        source=current._captured_source,
+                        active_generation=generation_id,
+                        previous_generation=current.active_generation,
+                        manifest_sha=manifest_sha,
+                        issues=(),
+                        config=plan._config,
+                        source_reader=plan._source,
+                        snapshot=published_snapshot,
+                        config_source_revision=current._config_source_revision,
+                    )
+                    audit_completion_pending = False
+                    try:
+                        audit.complete(
+                            {
+                                "operation_id": stage_grant.operation_id,
+                                "generation_id": generation_id,
+                                "previous_generation": current.active_generation,
+                                "source": inspected_after.source.to_dict()
+                                if inspected_after.source is not None
+                                else None,
+                            }
+                        )
+                    except AuditTraceError:
+                        audit.mark_completion_pending_after_commit()
+                        audit_completion_pending = True
+                    ledger_completion_pending = False
+                    if execution_observer is not None:
+                        try:
+                            execution_observer.mark_completed(stage_grant.operation_id)
+                        except Exception:
+                            # Pointer activation already committed.  Returning a
+                            # distinct reconciliation marker is safer than
+                            # falsely claiming a failed rebuild or retrying a
+                            # paid Provider operation.
+                            ledger_completion_pending = True
+                    return EmbeddingRebuildExecution(
+                        inspection=inspected_after,
+                        generation_id=generation_id,
+                        previous_generation=current.active_generation,
+                        operation_id=stage_grant.operation_id,
+                        audit_completion_pending=audit_completion_pending,
+                        ledger_completion_pending=ledger_completion_pending,
+                    )
+                except PKVRuntimeError as error:
+                    try:
+                        audit.fail_runtime_error(
+                            error,
+                            details={
+                                "operation_id": stage_grant.operation_id,
+                                "plan_id": plan.plan_id,
+                            },
+                        )
+                    except AuditTraceError:
+                        pass
+                    raise
+        except PKVRuntimeError as error:
+            if not pointer_committed:
+                _observer_failure(stage_grant.operation_id, error)
+            raise
 
 
 def resolve_embedding_index_binding(

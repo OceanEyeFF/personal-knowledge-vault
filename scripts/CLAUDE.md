@@ -269,7 +269,7 @@ symlink/reparse 或竞态变化必须失败并保留现场。
 1. 检查当前版本: 1.0.0
 2. 扫描待迁移脚本:
    - 002_add_cli_tables.sql (v1.1.0)
-   - ...（当前链的末端为 012_add_r4_content_submission.sql，v1.2.6）
+   - ...（当前链的末端为 013_add_traceable_outcomes.sql，v1.2.7）
 3. 旧实现可选地写入 `.data-backup/`
 4. 执行迁移脚本
 5. 更新 schema_version 表
@@ -332,6 +332,7 @@ CREATE TABLE IF NOT EXISTS cli_stats (
 | `010_add_storage_operation_commits.sql` | 1.2.4 | 跨存储操作提交凭据 |
 | `011_add_ai_automation_ledger.sql` | 1.2.5 | 内部 AI 自动任务与 token 用量账本 |
 | `012_add_r4_content_submission.sql` | 1.2.6 | R4 Q0 ingress、Q1′ 内容提交/handoff 与 Q2 fenced 用量账本 |
+| `013_add_traceable_outcomes.sql` | 1.2.7 | P1-B Topic、Evidence、Claim 与 research brief 成果合同 |
 
 详见: [scripts/migrations/README.md](./migrations/README.md)
 
@@ -560,6 +561,7 @@ U1/G8/FT5 user-only gate 尚未交付
 | `migrations/010_add_storage_operation_commits.sql` | 1.2.4 | 跨存储操作提交凭据 |
 | `migrations/011_add_ai_automation_ledger.sql` | 1.2.5 | 内部 AI 自动任务与 token 用量账本 |
 | `migrations/012_add_r4_content_submission.sql` | 1.2.6 | R4 Q0 ingress、Q1′ 内容提交/handoff 与 Q2 fenced 用量账本 |
+| `migrations/013_add_traceable_outcomes.sql` | 1.2.7 | P1-B Topic、Evidence、Claim 与 research brief 成果合同 |
 | `migrations/README.md` | - | 迁移脚本说明 |
 
 ### 文档

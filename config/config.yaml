@@ -57,6 +57,18 @@ ai:
     retry:
       max_attempts: 2
 
+  # Foreground public Embedding maintenance is deliberately separate from
+  # ai.automation.  A CLI/MCP plan confirmation authorizes one rebuild; this
+  # block supplies only a token hard cap and never enables the internal Q2
+  # scheduler.  Both caps null means execution is rejected before a Provider
+  # is constructed.
+  embedding_rebuild:
+    schema_version: 1
+    token_budget:
+      timezone: "UTC"
+      daily_total_tokens: null
+      monthly_total_tokens: null
+
   # Whisper 配置 (Phase 2)
   whisper:
     model: "whisper-1"

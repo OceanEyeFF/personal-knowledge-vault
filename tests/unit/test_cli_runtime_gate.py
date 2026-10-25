@@ -97,7 +97,10 @@ def test_degraded_runtime_allows_only_explicit_read_commands(
     configure_logging.assert_not_called()
 
 
-@pytest.mark.parametrize("command_name", ("archive", "archive-text", None, "future-write"))
+@pytest.mark.parametrize(
+    "command_name",
+    ("archive", "archive-text", "outcome get", "outcome list", "outcome suggest-evidence", None, "future-write"),
+)
 def test_degraded_runtime_rejects_writes_and_unknown_commands(
     command_name: str | None,
     monkeypatch: pytest.MonkeyPatch,

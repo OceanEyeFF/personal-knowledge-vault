@@ -38,6 +38,10 @@ while the Kernel remains usable without importing PySide6 or any GUI module.
   incompatibly change a public symbol. Removal requires a documented
   `DeprecationWarning` for at least one compatible SDK version and a new API
   major.
+- `kernel.traceable-outcomes.v1` is implemented only by the narrow
+  `pkv_kernel.outcomes` façade. It exposes body-free Topic/Evidence/Claim and
+  revisioned `research_brief` DTOs; adapters do not receive a Store, Layout,
+  writer lease, source content, raw source URL, or Provider object.
 
 ## Configuration and lifecycle
 
@@ -79,4 +83,5 @@ Use the repository wrapper and an isolated `.data-test` root:
 
 The architecture test is mandatory for changes on this boundary: it AST-scans
 for wrapper/Qt imports and rejects reverse dependencies. It also freezes the
-`pkv_kernel` API-major-1 export set and handshake behavior.
+`pkv_kernel` API-major-1 export set, including the nested `outcomes` module,
+and handshake behavior.

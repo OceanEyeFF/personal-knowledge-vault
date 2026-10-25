@@ -204,21 +204,28 @@ class TestToolRegistration:
     """验证 Tool 注册机制是否正确。"""
 
     @pytest.mark.asyncio
-    async def test_list_tools_returns_all_15(self):
-        """list_tools() 应返回 15 个已注册的 Tool。"""
+    async def test_list_tools_returns_all_30(self):
+        """list_tools() 应返回 30 个已注册的 Tool。"""
         tools = await mcp.list_tools()
-        assert len(tools) == 15, f"期望 15 个 Tool，实际: {len(tools)}"
+        assert len(tools) == 30, f"期望 30 个 Tool，实际: {len(tools)}"
 
     @pytest.mark.asyncio
     async def test_tool_names(self):
-        """15 个 Tool 名称应正确。"""
+        """30 个 Tool 名称应正确。"""
         tools = await mcp.list_tools()
         names = {t.name for t in tools}
         expected = {
-            "get_runtime_status", "search_knowledge", "get_entry", "list_tags", "list_entries",
+            "get_runtime_status", "inspect_embedding_rebuild", "plan_embedding_rebuild",
+            "execute_embedding_rebuild", "search_knowledge", "get_entry", "list_tags", "list_entries",
             "get_stats", "archive_url", "archive_text", "get_related",
             "query_subgraph", "explain_relation", "collect_evidence",
             "find_bridges", "timeline_of", "contrast",
+            "create_outcome_topic", "get_outcome", "suggest_outcome_evidence",
+            "attach_outcome_evidence", "detach_outcome_evidence",
+            "create_outcome_claim", "revise_outcome_claim",
+            "link_outcome_claim_evidence", "unlink_outcome_claim_evidence",
+            "render_outcome_research_brief",
+            "approve_outcome_research_brief", "return_outcome_research_brief",
         }
         assert names == expected, f"Tool 名称不匹配: 多了 {names - expected}, 缺少 {expected - names}"
 
@@ -227,9 +234,11 @@ class TestToolRegistration:
         """只读 Tool 应标注 readOnlyHint=True。"""
         tools = await mcp.list_tools()
         readonly_names = {
-            "get_runtime_status", "search_knowledge", "get_entry", "list_tags", "list_entries",
+            "get_runtime_status", "inspect_embedding_rebuild", "plan_embedding_rebuild",
+            "search_knowledge", "get_entry", "list_tags", "list_entries",
             "get_stats", "get_related", "query_subgraph", "explain_relation",
             "collect_evidence", "find_bridges", "timeline_of", "contrast",
+            "get_outcome", "suggest_outcome_evidence",
         }
         for tool in tools:
             if tool.name in readonly_names:
@@ -238,9 +247,16 @@ class TestToolRegistration:
 
     @pytest.mark.asyncio
     async def test_write_tools_no_readonly_annotation(self):
-        """2 个写入 Tool 不应有 readOnlyHint=True。"""
+        """写入 Tool 不应有 readOnlyHint=True。"""
         tools = await mcp.list_tools()
-        write_names = {"archive_url", "archive_text"}
+        write_names = {
+            "archive_url", "archive_text", "execute_embedding_rebuild",
+            "create_outcome_topic", "attach_outcome_evidence", "detach_outcome_evidence",
+            "create_outcome_claim", "revise_outcome_claim",
+            "link_outcome_claim_evidence", "unlink_outcome_claim_evidence",
+            "render_outcome_research_brief",
+            "approve_outcome_research_brief", "return_outcome_research_brief",
+        }
         for tool in tools:
             if tool.name in write_names:
                 # 写入 Tool 要么无 annotations，要么 readOnlyHint 不为 True
@@ -276,6 +292,12 @@ class TestToolRegistration:
         props = at.inputSchema.get("properties", {})
         assert "text" in props, "archive_text 缺少 text 参数"
         assert "title" in props, "archive_text 缺少 title 参数"
+
+        execute_rebuild = tool_map["execute_embedding_rebuild"]
+        rebuild_props = execute_rebuild.inputSchema.get("properties", {})
+        assert "plan_id" in rebuild_props, "execute_embedding_rebuild 缺少 plan_id 参数"
+        assert "approved" in rebuild_props, "execute_embedding_rebuild 缺少 approved 参数"
+        assert "allow_network" in rebuild_props, "execute_embedding_rebuild 缺少 allow_network 参数"
 
         # get_related 应有 knowledge_id 必填参数
         gr = tool_map["get_related"]

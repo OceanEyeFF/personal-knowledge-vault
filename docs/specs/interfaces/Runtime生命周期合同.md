@@ -4,6 +4,21 @@
 CLI/MCP 等适配器只能投影本合同，不能重新解释或绕过它。R4 证据不提升 Artifact/release
 状态，见 [R4-E 源码验收记录](../../overview/R4-E-源码验收记录-2026-09.md)。
 
+2026-10-24：上述是原基线的 source 证据。当前工作树另含 R4-P1 public rebuild 与 P1-B，
+其本轮已知缺口和待实现修订见
+[生命周期一致性修复计划](../../overview/生命周期一致性修复设计与分阶段计划-2026-10.md)。
+本文标注的目标状态、字段和恢复入口均未因文档修订成为产品能力。
+W1 的具体协议与持久字段分别以
+[v2 接口冻结合同](./生命周期一致性v2接口冻结合同-2026-10.md) 和
+[迁移冻结方案](../database/生命周期一致性迁移冻结方案-2026-10.md) 为准；红测试证据不表示修复完成。
+
+2026-10-25 W2 更新：R-01 的公共重建根身份与完整已捕获 snapshot 确认绑定已修复，
+identity/Kernel 定向运行 `49 passed、7 deselected`、身份 CLI/MCP 黑盒 `7 passed`，
+最终组合公共流程黑盒 `9 passed`，均 exit 0；具体范围与日志见
+[W2 修复记录](../../overview/W2-身份队列与CLI门禁修复记录-2026-10.md)。
+这些运行不累加为全量计数。v1 durable replay 算法保持，v2 API/schema/ledger/grant 迁移
+未实施；R-02 的 D 阶段恢复及 R-06 的预算重入继续为 known_gap。
+
 ## 决策
 
 运行时启动不再只有“启动即创建/恢复”的一种语义。新入口分成三个明确阶段：
@@ -51,7 +66,7 @@ Provider 的 structural validation 只验证本地配置结构。实际 LLM/Embe
 ```yaml
 schema_version: 1
 database:
-  schema_version: "1.2.6" # bundled migration chain 的 canonical semver
+  schema_version: "1.2.7" # bundled migration chain 的 canonical semver
 embedding:
   provider: openai_compatible
   fingerprint:
@@ -77,7 +92,7 @@ version，以及不含 endpoint 明文/API key 的 Embedding provider contract�
 generation pointer 等 extension；CAS 发现 snapshot 在执行中变化时返回
 `runtime_plan_stale`。发布后再次只读校验，成功后才成为 `ready`。R4 staged core 已在该
 基础上实现 generation compatibility/rebuild/retention/atomic pointer；其精确 runtime
-内部合同与尚未完成的 adapter gate 见
+内部合同与独立 public adapter 边界见
 [Embedding Generation 生命周期合同](./EmbeddingGeneration生命周期合同.md)。R2 不把现有索引
 重建或 snapshot repair 自动化。
 
@@ -106,6 +121,22 @@ log / snapshot。API key 不属于 stored
 embedding contract，因此 key rotation 本身不触发 vector rebuild。写入或网络确认缺失返回
 `confirmation_required`。稳定错误码还包括 `setup_required` 与 `repair_required`。
 
+这里的私有 Config-source revision 属于 R2 进程内 fence。R4-P1 跨进程 public plan 不直接
+复用该私有 HMAC。W2 已为现有 v1 公共确认补齐独立稳定的 `data_root_identity_sha256`
+和 `runtime_snapshot_sha256`：前者来自同一 immutable Config 的根身份，后者复用同次
+无密钥验证读取的完整 snapshot 原始字节摘要，不另读新快照拼接确认材料。它们与既有
+source、pointer/manifest、Provider contract、policy、v1 action 和 force 一起绑定。
+不同根即使内容和配置相同也不能共享确认；完整 snapshot 字节漂移使旧确认失效，
+同根未变时仍可跨进程重算。执行前及 A 阶段的 Core 重检继续防止捕获后的竞态。
+
+W2 只加强 public plan identity，保留 v1 durable replay 的原材料与编码，避免已存在
+processing 记录因算法换代而失去防重复效果。根由独立 ledger 文件隔离，旧 replay 不区分
+完整 snapshot 是保守围栏；不能将新 plan_id 当作重复调用 Provider 的许可。
+W1 冻结的 v2 分域 identity、`budget_check_period` 和 ledger/grant 升级仍待 W4：
+新网络计划届时绑定用户可见预算期间，publish-only 计划绑定原 operation 与当前发布材料、
+不新建网络预算；v2 material replay 排除 force/期间。R-02/R-06 不因本次身份修复关闭。
+具体规则与阶段证据以 R4-P1/ER 合同及上述 W2 记录为准。
+
 `execute_runtime_plan(..., writer_lease_factory=...)` 已预留 R3 的跨进程单写接点。factory
 接收这次计划绑定的显式 Config，返回上下文管理器；获得 lease 后还会再次 inspect，避免
 等待锁期间混合旧计划与新状态。R2 不替代 R3 的 lease 实现。
@@ -127,13 +158,20 @@ data-root 持久写入清单（当前版本 `4`）。它明确区分：
 
 产品 sink 在创建目录、打开可写文件、发布 snapshot、创建/恢复显式 Config-bound 的 writable
 `VectorStore` 或 append audit 前，都必须验证当前 task/thread 持有同一 `RuntimeLayout` 的 R3
-lease。缺失能力一律为 `write_busy` / `write_lease`，不是隐式取锁、更不是静默写入。唯一窄例外
-是已被 Q0 claim 的 task-private temporary asset grant：其父目录在 lease 内创建，发布时复核
+lease。缺失能力一律为 `write_busy` / `write_lease`，不是隐式取锁、更不是静默写入。窄能力例外
+包括已被 Q0 claim 的 task-private temporary asset grant：其父目录在 lease 内创建，发布时复核
 task/token/fence/expiry，且当前只能写自己的 temporary-image 叶子；它不授权 Vault、SQLite、vector、日志、
 config 或其他任务目录。只读/status 路径不获取 lease；`pkv.log` 为 delayed、layout+immutable-
 Config binding 的 handler，只有匹配 binding 的 mutation scope 才能触发打开、轮转或追加。reload
 会替换新的 binding，同时保留仍在飞行的旧 binding handler 至其 mutation 排空，避免旧写入混入
 新 snapshot。
+
+R4-P1 已另引入 operation-private generation stage grant，允许在根 lease 外只写自己的
+staging leaves，不授权 final generation、snapshot、共享 ledger、audit 或日志。2026-10
+目标进一步要求在该窄能力内封存 publish-ready proof；D 争锁后不能为了记录
+awaiting_publish 而绕过根 lease 写共享状态。effective 状态可由完整 proof 与 pointer
+只读推导，获得 lease 后再 reconcile；proof 字段、grant 到期后的重新采用及错误终态见
+[R4-P1 计划](../../overview/R4-P1-公共Embedding重建适配器实施计划-2026-09.md)。这项补充尚待实现验收。
 
 ## R4 内部内容与自动 AI 生命周期
 
@@ -155,6 +193,39 @@ schema `1.2.6` 在不改变公开 CLI/MCP/Kernel capability 的前提下增加�
 文档已保存。Q2 的 `processing`、`retry_required`、`budget_paused` 与
 `authorization_required` 是可操作的降级状态，不可被 adapter 重写为成功或空检索。
 
+W2 已统一同步/异步 Q1 的 archive/delete/apply_ai_patch 执行与恢复分发，并实现轮内去重、
+持久退避及独立任务的有界推进；消费者不能把不能执行的动作持续领取为自重试。
+Q1-01..05 对 pending/retry patch → 同步 delete、patch 幂等及零额外 Provider 的阶段证据
+见 [W2 修复记录](../../overview/W2-身份队列与CLI门禁修复记录-2026-10.md)。
+既有物化 patch 的本地提交/恢复不授权新的 AI retry；
+后者按下一主线的显式 attempt 目标另行实施，不能靠队列修复混入自动收费。
+
+## P1-B traceable outcome lifecycle
+
+schema `1.2.7` 新增 SQLite-authoritative 的 `outcome_topics`、`outcome_evidence`、
+`outcome_claims`、`outcome_claim_evidence` 与 `outcome_briefs`。它们不改变 R4 archive 的
+Q0/Q1′/Q2 生命周期，也不触发 runtime setup、Provider probe 或 generation rebuild。
+
+- Outcome 的 source binding 只接受 canonical PKV locator 和 captured digest；source drift/delete
+  在 public read 中可见，但 read 是零 lease、零写入的 revalidation。
+- render/approve/return 等明确 mutation 由 Application writer lease 所有；Markdown projection
+  必须先以不可覆盖 revision 发布，再提交 SQLite relative pointer。
+- P1-B 不把 Topic/Claim/brief 写回 Vault 内容、FTS 或 vector generation，不引入 daemon、网络、
+  LLM/Embedding、Q2 resume/retry 或 release acceptance。
+
+2026-10 目标修订（当前 schema 1.2.7 尚不具备全部字段）：
+
+- 影响 render input 的 mutation、input_revision/input_digest 更新、已有 brief 失效同 SQLite
+  事务提交；lease 只能互斥，不能代替该原子性。brief 记录 rendered_input_revision/digest。
+- 任何 revision 均通过绑定 outcome/candidate revision/input digest 的 publication_id 发布，
+  相同输入可验证收养相同字节 orphan，新输入使用不同 identity；pointer CAS 同时检查旧
+  pointer 与当前输入。不得覆盖 orphan 或把后续版本恢复限制为第一次生成。
+- approve/return 绑定用户审阅的 outcome_id、expected_revision、content_sha256、
+  expected_input_revision，事务内重检后改变状态；只读输入或 projection 失配不保持
+  approved。API-major-2 迁移与旧入口处理见 Kernel SDK 合同，不在当前 major 静默改签名。
+- 缺少输入绑定的旧 brief 必须经显式迁移/重新生成判定；无法证明历史批准对象时不得猜测
+  继承 approved。迁移只在后续授权的合成 fixture 验证，本轮没有新增或执行迁移。
+
 价格卡是 bundled、审阅的可选资源；无 card 时只记录 token，Provider 未报告的 usage 字段保持
 `NULL`。任何 policy、model 或 card digest 变化都要求重新确认，绝不能复用旧 reservation。
 
@@ -163,8 +234,9 @@ schema `1.2.6` 在不改变公开 CLI/MCP/Kernel capability 的前提下增加�
 - R3.1 的 writer inventory 只约束产品 data-root persistent writers；测试 fixture、
   report、backup/restore 和已栅栏历史脚本不能被笼统称作“所有文件系统写入”。
 - R4 staged core 已扩展 runtime snapshot 的 Embedding generation 契约、confirmed rebuild、
-  retained previous generation 与 atomic pointer；公开 CLI/MCP/Kernel adapter、自动清理和
-  rollback action 仍是独立 gate，不能由 core 测试反推已经公开。
+  retained previous generation 与 atomic pointer；当前工作树的公开 adapter 由 R4-P1 独立
+  声明。其 v2 publish-only 继续、自动清理和 rollback 的状态分别按修复计划/后置项判断，
+  不能由旧 core 测试反推已交付。
 - CLI/MCP/Kernel 适配器必须调用或投影此 lifecycle，不得以 legacy bootstrap 偷偷完成
   inspect/plan 阶段的写入；CLI/MCP 的 status/setup/repair 适配行为须由各自模块合同和
   回归单独验证，不能反推 R3.1 或 R4 public-adapter gate 已完成。其具体命令/Tool envelope

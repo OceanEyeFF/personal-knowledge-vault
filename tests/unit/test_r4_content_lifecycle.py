@@ -65,7 +65,7 @@ def _seed_r2_snapshot(config: Config) -> None:
     assert config.embedding_dim is not None
     payload = {
         "schema_version": 1,
-        "database": {"schema_version": "1.2.6"},
+        "database": {"schema_version": "1.2.7"},
         "embedding": {
             "provider": config.embd_provider,
             "fingerprint": config.embedding_index_fingerprint(config.embedding_dim),

@@ -384,6 +384,266 @@ def test_managed_ready_accessors_reuse_one_published_application_snapshot():
     assert get_default_application.call_args_list == [call(), call()]
 
 
+def test_public_embedding_lifecycle_uses_a_fresh_same_root_config_snapshot():
+    """A long-running stdio server must not execute a new plan with old policy."""
+
+    refreshed = object()
+    startup = MagicMock()
+    startup.reload_snapshot.return_value = refreshed
+    ready = _inspection()
+    server._set_runtime_state(config=startup, inspection=ready, managed=True)
+
+    with patch.object(server, "inspect_runtime", return_value=ready) as inspect:
+        config = server.get_runtime_config_for_lifecycle(require_ready=True)
+
+    assert config is refreshed
+    startup.reload_snapshot.assert_called_once_with()
+    inspect.assert_called_once_with(refreshed)
+
+
+def test_public_embedding_lifecycle_redacts_a_failed_config_refresh():
+    secret = "MCP-EMBEDDING-REFRESH-SECRET"
+    startup = MagicMock()
+    startup.reload_snapshot.side_effect = OSError(secret)
+    server._set_runtime_state(config=startup, inspection=_inspection(), managed=True)
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        server.get_runtime_config_for_lifecycle(require_ready=False)
+
+    assert exc_info.value.code is ErrorCode.REPAIR_REQUIRED
+    assert exc_info.value.stage == "embedding_rebuild_config"
+    assert secret not in str(exc_info.value)
+
+
+def test_public_embedding_lifecycle_rejects_missing_snapshot_reloader():
+    server._set_runtime_state(config=object(), inspection=_inspection(), managed=True)
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        server.get_runtime_config_for_lifecycle(require_ready=False)
+
+    assert exc_info.value.code is ErrorCode.REPAIR_REQUIRED
+    assert exc_info.value.stage == "embedding_rebuild_config"
+
+
+def test_public_embedding_lifecycle_rejects_empty_snapshot_refresh():
+    startup = MagicMock()
+    startup.reload_snapshot.return_value = None
+    server._set_runtime_state(config=startup, inspection=_inspection(), managed=True)
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        server.get_runtime_config_for_lifecycle(require_ready=False)
+
+    assert exc_info.value.code is ErrorCode.REPAIR_REQUIRED
+    assert exc_info.value.stage == "embedding_rebuild_config"
+
+
+def test_public_embedding_lifecycle_unmanaged_path_uses_current_ready_config():
+    config = object()
+    ready = _inspection()
+
+    with (
+        patch.object(server, "get_config", return_value=config) as get_config,
+        patch.object(server, "inspect_runtime", return_value=ready) as inspect,
+    ):
+        assert server.get_runtime_config_for_lifecycle(require_ready=True) is config
+
+    get_config.assert_called_once_with()
+    inspect.assert_called_once_with(config)
+
+
+def test_public_embedding_lifecycle_unmanaged_ready_gate_preserves_nonready_terminal():
+    config = object()
+    pending = _inspection(RuntimeReadiness.SETUP_REQUIRED)
+
+    with (
+        patch.object(server, "get_config", return_value=config),
+        patch.object(server, "inspect_runtime", return_value=pending),
+        pytest.raises(PKVRuntimeError) as exc_info,
+    ):
+        server.get_runtime_config_for_lifecycle(require_ready=True)
+
+    assert exc_info.value.code is ErrorCode.SETUP_REQUIRED
+    assert exc_info.value.stage == "runtime_readiness"
+
+
+def test_public_embedding_lifecycle_rejects_managed_runtime_without_config():
+    server._set_runtime_state(config=None, inspection=_inspection(), managed=True)
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        server.get_runtime_config_for_lifecycle(require_ready=False)
+
+    assert exc_info.value.code is ErrorCode.REPAIR_REQUIRED
+    assert exc_info.value.stage == "runtime_readiness"
+
+
+def test_runtime_refresh_rejects_managed_state_without_config():
+    server._set_runtime_state(config=None, inspection=_inspection(), managed=True)
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        server._refresh_runtime_inspection()
+
+    assert exc_info.value.code is ErrorCode.REPAIR_REQUIRED
+    assert exc_info.value.stage == "runtime_readiness"
+
+
+def test_runtime_refresh_preserves_public_runtime_error():
+    config = object()
+    expected = PKVRuntimeError(
+        ErrorCode.SETUP_REQUIRED,
+        "fixture setup required",
+        stage="runtime_readiness",
+        recoverable=True,
+    )
+    server._set_runtime_state(config=config, inspection=_inspection(), managed=True)
+
+    with (
+        patch.object(server, "inspect_runtime", side_effect=expected),
+        pytest.raises(PKVRuntimeError) as exc_info,
+    ):
+        server._refresh_runtime_inspection()
+
+    assert exc_info.value is expected
+
+
+def test_unmanaged_runtime_status_loads_the_current_config_snapshot():
+    config = object()
+    inspection = _inspection()
+    plan = MagicMock()
+    plan.to_dict.return_value = {"action": "fixture"}
+
+    with (
+        patch.object(server, "get_config", return_value=config) as get_config,
+        patch.object(server, "inspect_runtime", return_value=inspection) as inspect,
+        patch.object(server, "plan_runtime", return_value=plan),
+    ):
+        payload = server.get_runtime_status_payload()
+
+    assert payload["status"] == "success"
+    assert payload["readiness"] == RuntimeReadiness.READY.value
+    get_config.assert_called_once_with()
+    inspect.assert_called_once_with(config)
+
+
+def test_public_embedding_lifecycle_rejects_non_boolean_readiness_request():
+    with pytest.raises(TypeError, match="require_ready"):
+        server.get_runtime_config_for_lifecycle(require_ready=1)
+
+
+def test_public_embedding_lifecycle_preserves_recorded_startup_error():
+    expected = PKVRuntimeError(
+        ErrorCode.REPAIR_REQUIRED,
+        "fixture startup failure",
+        stage="runtime_readiness",
+        recoverable=True,
+    )
+    server._set_runtime_state(
+        config=object(),
+        inspection=None,
+        startup_error=expected,
+        managed=True,
+    )
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        server.get_runtime_config_for_lifecycle(require_ready=False)
+
+    assert exc_info.value is expected
+
+
+def test_public_embedding_lifecycle_preserves_refresh_runtime_error():
+    expected = PKVRuntimeError(
+        ErrorCode.REPAIR_REQUIRED,
+        "fixture refresh failure",
+        stage="embedding_rebuild_config",
+        recoverable=True,
+    )
+    startup = MagicMock()
+    startup.reload_snapshot.side_effect = expected
+    server._set_runtime_state(config=startup, inspection=_inspection(), managed=True)
+
+    with pytest.raises(PKVRuntimeError) as exc_info:
+        server.get_runtime_config_for_lifecycle(require_ready=False)
+
+    assert exc_info.value is expected
+
+
+def test_public_embedding_lifecycle_wraps_unexpected_readiness_reinspection():
+    secret = "MCP-EMBEDDING-REINSPECTION-SECRET"
+    refreshed = object()
+    startup = MagicMock()
+    startup.reload_snapshot.return_value = refreshed
+    server._set_runtime_state(config=startup, inspection=_inspection(), managed=True)
+
+    with (
+        patch.object(server, "inspect_runtime", side_effect=OSError(secret)),
+        pytest.raises(PKVRuntimeError) as exc_info,
+    ):
+        server.get_runtime_config_for_lifecycle(require_ready=True)
+
+    assert exc_info.value.code is ErrorCode.REPAIR_REQUIRED
+    assert exc_info.value.stage == "runtime_readiness"
+    assert secret not in str(exc_info.value)
+
+
+def test_public_embedding_lifecycle_ready_gate_preserves_nonready_terminal():
+    startup = MagicMock()
+    startup.reload_snapshot.return_value = object()
+    pending = _inspection(RuntimeReadiness.SETUP_REQUIRED)
+    server._set_runtime_state(config=startup, inspection=_inspection(), managed=True)
+
+    with (
+        patch.object(server, "inspect_runtime", return_value=pending),
+        pytest.raises(PKVRuntimeError) as exc_info,
+    ):
+        server.get_runtime_config_for_lifecycle(require_ready=True)
+
+    assert exc_info.value.code is ErrorCode.SETUP_REQUIRED
+    assert exc_info.value.stage == "runtime_readiness"
+
+
+def test_managed_application_accessor_rejects_missing_config_before_graph_access():
+    server._set_runtime_state(config=None, inspection=_inspection(), managed=True)
+
+    with (
+        patch.object(server, "configure_application") as configure_application,
+        patch.object(
+            server,
+            "_application_get_application",
+        ) as get_default_application,
+        pytest.raises(PKVRuntimeError) as exc_info,
+    ):
+        server.get_application()
+
+    assert exc_info.value.code is ErrorCode.REPAIR_REQUIRED
+    assert exc_info.value.stage == "runtime_readiness"
+    configure_application.assert_not_called()
+    get_default_application.assert_not_called()
+
+
+def test_main_records_a_public_runtime_error_without_losing_stdio(
+    preserve_root_logger,
+):
+    config = SimpleNamespace(log_level="INFO")
+    config.get = lambda key, default=None: False
+    expected = PKVRuntimeError(
+        ErrorCode.SETUP_REQUIRED,
+        "fixture setup required",
+        stage="runtime_readiness",
+        recoverable=True,
+    )
+
+    with (
+        patch.object(sys, "argv", ["pkv-mcp"]),
+        patch.object(server, "get_config", return_value=config),
+        patch.object(server, "inspect_runtime", side_effect=expected),
+        patch.object(server.mcp, "run") as run_server,
+    ):
+        server.main()
+
+    assert server._runtime_state.startup_error is expected
+    assert server._runtime_state.managed is True
+    run_server.assert_called_once_with(transport="stdio")
+
+
 def test_transport_contract_only_publishes_stdio():
     server.ensure_supported_transport("stdio")
 

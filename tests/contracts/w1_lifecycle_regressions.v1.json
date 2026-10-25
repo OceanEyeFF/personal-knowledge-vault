@@ -1,0 +1,243 @@
+{
+  "schema_version": "pkv.lifecycle.w1-regressions.v1",
+  "truth_source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+  "purpose": "W1 defect reproduction, not product repair acceptance",
+  "lane": "source",
+  "default_collection": true,
+  "skip_or_xfail": false,
+  "run": {
+    "id": "w1-lifecycle-20261024-final",
+    "date": "2026-10-24",
+    "git_commit": "6d6d43554d35278b8bf92e77cb6c2d09f001016d",
+    "worktree": "dirty; pre-existing product changes retained",
+    "tracked_product_diff_git_blob": "5a12a5b29a3f2b93e436d1cd49c3fc9b22eaf357",
+    "untracked_product_sha256_manifest": ".data-test/w1-lifecycle-20261024-final/reports/product-untracked.sha256",
+    "untracked_product_manifest_sha256": "3afdebd2d710be9cbefba9733a23da63eb1ff25340b5e2c59132c48e87c66185",
+    "product_diff_command": "git -c core.autocrlf=false diff --no-ext-diff --binary -- . ':(exclude)tests/**' ':(exclude)**/*.md' ':(exclude)*.md' | git hash-object --stdin",
+    "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w1-lifecycle-20261024-final pytest tests/unit/test_w1_embedding_regressions.py tests/unit/test_w1_outcome_regressions.py tests/unit/test_w1_q1_regressions.py tests/blackbox/test_w1_cli_parse_regressions.py -vv --tb=short",
+    "data_root": ".data-test/w1-lifecycle-20261024-final",
+    "log": ".data-test/w1-lifecycle-20261024-final/reports/pytest.log",
+    "log_sha256": "19747903b250efa863767a3053bd5c692f352cebf66b9404209eb9a0f4102a17",
+    "exit_code": 1,
+    "collected": 34,
+    "failed": 19,
+    "passed": 15,
+    "skipped": 0,
+    "xfail": 0,
+    "collection_errors": 0,
+    "duration_seconds": 149.82,
+    "interpretation": "expected_red; all eight defects remain known_gap",
+    "test_file_sha256": {
+      "tests/unit/test_w1_embedding_regressions.py": "000d2d753b624590a72256374a67467fa17a033f76cb292814a6c6f22bc59ec6",
+      "tests/unit/test_w1_outcome_regressions.py": "9ef95fb2fb863593ed519bef5edeb397c0aadbdcae68fecc0aa6c3b0b7b5d674",
+      "tests/unit/test_w1_q1_regressions.py": "54a26924d660ba43950b4c56829bcc59478b954624777719209d2a3836509a35",
+      "tests/blackbox/test_w1_cli_parse_regressions.py": "9a916c68a0006734c72f713613319ba73db49c9540e120802cf88dbda0f1b275"
+    }
+  },
+  "requirements": [
+    {
+      "requirement": "R-01",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "embedding",
+      "case_ids": [
+        "ER-01"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "public SDK plan",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "两个根的内容与配置相同，分别 inspect/plan",
+      "oracle": "plan_id 必须区分根",
+      "observed": "不同根得到同一 plan_id",
+      "current_status": "failed",
+      "defect_status": "known_gap",
+      "run_evidence": "w1-lifecycle-20261024-final",
+      "nodeids": [
+        "tests/unit/test_w1_embedding_regressions.py::test_r01_er01_public_plan_confirmation_identity_is_bound_to_data_root"
+      ]
+    },
+    {
+      "requirement": "R-02",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "embedding",
+      "case_ids": [
+        "ER-04"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "Core execute with real writer contention",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "Provider 和 stage 完成后，Event barrier 让另一线程持有 D 所需 lease",
+      "oracle": "共享 ledger/pointer 不写，返回原 operation 的 awaiting_publish 安全投影",
+      "observed": "返回 write_busy 且 details 缺失",
+      "current_status": "failed",
+      "defect_status": "known_gap",
+      "run_evidence": "w1-lifecycle-20261024-final",
+      "nodeids": [
+        "tests/unit/test_w1_embedding_regressions.py::test_r02_er04_completed_stage_contention_exposes_publish_only_recovery"
+      ]
+    },
+    {
+      "requirement": "R-03",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "outcomes",
+      "case_ids": [
+        "OC-01"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "Application mutation + SQLite authorizer",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "已批准 brief；SQLite 拒绝状态 UPDATE，重新建立 Application 读取",
+      "oracle": "输入和 brief 失效一起回滚",
+      "observed": "新 Claim 已提交而旧 brief 仍 approved",
+      "current_status": "failed",
+      "defect_status": "known_gap",
+      "run_evidence": "w1-lifecycle-20261024-final",
+      "nodeids": [
+        "tests/unit/test_w1_outcome_regressions.py::test_r03_input_and_brief_invalidation_roll_back_together"
+      ]
+    },
+    {
+      "requirement": "R-04",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "outcomes",
+      "case_ids": [
+        "OC-07",
+        "OC-10b"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "public SDK legacy review",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "用户看过 r1，另一 Application 改输入并生成 r2，原用户调用旧 approve/return",
+      "oracle": "旧无版本入口拒绝且 r2 保持 awaiting_review；W5 才关闭",
+      "observed": "公共旧入口将 r2 改成 approved/returned",
+      "current_status": "failed",
+      "defect_status": "known_gap",
+      "run_evidence": "w1-lifecycle-20261024-final",
+      "nodeids": [
+        "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[approve]",
+        "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[return]"
+      ]
+    },
+    {
+      "requirement": "R-05",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "outcomes",
+      "case_ids": [
+        "OC-05"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "Application render / pointer seam",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "r2 Markdown 已发布而 pointer 前中断；更改输入后重试",
+      "oracle": "生成新 publication，推进到 r2，旧文件保留",
+      "observed": "不可覆盖的旧 r2 文件导致 outcome_state_conflict",
+      "current_status": "failed",
+      "defect_status": "known_gap",
+      "run_evidence": "w1-lifecycle-20261024-final",
+      "nodeids": [
+        "tests/unit/test_w1_outcome_regressions.py::test_r05_second_revision_orphan_does_not_block_recovery[changed_input_regression]"
+      ]
+    },
+    {
+      "requirement": "R-06",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "embedding",
+      "case_ids": [
+        "ER-07"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "durable manual ledger clock seam",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "配额用尽而零 Provider 拒绝；跨日/月后以新确认重申同一 material transition",
+      "oracle": "恢复额度允许新 operation，活跃 replay 仍阻断",
+      "observed": "预算拒绝记录使新提交仍 runtime_plan_stale",
+      "current_status": "failed",
+      "defect_status": "known_gap",
+      "run_evidence": "w1-lifecycle-20261024-final",
+      "nodeids": [
+        "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[day]",
+        "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[month]"
+      ]
+    },
+    {
+      "requirement": "R-07",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "q1",
+      "case_ids": [
+        "Q1-01",
+        "Q1-03"
+      ],
+      "layer": "L1 in-process source",
+      "entry": "persistent Q1 / Kernel delete",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "完整 patch 在队首，重建 Application 后同步删除同一或独立目标；单轮 drain",
+      "oracle": "patch 正常处理或有限退避；删除有界推进；无进展任务单轮不重复领取",
+      "observed": "patch attempt 每轮增加 8，delete 一直 embedding_processing",
+      "current_status": "failed",
+      "defect_status": "known_gap",
+      "run_evidence": "w1-lifecycle-20261024-final",
+      "nodeids": [
+        "tests/unit/test_w1_q1_regressions.py::test_q1_01_sync_delete_progresses_past_materialized_patch[same_target-accepted]",
+        "tests/unit/test_w1_q1_regressions.py::test_q1_01_sync_delete_progresses_past_materialized_patch[same_target-retry_required]",
+        "tests/unit/test_w1_q1_regressions.py::test_q1_01_sync_delete_progresses_past_materialized_patch[independent_target-accepted]",
+        "tests/unit/test_w1_q1_regressions.py::test_q1_01_sync_delete_progresses_past_materialized_patch[independent_target-retry_required]",
+        "tests/unit/test_w1_q1_regressions.py::test_q1_03_single_drain_does_not_repeat_one_no_progress_task"
+      ]
+    },
+    {
+      "requirement": "R-08",
+      "source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+      "owner": "cli",
+      "case_ids": [
+        "CLI-01",
+        "CLI-02",
+        "CLI-04"
+      ],
+      "layer": "L1 real subprocess",
+      "entry": "real offline CLI child",
+      "fixture": "synthetic, wrapper-owned isolated .data-test",
+      "sequence": "公开 inspect 证明 absent-root；执行叶子 help / 参数错误，并比较数据树指纹",
+      "oracle": "Click exit 0/2 优先，零运行数据写入",
+      "observed": "setup_required / runtime_readiness exit 1 覆盖 Click 解析",
+      "current_status": "failed",
+      "defect_status": "known_gap",
+      "run_evidence": "w1-lifecycle-20261024-final",
+      "nodeids": [
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-01-read-leaf-help]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-01-mutation-leaf-help]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-01-unsupported-leaf-version]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-02-missing-required-argument]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-02-invalid-integer-option]",
+        "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-02-unknown-leaf-option]"
+      ]
+    }
+  ],
+  "controls": {
+    "current_status": "passed",
+    "run_evidence": "w1-lifecycle-20261024-final",
+    "nodeids": [
+      "tests/unit/test_w1_embedding_regressions.py::test_r01_er02_unchanged_same_root_reinspection_keeps_public_plan_identity",
+      "tests/unit/test_w1_embedding_regressions.py::test_r06_er08_period_change_does_not_replay_an_active_operation",
+      "tests/unit/test_w1_outcome_regressions.py::test_r05_second_revision_orphan_does_not_block_recovery[same_input_control]",
+      "tests/unit/test_w1_q1_regressions.py::test_q1_02_async_control_applies_same_patch_once_then_sync_delete[accepted]",
+      "tests/unit/test_w1_q1_regressions.py::test_q1_02_async_control_applies_same_patch_once_then_sync_delete[retry_required]",
+      "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-01-group-help]",
+      "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-01-read-leaf-help]",
+      "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-01-mutation-leaf-help]",
+      "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-01-root-version]",
+      "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-01-unsupported-leaf-version]",
+      "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-02-missing-required-argument]",
+      "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-02-invalid-integer-option]",
+      "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[ready-control-CLI-02-unknown-leaf-option]",
+      "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-01-group-help]",
+      "tests/blackbox/test_w1_cli_parse_regressions.py::test_outcome_parse_precedes_runtime_gate[unready-absent-root-CLI-01-root-version]"
+    ]
+  },
+  "not_covered": [
+    "full ER/OC/Q1/CLI acceptance matrices",
+    "v2 exact review DTO execution and migration cases MIG-01..10",
+    "real CLI/MCP publish-only recovery and Q1 restart",
+    "synthetically damaged config CLI cases",
+    "SDK deprecation release, major-2 switch and installed-wheel compatibility",
+    "full offline P0, MCP coverage or release acceptance"
+  ]
+}

@@ -41,15 +41,44 @@ COMMAND_ATTRS = {
     "inspect": "inspect",
     "setup": "setup",
     "repair": "repair",
+    "embedding": "embedding",
+    "outcome": "outcome",
     "stats": "stats",
 }
 
-# These commands deliberately inspect or update only the user configuration.
-# They must not make the historical implicit bootstrap path observable before a
-# user has reviewed and confirmed a lifecycle plan.
-_LIFECYCLE_COMMANDS = frozenset({"inspect", "setup", "repair"})
-_CONFIG_COMMANDS = frozenset({"config"})
-_BUSINESS_COMMANDS = frozenset(COMMAND_ATTRS) - _LIFECYCLE_COMMANDS - _CONFIG_COMMANDS
+# Policies belong to complete leaf paths, never to their ancestor groups.
+# Lifecycle and config leaves perform their own explicit, narrower checks.
+_COMMAND_POLICIES = {
+    "archive": "mutation",
+    "archive-text": "mutation",
+    "search": "read",
+    "show": "read",
+    "list": "read",
+    "tags": "read",
+    "related": "read",
+    "stats": "read",
+    "config show": "config",
+    "config get": "config",
+    "config set": "config",
+    "inspect": "lifecycle",
+    "setup": "lifecycle",
+    "repair": "lifecycle",
+    "embedding inspect": "lifecycle",
+    "embedding rebuild": "lifecycle",
+    "outcome get": "read",
+    "outcome list": "read",
+    "outcome suggest-evidence": "read",
+    "outcome create-topic": "mutation",
+    "outcome attach-evidence": "mutation",
+    "outcome detach-evidence": "mutation",
+    "outcome create-claim": "mutation",
+    "outcome revise-claim": "mutation",
+    "outcome link-evidence": "mutation",
+    "outcome unlink-evidence": "mutation",
+    "outcome render": "mutation",
+    "outcome approve": "mutation",
+    "outcome return": "mutation",
+}
 # Keep this list explicit and fail closed for future commands.  A degraded
 # runtime can expose already-committed data, but it must never accept another
 # mutation until the operator has reviewed and completed its repair plan.
@@ -83,21 +112,25 @@ class LazyCLIGroup(click.Group):
             command.name = "list"
         if command is not None and cmd_name == "config":
             command.name = "config"
-        if command is not None and cmd_name in _BUSINESS_COMMANDS:
-            _attach_runtime_gate(command, command_name=cmd_name)
+        if command is not None:
+            _attach_runtime_gate(command)
         return command
 
 
-def _attach_runtime_gate(command: click.Command, *, command_name: str) -> None:
-    """Run the command-specific readiness check after Click has parsed it.
+def _attach_runtime_gate(command: click.Command) -> None:
+    """Gate only leaves, after Click has parsed their entire command path.
 
     ``Group`` callbacks run before a subcommand has parsed its own eager
     ``--help`` option or validated required arguments.  Doing runtime work
     there turned a harmless help/validation request into a ``setup_required``
-    failure.  Wrapping the already-created command callback leaves Click in
-    charge of parsing and only gates an actual command execution.
+    failure.  Ancestor groups remain pure dispatch; recursively wrapping their
+    leaves lets Click finish eager options and validation at any depth first.
     """
 
+    if isinstance(command, click.Group):
+        for child in command.commands.values():
+            _attach_runtime_gate(child)
+        return
     if getattr(command, "_pkv_runtime_gate_attached", False):
         return
     callback = command.callback
@@ -106,7 +139,19 @@ def _attach_runtime_gate(command: click.Command, *, command_name: str) -> None:
 
     @wraps(callback)
     def _gated_callback(*args: object, **kwargs: object) -> object:
-        _prepare_cli_runtime(command_name=command_name)
+        # Resolve the invocation path rather than capturing the first path that
+        # registered this Command: Click permits sharing a command under aliases.
+        context = click.get_current_context()
+        path_parts = []
+        while context.parent is not None:
+            path_parts.append(context.info_name or "")
+            context = context.parent
+        command_name = " ".join(reversed(path_parts))
+        policy = _COMMAND_POLICIES.get(command_name)
+        if policy is None:
+            raise click.ClickException("Command has no registered runtime policy.")
+        if policy in {"read", "mutation"}:
+            _prepare_cli_runtime(command_name=command_name)
         return callback(*args, **kwargs)
 
     command.callback = _gated_callback
@@ -189,8 +234,9 @@ def _prepare_cli_runtime(*, command_name: str | None = None) -> None:
     may inspect or repair an unready root without implicit initialization.  A
     business command obtains the same immutable ``Config`` snapshot for the
     readiness inspection and application graph.  Only explicitly listed
-    read-only commands may use a ``DEGRADED`` snapshot; every mutation and any
-    unknown future command remains fail-closed until the runtime is ``READY``.
+    read-only commands may use a ``DEGRADED`` snapshot; every mutation requires
+    ``READY``.  The leaf policy check rejects unregistered paths before entering
+    this function, regardless of readiness.
     """
 
     context = click.get_current_context(silent=True)

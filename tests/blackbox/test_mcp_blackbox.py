@@ -373,8 +373,8 @@ class TestServerStartup:
                 assert caps is not None
 
     @pytest.mark.asyncio
-    async def test_list_tools_returns_15(self, empty_db_path):
-        """list_tools 应返回 15 个 Tool。"""
+    async def test_list_tools_returns_30(self, empty_db_path):
+        """list_tools 应返回 30 个已发布 Tool。"""
         params = get_server_params(empty_db_path)
 
         async with stdio_client(params) as (read, write):
@@ -383,12 +383,19 @@ class TestServerStartup:
                 tools_result = await session.list_tools()
                 tool_names = {t.name for t in tools_result.tools}
 
-                assert len(tool_names) == 15, f"期望 15 个 Tool，实际: {tool_names}"
+                assert len(tool_names) == 30, f"期望 30 个 Tool，实际: {tool_names}"
                 expected = {
-                    "get_runtime_status", "search_knowledge", "get_entry", "list_tags", "list_entries",
+                    "get_runtime_status", "inspect_embedding_rebuild", "plan_embedding_rebuild",
+                    "execute_embedding_rebuild", "search_knowledge", "get_entry", "list_tags", "list_entries",
                     "get_stats", "archive_url", "archive_text", "get_related",
                     "query_subgraph", "explain_relation", "collect_evidence",
                     "find_bridges", "timeline_of", "contrast",
+                    "create_outcome_topic", "get_outcome", "suggest_outcome_evidence",
+                    "attach_outcome_evidence", "detach_outcome_evidence",
+                    "create_outcome_claim", "revise_outcome_claim",
+                    "link_outcome_claim_evidence", "unlink_outcome_claim_evidence",
+                    "render_outcome_research_brief",
+                    "approve_outcome_research_brief", "return_outcome_research_brief",
                 }
                 assert tool_names == expected
 
@@ -408,7 +415,7 @@ class TestServerStartup:
         tool_names = {tool.name for tool in tools_result.tools}
         status = parse_tool_content(status_result)
         stats = parse_tool_content(stats_result)
-        assert len(tool_names) == 15
+        assert len(tool_names) == 30
         assert "get_runtime_status" in tool_names
         assert status["status"] == "success"
         # The generic offline child creates declared directories before it
@@ -1199,7 +1206,7 @@ class TestEndToEnd:
 
     @pytest.mark.asyncio
     async def test_discovery_then_invoke(self, populated_db_path):
-        """发现 → 调用 工作流：先 list_tools, 再 call 每个只读 tool。"""
+        """发现 → 调用 W2 工作流，并识别后续 public maintenance Tool。"""
         params = get_server_params(populated_db_path)
 
         async with stdio_client(params) as (read, write):
@@ -1212,9 +1219,33 @@ class TestEndToEnd:
 
                 readonly_names = {case["name"] for case in READONLY_TOOL_MATRIX}
                 assert len(readonly_names) == 13
-                assert readonly_names == tool_names - {"archive_url", "archive_text"}
+                public_rebuild_readonly = {
+                    "inspect_embedding_rebuild",
+                    "plan_embedding_rebuild",
+                }
+                p1b_readonly = {"get_outcome", "suggest_outcome_evidence"}
+                p1b_writes = {
+                    "create_outcome_topic",
+                    "attach_outcome_evidence",
+                    "detach_outcome_evidence",
+                    "create_outcome_claim",
+                    "revise_outcome_claim",
+                    "link_outcome_claim_evidence",
+                    "unlink_outcome_claim_evidence",
+                    "render_outcome_research_brief",
+                    "approve_outcome_research_brief",
+                    "return_outcome_research_brief",
+                }
+                assert readonly_names | public_rebuild_readonly | p1b_readonly == tool_names - {
+                    "archive_url",
+                    "archive_text",
+                    "execute_embedding_rebuild",
+                    *p1b_writes,
+                }
 
-                # 版本化 fixture 为每个只读 Tool 提供有效、离线且确定性的参数。
+                # 历史版本化 fixture 只覆盖 W2 readonly Tool；R4-P1 的三个
+                # public maintenance Tool 有独立真实 stdio blackbox，不让其
+                # 依赖这个旧数据库/flat-vector fixture。
                 invoked = []
                 for case in READONLY_TOOL_MATRIX:
                     name = case["name"]

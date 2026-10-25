@@ -40,6 +40,18 @@ scoped Workflow/Processor creation for one validated runtime configuration.
   degraded result. Read-only operations never drain these tasks.
 - This is bounded work in the current Application process, not a daemon or public
   resume/rebuild API. A later public adapter must be designed and tested separately.
+- P1-B traceable outcomes are Provider-free: `OutcomeService` binds only canonical
+  PKV entry/chunk/relation locators plus captured revisions, keeps SQLite as the
+  authority, and publishes deterministic Markdown projections under `outcomes/`.
+  Reads revalidate source bindings and the pointed Markdown SHA-256 without a lease
+  or write; only a directly confirmed missing/changed projection is exposed as
+  `projection_state=unavailable|stale` and effective `needs_review`. Permission,
+  I/O or path-state uncertainty remains a safe public failure, never a silently
+  trusted approved brief. Topic/question/Claim/BM25 query and suggestion title reject
+  local paths and credential-bearing URLs before they reach SQLite or Markdown.
+  Explicit Topic/Evidence/Claim/render/review mutations run through the root writer
+  lease and audit. No outcome operation may construct QueryRouter, an LLM, an
+  Embedding provider, or silently rebind a drifted source.
 
 ## Tests
 
@@ -58,3 +70,8 @@ R4 lifecycle evidence is split deliberately: `test_r4_ingress_lifecycle.py`,
 `tests/blackbox/test_r4_cli_fullflow.py` and `test_r4_mcp_fullflow.py` own the
 real public-process proof. All run only via `run-test.ps1` and independent
 `.data-test` roots.
+
+P1-B domain coverage lives in `tests/unit/test_traceable_outcomes.py`; its CLI/MCP
+public-process counterparts are `tests/blackbox/test_outcome_cli_blackbox.py` and
+`tests/blackbox/test_outcome_mcp_blackbox.py`. They use only test-owned SQLite and
+Markdown source fixtures, then exercise the public Kernel adapter boundary.

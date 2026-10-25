@@ -217,11 +217,12 @@ def _validate_test_user_config(raw: bytes) -> frozenset[tuple[str, int]]:
     if set(payload) != {"ai"} or type(payload["ai"]) is not dict:
         raise RuntimeError("test user config fields are invalid")
     ai = payload["ai"]
-    if set(ai) != {"llm", "embedding", "automation"}:
+    if set(ai) != {"llm", "embedding", "automation", "embedding_rebuild"}:
         raise RuntimeError("test user AI config fields are invalid")
     llm = ai["llm"]
     embedding = ai["embedding"]
     automation = ai["automation"]
+    embedding_rebuild = ai["embedding_rebuild"]
     if type(llm) is not dict or set(llm) != {
         "provider",
         "api_key",
@@ -299,6 +300,35 @@ def _validate_test_user_config(raw: bytes) -> frozenset[tuple[str, int]]:
         or retry["max_attempts"] != 2
     ):
         raise RuntimeError("test automation policy is invalid")
+    if type(embedding_rebuild) is not dict or set(embedding_rebuild) != {
+        "schema_version",
+        "token_budget",
+    }:
+        raise RuntimeError("test embedding rebuild config fields are invalid")
+    rebuild_budget = embedding_rebuild["token_budget"]
+    if (
+        type(embedding_rebuild["schema_version"]) is not int
+        or embedding_rebuild["schema_version"] != 1
+        or type(rebuild_budget) is not dict
+        or set(rebuild_budget)
+        != {"timezone", "daily_total_tokens", "monthly_total_tokens"}
+        or rebuild_budget["timezone"] != "UTC"
+        or (
+            rebuild_budget["daily_total_tokens"] is not None
+            and (
+                type(rebuild_budget["daily_total_tokens"]) is not int
+                or not 0 <= rebuild_budget["daily_total_tokens"] <= 10_000_000
+            )
+        )
+        or (
+            rebuild_budget["monthly_total_tokens"] is not None
+            and (
+                type(rebuild_budget["monthly_total_tokens"]) is not int
+                or not 0 <= rebuild_budget["monthly_total_tokens"] <= 100_000_000
+            )
+        )
+    ):
+        raise RuntimeError("test embedding rebuild policy is invalid")
     return frozenset({llm_endpoint})
 
 

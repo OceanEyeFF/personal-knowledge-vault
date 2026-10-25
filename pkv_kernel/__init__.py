@@ -7,9 +7,9 @@ facade and its value contracts; no GUI framework is imported by this package.
 K1a compatibility policy:
 
 * ``__all__`` is the complete supported package-root Python surface for API
-  major 1.  ``pkv_kernel.contracts`` and ``pkv_kernel.lifecycle`` are the two
-  separately frozen, supported nested contract modules and define their own
-  ``__all__`` values.
+  major 1.  ``pkv_kernel.contracts``, ``pkv_kernel.lifecycle``,
+  ``pkv_kernel.embedding`` and ``pkv_kernel.outcomes`` are separately frozen, supported nested contract
+  modules and define their own ``__all__`` values.
 * Additive symbols/capabilities are compatible; removal or incompatible change
   requires a new API major.  A symbol is deprecated through at least one
   compatible SDK version with an observable ``DeprecationWarning`` before
@@ -99,8 +99,8 @@ def require_kernel_compatibility(
 def __getattr__(name: str):
     """Lazily resolve the lifecycle facade without recreating Core import cycles."""
 
-    if name == "lifecycle":
-        module = importlib.import_module(".lifecycle", __name__)
+    if name in {"embedding", "lifecycle", "outcomes"}:
+        module = importlib.import_module(f".{name}", __name__)
         globals()[name] = module
         return module
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -109,7 +109,7 @@ def __getattr__(name: str):
 def __dir__() -> list[str]:
     """Expose the lazy, supported lifecycle module to introspection tools."""
 
-    return sorted(set(globals()) | {"lifecycle"})
+    return sorted(set(globals()) | {"embedding", "lifecycle", "outcomes"})
 
 __all__ = [
     "__version__",
@@ -140,6 +140,7 @@ __all__ = [
     "configure_kernel",
     "contracts",
     "describe_url_target",
+    "embedding",
     "get_config",
     "get_kernel_capabilities",
     "get_kernel",
@@ -149,6 +150,7 @@ __all__ = [
     "is_supported_chat_finish_reason",
     "load_preview_with_store",
     "lifecycle",
+    "outcomes",
     "project_bootstrap_error",
     "redact_url_credentials",
     "reload_kernel",

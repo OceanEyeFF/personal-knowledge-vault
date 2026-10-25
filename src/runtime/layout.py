@@ -526,6 +526,7 @@ class RuntimeLayout:
     local_config_path: Path
     db_path: Path
     vault_dir: Path
+    outcomes_dir: Path
     vector_index_dir: Path
     log_dir: Path
     tmp_dir: Path
@@ -666,6 +667,7 @@ class RuntimeLayout:
             local_config_path=resolved_runtime_config,
             db_path=resolved_children["db_path"],
             vault_dir=resolved_children["vault_dir"],
+            outcomes_dir=data_root / "outcomes",
             vector_index_dir=resolved_children["vector_index_dir"],
             log_dir=resolved_children["log_dir"],
             tmp_dir=resolved_children["tmp_dir"],
@@ -891,6 +893,7 @@ class RuntimeLayout:
             self.runtime_config_path.parent,
             self.db_path.parent,
             self.vault_dir,
+            self.outcomes_dir,
             self.vector_index_dir,
             self.log_dir,
             self.tmp_dir,
@@ -1038,6 +1041,7 @@ class RuntimeLayout:
             "local_config_path": self.local_config_path,
             "db_path": self.db_path,
             "vault_dir": self.vault_dir,
+            "outcomes_dir": self.outcomes_dir,
             "vector_index_dir": self.vector_index_dir,
             "log_dir": self.log_dir,
             "tmp_dir": self.tmp_dir,

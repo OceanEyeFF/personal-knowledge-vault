@@ -44,6 +44,9 @@ class ErrorCode(str, Enum):
     EMBEDDING_PROCESSING = "embedding_processing"
     EMBEDDING_RETRY_REQUIRED = "embedding_retry_required"
     EMBEDDING_BUDGET_PAUSED = "embedding_budget_paused"
+    EMBEDDING_REBUILD_AUTHORIZATION_REQUIRED = (
+        "embedding_rebuild_authorization_required"
+    )
     EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED = (
         "embedding_automation_authorization_required"
     )
@@ -70,6 +73,11 @@ class ErrorCode(str, Enum):
     CHAT_PROVIDER_FAILED = "chat_provider_failed"
     CHAT_SAVE_FAILED = "chat_save_failed"
     CHAT_STATE_CONFLICT = "chat_state_conflict"
+    OUTCOME_NOT_FOUND = "outcome_not_found"
+    OUTCOME_INVALID = "outcome_invalid"
+    OUTCOME_STATE_CONFLICT = "outcome_state_conflict"
+    OUTCOME_EVIDENCE_STALE = "outcome_evidence_stale"
+    OUTCOME_APPROVAL_BLOCKED = "outcome_approval_blocked"
 
 
 class OperationStatus(str, Enum):

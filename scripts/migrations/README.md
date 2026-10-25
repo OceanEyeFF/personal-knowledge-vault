@@ -19,7 +19,8 @@ scripts/migrations/
 ├── 009_repair_fts_storage_contract.sql # v1.2.3 修复 FTS 存储合同
 ├── 010_add_storage_operation_commits.sql # v1.2.4 新增跨存储提交凭据
 ├── 011_add_ai_automation_ledger.sql # v1.2.5 新增内部 AI 自动任务与 token 用量账本
-└── 012_add_r4_content_submission.sql # v1.2.6 新增 R4 Q0/Q1′/Q2 durable 生命周期
+├── 012_add_r4_content_submission.sql # v1.2.6 新增 R4 Q0/Q1′/Q2 durable 生命周期
+└── 013_add_traceable_outcomes.sql     # v1.2.7 新增 P1-B 可追溯成果表
 ```
 
 ---
@@ -116,6 +117,7 @@ VALUES ('{版本号}', '{变更描述}');
 | 1.2.4 | 010_add_storage_operation_commits.sql | 新增跨存储操作提交凭据 | 2026-08-03 |
 | 1.2.5 | 011_add_ai_automation_ledger.sql | 新增内部 AI 自动任务、reservation 与 token 用量账本 | 2026-08-31 |
 | 1.2.6 | 012_add_r4_content_submission.sql | 新增 R4 Q0 ingress、Q1′ 内容提交/handoff 与 Q2 fenced 用量账本 | 2026-09-01 |
+| 1.2.7 | 013_add_traceable_outcomes.sql | 新增 P1-B Topic、Evidence、Claim 与 research brief 成果合同 | 2026-09-04 |
 
 ### 版本号规范
 

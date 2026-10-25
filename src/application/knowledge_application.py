@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Iterator, Mapping
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 import math
@@ -90,6 +90,7 @@ class KnowledgeApplication:
     _relation_query_service: Any = field(default=None, init=False, repr=False)
     _evidence_collection_service: Any = field(default=None, init=False, repr=False)
     _exploration_service: Any = field(default=None, init=False, repr=False)
+    _outcome_service: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if type(self.snapshot_generation) is not int or self.snapshot_generation < 0:
@@ -197,7 +198,7 @@ class KnowledgeApplication:
                 )
             except PKVRuntimeError as error:
                 return None, error
-            except Exception as exc:
+            except Exception:
                 return (
                     None,
                     PKVRuntimeError(
@@ -290,6 +291,269 @@ class KnowledgeApplication:
                 runtime_config=self.config,
             )
         return self._exploration_service
+
+    @property
+    def outcome_service(self) -> Any:
+        """Return the Provider-free P1-B traceable-outcome service.
+
+        The BM25 dependency remains a callable so Topic/Claim/Brief reads and
+        mutations never construct even the credential-free retriever.  In
+        particular, this composition path never touches QueryRouter, a Provider
+        factory, or a vector generation.
+        """
+
+        if self._outcome_service is None:
+            from src.outcomes.service import OutcomeService
+            from src.storage.outcome_store import OutcomeStore
+            from src.storage.relation_store import RelationStore
+
+            self._outcome_service = OutcomeService(
+                outcome_store=OutcomeStore(self.config.db_path, layout=self.config.layout),
+                sqlite_store=self.sqlite_store,
+                markdown_store=self.markdown_store,
+                relation_store=RelationStore(self.config.db_path),
+                layout=self.config.layout,
+                bm25_retriever_factory=lambda: self.bm25_retriever,
+            )
+        return self._outcome_service
+
+    def _run_outcome_mutation(
+        self,
+        operation: str,
+        context: Mapping[str, Any],
+        action: Callable[[], Any],
+    ) -> Any:
+        """Execute an explicit outcome mutation under the R3 lease and audit."""
+
+        with (
+            self._write_lease_scope(),
+            self._runtime_file_log_scope(owner="knowledge_outcomes"),
+            self._audit_mutation(operation, context) as audit,
+        ):
+            try:
+                result = action()
+            except PKVRuntimeError as error:
+                audit.fail_runtime_error(error)
+                raise
+            public_result = getattr(result, "to_dict", None)
+            if callable(public_result):
+                self._finish_mutation_audit(audit, public_result())
+            else:
+                self._finish_mutation_audit(
+                    audit,
+                    {"result_type": type(result).__name__},
+                )
+            return result
+
+    def create_outcome_topic(self, *, title: str, question: str) -> Any:
+        """Create one explicit inquiry container; no source or Provider work occurs."""
+
+        return self._run_outcome_mutation(
+            "outcome_topic_create",
+            {"title_length": len(title) if isinstance(title, str) else None,
+             "question_length": len(question) if isinstance(question, str) else None},
+            lambda: self.outcome_service.create_topic(title=title, question=question),
+        )
+
+    def attach_outcome_evidence(
+        self,
+        *,
+        topic_id: str,
+        locator: str,
+        acquisition_method: str = "user_selected",
+        retrieval_status: str = "not_requested",
+        limitation_codes: tuple[str, ...] | list[str] = (),
+    ) -> Any:
+        """Bind a selected entry/chunk/relation to its captured source revision."""
+
+        return self._run_outcome_mutation(
+            "outcome_evidence_attach",
+            {
+                "topic_id": topic_id,
+                "locator_length": len(locator) if isinstance(locator, str) else None,
+                "acquisition_method_type": type(acquisition_method).__name__,
+                "retrieval_status_type": type(retrieval_status).__name__,
+                "limitation_code_count": (
+                    len(limitation_codes)
+                    if isinstance(limitation_codes, (tuple, list))
+                    else None
+                ),
+            },
+            lambda: self.outcome_service.attach_evidence(
+                topic_id=topic_id,
+                locator=locator,
+                acquisition_method=acquisition_method,
+                retrieval_status=retrieval_status,
+                limitation_codes=limitation_codes,
+            ),
+        )
+
+    def detach_outcome_evidence(self, evidence_id: str) -> None:
+        """Detach one evidence item without rebinding any historical locator."""
+
+        self._run_outcome_mutation(
+            "outcome_evidence_detach",
+            {"evidence_id": evidence_id},
+            lambda: self.outcome_service.detach_evidence(evidence_id),
+        )
+
+    def create_outcome_claim(
+        self,
+        *,
+        topic_id: str,
+        statement: str,
+        state: str = "draft",
+        limitation_codes: tuple[str, ...] | list[str] = (),
+    ) -> Any:
+        """Create an explicit epistemic claim; it is never auto-promoted."""
+
+        return self._run_outcome_mutation(
+            "outcome_claim_create",
+            {
+                "topic_id": topic_id,
+                "state_type": type(state).__name__,
+                "statement_length": len(statement) if isinstance(statement, str) else None,
+                "limitation_code_count": (
+                    len(limitation_codes)
+                    if isinstance(limitation_codes, (tuple, list))
+                    else None
+                ),
+            },
+            lambda: self.outcome_service.create_claim(
+                topic_id=topic_id,
+                statement=statement,
+                state=state,
+                limitation_codes=limitation_codes,
+            ),
+        )
+
+    def revise_outcome_claim(
+        self,
+        *,
+        claim_id: str,
+        statement: str | None = None,
+        state: str | None = None,
+        limitation_codes: tuple[str, ...] | list[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> Any:
+        """Revise a claim with optional optimistic revision fencing."""
+
+        return self._run_outcome_mutation(
+            "outcome_claim_revise",
+            {
+                "claim_id": claim_id,
+                "state_type": type(state).__name__ if state is not None else None,
+                "statement_length": len(statement) if isinstance(statement, str) else None,
+                "limitation_code_count": (
+                    len(limitation_codes)
+                    if isinstance(limitation_codes, (tuple, list))
+                    else None
+                ),
+                "expected_revision": expected_revision,
+            },
+            lambda: self.outcome_service.revise_claim(
+                claim_id=claim_id,
+                statement=statement,
+                state=state,
+                limitation_codes=limitation_codes,
+                expected_revision=expected_revision,
+            ),
+        )
+
+    def link_outcome_claim_evidence(
+        self,
+        *,
+        claim_id: str,
+        evidence_id: str,
+        polarity: str,
+    ) -> Any:
+        """Create one explicit support/counter edge in the same Topic."""
+
+        return self._run_outcome_mutation(
+            "outcome_claim_evidence_link",
+            {
+                "claim_id": claim_id,
+                "evidence_id": evidence_id,
+                "polarity_type": type(polarity).__name__,
+            },
+            lambda: self.outcome_service.link_claim_evidence(
+                claim_id=claim_id,
+                evidence_id=evidence_id,
+                polarity=polarity,
+            ),
+        )
+
+    def unlink_outcome_claim_evidence(self, *, claim_id: str, evidence_id: str) -> Any:
+        """Remove one explicit Claim→Evidence edge."""
+
+        return self._run_outcome_mutation(
+            "outcome_claim_evidence_unlink",
+            {"claim_id": claim_id, "evidence_id": evidence_id},
+            lambda: self.outcome_service.unlink_claim_evidence(
+                claim_id=claim_id,
+                evidence_id=evidence_id,
+            ),
+        )
+
+    def render_outcome_research_brief(self, *, topic_id: str) -> Any:
+        """Revalidate and publish a new immutable research-brief Markdown revision."""
+
+        return self._run_outcome_mutation(
+            "outcome_brief_render",
+            {"topic_id": topic_id},
+            lambda: self.outcome_service.render_research_brief(topic_id=topic_id),
+        )
+
+    def approve_outcome_research_brief(self, *, topic_id: str) -> Any:
+        """Approve only a fully current, explicitly reviewable research brief."""
+
+        return self._run_outcome_mutation(
+            "outcome_brief_approve",
+            {"topic_id": topic_id},
+            lambda: self.outcome_service.approve_research_brief(topic_id=topic_id),
+        )
+
+    def return_outcome_research_brief(self, *, topic_id: str) -> Any:
+        """Explicitly return a research brief for another authored revision."""
+
+        return self._run_outcome_mutation(
+            "outcome_brief_return",
+            {"topic_id": topic_id},
+            lambda: self.outcome_service.return_research_brief(topic_id=topic_id),
+        )
+
+    def get_outcome_bundle(self, *, topic_id: str) -> Any:
+        """Read one revalidated Topic/Claim/Evidence/Brief view with zero writes."""
+
+        return self.outcome_service.get_bundle(topic_id)
+
+    def get_outcome_research_brief(
+        self,
+        *,
+        topic_id: str | None = None,
+        outcome_id: str | None = None,
+    ) -> Any:
+        """Read one public brief pointer with effective drift state overlaid."""
+
+        return self.outcome_service.get_research_brief(
+            topic_id=topic_id,
+            outcome_id=outcome_id,
+        )
+
+    def suggest_outcome_evidence(
+        self,
+        *,
+        topic_id: str,
+        query: str,
+        limit: int = 10,
+    ) -> Any:
+        """Run only strict BM25 suggestion; it never enters QueryRouter/Provider."""
+
+        return self.outcome_service.suggest_evidence(
+            topic_id=topic_id,
+            query=query,
+            limit=limit,
+        )
 
     def query_router(self, *, token_threshold: int = 5) -> Any:
         """Return a lazy Provider-aware query router for one routing threshold."""
@@ -1071,11 +1335,14 @@ class KnowledgeApplication:
                     audit.fail_runtime_error(error)
                     raise
                 result = self._schedule_archive_ai_automation(result)
-                result = self._drain_scheduled_ai_automation(result)
                 return self._finish_workflow_audit(audit, result)
 
         try:
-            return await self._run_write_operation(audited_operation)
+            committed = await self._run_write_operation(audited_operation)
+            # Q0/Q1′ and their audit trail are now durable.  Q2 Provider work
+            # must never inherit the archive's root lease; its lifecycle takes
+            # short claim/finalization leases of its own below.
+            return self._drain_scheduled_ai_automation(committed)
         except PKVRuntimeError as error:
             if error.stage != "write_lease":
                 raise
@@ -1320,17 +1587,19 @@ class KnowledgeApplication:
                 },
             )
         )
-        outcome = self._drain_scheduled_ai_automation(outcome)
+        # Kernel delete already owns its mutation lease.  Do not start a paid
+        # Provider call under that lease; a later allowed mutation may drain the
+        # durable task through the same bounded lifecycle.
         status = outcome.data.get("ai_automation")
         return status if isinstance(status, Mapping) else None
 
     def _drain_scheduled_ai_automation(self, result: WorkflowResult) -> WorkflowResult:
-        """Run one bounded, internal AI drain while the mutation lease is live.
+        """Run one bounded, internal AI drain after the core mutation lease ends.
 
         This is deliberately not a daemon and is never reached from a read
         path.  Archive/delete have already committed their core data before this
-        point.  Therefore every non-ready outcome is projected as a recoverable
-        lifecycle state rather than asking callers to repeat the import.
+        point.  The drain obtains short leases for durable task transitions but
+        releases the root lease before creating or calling a Provider.
         """
 
         if not self._uses_internal_ai_automation():
@@ -1399,13 +1668,10 @@ class KnowledgeApplication:
     ) -> tuple[str, str, ErrorCode, str] | None:
         """Claim and execute the newest eligible internal generation task.
 
-        Preconditions are intentionally ordered: this method is called only
-        from an already-held Application writer lease; it then re-inspects
-        policy, source and plan, reserves tokens, and only then constructs an
-        Embedding Provider.  ``execute_embedding_rebuild`` receives the active
-        lease through a no-op nested scope, so it retains its full stale-plan,
-        staging, audit and pointer-CAS checks without attempting a second root
-        lock acquisition.
+        Claim/policy/source/reservation and terminal settlement use short root
+        leases.  Provider construction and all Provider calls happen after the
+        preflight lease has ended; ``execute_embedding_rebuild`` owns its own
+        fenced stage/finalization leases and never inherits a no-op outer lease.
         """
 
         from src.runtime.ai_automation_policy import (
@@ -1425,193 +1691,196 @@ class KnowledgeApplication:
         )
         from src.storage.ai_automation_store import AIAutomationTaskStore
 
-        store = AIAutomationTaskStore(self.config.layout)
         # At most one current-source task is executed per foreground mutation.
         # Older queued tasks may be retired without Provider work, otherwise a
         # failed historical task could permanently hide the newly committed one.
-        for _ in range(8):
-            task = store.claim_next()
-            if task is None:
-                return None
-            assert task.claim_token is not None
-            claim_token = task.claim_token
-            policy = inspect_ai_automation_policy(self.config)
-            source = SQLiteEmbeddingSource()
+        with self._write_lease_scope(), self._runtime_file_log_scope(
+            owner="ai_automation_lifecycle"
+        ):
+            store = AIAutomationTaskStore(self.config.layout)
+            for _ in range(8):
+                task = store.claim_next()
+                if task is None:
+                    return None
+                assert task.claim_token is not None
+                claim_token = task.claim_token
+                policy = inspect_ai_automation_policy(self.config)
+                source = SQLiteEmbeddingSource()
 
-            if policy.state in {
-                AutomationPolicyState.AUTHORIZATION_REQUIRED,
-                AutomationPolicyState.INVALID,
-            }:
-                store.mark_authorization_required(task.task_id, claim_token=claim_token)
-                publish_embedding_nonready_binding(
-                    self.config,
-                    state=EmbeddingIndexState.AUTHORIZATION_REQUIRED,
-                    source=source,
-                )
-                return (
-                    "authorization_required",
-                    "authorization_required",
-                    ErrorCode.EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED,
-                    "文档已入库，自动 AI 任务等待当前策略确认。",
-                )
-            if policy.state is not AutomationPolicyState.READY:
-                store.mark_retry(
+                if policy.state in {
+                    AutomationPolicyState.AUTHORIZATION_REQUIRED,
+                    AutomationPolicyState.INVALID,
+                }:
+                    store.mark_authorization_required(task.task_id, claim_token=claim_token)
+                    publish_embedding_nonready_binding(
+                        self.config,
+                        state=EmbeddingIndexState.AUTHORIZATION_REQUIRED,
+                        source=source,
+                    )
+                    return (
+                        "authorization_required",
+                        "authorization_required",
+                        ErrorCode.EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED,
+                        "文档已入库，自动 AI 任务等待当前策略确认。",
+                    )
+                if policy.state is not AutomationPolicyState.READY:
+                    store.mark_retry(
+                        task.task_id,
+                        claim_token=claim_token,
+                        error_code=ErrorCode.EMBEDDING_REBUILD_REQUIRED.value,
+                    )
+                    publish_embedding_nonready_binding(
+                        self.config,
+                        state=EmbeddingIndexState.REBUILD_REQUIRED,
+                        source=source,
+                    )
+                    return (
+                        "rebuild_required",
+                        "retry_required",
+                        ErrorCode.EMBEDDING_REBUILD_REQUIRED,
+                        "AI 自动化当前未启用；文档已保存，Embedding 等待后续内部处理。",
+                    )
+
+                assert policy.policy_fingerprint is not None
+                inspection = inspect_embedding_index(self.config, source=source)
+                if inspection.source is None or inspection.source.digest != task.source_digest:
+                    store.mark_superseded(task.task_id, claim_token=claim_token)
+                    continue
+                if task.policy_fingerprint != policy.policy_fingerprint:
+                    store.mark_authorization_required(task.task_id, claim_token=claim_token)
+                    publish_embedding_nonready_binding(
+                        self.config,
+                        state=EmbeddingIndexState.AUTHORIZATION_REQUIRED,
+                        source=source,
+                    )
+                    return (
+                        "authorization_required",
+                        "authorization_required",
+                        ErrorCode.EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED,
+                        "AI 策略已变化；现有任务等待以新策略重新登记。",
+                    )
+
+                try:
+                    plan = plan_embedding_rebuild(inspection)
+                except PKVRuntimeError as error:
+                    store.mark_retry(
+                        task.task_id,
+                        claim_token=claim_token,
+                        error_code=error.code.value,
+                    )
+                    publish_embedding_nonready_binding(
+                        self.config,
+                        state=EmbeddingIndexState.RETRY_REQUIRED,
+                        source=source,
+                    )
+                    return (
+                        "retry_required",
+                        "retry_required",
+                        error.code,
+                        "自动 AI 任务的运行态计划需要重试。",
+                    )
+
+                quota = policy.token_quota
+                assert quota is not None
+                local_now = datetime.now(ZoneInfo(quota.timezone))
+                estimate = self._estimated_embedding_tokens(inspection._captured_source)
+                reservation = store.reserve_tokens(
                     task.task_id,
                     claim_token=claim_token,
-                    error_code=ErrorCode.EMBEDDING_REBUILD_REQUIRED.value,
+                    timezone=quota.timezone,
+                    local_day=local_now.date().isoformat(),
+                    local_month=local_now.strftime("%Y-%m"),
+                    reserved_tokens=estimate,
+                    daily_total_tokens=quota.daily_total_tokens,
+                    monthly_total_tokens=quota.monthly_total_tokens,
                 )
-                publish_embedding_nonready_binding(
-                    self.config,
-                    state=EmbeddingIndexState.REBUILD_REQUIRED,
-                    source=source,
-                )
-                return (
-                    "rebuild_required",
-                    "retry_required",
-                    ErrorCode.EMBEDDING_REBUILD_REQUIRED,
-                    "AI 自动化当前未启用；文档已保存，Embedding 等待后续内部处理。",
-                )
+                if reservation is None:
+                    publish_embedding_nonready_binding(
+                        self.config,
+                        state=EmbeddingIndexState.BUDGET_PAUSED,
+                        source=source,
+                    )
+                    return (
+                        "budget_paused",
+                        "budget_paused",
+                        ErrorCode.EMBEDDING_BUDGET_PAUSED,
+                        "文档已入库；已达到 token 预算，自动 AI 任务暂停。",
+                    )
 
-            assert policy.policy_fingerprint is not None
-            inspection = inspect_embedding_index(self.config, source=source)
-            if inspection.source is None or inspection.source.digest != task.source_digest:
-                store.mark_superseded(task.task_id, claim_token=claim_token)
-                continue
-            if task.policy_fingerprint != policy.policy_fingerprint:
-                # A newer explicitly approved policy may not be silently applied
-                # to an old claim.  It remains visible as authorization-required
-                # until the next mutation lifecycle records a matching task.
-                store.mark_authorization_required(task.task_id, claim_token=claim_token)
-                publish_embedding_nonready_binding(
-                    self.config,
-                    state=EmbeddingIndexState.AUTHORIZATION_REQUIRED,
-                    source=source,
-                )
-                return (
-                    "authorization_required",
-                    "authorization_required",
-                    ErrorCode.EMBEDDING_AUTOMATION_AUTHORIZATION_REQUIRED,
-                    "AI 策略已变化；现有任务等待以新策略重新登记。",
-                )
-
-            try:
-                plan = plan_embedding_rebuild(inspection)
-            except PKVRuntimeError as error:
-                store.mark_retry(
+                store.record_usage(
                     task.task_id,
                     claim_token=claim_token,
-                    error_code=error.code.value,
+                    reservation_id=reservation.reservation_id,
+                    usage=TokenUsage(
+                        embedding_input_tokens=estimate,
+                        source="local_estimate",
+                    ),
                 )
-                publish_embedding_nonready_binding(
-                    self.config,
-                    state=EmbeddingIndexState.RETRY_REQUIRED,
-                    source=source,
-                )
-                return (
-                    "retry_required",
-                    "retry_required",
-                    error.code,
-                    "自动 AI 任务的运行态计划需要重试。",
-                )
-
-            quota = policy.token_quota
-            assert quota is not None
-            local_now = datetime.now(ZoneInfo(quota.timezone))
-            estimate = self._estimated_embedding_tokens(inspection._captured_source)
-            reservation = store.reserve_tokens(
-                task.task_id,
-                claim_token=claim_token,
-                timezone=quota.timezone,
-                local_day=local_now.date().isoformat(),
-                local_month=local_now.strftime("%Y-%m"),
-                reserved_tokens=estimate,
-                daily_total_tokens=quota.daily_total_tokens,
-                monthly_total_tokens=quota.monthly_total_tokens,
-            )
-            if reservation is None:
-                publish_embedding_nonready_binding(
-                    self.config,
-                    state=EmbeddingIndexState.BUDGET_PAUSED,
-                    source=source,
-                )
-                return (
-                    "budget_paused",
-                    "budget_paused",
-                    ErrorCode.EMBEDDING_BUDGET_PAUSED,
-                    "文档已入库；已达到 token 预算，自动 AI 任务暂停。",
+                break
+            else:
+                raise PKVRuntimeError(
+                    ErrorCode.RUNTIME_PLAN_STALE,
+                    "AI 自动化队列包含过多已过期任务；请在下一次写入时继续处理。",
+                    stage="ai_automation_lifecycle",
+                    recoverable=True,
                 )
 
-            # Reserve and record before the Provider is constructed.  If a
-            # provider can later expose reliable usage, it may append a distinct
-            # provider_reported row; unknown cached/generated dimensions remain
-            # NULL rather than fabricated zeros.
-            store.record_usage(
-                task.task_id,
-                claim_token=claim_token,
-                reservation_id=reservation.reservation_id,
-                usage=TokenUsage(
-                    embedding_input_tokens=estimate,
-                    source="local_estimate",
+        # No root lease is active below this point.  The public Provider factory
+        # and the Provider calls performed by the rebuild core are bounded by
+        # the captured plan and its private staging capability instead.
+        try:
+            execute_embedding_rebuild(
+                plan,
+                confirm_embedding_rebuild(plan, allow_network=True),
+                embedder_factory=lambda: PreChunkedEmbeddingAdapter(
+                    self._create_embedder()
                 ),
+                writer_lease_factory=self.write_lease_factory,
             )
-            try:
-                provider = self._create_embedder()
-                execution = execute_embedding_rebuild(
-                    plan,
-                    confirm_embedding_rebuild(plan, allow_network=True),
-                    embedder=PreChunkedEmbeddingAdapter(provider),
-                    writer_lease_factory=lambda _config: nullcontext(),
-                )
-            except PKVRuntimeError as error:
-                store.settle_reservation(reservation.reservation_id, claim_token=claim_token)
-                store.mark_retry(
-                    task.task_id,
+        except PKVRuntimeError as error:
+            failure_code = error.code
+        except Exception:
+            failure_code = ErrorCode.PROVIDER_UNAVAILABLE
+        else:
+            with self._write_lease_scope(), self._runtime_file_log_scope(
+                owner="ai_automation_lifecycle"
+            ):
+                settled = AIAutomationTaskStore(self.config.layout)
+                settled.settle_reservation(
+                    reservation.reservation_id,
                     claim_token=claim_token,
-                    error_code=error.code.value,
                 )
-                publish_embedding_nonready_binding(
-                    self.config,
-                    state=EmbeddingIndexState.RETRY_REQUIRED,
-                    source=source,
-                )
-                return (
-                    "retry_required",
-                    "retry_required",
-                    error.code,
-                    "自动 AI 任务失败；文档已保存，稍后将重试。",
-                )
-            except Exception:
-                store.settle_reservation(reservation.reservation_id, claim_token=claim_token)
-                store.mark_retry(
-                    task.task_id,
-                    claim_token=claim_token,
-                    error_code=ErrorCode.PROVIDER_UNAVAILABLE.value,
-                )
-                publish_embedding_nonready_binding(
-                    self.config,
-                    state=EmbeddingIndexState.RETRY_REQUIRED,
-                    source=source,
-                )
-                return (
-                    "retry_required",
-                    "retry_required",
-                    ErrorCode.PROVIDER_UNAVAILABLE,
-                    "自动 AI 服务暂不可用；文档已保存，稍后将重试。",
-                )
-
-            store.settle_reservation(reservation.reservation_id, claim_token=claim_token)
-            store.mark_completed(task.task_id, claim_token=claim_token)
+                settled.mark_completed(task.task_id, claim_token=claim_token)
             return (
                 "ready",
                 "completed",
                 ErrorCode.EMBEDDING_REBUILD_REQUIRED,
                 "自动 AI 任务已完成。",
             )
-        raise PKVRuntimeError(
-            ErrorCode.RUNTIME_PLAN_STALE,
-            "AI 自动化队列包含过多已过期任务；请在下一次写入时继续处理。",
-            stage="ai_automation_lifecycle",
-            recoverable=True,
+
+        with self._write_lease_scope(), self._runtime_file_log_scope(
+            owner="ai_automation_lifecycle"
+        ):
+            failed = AIAutomationTaskStore(self.config.layout)
+            failed.settle_reservation(
+                reservation.reservation_id,
+                claim_token=claim_token,
+            )
+            failed.mark_retry(
+                task.task_id,
+                claim_token=claim_token,
+                error_code=failure_code.value,
+            )
+            publish_embedding_nonready_binding(
+                self.config,
+                state=EmbeddingIndexState.RETRY_REQUIRED,
+                source=source,
+            )
+        return (
+            "retry_required",
+            "retry_required",
+            failure_code,
+            "自动 AI 服务暂不可用；文档已保存，稍后将重试。",
         )
 
     @contextmanager

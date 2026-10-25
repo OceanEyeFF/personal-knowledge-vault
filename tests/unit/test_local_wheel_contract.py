@@ -42,6 +42,7 @@ EXPECTED_WHEEL_RESOURCE_PAYLOAD = frozenset(
         "pkv_kernel/_resources/scripts/migrations/010_add_storage_operation_commits.sql",
         "pkv_kernel/_resources/scripts/migrations/011_add_ai_automation_ledger.sql",
         "pkv_kernel/_resources/scripts/migrations/012_add_r4_content_submission.sql",
+        "pkv_kernel/_resources/scripts/migrations/013_add_traceable_outcomes.sql",
         "pkv_kernel/_resources/src/ai/prompts/extract_tags.txt",
         "pkv_kernel/_resources/src/ai/prompts/summarize.txt",
     }

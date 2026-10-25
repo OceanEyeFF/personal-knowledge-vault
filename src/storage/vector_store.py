@@ -195,6 +195,7 @@ class VectorStore:
         runtime_config: Any = None,
         layout: Any = None,
         path_validator: Optional[Callable[..., Any]] = None,
+        stage_grant: Any = None,
         allow_index_creation: bool = True,
         read_only: bool = False,
     ):
@@ -209,6 +210,9 @@ class VectorStore:
             layout: 显式注入的 RuntimeLayout（测试/运维 seam）；缺省时若
                 index_dir 位于已声明用户数据根内则自动启用完整 containment 合同
             path_validator: 显式注入的叶子验证器（测试 seam）
+            stage_grant: 已确认 rebuild 的私有 staging capability。它只允许
+                ``index_dir`` 等于该 capability 分配的 stage；不能用于任何
+                generation、snapshot 或普通向量目录写入。
             allow_index_creation: 是否允许为缺失 pair 创建新索引。只读检索入口
                 必须传入 False，避免把丢失或损坏的 pair 解释为空索引。
             read_only: 严格只读打开。不会创建目录/锁文件、恢复中断事务、迁移
@@ -221,10 +225,13 @@ class VectorStore:
             raise TypeError("read_only 必须是 bool")
         if read_only and allow_index_creation:
             raise ValueError("严格只读打开必须禁用索引创建")
+        if read_only and stage_grant is not None:
+            raise ValueError("严格只读打开不能使用 Embedding staging capability")
         self.index_dir = Path(index_dir)
         self._runtime_config = runtime_config
         self._allow_index_creation = allow_index_creation
         self._read_only = read_only
+        self._stage_grant = stage_grant
         self._contract = self._resolve_path_contract(
             self.index_dir,
             runtime_config=runtime_config,
@@ -245,13 +252,23 @@ class VectorStore:
         if self._read_only:
             self._validate_read_only_directory()
         elif self._contract.layout is not None:
-            # 产品目录由 bootstrap 创建；这里幂等重建并拒绝链接/越界。
-            self._contract.layout.ensure_user_directories()
+            # 正常产品 writer 由 bootstrap 创建完整目录树。私有 staging
+            # capability 已在 root lease 内分配其精确目录；它不能在 lease 外
+            # 借此创建或修复其他布局目录。
+            if self._stage_grant is None:
+                self._contract.layout.ensure_user_directories()
             self._contract.layout.validate_user_directory(
                 self.index_dir,
                 label="向量索引目录",
             )
             if not self.index_dir.is_dir():
+                if self._stage_grant is not None:
+                    raise PKVRuntimeError(
+                        ErrorCode.RUNTIME_PLAN_STALE,
+                        "Embedding private staging 目录已不可用；请重新生成计划。",
+                        stage="embedding_stage_grant",
+                        recoverable=True,
+                    )
                 # 父路径已验证；单个叶目录由我们创建（不递归，避免穿过链接）。
                 self.index_dir.mkdir()
         else:
@@ -632,6 +649,19 @@ class VectorStore:
         """Require the active R3 lease immediately before any mutable path use."""
 
         if self._read_only or not self._contract.requires_writer_lease:
+            return
+        if self._stage_grant is not None:
+            # A stage grant is an issued, concrete capability.  Structural
+            # duck-typing here would let any caller bypass the root writer
+            # lease by supplying a no-op ``require_stage_write`` method.
+            from src.runtime.generation_stage import GenerationStageGrant
+
+            if type(self._stage_grant) is not GenerationStageGrant:
+                raise TypeError("stage_grant 必须是已签发的 GenerationStageGrant")
+            self._stage_grant.require_stage_write(
+                self._contract.layout,
+                self.index_dir,
+            )
             return
         from src.runtime.writer_inventory import require_active_data_root_writer
 

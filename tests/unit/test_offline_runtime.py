@@ -507,6 +507,14 @@ def test_entrypoint_consumes_only_exact_dataroot_profile_config(
                         },
                         "retry": {"max_attempts": 2},
                     },
+                    "embedding_rebuild": {
+                        "schema_version": 1,
+                        "token_budget": {
+                            "timezone": "UTC",
+                            "daily_total_tokens": 100_000,
+                            "monthly_total_tokens": 1_000_000,
+                        },
+                    },
                 }
             }
         ),
@@ -592,7 +600,7 @@ def test_synthetic_ready_seed_preserves_existing_runtime_snapshot(
     )
     existing_snapshot = {
         "schema_version": 1,
-        "database": {"schema_version": "1.2.6"},
+        "database": {"schema_version": "1.2.7"},
         "embedding": {"provider": "offline", "fingerprint": {}},
     }
     config = SimpleNamespace(

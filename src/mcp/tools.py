@@ -1,11 +1,13 @@
 """
 MCP Tool handler 实现
 
-提供 15 个 Tool:
-- 只读: get_runtime_status, search_knowledge, get_entry, list_tags, list_entries, get_stats,
+提供 30 个 Tool:
+- 只读: get_runtime_status, inspect_embedding_rebuild, plan_embedding_rebuild,
+  search_knowledge, get_entry, list_tags, list_entries, get_stats,
   get_related, query_subgraph, explain_relation, collect_evidence, find_bridges,
   timeline_of, contrast
-- 写入: archive_url, archive_text
+- 写入: archive_url, archive_text, execute_embedding_rebuild，以及 P1-B
+  Topic/Evidence/Claim/research brief 的显式操作
 
 同步/异步策略说明：
     - FastMCP 的同步 def handler 会直接在 asyncio 事件循环中调用（不同于 FastAPI）
@@ -16,6 +18,7 @@ MCP Tool handler 实现
 
 import logging
 import math
+import re
 from typing import Optional
 
 import anyio
@@ -30,6 +33,7 @@ from src.mcp.server import (
     get_sqlite_store,
     get_markdown_store,
     get_relation_query_service,
+    get_runtime_config_for_lifecycle,
 )
 from src.mcp.utils import (
     parse_tags_string, serialize_search_result,
@@ -137,6 +141,11 @@ _PUBLIC_RUNTIME_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.DATABASE_UPGRADE_REQUIRED: "知识库需要先完成显式升级",
     ErrorCode.WRITE_BUSY: "另一个应用正在写入知识库，请稍后重试",
     ErrorCode.AUDIT_COMPLETION_PENDING: "归档已提交，但本地审计完成记录待补；请勿直接重试。",
+    ErrorCode.CONFIRMATION_REQUIRED: "该操作需要明确确认",
+    ErrorCode.RUNTIME_PLAN_STALE: "运行时计划已变化，请重新检查并生成计划",
+    ErrorCode.EMBEDDING_REBUILD_REQUIRED: "当前 Embedding generation 需要显式重建",
+    ErrorCode.EMBEDDING_BUDGET_PAUSED: "手动 Embedding 重建已达到 token 预算",
+    ErrorCode.EMBEDDING_REBUILD_AUTHORIZATION_REQUIRED: "手动 Embedding 重建尚未通过策略授权",
 }
 _ERROR_CODE_VALUES = frozenset(item.value for item in ErrorCode)
 _ARCHIVE_STEP_IDS = frozenset(
@@ -3442,6 +3451,530 @@ async def get_runtime_status() -> dict:
     """
 
     return await anyio.to_thread.run_sync(get_runtime_status_payload)
+
+
+# ============================================================
+# Foreground Embedding rebuild — public Kernel lifecycle projection
+# ============================================================
+
+_PUBLIC_EMBEDDING_REBUILD_STAGES = frozenset(
+    {
+        "embedding_generation",
+        "embedding_index",
+        "embedding_plan",
+        "embedding_rebuild_ledger",
+        "embedding_rebuild_provider",
+        "embedding_rebuild_config",
+        "embedding_stage_grant",
+        "runtime_readiness",
+        "runtime_snapshot",
+        "write_lease",
+    }
+)
+
+
+def _embedding_rebuild_failure_payload(exc: BaseException) -> dict[str, object]:
+    """Serialize a Kernel rebuild failure without exception text or local paths."""
+
+    if isinstance(exc, PKVRuntimeError):
+        code = exc.code
+        recoverable = exc.recoverable is True
+        stage = (
+            exc.stage
+            if isinstance(exc.stage, str) and exc.stage in _PUBLIC_EMBEDDING_REBUILD_STAGES
+            else "embedding_rebuild_ledger"
+        )
+    else:
+        code = ErrorCode.REPAIR_REQUIRED
+        recoverable = True
+        stage = "embedding_rebuild_ledger"
+    return {
+        "status": "error",
+        "terminal": "error",
+        "operation": "embedding_rebuild",
+        "issues": [
+            {
+                "code": code.value,
+                "message": _stable_runtime_message(
+                    PKVRuntimeError(code, "", stage=stage, recoverable=recoverable),
+                    "Embedding 重建当前不可用",
+                ),
+                "stage": stage,
+                "recoverable": recoverable,
+            }
+        ],
+    }
+
+
+def _embedding_rebuild_success_payload(
+    inspection: object,
+    plan: object | None,
+    *,
+    execution: object | None = None,
+) -> dict[str, object]:
+    """Build one safe response envelope from opaque public Kernel handles."""
+
+    inspection_to_dict = getattr(inspection, "to_dict", None)
+    plan_to_dict = getattr(plan, "to_dict", None) if plan is not None else None
+    if not callable(inspection_to_dict) or (
+        plan is not None and not callable(plan_to_dict)
+    ):
+        raise TypeError("Embedding rebuild Kernel 返回了无效公共 DTO")
+    payload: dict[str, object] = {
+        "status": "success",
+        "terminal": "success",
+        "operation": "embedding_rebuild",
+        "inspection": inspection_to_dict(),
+        "plan": plan_to_dict() if callable(plan_to_dict) else None,
+        "issues": [],
+    }
+    if execution is not None:
+        execution_to_dict = getattr(execution, "to_dict", None)
+        if not callable(execution_to_dict):
+            raise TypeError("Embedding rebuild Kernel 返回了无效执行 DTO")
+        payload["execution"] = execution_to_dict()
+    return payload
+
+
+def _is_public_plan_id(value: object) -> bool:
+    return (
+        type(value) is str
+        and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def inspect_embedding_rebuild() -> dict:
+    """零写入检查 generation binding 与独立手动重建预算。"""
+
+    def _impl() -> dict[str, object]:
+        try:
+            from pkv_kernel import embedding as kernel_embedding
+
+            config = get_runtime_config_for_lifecycle(require_ready=False)
+            inspection = kernel_embedding.inspect_embedding_rebuild(config)
+            return _embedding_rebuild_success_payload(inspection, None)
+        except Exception as exc:
+            logger.warning("inspect_embedding_rebuild failed: kind=%s", _failure_kind(exc))
+            return _embedding_rebuild_failure_payload(exc)
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+# ============================================================
+# P1-B: traceable outcome tools
+# ============================================================
+
+_OUTCOME_PUBLIC_MESSAGES: dict[ErrorCode, str] = {
+    ErrorCode.OUTCOME_NOT_FOUND: "请求的研究成果对象不存在。",
+    ErrorCode.OUTCOME_INVALID: "研究成果参数无效。",
+    ErrorCode.OUTCOME_STATE_CONFLICT: "研究成果状态已变化，请重新读取后再操作。",
+    ErrorCode.OUTCOME_EVIDENCE_STALE: "证据来源已变化或不可用，需要重新核对。",
+    ErrorCode.OUTCOME_APPROVAL_BLOCKED: "研究成果尚未满足批准条件。",
+    ErrorCode.DATABASE_UPGRADE_REQUIRED: "知识库需要先升级后才能使用研究成果。",
+    ErrorCode.WRITE_BUSY: "另一个应用正在写入知识库，请稍后重试。",
+    ErrorCode.DATA_ROOT_UNSAFE: "成果输出目录未通过安全检查。",
+    ErrorCode.PATH_STATE_UNDETERMINED: "无法安全确认成果输出目录状态。",
+}
+
+
+def _outcome_failure_payload(exc: BaseException, *, operation: str) -> dict[str, object]:
+    """Return a safe failure envelope without reflecting a locator/path/body."""
+
+    if isinstance(exc, PKVRuntimeError):
+        code = exc.code
+        message = _OUTCOME_PUBLIC_MESSAGES.get(code, "研究成果操作未能完成。")
+        recoverable = exc.recoverable
+    elif isinstance(exc, (TypeError, ValueError)):
+        code = ErrorCode.OUTCOME_INVALID
+        message = _OUTCOME_PUBLIC_MESSAGES[code]
+        recoverable = False
+    else:
+        code = ErrorCode.OUTCOME_INVALID
+        message = "研究成果操作暂时不可用。"
+        recoverable = True
+    return {
+        "status": "error",
+        "operation": operation,
+        "issues": [
+            {
+                "code": code.value,
+                "message": message,
+                "stage": "outcome",
+                "recoverable": recoverable,
+            }
+        ],
+    }
+
+
+def _outcome_public_module() -> object:
+    """Resolve the public Kernel module only after the MCP READY gate."""
+
+    # The server accessor provides the managed stdio readiness check and
+    # configures the shared Application graph.  The actual outcome operation is
+    # then dispatched exclusively through ``pkv_kernel.outcomes``.
+    get_application()
+    from pkv_kernel import outcomes as kernel_outcomes
+
+    return kernel_outcomes
+
+
+def _outcome_success_payload(*, operation: str, result: object) -> dict[str, object]:
+    serializer = getattr(result, "to_dict", None)
+    if not callable(serializer):
+        raise TypeError("outcome public result contract invalid")
+    payload = serializer()
+    if not isinstance(payload, dict):
+        raise TypeError("outcome public result contract invalid")
+    return {"status": "success", "operation": operation, "result": payload}
+
+
+@mcp.tool()
+async def create_outcome_topic(title: str, question: str) -> dict:
+    """创建一个显式研究 Topic；不会自动检索、联网或调用 Provider。"""
+
+    def _impl() -> dict[str, object]:
+        try:
+            module = _outcome_public_module()
+            result = module.create_topic(title=title, question=question)
+            return _outcome_success_payload(operation="create_topic", result=result)
+        except Exception as exc:
+            logger.warning("create_outcome_topic failed: kind=%s", _failure_kind(exc))
+            return _outcome_failure_payload(exc, operation="create_topic")
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def get_outcome(topic_id: str) -> dict:
+    """读取 Topic、Evidence、Claim 与 brief 的无写入、漂移可见视图。"""
+
+    def _impl() -> dict[str, object]:
+        try:
+            module = _outcome_public_module()
+            result = module.get_outcome(topic_id)
+            return _outcome_success_payload(operation="get_outcome", result=result)
+        except Exception as exc:
+            logger.warning("get_outcome failed: kind=%s", _failure_kind(exc))
+            return _outcome_failure_payload(exc, operation="get_outcome")
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def suggest_outcome_evidence(topic_id: str, query: str, limit: int = 10) -> dict:
+    """仅通过严格 BM25 提供待用户选择绑定的 entry locator 候选。"""
+
+    def _impl() -> dict[str, object]:
+        try:
+            module = _outcome_public_module()
+            result = module.suggest_evidence(topic_id=topic_id, query=query, limit=limit)
+            return _outcome_success_payload(operation="suggest_outcome_evidence", result=result)
+        except Exception as exc:
+            logger.warning("suggest_outcome_evidence failed: kind=%s", _failure_kind(exc))
+            return _outcome_failure_payload(exc, operation="suggest_outcome_evidence")
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool()
+async def attach_outcome_evidence(
+    topic_id: str,
+    locator: str,
+    acquisition_method: str = "user_selected",
+    retrieval_status: str = "not_requested",
+    limitation_codes: list[str] | None = None,
+) -> dict:
+    """绑定用户选择的 entry/chunk/relation locator 和当前 source digest。"""
+
+    def _impl() -> dict[str, object]:
+        try:
+            module = _outcome_public_module()
+            result = module.attach_evidence(
+                topic_id=topic_id,
+                locator=locator,
+                acquisition_method=acquisition_method,
+                retrieval_status=retrieval_status,
+                limitation_codes=() if limitation_codes is None else limitation_codes,
+            )
+            return _outcome_success_payload(operation="attach_outcome_evidence", result=result)
+        except Exception as exc:
+            logger.warning("attach_outcome_evidence failed: kind=%s", _failure_kind(exc))
+            return _outcome_failure_payload(exc, operation="attach_outcome_evidence")
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool()
+async def detach_outcome_evidence(evidence_id: str) -> dict:
+    """解除一条明确选择的 Evidence，不推断或改绑任何替代来源。"""
+
+    def _impl() -> dict[str, object]:
+        try:
+            module = _outcome_public_module()
+            module.detach_evidence(evidence_id)
+            return {
+                "status": "success",
+                "operation": "detach_outcome_evidence",
+                "result": {"evidence_id": evidence_id},
+            }
+        except Exception as exc:  # noqa: BLE001 - public adapter boundary
+            logger.warning("detach_outcome_evidence failed: kind=%s", _failure_kind(exc))
+            return _outcome_failure_payload(exc, operation="detach_outcome_evidence")
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool()
+async def create_outcome_claim(
+    topic_id: str,
+    statement: str,
+    state: str = "draft",
+    limitation_codes: list[str] | None = None,
+) -> dict:
+    """创建显式主张状态；supported 不表示系统自动断言事实为真。"""
+
+    def _impl() -> dict[str, object]:
+        try:
+            module = _outcome_public_module()
+            result = module.create_claim(
+                topic_id=topic_id,
+                statement=statement,
+                state=state,
+                limitation_codes=() if limitation_codes is None else limitation_codes,
+            )
+            return _outcome_success_payload(operation="create_outcome_claim", result=result)
+        except Exception as exc:
+            logger.warning("create_outcome_claim failed: kind=%s", _failure_kind(exc))
+            return _outcome_failure_payload(exc, operation="create_outcome_claim")
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool()
+async def revise_outcome_claim(
+    claim_id: str,
+    statement: str | None = None,
+    state: str | None = None,
+    limitation_codes: list[str] | None = None,
+    expected_revision: int | None = None,
+) -> dict:
+    """显式修订 Claim，并可用 revision 防止覆盖另一位审阅者的修改。"""
+
+    def _impl() -> dict[str, object]:
+        try:
+            module = _outcome_public_module()
+            result = module.revise_claim(
+                claim_id=claim_id,
+                statement=statement,
+                state=state,
+                limitation_codes=limitation_codes,
+                expected_revision=expected_revision,
+            )
+            return _outcome_success_payload(operation="revise_outcome_claim", result=result)
+        except Exception as exc:  # noqa: BLE001 - public adapter boundary
+            logger.warning("revise_outcome_claim failed: kind=%s", _failure_kind(exc))
+            return _outcome_failure_payload(exc, operation="revise_outcome_claim")
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool()
+async def link_outcome_claim_evidence(
+    claim_id: str,
+    evidence_id: str,
+    polarity: str,
+) -> dict:
+    """记录同一 Topic 内明确的 support 或 counter Claim→Evidence 关系。"""
+
+    def _impl() -> dict[str, object]:
+        try:
+            module = _outcome_public_module()
+            result = module.link_claim_evidence(
+                claim_id=claim_id,
+                evidence_id=evidence_id,
+                polarity=polarity,
+            )
+            return _outcome_success_payload(
+                operation="link_outcome_claim_evidence",
+                result=result,
+            )
+        except Exception as exc:
+            logger.warning("link_outcome_claim_evidence failed: kind=%s", _failure_kind(exc))
+            return _outcome_failure_payload(exc, operation="link_outcome_claim_evidence")
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool()
+async def unlink_outcome_claim_evidence(claim_id: str, evidence_id: str) -> dict:
+    """解除一条明确的 Claim→Evidence 关系，其他关系保持不变。"""
+
+    def _impl() -> dict[str, object]:
+        try:
+            module = _outcome_public_module()
+            result = module.unlink_claim_evidence(
+                claim_id=claim_id,
+                evidence_id=evidence_id,
+            )
+            return _outcome_success_payload(
+                operation="unlink_outcome_claim_evidence",
+                result=result,
+            )
+        except Exception as exc:  # noqa: BLE001 - public adapter boundary
+            logger.warning("unlink_outcome_claim_evidence failed: kind=%s", _failure_kind(exc))
+            return _outcome_failure_payload(
+                exc,
+                operation="unlink_outcome_claim_evidence",
+            )
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool()
+async def render_outcome_research_brief(topic_id: str) -> dict:
+    """复核 source binding 后发布一份新 immutable research brief revision。"""
+
+    def _impl() -> dict[str, object]:
+        try:
+            module = _outcome_public_module()
+            result = module.render_research_brief(topic_id=topic_id)
+            return _outcome_success_payload(
+                operation="render_outcome_research_brief",
+                result=result,
+            )
+        except Exception as exc:
+            logger.warning("render_outcome_research_brief failed: kind=%s", _failure_kind(exc))
+            return _outcome_failure_payload(exc, operation="render_outcome_research_brief")
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool()
+async def approve_outcome_research_brief(topic_id: str) -> dict:
+    """仅在证据 current 且主张状态可审阅时显式批准 brief。"""
+
+    def _impl() -> dict[str, object]:
+        try:
+            module = _outcome_public_module()
+            result = module.approve_research_brief(topic_id=topic_id)
+            return _outcome_success_payload(
+                operation="approve_outcome_research_brief",
+                result=result,
+            )
+        except Exception as exc:
+            logger.warning("approve_outcome_research_brief failed: kind=%s", _failure_kind(exc))
+            return _outcome_failure_payload(exc, operation="approve_outcome_research_brief")
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool()
+async def return_outcome_research_brief(topic_id: str) -> dict:
+    """将已生成 brief 显式退回，等待新的主张/证据/渲染 revision。"""
+
+    def _impl() -> dict[str, object]:
+        try:
+            module = _outcome_public_module()
+            result = module.return_research_brief(topic_id=topic_id)
+            return _outcome_success_payload(
+                operation="return_outcome_research_brief",
+                result=result,
+            )
+        except Exception as exc:
+            logger.warning("return_outcome_research_brief failed: kind=%s", _failure_kind(exc))
+            return _outcome_failure_payload(exc, operation="return_outcome_research_brief")
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def plan_embedding_rebuild(force: bool = False) -> dict:
+    """生成一个显式、进程内可确认的 Embedding rebuild 计划，不访问 Provider。"""
+
+    def _impl() -> dict[str, object]:
+        if type(force) is not bool:
+            return _embedding_rebuild_failure_payload(
+                PKVRuntimeError(
+                    ErrorCode.CONFIRMATION_REQUIRED,
+                    "force 必须是 bool",
+                    stage="embedding_plan",
+                    recoverable=True,
+                )
+            )
+        try:
+            from pkv_kernel import embedding as kernel_embedding
+
+            config = get_runtime_config_for_lifecycle(require_ready=False)
+            inspection = kernel_embedding.inspect_embedding_rebuild(config)
+            plan = kernel_embedding.plan_embedding_rebuild(inspection, force=force)
+            return _embedding_rebuild_success_payload(inspection, plan)
+        except Exception as exc:
+            logger.warning("plan_embedding_rebuild failed: kind=%s", _failure_kind(exc))
+            return _embedding_rebuild_failure_payload(exc)
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool()
+async def execute_embedding_rebuild(
+    plan_id: str,
+    approved: bool,
+    allow_network: bool,
+    force: bool = False,
+) -> dict:
+    """以明确确认执行一个重新核验的公开 Embedding rebuild 计划。
+
+    ``plan_id`` 会在同一 stdio server 的当前 Config/source snapshot 上重新
+    计算并严格比对；MCP 不接受反序列化的计划对象，也不提供恢复/后台队列入口。
+    """
+
+    def _impl() -> dict[str, object]:
+        if (
+            not _is_public_plan_id(plan_id)
+            or type(approved) is not bool
+            or type(allow_network) is not bool
+            or type(force) is not bool
+        ):
+            return _embedding_rebuild_failure_payload(
+                PKVRuntimeError(
+                    ErrorCode.CONFIRMATION_REQUIRED,
+                    "Embedding rebuild 确认参数无效",
+                    stage="embedding_plan",
+                    recoverable=True,
+                )
+            )
+        try:
+            from pkv_kernel import embedding as kernel_embedding
+
+            config = get_runtime_config_for_lifecycle(require_ready=True)
+            inspection = kernel_embedding.inspect_embedding_rebuild(config)
+            plan = kernel_embedding.plan_embedding_rebuild(inspection, force=force)
+            if plan.plan_id != plan_id:
+                raise PKVRuntimeError(
+                    ErrorCode.RUNTIME_PLAN_STALE,
+                    "确认不属于当前 Embedding rebuild 计划。",
+                    stage="embedding_plan",
+                    recoverable=True,
+                )
+            execution = kernel_embedding.execute_embedding_rebuild(
+                plan,
+                kernel_embedding.confirm_embedding_rebuild(
+                    plan,
+                    approved=approved,
+                    allow_network=allow_network,
+                ),
+            )
+            return _embedding_rebuild_success_payload(
+                inspection,
+                plan,
+                execution=execution,
+            )
+        except Exception as exc:
+            logger.warning("execute_embedding_rebuild failed: kind=%s", _failure_kind(exc))
+            return _embedding_rebuild_failure_payload(exc)
+
+    return await anyio.to_thread.run_sync(_impl)
 
 
 # ============================================================

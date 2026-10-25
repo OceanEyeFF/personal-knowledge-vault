@@ -16,7 +16,7 @@ from typing import Literal
 from src.runtime.errors import ErrorCode, PKVRuntimeError
 
 
-WRITER_INVENTORY_VERSION = 4
+WRITER_INVENTORY_VERSION = 5
 
 WriterKind = Literal["product", "test_fixture", "historical_fenced"]
 
@@ -76,11 +76,28 @@ DATA_ROOT_WRITER_INVENTORY: tuple[DataRootWriter, ...] = (
         "Kernel reads do not acquire a data-root lease",
     ),
     DataRootWriter(
+        "knowledge_outcomes",
+        (
+            "db/knowledge_vault.db",
+            "outcomes/",
+            "logs/audit.jsonl",
+        ),
+        "KnowledgeApplication outcome mutation",
+        "product",
+        "Topic/Evidence/Claim/Outcome reads are zero-write; explicit create, revise, render and review actions hold the lease and publish revisioned Markdown only after source revalidation",
+    ),
+    DataRootWriter(
         "embedding_generation",
-        ("vectors/staging/", "vectors/generations/", "config/local.yaml", "logs/audit.jsonl"),
+        (
+            "vectors/staging/",
+            "vectors/generations/",
+            "runtime/embedding-rebuild-ledger.json",
+            "config/local.yaml",
+            "logs/audit.jsonl",
+        ),
         "confirmed embedding lifecycle execution",
         "product",
-        "inspection and binding resolution are strict read-only",
+        "inspection and binding resolution are strict read-only; preflight/final accounting own the lease, while only a fenced private GenerationStageGrant may write its own unreferenced vectors/staging/.stage-* leaves during Provider work outside the root lease",
     ),
     DataRootWriter(
         "ai_automation_lifecycle",
