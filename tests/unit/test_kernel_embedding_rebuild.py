@@ -70,7 +70,7 @@ def _seed_r2(config: Config) -> None:
             observed,
             {
                 "schema_version": 1,
-                "database": {"schema_version": "1.2.7"},
+                "database": {"schema_version": "1.2.8"},
                 "embedding": {
                     "provider": config.embd_provider,
                     "fingerprint": config.embedding_index_fingerprint(config.embedding_dim),

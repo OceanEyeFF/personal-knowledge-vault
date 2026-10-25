@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
@@ -34,7 +35,9 @@ from src.outcomes.models import (
     TopicRecord,
     normalize_limitation_codes,
     normalize_outcome_text,
+    _require_identifier,
 )
+from src.outcomes.identity import outcome_input_digest, outcome_publication_id
 from src.outcomes.renderer import render_research_brief
 from src.relations.citations import build_entry_locator
 from src.runtime.errors import ErrorCode, PKVRuntimeError
@@ -80,9 +83,7 @@ class OutcomeService:
 
     @staticmethod
     def _require_topic_id(value: Any) -> str:
-        if type(value) is not str or not value.startswith("topic_"):
-            raise ValueError("topic_id无效")
-        return value
+        return _require_identifier(value, label="topic_id")
 
     @staticmethod
     def _require_claim_id(value: Any) -> str:
@@ -105,23 +106,51 @@ class OutcomeService:
             recoverable=False,
         )
 
-    def _bundle_from_store(self, topic_id: str) -> OutcomeBundle:
+    def _stored_bundle(self, topic_id: str) -> OutcomeBundle:
         stored = self._outcome_store.get_bundle_rows(topic_id)
         if stored is None:
             raise self._not_found(
                 stage="outcome_topic", message="指定的研究主题不存在。"
             )
         topic, evidence, claims, brief = stored
-        revalidated = tuple(self._revalidate_evidence(item) for item in evidence)
-        effective_claims = self._effective_claims(claims, revalidated)
+        return OutcomeBundle(topic, evidence, claims, brief)
+
+    def _bundle_from_store(self, topic_id: str) -> OutcomeBundle:
+        return self._revalidated_bundle(self._stored_bundle(topic_id))
+
+    def _revalidated_bundle(self, stored: OutcomeBundle) -> OutcomeBundle:
+        """Overlay observations on one captured SQLite input/pointer snapshot."""
+
+        topic, brief = stored.topic, stored.brief
+        revalidated = tuple(self._revalidate_evidence(item) for item in stored.evidence)
+        effective_claims = self._effective_claims(stored.claims, revalidated)
         if brief is not None:
+            brief = replace(
+                brief,
+                current_input_revision=topic.input_revision,
+                current_input_digest=topic.input_digest,
+                current_render_contract_version=topic.render_contract_version,
+            )
             brief = self._revalidate_brief_projection(brief)
-            if any(
+            if not self._input_binding_matches(topic, brief) or any(
                 item.recorded_state is not EvidenceState.CURRENT
                 for item in revalidated
             ):
                 brief = brief.with_effective_state(OutcomeState.NEEDS_REVIEW)
         return OutcomeBundle(topic, revalidated, effective_claims, brief)
+
+    @staticmethod
+    def _input_binding_matches(topic: TopicRecord, brief: ResearchBriefRecord) -> bool:
+        return (
+            brief.binding_state == "verified"
+            and topic.outcome_id == brief.outcome_id
+            and topic.input_revision is not None
+            and topic.input_digest is not None
+            and topic.render_contract_version is not None
+            and brief.rendered_input_revision == topic.input_revision
+            and brief.rendered_input_digest == topic.input_digest
+            and brief.render_contract_version == topic.render_contract_version
+        )
 
     def _revalidate_brief_projection(
         self,
@@ -270,7 +299,16 @@ class OutcomeService:
                 relative_path,
                 [str(chunk["chunk_text"]) for chunk in chunks],
             )
-        except (OSError, TypeError, ValueError, KeyError, PKVRuntimeError):
+        except FileNotFoundError:
+            return None
+        except PKVRuntimeError:
+            raise
+        except OSError as error:
+            raise PKVRuntimeError(
+                ErrorCode.PATH_STATE_UNDETERMINED, "无法安全确认研究证据来源状态。",
+                stage="outcome_evidence", recoverable=True,
+            ) from error
+        except (TypeError, ValueError, KeyError):
             return None
         if markdown_revision == sqlite_revision:
             return sqlite_revision
@@ -327,27 +365,6 @@ class OutcomeService:
         if revision != evidence.source_revision_sha256:
             return evidence.with_recorded_state(EvidenceState.STALE)
         return evidence.with_recorded_state(EvidenceState.CURRENT)
-
-    def _persist_revalidation(self, bundle: OutcomeBundle) -> OutcomeBundle:
-        """Durably record observed drift only from a mutation-owned operation."""
-
-        changes = {
-            current.evidence_id: current.recorded_state
-            for current, stored in zip(
-                bundle.evidence,
-                self._outcome_store.get_bundle_rows(bundle.topic.topic_id)[1],
-                strict=True,
-            )
-            if current.recorded_state is not stored.recorded_state
-        }
-        if changes:
-            self._outcome_store.update_evidence_recorded_states(changes)
-        if any(
-            evidence.recorded_state is not EvidenceState.CURRENT
-            for evidence in bundle.evidence
-        ):
-            self._outcome_store.mark_brief_needs_review(bundle.topic.topic_id)
-        return self._bundle_from_store(bundle.topic.topic_id)
 
     @staticmethod
     def _require_current_evidence(bundle: OutcomeBundle) -> None:
@@ -414,13 +431,11 @@ class OutcomeService:
             retrieval_status=retrieval_status,
             limitation_codes=normalize_limitation_codes(limitation_codes),
         )
-        self._outcome_store.mark_brief_needs_review(topic_id)
         return evidence
 
     def detach_evidence(self, evidence_id: str) -> None:
         self._require_evidence_id(evidence_id)
-        topic_id = self._outcome_store.delete_evidence(evidence_id)
-        self._outcome_store.mark_brief_needs_review(topic_id)
+        self._outcome_store.delete_evidence(evidence_id)
 
     def suggest_evidence(
         self,
@@ -474,7 +489,6 @@ class OutcomeService:
             state=ClaimState(state),
             limitation_codes=normalize_limitation_codes(limitation_codes),
         )
-        self._outcome_store.mark_brief_needs_review(topic_id)
         return claim
 
     def revise_claim(
@@ -498,7 +512,6 @@ class OutcomeService:
             ),
             expected_revision=expected_revision,
         )
-        self._outcome_store.mark_brief_needs_review(claim.topic_id)
         return claim
 
     def link_claim_evidence(
@@ -515,7 +528,6 @@ class OutcomeService:
             evidence_id=evidence_id,
             polarity=ClaimEvidencePolarity(polarity),
         )
-        self._outcome_store.mark_brief_needs_review(claim.topic_id)
         return claim
 
     def unlink_claim_evidence(self, *, claim_id: str, evidence_id: str) -> ClaimRecord:
@@ -525,47 +537,38 @@ class OutcomeService:
             claim_id=claim_id,
             evidence_id=evidence_id,
         )
-        self._outcome_store.mark_brief_needs_review(claim.topic_id)
         return claim
-
-    @staticmethod
-    def _initial_brief_input_fingerprint(bundle: OutcomeBundle) -> str:
-        """Return the body-free canonical input identity for first publication.
-
-        This never enters a public DTO or filename directly.  It distinguishes
-        a retry of the exact render that left an orphan Markdown file from a
-        later user revision made before that first SQLite pointer could commit.
-        """
-
-        return _canonical_sha256(
-            {
-                "topic": bundle.topic.to_dict(),
-                "evidence": [item.to_dict() for item in bundle.evidence],
-                "claims": [item.to_dict() for item in bundle.claims],
-            }
-        )
 
     def _next_brief_identity(
         self,
         *,
         bundle: OutcomeBundle,
-    ) -> tuple[str, int, int | None]:
-        topic_id = bundle.topic.topic_id
-        existing = bundle.brief
-        if existing is None:
-            # The first pointer is published only after Markdown.  Deriving
-            # this opaque identifier from the Topic and complete render input
-            # lets a fresh process find the exact same r0001 projection after
-            # an interruption, without pre-committing a SQLite row.  A later
-            # Claim/Evidence change receives a new immutable r0001 instead of
-            # being permanently blocked by the unmatched orphan.
-            input_fingerprint = self._initial_brief_input_fingerprint(bundle)
-            outcome_id = uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"pkv:research-brief:{topic_id}:{input_fingerprint}",
-            ).hex
-            return f"outcome_{outcome_id}", 1, None
-        return existing.outcome_id, existing.revision + 1, existing.revision
+    ) -> tuple[str, int, str]:
+        topic = bundle.topic
+        if (
+            topic.outcome_id is None or topic.input_revision is None
+            or topic.input_digest is None or topic.render_contract_version is None
+        ):
+            raise PKVRuntimeError(
+                ErrorCode.DATABASE_UPGRADE_REQUIRED,
+                "研究成果需要先完成数据库升级。",
+                stage="outcome_brief", recoverable=True,
+            )
+        if outcome_input_digest(topic=topic, evidence=bundle.evidence, claims=bundle.claims) != topic.input_digest:
+            raise PKVRuntimeError(
+                ErrorCode.REPAIR_REQUIRED, "研究主题输入摘要不一致。",
+                stage="outcome_brief", recoverable=True,
+            )
+        revision = 1 if bundle.brief is None else bundle.brief.revision + 1
+        if revision > 9223372036854775807:
+            raise PKVRuntimeError(
+                ErrorCode.OUTCOME_STATE_CONFLICT, "研究成果版本已达到上限。",
+                stage="outcome_brief", recoverable=False,
+            )
+        return topic.outcome_id, revision, outcome_publication_id(
+            outcome_id=topic.outcome_id, candidate_revision=revision,
+            input_digest=topic.input_digest,
+        )
 
     def _publish_brief_markdown(
         self,
@@ -573,6 +576,7 @@ class OutcomeService:
         topic_id: str,
         outcome_id: str,
         revision: int,
+        publication_id: str,
         content: str,
     ) -> tuple[str, str]:
         topic_dir = self._layout.validate_user_directory(
@@ -586,7 +590,7 @@ class OutcomeService:
             label="research brief目录",
             allow_missing=False,
         )
-        target = topic_dir / f"{outcome_id}-r{revision:04d}.md"
+        target = topic_dir / f"{outcome_id}-r{revision:04d}-p{publication_id}.md"
         self._layout.validate_user_file(
             target,
             label="research brief",
@@ -638,13 +642,17 @@ class OutcomeService:
 
     def render_research_brief(self, *, topic_id: str) -> ResearchBriefRecord:
         self._require_topic_id(topic_id)
-        bundle = self._persist_revalidation(self._bundle_from_store(topic_id))
+        bundle = self._stored_bundle(topic_id)
+        # Legacy observations may have persisted a stale binding.  A recovered
+        # source does not silently rewrite those inputs: explicit reattachment
+        # must establish a current binding before rendering their claims.
         self._require_current_evidence(bundle)
-        outcome_id, revision, expected_previous = self._next_brief_identity(
+        self._require_current_evidence(self._revalidated_bundle(bundle))
+        outcome_id, revision, publication_id = self._next_brief_identity(
             bundle=bundle,
         )
         content = render_research_brief(
-            bundle,
+            replace(bundle, claims=self._effective_claims(bundle.claims, bundle.evidence)),
             outcome_id=outcome_id,
             revision=revision,
         )
@@ -652,20 +660,40 @@ class OutcomeService:
             topic_id=topic_id,
             outcome_id=outcome_id,
             revision=revision,
+            publication_id=publication_id,
             content=content,
         )
-        return self._outcome_store.upsert_rendered_brief(
+        # External files can change without the PKV writer lease.  Recheck
+        # sources and our exact publication before attempting the SQLite CAS.
+        self._require_current_evidence(self._revalidated_bundle(bundle))
+        candidate = ResearchBriefRecord(
+            outcome_id=outcome_id, topic_id=topic_id, state=OutcomeState.AWAITING_REVIEW,
+            revision=revision, markdown_relative_path=relative_path,
+            content_sha256=content_sha256, created_at="", updated_at="",
+        )
+        if self._revalidate_brief_projection(candidate).projection_state != "current":
+            raise PKVRuntimeError(
+                ErrorCode.OUTCOME_STATE_CONFLICT, "研究成果发布文件已变化。",
+                stage="outcome_brief", recoverable=True,
+            )
+        self._outcome_store.upsert_rendered_brief(
             outcome_id=outcome_id,
             topic_id=topic_id,
             revision=revision,
             markdown_relative_path=relative_path,
             content_sha256=content_sha256,
-            expected_previous_revision=expected_previous,
+            expected_previous_revision=bundle.brief.revision if bundle.brief else None,
+            expected_previous_pointer=bundle.brief,
+            expected_input_revision=bundle.topic.input_revision,
+            expected_input_digest=bundle.topic.input_digest,
+            render_contract_version=bundle.topic.render_contract_version,
+            publication_id=publication_id,
         )
+        return self._bundle_from_store(topic_id).brief
 
     def approve_research_brief(self, *, topic_id: str) -> ResearchBriefRecord:
         self._require_topic_id(topic_id)
-        bundle = self._persist_revalidation(self._bundle_from_store(topic_id))
+        bundle = self._bundle_from_store(topic_id)
         self._require_current_evidence(bundle)
         brief = bundle.brief
         if brief is None:
@@ -675,6 +703,24 @@ class OutcomeService:
                 stage="outcome_review",
                 recoverable=False,
             )
+        self._require_approval_inputs(bundle)
+        if brief.visible_state not in {
+            OutcomeState.AWAITING_REVIEW,
+            OutcomeState.APPROVED,
+        }:
+            raise PKVRuntimeError(
+                ErrorCode.OUTCOME_STATE_CONFLICT,
+                "当前研究成果状态不能直接批准；请重新生成后再审阅。",
+                stage="outcome_review",
+                recoverable=True,
+            )
+        return self._outcome_store.set_brief_state(
+            topic_id=topic_id,
+            state=OutcomeState.APPROVED,
+        )
+
+    @staticmethod
+    def _require_approval_inputs(bundle: OutcomeBundle) -> None:
         if not bundle.evidence:
             raise PKVRuntimeError(
                 ErrorCode.OUTCOME_APPROVAL_BLOCKED,
@@ -716,20 +762,6 @@ class OutcomeService:
                     stage="outcome_review",
                     recoverable=False,
                 )
-        if brief.visible_state not in {
-            OutcomeState.AWAITING_REVIEW,
-            OutcomeState.APPROVED,
-        }:
-            raise PKVRuntimeError(
-                ErrorCode.OUTCOME_STATE_CONFLICT,
-                "当前研究成果状态不能直接批准；请重新生成后再审阅。",
-                stage="outcome_review",
-                recoverable=True,
-            )
-        return self._outcome_store.set_brief_state(
-            topic_id=topic_id,
-            state=OutcomeState.APPROVED,
-        )
 
     def return_research_brief(self, *, topic_id: str) -> ResearchBriefRecord:
         self._require_topic_id(topic_id)
@@ -763,12 +795,92 @@ class OutcomeService:
             self._require_topic_id(topic_id)
             bundle = self._bundle_from_store(topic_id)
             return bundle.brief
-        if type(outcome_id) is not str or not outcome_id.startswith("outcome_"):
-            raise ValueError("outcome_id无效")
+        _require_identifier(outcome_id, label="outcome_id")
         brief = self._outcome_store.get_brief(outcome_id)
         if brief is None:
             return None
         return self._bundle_from_store(brief.topic_id).brief
+
+    def get_research_brief_v2(
+        self, *, topic_id: str | None = None, outcome_id: str | None = None,
+    ) -> ResearchBriefRecord | None:
+        if (topic_id is None) == (outcome_id is None):
+            raise ValueError("必须且只能提供topic_id或outcome_id")
+        if topic_id is not None:
+            self._require_topic_id(topic_id)
+            stored = self._outcome_store.get_bundle_rows(topic_id)
+            return self._revalidated_bundle(OutcomeBundle(*stored)).brief if stored else None
+        _require_identifier(outcome_id, label="outcome_id")
+        brief = self._outcome_store.get_brief(outcome_id)
+        if brief is None:
+            return None
+        return self._bundle_from_store(brief.topic_id).brief
+
+    def review_research_brief_v2(
+        self, *, outcome_id: str, expected_revision: int, content_sha256: str,
+        expected_input_revision: int, action: str, reason_code: str | None = None,
+    ) -> Any:
+        """Revalidate the displayed revision, then commit state and receipt once."""
+
+        _require_identifier(outcome_id, label="outcome_id")
+        if any(type(value) is not int or not 1 <= value <= 9223372036854775807
+               for value in (expected_revision, expected_input_revision)):
+            raise ValueError("review revision无效")
+        if type(content_sha256) is not str or re.fullmatch(r"[0-9a-f]{64}", content_sha256) is None:
+            raise ValueError("review content_sha256无效")
+        if action not in {"approve", "return"} or (
+            action == "approve" and reason_code is not None
+        ) or (action == "return" and reason_code not in {
+            "needs_revision", "insufficient_evidence", "other",
+        }):
+            raise ValueError("review action/reason_code无效")
+        current = self._outcome_store.get_brief(outcome_id)
+        if current is None:
+            raise self._not_found(stage="outcome_review", message="指定的研究成果不存在。")
+        bundle = self._bundle_from_store(current.topic_id)
+        brief = bundle.brief
+        assert brief is not None
+        if brief.binding_state != "verified":
+            raise PKVRuntimeError(
+                ErrorCode.OUTCOME_APPROVAL_BLOCKED, "历史研究成果的输入绑定尚未验证，请重新生成。",
+                stage="outcome_review", recoverable=True,
+            )
+        if (
+            brief.outcome_id != outcome_id or brief.revision != expected_revision
+            or brief.content_sha256 != content_sha256
+            or brief.rendered_input_revision != expected_input_revision
+            or bundle.topic.input_revision != expected_input_revision
+            or not self._input_binding_matches(bundle.topic, brief)
+        ):
+            raise PKVRuntimeError(
+                ErrorCode.OUTCOME_STATE_CONFLICT, "审阅确认与当前研究成果或输入版本不一致。",
+                stage="outcome_review", recoverable=True,
+            )
+        self._require_current_evidence(bundle)
+        if brief.visible_state in {OutcomeState.DRAFT, OutcomeState.NEEDS_REVIEW}:
+            raise PKVRuntimeError(
+                ErrorCode.OUTCOME_APPROVAL_BLOCKED, "当前研究成果尚不满足审阅条件。",
+                stage="outcome_review", recoverable=True,
+            )
+        if action == "approve":
+            if brief.visible_state is OutcomeState.RETURNED:
+                raise PKVRuntimeError(
+                    ErrorCode.OUTCOME_STATE_CONFLICT, "已退回的研究成果必须重新生成后再批准。",
+                    stage="outcome_review", recoverable=True,
+                )
+            self._require_approval_inputs(bundle)
+        committed = self._outcome_store.review_brief(
+            outcome_id=outcome_id, expected_revision=expected_revision,
+            content_sha256=content_sha256, expected_input_revision=expected_input_revision,
+            action=action, reason_code=reason_code,
+        )
+        # Return the committed receipt with its captured input context.  A later
+        # public read independently revalidates external sources/projection.
+        return replace(committed, brief=replace(
+            committed.brief, current_input_revision=bundle.topic.input_revision,
+            current_input_digest=bundle.topic.input_digest,
+            current_render_contract_version=bundle.topic.render_contract_version,
+        ))
 
 
 __all__ = ["OutcomeService"]

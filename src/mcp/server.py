@@ -12,6 +12,7 @@ PKV MCP Server 主入口
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from threading import RLock
 from typing import Any
@@ -327,7 +328,90 @@ def get_runtime_config_for_lifecycle(*, require_ready: bool = False) -> Any:
 # FastMCP 实例（模块级单例）
 # ============================================================
 
-mcp = FastMCP(
+_OUTCOME_V2_PARAMETERS = {
+    "get_outcome_v2": {"topic_id": "id"},
+    "get_outcome_research_brief_v2": {"topic_id": "optional_id", "outcome_id": "optional_id"},
+    "render_outcome_research_brief_v2": {"topic_id": "id"},
+    "approve_outcome_research_brief_v2": {
+        "outcome_id": "id", "expected_revision": "positive_int", "content_sha256": "sha256",
+        "expected_input_revision": "positive_int",
+    },
+    "return_outcome_research_brief_v2": {
+        "outcome_id": "id", "expected_revision": "positive_int", "content_sha256": "sha256",
+        "expected_input_revision": "positive_int", "reason_code": "reason",
+    },
+}
+
+
+def valid_outcome_v2_arguments(name: str, arguments: object) -> bool:
+    """Validate raw JSON scalars before FastMCP can coerce or discard fields."""
+
+    fields = _OUTCOME_V2_PARAMETERS.get(name)
+    if fields is None or type(arguments) is not dict or set(arguments) - set(fields):
+        return False
+    for field, kind in fields.items():
+        if field not in arguments and kind != "optional_id":
+            return False
+        value = arguments.get(field)
+        if kind == "optional_id" and value is None:
+            continue
+        if kind in {"id", "optional_id"}:
+            if type(value) is not str or re.fullmatch(r"[a-z][a-z0-9_-]{0,95}", value) is None:
+                return False
+        elif kind == "sha256":
+            if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                return False
+        elif kind == "positive_int":
+            if type(value) is not int or not 1 <= value <= 2**63 - 1:
+                return False
+        elif kind == "reason":
+            if type(value) is not str or value not in {"needs_revision", "insufficient_evidence", "other"}:
+                return False
+    if name == "get_outcome_research_brief_v2":
+        return (arguments.get("topic_id") is None) != (arguments.get("outcome_id") is None)
+    return True
+
+
+class _OutcomeV2FastMCP(FastMCP):
+    """Keep the new closed request contract outside legacy coercive parsing."""
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        if name in _OUTCOME_V2_PARAMETERS:
+            from src.mcp import tools
+
+            if not valid_outcome_v2_arguments(name, arguments):
+                return tools._outcome_v2_failure_payload(ValueError("invalid outcome request"), operation=name)
+            # FastMCP also JSON-decodes optional string values before validation
+            # (for example the legal identifier "null").  These five handlers
+            # receive the already-validated original values without conversion.
+            return await getattr(tools, name)(**arguments)
+        return await super().call_tool(name, arguments)
+
+    async def list_tools(self) -> list[Any]:
+        tools = await super().list_tools()
+        for index, tool in enumerate(tools):
+            fields = _OUTCOME_V2_PARAMETERS.get(tool.name)
+            if fields is None:
+                continue
+            schema = dict(tool.inputSchema)
+            schema["additionalProperties"] = False
+            properties = {name: dict(value) for name, value in schema.get("properties", {}).items()}
+            for field, kind in fields.items():
+                if kind in {"id", "optional_id"}:
+                    properties[field]["pattern"] = "^[a-z][a-z0-9_-]{0,95}$"
+                elif kind == "sha256":
+                    properties[field]["pattern"] = "^[0-9a-f]{64}$"
+                elif kind == "positive_int":
+                    properties[field]["minimum"] = 1
+                    properties[field]["maximum"] = 2**63 - 1
+                elif kind == "reason":
+                    properties[field]["enum"] = ["needs_revision", "insufficient_evidence", "other"]
+            schema["properties"] = properties
+            tools[index] = tool.model_copy(update={"inputSchema": schema})
+        return tools
+
+
+mcp = _OutcomeV2FastMCP(
     name="Personal Knowledge Vault",
     instructions=(
         "个人知识库 MCP 服务。支持知识搜索、归档、浏览、关联推荐、关系推理、可追溯成果和统计。\n"
@@ -338,13 +422,16 @@ mcp = FastMCP(
         "explain_relation（关系解释）、collect_evidence（证据聚合）、"
         "find_bridges（桥接发现）、timeline_of（弱时间线）、"
         "contrast（主题对比）、get_outcome（成果读取）、"
-        "suggest_outcome_evidence（严格 BM25 成果证据候选）。\n"
+        "suggest_outcome_evidence（严格 BM25 成果证据候选）、"
+        "get_outcome_v2、get_outcome_research_brief_v2（精确版本成果视图）。\n"
         "写入工具：archive_url（归档网页）、archive_text（归档文本）、"
         "execute_embedding_rebuild（执行已确认的 generation rebuild）、"
         "create_outcome_topic、attach_outcome_evidence、detach_outcome_evidence、"
         "create_outcome_claim、revise_outcome_claim、link_outcome_claim_evidence、"
         "unlink_outcome_claim_evidence、render_outcome_research_brief、"
-        "approve_outcome_research_brief、return_outcome_research_brief。\n"
+        "approve_outcome_research_brief、return_outcome_research_brief、"
+        "render_outcome_research_brief_v2、approve_outcome_research_brief_v2、"
+        "return_outcome_research_brief_v2。旧 approve/return 将于 API major 2 移除，请使用对应 v2 工具。\n"
         "Prompt 模板：search_and_summarize、knowledge_qa、idea_sharpen。\n"
         "知识条目包含标题、摘要、标签、全文等信息。"
     ),

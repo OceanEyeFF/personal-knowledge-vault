@@ -287,6 +287,8 @@ try {
                 "tests\blackbox\test_mcp_blackbox.py",
                 "tests\blackbox\test_r4_mcp_fullflow.py",
                 "tests\blackbox\test_embedding_rebuild_mcp_blackbox.py",
+                "tests\blackbox\test_outcome_mcp_blackbox.py",
+                "tests\blackbox\test_w3_outcome_mcp_blackbox.py",
                 "tests\e2e\test_mcp_e2e_archive.py",
                 "tests\e2e\test_mcp_e2e_knowledge_qa.py",
                 "tests\e2e\test_mcp_e2e_search.py",

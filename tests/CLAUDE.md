@@ -20,6 +20,8 @@
 
 - 默认自动化只经 `scripts/run-test.ps1` 启动。本地 pytest 作为其 Direct 子命令运行，包装器把调用路由到 `tests/offline_entrypoint.py pytest`，并把继承的 `PYTEST_ADDOPTS` 收敛为 `--strict-markers`；bootstrap 在 pytest/plugin 导入前建立 G0，根 `tests/conftest.py` 再维持逐用例隔离。`--noconftest`、`--confcutdir`、`-c`、`--rootdir`、外部 collection target 和前置 plugin 都会被拒绝。
 - CLI/MCP 离线子进程由 `tests/offline_entrypoint.py` 启动。
+- 仅经严格验证的合成 Provider 配置子进程在环境清理后设置 loopback `NO_PROXY`，避免
+  HTTPX 重新发现 Windows 系统代理；网络 guard 仍只允许本次 harness 的精确端口，其他端口和外部地址继续拒绝。
 - Direct Python（FT7）只允许显式 test-safe target：pytest、`setup-test-db.py`、`rebuild-dev-vault.py`、受控 consistency checker、`src.cli.commands`、`src.mcp.server`、`src.utils.verify_setup` 和固定 MCP 评测；其他仓库脚本/模块（含 build helper）会在创建 DataRoot 前拒绝，`-c`、stdin 与解释器 flags 同样拒绝。入口用同进程 `runpy`，在产品导入前清理 live/secret/proxy、安装 base-only Config、网络 guard 与子进程 guard。
 - FT7 是 Python 进程内 guard，不是 OS sandbox。非 Python Direct 仍须经过 wrapper，但不属于 Python G0、也不保证离线，必须单独审查。
 - `scripts/setup-test-db.py` 只能经 FT7 运行，输出必须精确位于本次所选 `DATA_DIR`（默认 `DB_PATH`）。
@@ -123,10 +125,11 @@
 | `test_embedding_rebuild_mcp_blackbox.py` | public MCP stdio rebuild Tool、fenced Provider barrier、全新 server 读取/检索闭环 |
 | `test_outcome_cli_blackbox.py` | public CLI Topic → Evidence → Claim → research brief → fresh-process read；验证 stale/missing projection 与路径脱敏 |
 | `test_outcome_mcp_blackbox.py` | real MCP stdio/JSON-RPC Topic → review → new-server read；严格 BM25/URL credential rejection 与 missing projection 合同 |
+| `test_w3_outcome_cli_blackbox.py` / `test_w3_outcome_mcp_blackbox.py` | v2 publication/review 四元组、幂等重放、漂移拒绝、v1 弃用警告与独立新进程读取 |
 
 **MCP 黑盒测试**: 仅经 `tests/offline_entrypoint.py mcp` 启动 base-only 子进程，并由 MCP SDK 经 JSON-RPC over stdio 端到端验证；不得直接启动默认配置入口。验证:
 - 服务启动与协议初始化(MCP 握手)
-- 功能发现（当前 manifest：`list_tools=30`，其中 17 个只读、13 个写入；`list_prompts=3`、2 个静态 Resource、7 个 Resource Template；后两者分别由 `list_resources` / `list_resource_templates` 发现）
+- 功能发现（当前 manifest：`list_tools=35`，其中 19 个只读、16 个写入；`list_prompts=3`、2 个静态 Resource、7 个 Resource Template；后两者分别由 `list_resources` / `list_resource_templates` 发现）
 - 只读 Tool 端到端调用 (含分页/过滤)
 - 写入 Tool 安全拦截 (SSRF/空文本/超长文本)
 - Prompt 端到端调用
@@ -438,6 +441,21 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 
 ## 变更记录 (Changelog)
 
+### 2026-10-25（W3 Outcome 验收）
+
+- 新增 229 项全部通过，原 W1 子集为 29 passed / 5 known failures；完整 MCP 为
+  835 passed、95.54% coverage。默认 P0 遇磁盘满后完整补跑异常文件，按节点去重为
+  3706 passed、21 skipped、5 known failures、0 errors，不称单轮全量通过。
+- 新增 Store、Service、真实进程、SDK、CLI/MCP 与合成迁移回归；OC-02 在输入提交后让
+  子进程退出，由全新进程核实 revision 只推进一次。r1/r2/r4 发布测试覆盖孤儿采用、
+  改输入分离以及 pointer 已提交但响应中断；事务故障注入与真实进程证据分别登记。
+- 014/schema 1.2.8 的合成升级、伪 schema/坏绑定零写拒绝及本地 source-free wheel 均进入
+  默认 source 收集；MCP 专用 lane 同时包含旧 Outcome 和新 v2 黑盒。
+- 原 W1/W2 登记与红例保持原样；R-04 的旧无版本入口、R-02 D 争锁、R-06 日/月预算仍是
+  W4–W5 的已知失败，不新增 skip/xfail。实际结果见
+  [W3 记录](../docs/overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)和
+  [W3 JSON](./contracts/w3_lifecycle_repairs.v1.json)。
+
 ### 2026-10-25（W2 生命周期修复验收）
 
 - 新增 W2 identity、Q1 恢复/新进程及 CLI 叶子门禁测试；扩展 W1 CLI 三状态矩阵，保留
@@ -576,6 +594,6 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-09-03
+**最后更新**: 2026-10-25
 
 *本文档由 Claude Code 自动生成*

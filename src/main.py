@@ -78,6 +78,18 @@ _COMMAND_POLICIES = {
     "outcome render": "mutation",
     "outcome approve": "mutation",
     "outcome return": "mutation",
+    "outcome get-v2": "read",
+    "outcome brief-v2": "read",
+    "outcome render-v2": "mutation",
+    "outcome approve-v2": "mutation",
+    "outcome return-v2": "mutation",
+}
+_OUTCOME_V2_OPERATIONS = {
+    "outcome get-v2": "get_outcome_v2",
+    "outcome brief-v2": "get_outcome_research_brief_v2",
+    "outcome render-v2": "render_outcome_research_brief_v2",
+    "outcome approve-v2": "approve_outcome_research_brief_v2",
+    "outcome return-v2": "return_outcome_research_brief_v2",
 }
 # Keep this list explicit and fail closed for future commands.  A degraded
 # runtime can expose already-committed data, but it must never accept another
@@ -151,7 +163,17 @@ def _attach_runtime_gate(command: click.Command) -> None:
         if policy is None:
             raise click.ClickException("Command has no registered runtime policy.")
         if policy in {"read", "mutation"}:
-            _prepare_cli_runtime(command_name=command_name)
+            try:
+                _prepare_cli_runtime(command_name=command_name)
+            except (PKVRuntimeError, _StartupProjectionError) as exc:
+                operation = _OUTCOME_V2_OPERATIONS.get(command_name)
+                if operation is not None:
+                    module = importlib.import_module("src.cli.commands")
+                    module._outcome_v2_failure(
+                        exc, operation=operation, startup=True,
+                        startup_projection=exc.payload if isinstance(exc, _StartupProjectionError) else None,
+                    )
+                raise
         return callback(*args, **kwargs)
 
     command.callback = _gated_callback

@@ -210,10 +210,12 @@ class AuditOperation:
         """Prevent a false rollback-like outcome after an irreversible commit.
 
         This narrow escape hatch is for a mutation boundary that has already
-        durably committed its own state *and* recorded an ``activation_intent``
-        audit event, but whose final ``completed`` append failed (for example a
-        full disk).  No audit record is fabricated: the caller must return an
-        explicit reconciliation warning instead.  Marking the timeline terminal
+        durably committed its own state, backed by an ``activation_intent``
+        event or an atomic Outcome review receipt, but whose final ``completed``
+        append failed (for example a full disk). No audit record is fabricated.
+        Generation callers must return their explicit reconciliation warning;
+        Outcome review callers return the durable receipt without claiming that
+        its auxiliary audit append completed. Marking the timeline terminal
         stops the context manager from retrying a second terminal append and
         masking that committed outcome as an uncommitted failure.
         """

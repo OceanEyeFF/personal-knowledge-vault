@@ -1,0 +1,1461 @@
+{
+  "schema_version": "pkv.lifecycle.w3-repairs.v1",
+  "truth_source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+  "sources": {
+    "interface_contract": "docs/specs/interfaces/生命周期一致性v2接口冻结合同-2026-10.md",
+    "migration_contract": "docs/specs/database/生命周期一致性迁移冻结方案-2026-10.md",
+    "case_matrix": "docs/overview/P1-B-可追溯知识成果最小合同实施计划-2026-09.md",
+    "implementation_record": "docs/overview/W3-Outcome一致性与版本审批实施记录-2026-10.md",
+    "previous_registry": "tests/contracts/w2_lifecycle_repairs.v1.json"
+  },
+  "purpose": "W3 Outcome consistency and synthetic migration evidence; component results do not constitute final whole-tree acceptance.",
+  "lane": "source",
+  "default_collection": true,
+  "skip_or_xfail_added": false,
+  "scope": {
+    "phase": "W3",
+    "resolved_in_implementation": [
+      "R-03",
+      "R-05"
+    ],
+    "legacy_known_gap": [
+      "R-04"
+    ],
+    "acceptance_status": "W3_verified_with_registered_W4_W5_gaps",
+    "out_of_scope": [
+      "W4 embedding rebuild recovery/budget retry",
+      "W5 API-major-2 cutover",
+      "real user data migration",
+      "release"
+    ]
+  },
+  "versions": {
+    "sdk": "0.9.0",
+    "api": "1.0.0",
+    "api_major": 1,
+    "sqlite_schema": "1.2.8",
+    "migration": "014_add_lifecycle_consistency.sql",
+    "new_capabilities": [
+      "kernel.traceable-outcomes.v2"
+    ],
+    "all_v1_capabilities_retained": true,
+    "embedding_v2_advertised": false,
+    "legacy_review": "Original signatures and successful v1 semantics retained with deprecation; legacy refusal belongs to W5.",
+    "mcp_tools": {
+      "total": 35,
+      "read_only": 19,
+      "write": 16
+    }
+  },
+  "provenance": {
+    "git_commit": "009c48d",
+    "worktree": "W3 uncommitted implementation on clean checkpoint 009c48d",
+    "product_diff": ".data-test/w3-20261025-evidence/reports/final-product-v2.diff",
+    "product_diff_git_blob": "1f1f92f1708b84d703ace8278779b29525aeb8b4",
+    "product_file_manifest": ".data-test/w3-20261025-evidence/reports/final-product-files.sha256",
+    "product_file_manifest_sha256": "be93a9bc696ac042865a2beee2139837852d04a437da58acfa794487f80e9720",
+    "source_test_manifest": ".data-test/w3-20261025-evidence/reports/final-source-tests-v4.sha256",
+    "source_test_manifest_sha256": "e0fca65767ab302cfbec27a0d9b824674be5b091664e34cd9edcf4b41699d895",
+    "source_test_manifest_status": "frozen for recovery; v3-to-v4 changes only tests/unit/test_local_wheel_contract.py error-code oracle; all product fingerprints unchanged",
+    "historical_source_test_manifest": ".data-test/w3-20261025-evidence/reports/final-source-tests-v3.sha256",
+    "historical_source_test_manifest_sha256": "048b868a641b6c8863517aa8f3f655e1f1d11f8769175a76ddd5277a3631e12a",
+    "registry_excluded_from_manifest": true,
+    "component_provenance": "Service/process overlapped later Store hardening; adapter component overlapped CLI error-stage presentation adjustment. Final P0/MCP and separately identified supplemental evidence take precedence.",
+    "component_counts_are_not_additive": true
+  },
+  "runs": [
+    {
+      "id": "w3-p0-recovery",
+      "job_id": "j-tnwjm0",
+      "status": "completed_with_known_gap_failures",
+      "evidence_scope": "all_failed_or_error_files_recovery",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:/Users/fdch0/.codex/visualizations/2026/10/24/01a16d09-1b0f-7603-a95d-8ae34264fc7c/w3-recover-p0.ps1",
+      "command_script": ".data-test/w3-20261025-evidence/reports/w3-recover-p0.ps1",
+      "data_root": ".data-test/w3-p0-recovery-20261025",
+      "live_log": "C:/Users/fdch0/.fastctx/jobs/j-tnwjm0/output.log",
+      "log": ".data-test/w3-20261025-evidence/reports/p0-recovery.log",
+      "log_status": "archived and SHA256 verified",
+      "log_sha256": "98bbb201f777e72d3f19f6b56bacb7680aa8235328fb946fc3750046acfc5b3f",
+      "exit_code": 1,
+      "collection_total": 1082,
+      "collected": 1076,
+      "deselected": 6,
+      "passed": 1059,
+      "failed": 5,
+      "errors": 0,
+      "skipped": 12,
+      "xfail": 0,
+      "warnings": 2,
+      "duration_seconds": 1498.35,
+      "source_test_manifest": ".data-test/w3-20261025-evidence/reports/final-source-tests-v4.sha256",
+      "selection": ".data-test/w3-20261025-evidence/reports/p0-recovery-selection.json",
+      "selection_sha256": "a7bacd541ff6d08f1f62c97e30b5d856474a906bb70a172eceb901c658ee841a",
+      "original_failure_or_error_nodes": 869,
+      "selected_complete_files": 46,
+      "marker_expression": "not manual and not network and not artifact and not windows_release_env",
+      "additional_filter_added": false,
+      "interpretation": "Re-executes all 46 complete files containing any original FAILED/ERROR summary, including known W4/W5 gaps. It is not a repeat of the whole 3732-case P0 selection and its passed count must not be added to 2852 to claim one full run."
+    },
+    {
+      "id": "w3-phase-c",
+      "job_id": "j-80r2qh",
+      "status": "passed",
+      "evidence_scope": "offline_quality_gate",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-phase-c-20261025 python -m evals.mcp_quality --enforce-thresholds --output .data-test/w3-phase-c-20261025/result.json",
+      "log": ".data-test/w3-20261025-evidence/reports/phase-c.log",
+      "result": ".data-test/w3-20261025-evidence/reports/phase-c-result.json",
+      "exit_code": 0,
+      "tasks_passed": 16,
+      "tasks_total": 16,
+      "checks_passed": 151,
+      "checks_total": 151,
+      "overall_score": 1.0,
+      "all_dimension_scores": 1.0,
+      "targets_met": true,
+      "thresholds_met": true
+    },
+    {
+      "id": "w3-static",
+      "job_id": "j-rz0f6s",
+      "status": "passed",
+      "evidence_scope": "changed_product_static_errors",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-static-20261025 ruff check pkv_kernel src/outcomes src/storage/outcome_store.py src/storage/outcome_migration.py src/storage/migration_manager.py src/application/knowledge_application.py src/kernel/facade.py src/main.py src/cli/commands.py src/mcp/tools.py src/mcp/server.py src/runtime/lifecycle.py src/runtime/errors.py src/runtime/audit.py --select E9,F63,F7,F82",
+      "log": ".data-test/w3-20261025-evidence/reports/static.log",
+      "exit_code": 0,
+      "interpretation": "No serious syntax/undefined-control errors in changed product scope; not a full style lint claim."
+    },
+    {
+      "id": "w3-sdk-legacy-supplement",
+      "job_id": "j-l6on7k",
+      "date": "2026-10-25",
+      "status": "passed",
+      "evidence_scope": "supplemental_component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-sdk-legacy-20261025 pytest tests/unit/test_w3_outcome_public.py::test_public_v2_refuses_review_of_migrated_legacy_brief -vv --tb=short",
+      "data_root": ".data-test/w3-sdk-legacy-20261025",
+      "log": ".data-test/w3-sdk-legacy-20261025/pytest.log",
+      "archived_log": ".data-test/w3-20261025-evidence/reports/migrated-legacy-public-review.log",
+      "log_sha256": "8652df3aa6733ac7178b5652c99a595779f2b4e48e605a162fd608aa66e2cd62",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "duration_seconds": 8.09,
+      "nodeids": [
+        "tests/unit/test_w3_outcome_public.py::test_public_v2_refuses_review_of_migrated_legacy_brief"
+      ],
+      "test_file_sha256": "a08c5fc018cc39e351c2381f80c5c5fd1fe22842c101cd12cb0dcac2609fd1f9",
+      "interpretation": "Additional unique SDK test after the 84-case component run. Synthetic 013 legacy approved brief has actual current evidence, supported linked claim and matching projection. Formal 014 migration leaves historical binding unverified; public v2 read withholds confirmation and approve refuses without DB/Markdown changes or receipt. Earlier fixture preparation/assertion errors were corrected without product changes."
+    },
+    {
+      "id": "w3-mcp-initial-diagnostic",
+      "job_id": "j-v9taie",
+      "status": "failed",
+      "evidence_scope": "diagnostic_whole_mcp",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-conda.ps1 -EnvironmentName py311-private -Suite MCP",
+      "data_root": ".data-test/conda-fcf4f622/mcp-coverage",
+      "log": ".data-test/w3-20261025-evidence/reports/mcp-initial.log",
+      "log_sha256": "d4887f3c51cac160a785d8dfb8f09a12bb255fd6c11b95e62d488caa84d8c181",
+      "exit_code": 1,
+      "passed": 830,
+      "failed": 5,
+      "deselected": 5,
+      "duration_seconds": 914.55,
+      "coverage_percent": 95.54,
+      "known_failed_nodeids": [
+        "tests/blackbox/test_r4_mcp_fullflow.py::test_mcp_stdio_archive_restart_vector_and_hybrid_fullflow",
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_stdio_public_rebuild_activates_and_searches_after_new_server",
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_reloads_current_policy_before_executing_a_submitted_plan",
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_rebuild_confirmation_is_root_bound_across_fresh_servers"
+      ],
+      "additional_failure": "tests/blackbox/test_mcp_blackbox.py::TestServerStartup::test_unready_runtime_starts_status_only_without_mutation: stale count 30 versus 35; corrected test passes in j-anvm0o (1 passed, 3.99s).",
+      "interpretation": "One outdated compatibility assertion and four offline harness proxy-routing failures. Coverage alone does not make the failed suite accepted."
+    },
+    {
+      "id": "w3-mcp-proxy-reproduction",
+      "job_id": "j-24p5yo",
+      "status": "failed",
+      "evidence_scope": "test_environment_diagnostic",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-mcp-provider-repro-20261025 pytest tests/blackbox/test_r4_mcp_fullflow.py::test_mcp_stdio_archive_restart_vector_and_hybrid_fullflow tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_stdio_public_rebuild_activates_and_searches_after_new_server tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_reloads_current_policy_before_executing_a_submitted_plan tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_rebuild_confirmation_is_root_bound_across_fresh_servers --cov=src.mcp --cov-report=term-missing -q",
+      "data_root": ".data-test/w3-mcp-provider-repro-20261025",
+      "log": "C:/Users/fdch0/.fastctx/jobs/j-24p5yo/output.log",
+      "exit_code": 1,
+      "passed": 0,
+      "failed": 4,
+      "duration_seconds": 148.24,
+      "failed_nodeids": [
+        "tests/blackbox/test_r4_mcp_fullflow.py::test_mcp_stdio_archive_restart_vector_and_hybrid_fullflow",
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_stdio_public_rebuild_activates_and_searches_after_new_server",
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_reloads_current_policy_before_executing_a_submitted_plan",
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_rebuild_confirmation_is_root_bound_across_fresh_servers"
+      ],
+      "interpretation": "All four failures reproduce registry-proxy routing outside the offline harness endpoint; harness request_count was zero."
+    },
+    {
+      "id": "w3-mcp-proxy-fix-targeted",
+      "job_id": "j-venmjo",
+      "status": "passed",
+      "evidence_scope": "test_environment_component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-mcp-proxy-fixed-20261025 pytest tests/unit/test_w3_offline_proxy_isolation.py tests/unit/test_offline_runtime.py tests/blackbox/test_r4_mcp_fullflow.py::test_mcp_stdio_archive_restart_vector_and_hybrid_fullflow tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_stdio_public_rebuild_activates_and_searches_after_new_server tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_reloads_current_policy_before_executing_a_submitted_plan tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_rebuild_confirmation_is_root_bound_across_fresh_servers --cov=src.mcp --cov-report=term-missing -q",
+      "data_root": ".data-test/w3-mcp-proxy-fixed-20261025",
+      "log": "C:/Users/fdch0/.fastctx/jobs/j-venmjo/output.log",
+      "exit_code": 0,
+      "passed": 69,
+      "failed": 0,
+      "duration_seconds": 150.45,
+      "counts": {
+        "new_proxy_cases": 2,
+        "existing_offline_runtime": 63,
+        "blackbox": 4
+      },
+      "nodeids": [
+        "tests/unit/test_w3_offline_proxy_isolation.py::test_only_validated_provider_child_bypasses_system_proxy_and_keeps_endpoint_guard[ordinary_child]",
+        "tests/unit/test_w3_offline_proxy_isolation.py::test_only_validated_provider_child_bypasses_system_proxy_and_keeps_endpoint_guard[validated_provider_child]",
+        "tests/blackbox/test_r4_mcp_fullflow.py::test_mcp_stdio_archive_restart_vector_and_hybrid_fullflow",
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_stdio_public_rebuild_activates_and_searches_after_new_server",
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_reloads_current_policy_before_executing_a_submitted_plan",
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_rebuild_confirmation_is_root_bound_across_fresh_servers"
+      ],
+      "coverage_percent": 30.98,
+      "coverage_gate_status": "not_a_whole_suite_gate_run",
+      "coverage_interpretation": "Focused selection covered 30.98% of src.mcp; this is not the 95% whole-suite coverage gate."
+    },
+    {
+      "id": "w3-p0-interrupted-diagnostic",
+      "job_id": "j-wlx0th",
+      "status": "interrupted_by_root",
+      "evidence_scope": "diagnostic_incomplete",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-conda.ps1 -EnvironmentName py311-private -Suite P0",
+      "log": "C:/Users/fdch0/.fastctx/jobs/j-wlx0th/output.log",
+      "exit_code": null,
+      "passed": null,
+      "failed": null,
+      "interpretation": "Root replaces this run after final supplemental tests and test-environment fixes. An interrupted run is not acceptance evidence."
+    },
+    {
+      "id": "w3-store",
+      "job_id": "j-iw8fgt",
+      "date": "2026-10-25",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-store-final-v3 pytest tests/unit/test_w3_outcome_store.py -vv --tb=short",
+      "data_root": ".data-test/w3-store-final-v3",
+      "log": ".data-test/w3-outcome-store-evidence/reports/final-65-passed.log",
+      "exit_code": 0,
+      "passed": 65,
+      "failed": 0,
+      "duration_seconds": 186.44,
+      "log_sha256": "8e6dbb1ac426e066570b780d874b1079c8819069559bf266376b0a0409beb2aa",
+      "unique_cases": 65
+    },
+    {
+      "id": "w3-store-snapshot",
+      "job_id": "j-fosgli",
+      "date": "2026-10-25",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-store-snapshot-final pytest tests/unit/test_w3_outcome_store.py::test_read_bundle_uses_one_snapshot_across_independent_writer -vv --tb=short",
+      "data_root": ".data-test/w3-store-snapshot-final",
+      "log": ".data-test/w3-outcome-store-evidence/reports/snapshot-oracle-1-passed.log",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "duration_seconds": 6.2,
+      "log_sha256": "f6d79d81dc3adb30cf4f6e0eb145b729b420da8861a7045a786563f6a356023e",
+      "rerun_of_existing_nodeid": true,
+      "interpretation": "Same product; test now asserts writer committed outside SQLite callback. This is one of the 65 Store cases, not a 66th unique case."
+    },
+    {
+      "id": "w3-service-process",
+      "job_id": "j-y5ifin",
+      "date": "2026-10-25",
+      "status": "completed_with_known_gap_failures",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-outcome-final-20261025 pytest tests/unit/test_w3_outcome_service.py tests/unit/test_w3_outcome_process.py tests/unit/test_traceable_outcomes.py tests/unit/test_w1_outcome_regressions.py tests/unit/test_kernel_wrapper_boundary.py -q",
+      "data_root": ".data-test/w3-outcome-final-20261025",
+      "log": "C:/Users/fdch0/.fastctx/jobs/j-y5ifin/output.log",
+      "exit_code": 1,
+      "passed": 69,
+      "failed": 2,
+      "duration_seconds": 308.97,
+      "warnings": 2,
+      "failed_nodeids": [
+        "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[approve]",
+        "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[return]"
+      ],
+      "nodeid_manifest": ".data-test/w3-outcome-final-20261025/tmp/pytest-cache/v/cache/nodeids",
+      "interpretation": "All 35 new service and 9 publication process cases passed; only two unchanged W1 R-04 legacy assertions failed. Store hardening continued during this component run."
+    },
+    {
+      "id": "w3-oc02-os-exit",
+      "job_id": "j-gzk0iz",
+      "date": "2026-10-25",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-outcome-oc02-20261025 pytest tests/unit/test_w3_outcome_process.py::test_input_commit_survives_child_exit_before_response -q",
+      "data_root": ".data-test/w3-outcome-oc02-20261025",
+      "log": "C:/Users/fdch0/.fastctx/jobs/j-gzk0iz/output.log",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "duration_seconds": 14.96,
+      "interpretation": "Real writer child os._exit(73) after Store commit; separate new reader child uses public v2."
+    },
+    {
+      "id": "w3-migration",
+      "job_id": "j-qea6kx",
+      "date": "2026-10-25",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "& ./scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-migration-dev5 -Command @(\"python\", \"-m\", \"pytest\", \"tests/unit/test_w3_outcome_migration.py\", \"-q\", \"--tb=short\")",
+      "data_root": ".data-test/w3-migration-dev5",
+      "log": "C:/Users/fdch0/.fastctx/jobs/j-qea6kx/output.log",
+      "exit_code": 0,
+      "passed": 23,
+      "failed": 0,
+      "duration_seconds": 54.25,
+      "interpretation": "Synthetic SQLite/files; explicit in-process fault seams, not OS kill or power loss."
+    },
+    {
+      "id": "w3-sdk",
+      "job_id": "j-vuxig7",
+      "date": "2026-10-25",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-sdk-20261025-boundary pytest tests/unit/test_w3_outcome_public.py tests/unit/test_kernel_wrapper_boundary.py -vv --tb=short",
+      "data_root": ".data-test/w3-sdk-20261025-boundary",
+      "log": ".data-test/w3-sdk-20261025-boundary/pytest.log",
+      "exit_code": 0,
+      "passed": 84,
+      "failed": 0,
+      "duration_seconds": 20.8,
+      "new_public_cases": 75,
+      "existing_boundary_cases": 9,
+      "nodeid_manifest": ".data-test/w3-sdk-20261025-boundary/tmp/pytest-cache/v/cache/nodeids"
+    },
+    {
+      "id": "w3-adapters",
+      "job_id": "j-jqg45o",
+      "date": "2026-10-25",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-adapter-20261025-full pytest tests/blackbox/test_w3_outcome_cli_blackbox.py tests/blackbox/test_w3_outcome_mcp_blackbox.py tests/blackbox/test_outcome_cli_blackbox.py tests/blackbox/test_outcome_mcp_blackbox.py -vv --tb=short",
+      "data_root": ".data-test/w3-adapter-20261025-full",
+      "log": ".data-test/w3-adapter-20261025-full/pytest.log",
+      "exit_code": 0,
+      "passed": 21,
+      "failed": 0,
+      "duration_seconds": 230.03,
+      "new_cases": 18,
+      "existing_cases": 3,
+      "interpretation": "Real offline CLI/MCP children; 21 includes 18 new and 3 existing cases. CLI error-stage presentation changed during this component run. Later complete MCP and deduplicated P0 evidence verify the final applicable sources."
+    },
+    {
+      "id": "w3-final-p0",
+      "job_id": "j-xzsc95",
+      "status": "failed_environment_and_oracle",
+      "evidence_scope": "complete_p0_attempt_with_disk_exhaustion",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-conda.ps1 -EnvironmentName py311-private -Suite P0",
+      "data_root": ".data-test/conda-26ab9681/offline",
+      "log": ".data-test/w3-20261025-evidence/reports/p0-initial-disk-exhausted.log",
+      "log_sha256": "8d27b32a01005d191d4254e08d7ac39347a7b0e170b52bd2ef2070cd168770ce",
+      "exit_code": 1,
+      "collected": 3732,
+      "collection_total": 3951,
+      "deselected": 219,
+      "passed": 2852,
+      "failed": 71,
+      "errors": 798,
+      "skipped": 11,
+      "xfail": 0,
+      "warnings": 38,
+      "duration_seconds": 2414.36,
+      "source_test_manifest": ".data-test/w3-20261025-evidence/reports/final-source-tests-v3.sha256",
+      "interpretation": "All 3732 selected cases reached terminal outcomes; the attempt failed during disk exhaustion and one new wheel-probe expectation was wrong. This is not a passing P0 run. Subsequent recovery covers every failed/error file without discarding known gaps."
+    },
+    {
+      "id": "w3-final-mcp",
+      "job_id": "j-j2zbrm",
+      "status": "passed",
+      "evidence_scope": "final_product_and_mcp_lane_sources",
+      "source_test_manifest": ".data-test/w3-20261025-evidence/reports/final-source-tests-v3.sha256",
+      "subsequent_v4_delta": "Only tests/unit/test_local_wheel_contract.py changed; it is outside this MCP selection. Product files and every MCP lane test/entrypoint are byte-identical between v3 and v4.",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-conda.ps1 -EnvironmentName py311-private -Suite MCP",
+      "data_root": ".data-test/conda-28d49775/mcp-coverage",
+      "log": ".data-test/w3-20261025-evidence/reports/final-mcp.log",
+      "log_sha256": "400eb72be5a87e3968c71058fcd25ea45c7a6c77367b4812bd73413a82538f9f",
+      "exit_code": 0,
+      "collected": 835,
+      "passed": 835,
+      "failed": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "deselected": 5,
+      "duration_seconds": 865.58,
+      "coverage_percent": 95.54,
+      "coverage_statements": 2085,
+      "coverage_missed": 93,
+      "coverage_required_percent": 95,
+      "data_root_retention": "Standard successful-suite cleanup removed the isolated run directory; complete log is archived.",
+      "interpretation": "Complete MCP gate passed on frozen product and final proxy-isolated test entrypoint. All five initial failures are resolved."
+    }
+  ],
+  "requirements": [
+    {
+      "case_id": "OC-01",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "Input rows/edges, revision/digest and brief invalidation commit or roll back together; normalized no-op does not advance identity.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-store"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_store.py::test_input_mutation_advances_once_and_invalidates_in_one_commit[topic]",
+            "tests/unit/test_w3_outcome_store.py::test_input_mutation_advances_once_and_invalidates_in_one_commit[evidence_add]",
+            "tests/unit/test_w3_outcome_store.py::test_input_mutation_advances_once_and_invalidates_in_one_commit[evidence_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_input_mutation_advances_once_and_invalidates_in_one_commit[evidence_state]",
+            "tests/unit/test_w3_outcome_store.py::test_input_mutation_advances_once_and_invalidates_in_one_commit[claim_add]",
+            "tests/unit/test_w3_outcome_store.py::test_input_mutation_advances_once_and_invalidates_in_one_commit[claim_update]",
+            "tests/unit/test_w3_outcome_store.py::test_input_mutation_advances_once_and_invalidates_in_one_commit[edge_change]",
+            "tests/unit/test_w3_outcome_store.py::test_input_mutation_advances_once_and_invalidates_in_one_commit[edge_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-topic]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-evidence_add]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-evidence_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-evidence_state]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-claim_add]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-claim_update]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-edge_change]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-edge_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-topic]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-evidence_add]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-evidence_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-evidence_state]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-claim_add]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-claim_update]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-edge_change]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-edge_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-topic]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-evidence_add]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-evidence_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-evidence_state]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-claim_add]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-claim_update]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-edge_change]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-edge_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_normalized_noops_leave_all_identities_and_approval_unchanged",
+            "tests/unit/test_w3_outcome_store.py::test_batch_state_change_advances_topic_only_once",
+            "tests/unit/test_w3_outcome_store.py::test_revision_overflow_rejects_and_rolls_back_mutation"
+          ],
+          "evidence_boundary": "Actual synthetic SQLite. 24 faults deny targeted UPDATE through set_authorizer before execution, followed by independent Store reads. Not OS kill."
+        },
+        {
+          "run_evidence": [
+            "w3-service-process"
+          ],
+          "nodeids": [
+            "tests/unit/test_w1_outcome_regressions.py::test_r03_input_and_brief_invalidation_roll_back_together"
+          ],
+          "evidence_boundary": "Original W1 assertion retained without skip/xfail."
+        }
+      ]
+    },
+    {
+      "case_id": "OC-02",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "After input commit and response loss, a new process observes exactly one revision advance, new digest/claim and needs_review, with unchanged pointer/Markdown.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-oc02-os-exit"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_process.py::test_input_commit_survives_child_exit_before_response"
+          ],
+          "evidence_boundary": "Real writer OS child calls Store.update_claim then os._exit(73) before Application response/audit/lease unwind; a separate new OS reader calls public v2 and verifies zero writes/lease. Not SIGKILL or power loss."
+        }
+      ]
+    },
+    {
+      "case_id": "OC-03",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "Unverifiable historical or mismatched binding exposes needs_review and no confirmation while preserving stored history and preventing review.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-service-process"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_service.py::test_read_detects_input_binding_mismatch_without_writer_or_write"
+          ],
+          "evidence_boundary": "Actual stored approved brief with mismatched rendered input: effective needs_review, projection current, unchanged DB bytes, no writer lease."
+        },
+        {
+          "run_evidence": [
+            "w3-sdk"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_public.py::test_unverifiable_brief_never_receives_a_review_confirmation[changes0]",
+            "tests/unit/test_w3_outcome_public.py::test_unverifiable_brief_never_receives_a_review_confirmation[changes1]",
+            "tests/unit/test_w3_outcome_public.py::test_unverifiable_brief_never_receives_a_review_confirmation[changes2]",
+            "tests/unit/test_w3_outcome_public.py::test_unverifiable_brief_never_receives_a_review_confirmation[changes3]",
+            "tests/unit/test_w3_outcome_public.py::test_unverifiable_brief_never_receives_a_review_confirmation[changes4]",
+            "tests/unit/test_w3_outcome_public.py::test_unverifiable_brief_never_receives_a_review_confirmation[changes5]",
+            "tests/unit/test_w3_outcome_public.py::test_unverifiable_brief_never_receives_a_review_confirmation[changes6]"
+          ],
+          "evidence_boundary": "DTO conversion checks; not alone an upgraded legacy end-to-end review."
+        },
+        {
+          "run_evidence": [
+            "w3-migration"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_migration.py::test_mig01_preserves_legacy_history_and_binds_only_current_input"
+          ],
+          "evidence_boundary": "Migration preserves state/pointer/bytes, marks legacy_unverified and leaves historical rendered binding absent."
+        },
+        {
+          "run_evidence": [
+            "w3-sdk-legacy-supplement"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_public.py::test_public_v2_refuses_review_of_migrated_legacy_brief"
+          ],
+          "evidence_boundary": "Single end-to-end component: real synthetic schema 1.2.7 approved brief with current evidence, supported linked claim and matching Markdown; formal migration to 1.2.8; only public v2 read/approve thereafter. Confirms legacy_unverified, effective needs_review, no confirmation, typed review refusal, zero receipts and unchanged DB/all Markdown bytes. Read acquires no writer lease; no implicit migration/bootstrap/Provider. Same OS process, not a new-process migration test."
+        }
+      ],
+      "supplemental_end_to_end_status": "passed in supplement and final recovery"
+    },
+    {
+      "case_id": "OC-04",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "Same-input complete orphan at r1/r2/rN is adopted only with matching bytes; retry advances pointer once without overwrite.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-service-process"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_process.py::test_orphan_publication_recovers_in_new_process[same_input-r1]",
+            "tests/unit/test_w3_outcome_process.py::test_orphan_publication_recovers_in_new_process[same_input-r2]",
+            "tests/unit/test_w3_outcome_process.py::test_orphan_publication_recovers_in_new_process[same_input-r4]",
+            "tests/unit/test_w3_outcome_service.py::test_same_input_orphan_with_different_bytes_is_never_overwritten"
+          ],
+          "evidence_boundary": "Exception at file-publication/pointer seam, then new interpreter retry at r1/r2/r4. Real subprocess recovery, not forced OS termination."
+        }
+      ]
+    },
+    {
+      "case_id": "OC-05",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "Changed input and A-to-B-to-A use distinct identities and preserve orphan bytes; renderer/source binding rules are explicit.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-service-process"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_process.py::test_orphan_publication_recovers_in_new_process[changed_input-r1]",
+            "tests/unit/test_w3_outcome_process.py::test_orphan_publication_recovers_in_new_process[changed_input-r2]",
+            "tests/unit/test_w3_outcome_process.py::test_orphan_publication_recovers_in_new_process[changed_input-r4]",
+            "tests/unit/test_w3_outcome_service.py::test_unknown_renderer_is_rejected_without_input_or_publication_change",
+            "tests/unit/test_w3_outcome_service.py::test_render_bytes_do_not_depend_on_effective_claim_overlay",
+            "tests/unit/test_w3_outcome_service.py::test_recovered_source_requires_explicit_refresh_of_persisted_noncurrent_input[stale]",
+            "tests/unit/test_w3_outcome_service.py::test_recovered_source_requires_explicit_refresh_of_persisted_noncurrent_input[unavailable]",
+            "tests/unit/test_w1_outcome_regressions.py::test_r05_second_revision_orphan_does_not_block_recovery[changed_input_regression]",
+            "tests/unit/test_w1_outcome_regressions.py::test_r05_second_revision_orphan_does_not_block_recovery[same_input_control]"
+          ],
+          "evidence_boundary": "New-process retry follows explicit publication seam; renderer/source checks are in-process."
+        },
+        {
+          "run_evidence": [
+            "w3-store"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_store.py::test_roundtrip_input_change_keeps_new_identity_and_review_history",
+            "tests/unit/test_w3_outcome_store.py::test_canonical_identities_match_frozen_domains_and_keep_v1_shape",
+            "tests/unit/test_w3_outcome_store.py::test_identity_frozen_material_and_sorting_without_model_dto"
+          ],
+          "evidence_boundary": "A-to-B-to-A and canonical material; does not introduce another supported renderer."
+        }
+      ]
+    },
+    {
+      "case_id": "OC-06",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "Complete pointer/input CAS preserves the winner and committed pointer survives response loss.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-service-process"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_process.py::test_committed_pointer_survives_lost_response_in_new_process[r1]",
+            "tests/unit/test_w3_outcome_process.py::test_committed_pointer_survives_lost_response_in_new_process[r2]",
+            "tests/unit/test_w3_outcome_process.py::test_committed_pointer_survives_lost_response_in_new_process[r4]",
+            "tests/unit/test_w3_outcome_service.py::test_pointer_cas_preserves_competing_publication[changed_input_winner]",
+            "tests/unit/test_w3_outcome_service.py::test_pointer_cas_preserves_competing_publication[same_input_winner]",
+            "tests/unit/test_w3_outcome_service.py::test_input_change_between_publication_and_pointer_cas_leaves_old_pointer",
+            "tests/unit/test_w3_outcome_service.py::test_publish_rechecks_external_bytes_before_pointer_commit[projection]",
+            "tests/unit/test_w3_outcome_service.py::test_publish_rechecks_external_bytes_before_pointer_commit[source]",
+            "tests/unit/test_w3_outcome_service.py::test_review_commit_rechecks_input_and_pointer_after_service_precheck[approve-input_changed]",
+            "tests/unit/test_w3_outcome_service.py::test_review_commit_rechecks_input_and_pointer_after_service_precheck[approve-new_pointer]",
+            "tests/unit/test_w3_outcome_service.py::test_review_commit_rechecks_input_and_pointer_after_service_precheck[return-input_changed]",
+            "tests/unit/test_w3_outcome_service.py::test_review_commit_rechecks_input_and_pointer_after_service_precheck[return-new_pointer]"
+          ],
+          "evidence_boundary": "Post-commit exception followed by new-process reads/retry; competing writer seams are in-process. Nine publication process cases do not force OS termination."
+        },
+        {
+          "run_evidence": [
+            "w3-store"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_store.py::test_pointer_cas_compares_complete_previous_tuple[markdown_relative_path-different.md]",
+            "tests/unit/test_w3_outcome_store.py::test_pointer_cas_compares_complete_previous_tuple[content_sha256-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd]",
+            "tests/unit/test_w3_outcome_store.py::test_pointer_cas_compares_complete_previous_tuple[publication_id-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee]"
+          ],
+          "evidence_boundary": "Complete tuple mismatch causes CAS refusal; not a SQLite commit failure injection."
+        }
+      ]
+    },
+    {
+      "case_id": "OC-07",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "Stale four-field confirmation refuses review without state/receipt writes; adapters never fetch latest to authorize.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-service-process"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_service.py::test_exact_review_rejects_changed_input_or_pointer[approve-input_changed]",
+            "tests/unit/test_w3_outcome_service.py::test_exact_review_rejects_changed_input_or_pointer[approve-new_pointer]",
+            "tests/unit/test_w3_outcome_service.py::test_exact_review_rejects_changed_input_or_pointer[return-input_changed]",
+            "tests/unit/test_w3_outcome_service.py::test_exact_review_rejects_changed_input_or_pointer[return-new_pointer]",
+            "tests/unit/test_w3_outcome_service.py::test_review_commit_rechecks_input_and_pointer_after_service_precheck[approve-input_changed]",
+            "tests/unit/test_w3_outcome_service.py::test_review_commit_rechecks_input_and_pointer_after_service_precheck[approve-new_pointer]",
+            "tests/unit/test_w3_outcome_service.py::test_review_commit_rechecks_input_and_pointer_after_service_precheck[return-input_changed]",
+            "tests/unit/test_w3_outcome_service.py::test_review_commit_rechecks_input_and_pointer_after_service_precheck[return-new_pointer]"
+          ],
+          "evidence_boundary": "Real synthetic SQLite races at explicit service precheck/commit seams."
+        },
+        {
+          "run_evidence": [
+            "w3-sdk"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_public.py::test_public_v2_rejects_old_tuple_and_replays_exact_review_after_reopen",
+            "tests/unit/test_w3_outcome_public.py::test_review_forwards_only_the_supplied_tuple_and_never_fetches_latest[approve]",
+            "tests/unit/test_w3_outcome_public.py::test_review_forwards_only_the_supplied_tuple_and_never_fetches_latest[return]"
+          ],
+          "evidence_boundary": "SDK reopens Kernel in same OS process; forwarding cases use fake Kernel."
+        },
+        {
+          "run_evidence": [
+            "w3-adapters"
+          ],
+          "nodeids": [
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_exact_review_replay_and_v1_deprecation",
+            "tests/blackbox/test_w3_outcome_mcp_blackbox.py::test_outcome_mcp_v2_exact_review_replay_restart_and_v1_deprecation"
+          ],
+          "evidence_boundary": "Real CLI/MCP child processes reject stale confirmation."
+        }
+      ]
+    },
+    {
+      "case_id": "OC-08",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "State and receipt commit atomically; exact replay succeeds only for still-current tuple and target state, without incrementing input/brief revision.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-store"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_store.py::test_review_receipt_and_state_are_atomic[state]",
+            "tests/unit/test_w3_outcome_store.py::test_review_receipt_and_state_are_atomic[receipt]",
+            "tests/unit/test_w3_outcome_store.py::test_review_receipt_replay_is_bound_to_current_state_and_tuple",
+            "tests/unit/test_w3_outcome_store.py::test_unreceipted_legacy_approval_is_not_v2_idempotency",
+            "tests/unit/test_w3_outcome_store.py::test_review_rechecks_current_input_and_pointer[input]",
+            "tests/unit/test_w3_outcome_store.py::test_review_rechecks_current_input_and_pointer[pointer]",
+            "tests/unit/test_w3_outcome_store.py::test_current_input_cannot_be_substituted_for_old_publication_confirmation"
+          ],
+          "evidence_boundary": "Authorizer denies state UPDATE or receipt INSERT; independent connection checks rollback. Actual SQLite replay/race checks."
+        },
+        {
+          "run_evidence": [
+            "w3-service-process"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_service.py::test_review_receipts_replay_only_while_exact_target_state_remains",
+            "tests/unit/test_w3_outcome_service.py::test_receipt_insert_failure_rolls_back_review_state",
+            "tests/unit/test_w3_outcome_service.py::test_committed_receipt_survives_response_or_audit_failure",
+            "tests/unit/test_w3_outcome_service.py::test_single_terminal_audit_failure_does_not_record_committed_review_as_failed",
+            "tests/unit/test_w3_outcome_service.py::test_failed_audit_append_cannot_replace_review_conflict"
+          ],
+          "evidence_boundary": "Precise in-process audit/response/SQLite failure seams, not OS kill."
+        },
+        {
+          "run_evidence": [
+            "w3-sdk"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_public.py::test_public_v2_rejects_old_tuple_and_replays_exact_review_after_reopen"
+          ],
+          "evidence_boundary": "New Kernel instance within same OS process."
+        },
+        {
+          "run_evidence": [
+            "w3-adapters"
+          ],
+          "nodeids": [
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_exact_review_replay_and_v1_deprecation",
+            "tests/blackbox/test_w3_outcome_mcp_blackbox.py::test_outcome_mcp_v2_exact_review_replay_restart_and_v1_deprecation"
+          ],
+          "evidence_boundary": "Exact receipt replay across fresh CLI processes and restarted MCP server."
+        }
+      ]
+    },
+    {
+      "case_id": "OC-09",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "Known source/projection drift or absence is explicit; uncertain I/O fails closed; exact tuple cannot bypass revalidation.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-service-process"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_service.py::test_exact_review_rejects_external_drift_without_state_or_receipt_write[projection_missing-approve]",
+            "tests/unit/test_w3_outcome_service.py::test_exact_review_rejects_external_drift_without_state_or_receipt_write[projection_missing-return]",
+            "tests/unit/test_w3_outcome_service.py::test_exact_review_rejects_external_drift_without_state_or_receipt_write[projection_stale-approve]",
+            "tests/unit/test_w3_outcome_service.py::test_exact_review_rejects_external_drift_without_state_or_receipt_write[projection_stale-return]",
+            "tests/unit/test_w3_outcome_service.py::test_exact_review_rejects_external_drift_without_state_or_receipt_write[source_missing-approve]",
+            "tests/unit/test_w3_outcome_service.py::test_exact_review_rejects_external_drift_without_state_or_receipt_write[source_missing-return]",
+            "tests/unit/test_w3_outcome_service.py::test_exact_review_rejects_external_drift_without_state_or_receipt_write[source_stale-approve]",
+            "tests/unit/test_w3_outcome_service.py::test_exact_review_rejects_external_drift_without_state_or_receipt_write[source_stale-return]",
+            "tests/unit/test_w3_outcome_service.py::test_source_io_uncertainty_fails_closed_without_mutating_input[read]",
+            "tests/unit/test_w3_outcome_service.py::test_source_io_uncertainty_fails_closed_without_mutating_input[render]",
+            "tests/unit/test_w3_outcome_service.py::test_source_io_uncertainty_fails_closed_without_mutating_input[review]",
+            "tests/unit/test_traceable_outcomes.py::test_brief_pointer_read_faults_fail_closed_instead_of_becoming_unavailable[io]",
+            "tests/unit/test_traceable_outcomes.py::test_brief_pointer_read_faults_fail_closed_instead_of_becoming_unavailable[permission]"
+          ],
+          "evidence_boundary": "Actual synthetic file drift/deletion plus controlled I/O failures; review state and receipt unchanged."
+        }
+      ]
+    },
+    {
+      "case_id": "OC-10a",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "Independent strict v2 DTOs and five public/CLI/MCP entries coexist with original v1 shape/signature/success and observable deprecation; handshake remains API-major 1.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-sdk"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_public.py::test_confirmation_is_closed_immutable_and_serializes_only_four_fields",
+            "tests/unit/test_w3_outcome_public.py::test_v2_request_rejects_extra_keywords_before_resolving_runtime",
+            "tests/unit/test_w3_outcome_public.py::test_brief_v2_is_independent_closed_and_drops_internal_metadata",
+            "tests/unit/test_w3_outcome_public.py::test_review_revalidates_shape_even_if_frozen_object_was_bypassed",
+            "tests/unit/test_w3_outcome_public.py::test_v1_review_preserves_signature_success_and_emits_migration_warning[approve]",
+            "tests/unit/test_w3_outcome_public.py::test_v1_review_preserves_signature_success_and_emits_migration_warning[return]",
+            "tests/unit/test_w3_outcome_public.py::test_handshake_keeps_major1_compatibility_and_sdk_bounds[None]",
+            "tests/unit/test_w3_outcome_public.py::test_handshake_keeps_major1_compatibility_and_sdk_bounds[1]",
+            "tests/unit/test_w3_outcome_public.py::test_handshake_rejects_wrong_or_coerced_api_major_without_runtime[True]",
+            "tests/unit/test_w3_outcome_public.py::test_handshake_rejects_wrong_or_coerced_api_major_without_runtime[False]",
+            "tests/unit/test_w3_outcome_public.py::test_handshake_rejects_wrong_or_coerced_api_major_without_runtime[0]",
+            "tests/unit/test_w3_outcome_public.py::test_handshake_rejects_wrong_or_coerced_api_major_without_runtime[2]",
+            "tests/unit/test_w3_outcome_public.py::test_handshake_rejects_wrong_or_coerced_api_major_without_runtime[1]",
+            "tests/unit/test_w3_outcome_public.py::test_handshake_rejects_wrong_or_coerced_api_major_without_runtime[1.0]",
+            "tests/unit/test_w3_outcome_public.py::test_handshake_rejects_wrong_or_coerced_api_major_without_runtime[-1]",
+            "tests/unit/test_w3_outcome_public.py::test_bad_selectors_fail_before_resolving_any_kernel[selectors0]",
+            "tests/unit/test_w3_outcome_public.py::test_bad_selectors_fail_before_resolving_any_kernel[selectors1]",
+            "tests/unit/test_w3_outcome_public.py::test_bad_selectors_fail_before_resolving_any_kernel[selectors2]",
+            "tests/unit/test_w3_outcome_public.py::test_bad_selectors_fail_before_resolving_any_kernel[selectors3]",
+            "tests/unit/test_w3_outcome_public.py::test_bad_selectors_fail_before_resolving_any_kernel[selectors4]",
+            "tests/unit/test_w3_outcome_public.py::test_confirmation_rejects_coercion_and_noncanonical_scalars[expected_revision-True]",
+            "tests/unit/test_w3_outcome_public.py::test_confirmation_rejects_coercion_and_noncanonical_scalars[expected_revision-9223372036854775808]",
+            "tests/unit/test_w3_outcome_public.py::test_confirmation_rejects_coercion_and_noncanonical_scalars[content_sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA]"
+          ],
+          "evidence_boundary": "Representative exact nodeids; full 75-case public inventory is in SDK run nodeid_manifest. No major-2 cutover."
+        },
+        {
+          "run_evidence": [
+            "w3-adapters"
+          ],
+          "nodeids": [
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_exact_review_replay_and_v1_deprecation",
+            "tests/blackbox/test_w3_outcome_mcp_blackbox.py::test_outcome_mcp_v2_exact_review_replay_restart_and_v1_deprecation",
+            "tests/blackbox/test_w3_outcome_mcp_blackbox.py::test_outcome_mcp_v2_rejects_coercion_missing_and_extra_fields_without_writes",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_valid_unready_request_uses_v2_error_envelope",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[get-help]",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[brief-help]",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[render-help]",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[approve-help]",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[return-help]",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[missing-selector]",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[two-selectors]",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[missing-confirmation]",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[invalid-integer]",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[zero-revision]",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[overflow-revision]",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[negative-input-revision]",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[uppercase-sha256]",
+            "tests/blackbox/test_w3_outcome_cli_blackbox.py::test_outcome_cli_v2_help_and_parse_precede_unready_runtime[unknown-option]"
+          ],
+          "evidence_boundary": "Actual offline subprocess JSON and MCP frames. MCP strict-validation case includes 22 malformed requests in one node. Legacy warning does not close R-04."
+        }
+      ],
+      "local_wheel_acceptance": "Clean-install wheel node passed in w3-p0-recovery after correcting the probe error-code expectation to the existing outcome_approval_blocked contract. Local compatibility build only; no release or held-Artifact acceptance."
+    },
+    {
+      "case_id": "OC-10b",
+      "required_phase": "W5",
+      "current_status": "known_gap",
+      "final_acceptance": "not_due_in_W3",
+      "oracle": "W5 must switch handshake to API-major 2 and reject old unversioned review; W3 preserves legacy compatibility.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-service-process"
+          ],
+          "nodeids": [
+            "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[approve]",
+            "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[return]"
+          ],
+          "evidence_boundary": "Both unchanged W1 assertions fail as known gaps; v2 success does not resolve them."
+        }
+      ],
+      "defect_status": "R-04 open",
+      "skip_or_xfail": false
+    },
+    {
+      "case_id": "OC-11",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "One SQLite snapshot per read, without writer lease, business write or implicit schema upgrade.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-store-snapshot"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_store.py::test_read_bundle_uses_one_snapshot_across_independent_writer"
+          ],
+          "evidence_boundary": "Same OS process: independent WAL connections and ThreadPoolExecutor writer commit at reader SELECT barrier. Reader sees complete old snapshot; next reader sees complete new state."
+        },
+        {
+          "run_evidence": [
+            "w3-migration"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_migration.py::test_readiness_binding_validation_uses_one_snapshot"
+          ],
+          "evidence_boundary": "Same-process independent WAL connections during readiness validation."
+        },
+        {
+          "run_evidence": [
+            "w3-sdk"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_public.py::test_public_v2_reads_are_immutable_zero_write_and_zero_writer_lease",
+            "tests/unit/test_w3_outcome_public.py::test_public_v2_read_rejects_actual_013_schema_without_upgrade_or_write[bundle]",
+            "tests/unit/test_w3_outcome_public.py::test_public_v2_read_rejects_actual_013_schema_without_upgrade_or_write[brief]",
+            "tests/unit/test_w3_outcome_public.py::test_direct_public_v2_read_rejects_forged_latest_schema_without_bootstrap[bundle]",
+            "tests/unit/test_w3_outcome_public.py::test_direct_public_v2_read_rejects_forged_latest_schema_without_bootstrap[brief]"
+          ],
+          "evidence_boundary": "Actual synthetic DB/file fingerprints with forbidden lease/init/migration seams; direct SDK schema refusal needs no bootstrap."
+        }
+      ]
+    },
+    {
+      "case_id": "OC-12",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "Synthetic 1.2.7 upgrade preserves historical IDs/state/pointer/bytes, binds only current input, refuses forged latest schema; reads do not migrate.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-migration"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_migration.py::test_mig01_preserves_legacy_history_and_binds_only_current_input",
+            "tests/unit/test_w3_outcome_migration.py::test_mig01_empty_fresh_schema_and_identity_manifest",
+            "tests/unit/test_w3_outcome_migration.py::test_mig02_work_copy_failure_preserves_original_bytes[ddl]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig02_work_copy_failure_preserves_original_bytes[backfill]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig02_work_copy_failure_preserves_original_bytes[foreign_keys]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig02_work_copy_failure_preserves_original_bytes[version]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig02_work_copy_failure_preserves_original_bytes[pre_publish]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig03_post_replace_response_loss_is_idempotent"
+          ],
+          "evidence_boundary": "Private work-copy seam faults; actual os.replace followed by injected OSError, then same-process new manager/connection."
+        },
+        {
+          "run_evidence": [
+            "w3-sdk"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_public.py::test_public_v2_read_rejects_actual_013_schema_without_upgrade_or_write[bundle]",
+            "tests/unit/test_w3_outcome_public.py::test_public_v2_read_rejects_actual_013_schema_without_upgrade_or_write[brief]",
+            "tests/unit/test_w3_outcome_public.py::test_direct_public_v2_read_rejects_forged_latest_schema_without_bootstrap[bundle]",
+            "tests/unit/test_w3_outcome_public.py::test_direct_public_v2_read_rejects_forged_latest_schema_without_bootstrap[brief]"
+          ],
+          "evidence_boundary": "Actual old/forged schema refuses without implicit upgrade or write."
+        },
+        {
+          "run_evidence": [
+            "w3-store"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_store.py::test_direct_store_rejects_forged_schema_without_check_and_does_not_write"
+          ],
+          "evidence_boundary": "Direct Store checks structure before use."
+        }
+      ]
+    }
+  ],
+  "migration_requirements": [
+    {
+      "case_id": "MIG-01",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "Preserve legacy history and projections, establish canonical current input only; resource drift invalidates stale migration confirmation.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-migration"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_migration.py::test_mig01_preserves_legacy_history_and_binds_only_current_input",
+            "tests/unit/test_w3_outcome_migration.py::test_mig01_empty_fresh_schema_and_identity_manifest",
+            "tests/unit/test_w3_outcome_migration.py::test_migration_resource_drift_invalidates_runtime_confirmation[014_add_lifecycle_consistency.sql]",
+            "tests/unit/test_w3_outcome_migration.py::test_migration_resource_drift_invalidates_runtime_confirmation[outcome_migration.py]",
+            "tests/unit/test_w3_outcome_migration.py::test_migration_resource_drift_invalidates_runtime_confirmation[identity.py]",
+            "tests/unit/test_w3_outcome_migration.py::test_migration_upgrade_impact_is_visible_but_not_executable"
+          ],
+          "evidence_boundary": "Synthetic legacy/fresh SQLite; controlled resource-read seam alters hashed bytes without editing product resources."
+        }
+      ]
+    },
+    {
+      "case_id": "MIG-02",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "Private work-copy failures leave original DB/projections byte-identical; original connections remain read-only until publication.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-migration"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_migration.py::test_mig02_work_copy_failure_preserves_original_bytes[ddl]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig02_work_copy_failure_preserves_original_bytes[backfill]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig02_work_copy_failure_preserves_original_bytes[foreign_keys]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig02_work_copy_failure_preserves_original_bytes[version]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig02_work_copy_failure_preserves_original_bytes[pre_publish]",
+            "tests/unit/test_w3_outcome_migration.py::test_migration_original_connections_remain_readonly_until_publication"
+          ],
+          "evidence_boundary": "Explicit in-process faults; no OS termination."
+        }
+      ]
+    },
+    {
+      "case_id": "MIG-03",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "After atomic replacement and response loss, inspect/re-entry recognizes current schema without republishing.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-migration"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_migration.py::test_mig03_post_replace_response_loss_is_idempotent"
+          ],
+          "evidence_boundary": "Real os.replace followed by artificial OSError; same OS process creates new manager and SQLite connection. No crash/kill claim."
+        }
+      ]
+    },
+    {
+      "case_id": "MIG-04",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "Version label alone cannot bypass schema/binding validation; refuse direct in-place 014 and malformed schema without writes.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-migration"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_migration.py::test_mig04_forged_latest_schema_rejected_even_on_no_pending[version_only]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig04_forged_latest_schema_rejected_even_on_no_pending[receipt_table]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig04_forged_latest_schema_rejected_even_on_no_pending[input_digest]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig04_forged_latest_schema_rejected_even_on_no_pending[renderer]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig04_forged_latest_schema_rejected_even_on_no_pending[constraint]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig04_forged_latest_schema_rejected_even_on_no_pending[quoted_literal]",
+            "tests/unit/test_w3_outcome_migration.py::test_mig04_direct_014_refuses_inplace_upgrade",
+            "tests/unit/test_w3_outcome_migration.py::test_mig04_broken_bundled_ddl_has_stable_readonly_failure",
+            "tests/unit/test_w3_outcome_migration.py::test_mig04_legacy_locator_auxiliary_mismatch_is_not_rebound",
+            "tests/unit/test_w3_outcome_migration.py::test_readiness_binding_validation_uses_one_snapshot"
+          ],
+          "evidence_boundary": "Synthetic schema/data corruption and controlled resource seam."
+        },
+        {
+          "run_evidence": [
+            "w3-store"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_store.py::test_direct_store_rejects_forged_schema_without_check_and_does_not_write"
+          ],
+          "evidence_boundary": "Direct Store structure check."
+        },
+        {
+          "run_evidence": [
+            "w3-sdk"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_public.py::test_direct_public_v2_read_rejects_forged_latest_schema_without_bootstrap[bundle]",
+            "tests/unit/test_w3_outcome_public.py::test_direct_public_v2_read_rejects_forged_latest_schema_without_bootstrap[brief]"
+          ],
+          "evidence_boundary": "Direct public Kernel check without bootstrap prerequisite."
+        }
+      ]
+    },
+    {
+      "case_id": "MIG-05",
+      "required_phase": "W3",
+      "current_status": "verified_in_W3",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "oracle": "Input identity/invalidation and review state/receipt transactions remain atomic at enumerated SQL cut points, and replay checks current binding.",
+      "evidence": [
+        {
+          "run_evidence": [
+            "w3-store"
+          ],
+          "nodeids": [
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-topic]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-evidence_add]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-evidence_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-evidence_state]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-claim_add]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-claim_update]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-edge_change]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_revision-edge_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-topic]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-evidence_add]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-evidence_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-evidence_state]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-claim_add]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-claim_update]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-edge_change]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[input_digest-edge_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-topic]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-evidence_add]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-evidence_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-evidence_state]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-claim_add]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-claim_update]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-edge_change]",
+            "tests/unit/test_w3_outcome_store.py::test_sql_fault_rolls_back_input_identity_and_invalidation[brief_state-edge_delete]",
+            "tests/unit/test_w3_outcome_store.py::test_review_receipt_and_state_are_atomic[state]",
+            "tests/unit/test_w3_outcome_store.py::test_review_receipt_and_state_are_atomic[receipt]",
+            "tests/unit/test_w3_outcome_store.py::test_review_receipt_replay_is_bound_to_current_state_and_tuple",
+            "tests/unit/test_w3_outcome_store.py::test_unreceipted_legacy_approval_is_not_v2_idempotency",
+            "tests/unit/test_w3_outcome_store.py::test_review_rechecks_current_input_and_pointer[input]",
+            "tests/unit/test_w3_outcome_store.py::test_review_rechecks_current_input_and_pointer[pointer]",
+            "tests/unit/test_w3_outcome_store.py::test_current_input_cannot_be_substituted_for_old_publication_confirmation"
+          ],
+          "evidence_boundary": "Authorizer covers the listed UPDATE/INSERT cuts, not every possible SQL statement or SQLite commit failure. Publication/response-loss cases are mapped separately under OC-04/06."
+        }
+      ]
+    }
+  ],
+  "defect_disposition": [
+    {
+      "requirement": "R-03",
+      "current_status": "resolved_in_W3_implementation",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "case_ids": [
+        "OC-01",
+        "OC-02",
+        "OC-11"
+      ],
+      "nodeids": [
+        "tests/unit/test_w1_outcome_regressions.py::test_r03_input_and_brief_invalidation_roll_back_together"
+      ],
+      "run_evidence": [
+        "w3-service-process",
+        "w3-store"
+      ]
+    },
+    {
+      "requirement": "R-05",
+      "current_status": "resolved_in_W3_implementation",
+      "final_acceptance": "verified_by_deduplicated_final_evidence",
+      "final_evidence_audit": "#/p0_recovery_audit/result_verification",
+      "case_ids": [
+        "OC-04",
+        "OC-05",
+        "OC-06"
+      ],
+      "nodeids": [
+        "tests/unit/test_w1_outcome_regressions.py::test_r05_second_revision_orphan_does_not_block_recovery[changed_input_regression]",
+        "tests/unit/test_w1_outcome_regressions.py::test_r05_second_revision_orphan_does_not_block_recovery[same_input_control]"
+      ],
+      "run_evidence": [
+        "w3-service-process"
+      ]
+    },
+    {
+      "requirement": "R-04",
+      "current_status": "known_gap",
+      "target_phase": "W5",
+      "case_ids": [
+        "OC-10b"
+      ],
+      "nodeids": [
+        "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[approve]",
+        "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[return]"
+      ],
+      "run_evidence": [
+        "w3-service-process"
+      ],
+      "reason": "New v2 and v1 deprecation prepare migration; API-major-1 legacy behavior remains."
+    }
+  ],
+  "known_gap_nodeids": [
+    "tests/unit/test_w1_embedding_regressions.py::test_r02_er04_completed_stage_contention_exposes_publish_only_recovery",
+    "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[approve]",
+    "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[return]",
+    "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[day]",
+    "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[month]"
+  ],
+  "original_w1_transition": {
+    "historical_registry": "tests/contracts/w1_lifecycle_regressions.v1.json",
+    "historical_total": 34,
+    "historical_passed": 15,
+    "historical_failed": 19,
+    "w2_passed": 27,
+    "w2_failed": 7,
+    "expected_w3_passed": 29,
+    "expected_w3_failed": 5,
+    "observed_w3_passed": 29,
+    "observed_w3_failed": 5,
+    "observed_w3_skipped": 0,
+    "observed_w3_errors": 0,
+    "status": "verified_by_deduplicated_two_run_evidence",
+    "original_red_to_green_in_W3": 2,
+    "expected_cumulative_original_red_to_green": 14,
+    "history_registry_unchanged": true,
+    "skip_or_xfail_added": false,
+    "remaining_known_gap_nodeids": [
+      "tests/unit/test_w1_embedding_regressions.py::test_r02_er04_completed_stage_contention_exposes_publish_only_recovery",
+      "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[approve]",
+      "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[return]",
+      "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[day]",
+      "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[month]"
+    ],
+    "interpretation": "Observed 29/5 is the frozen original 34-node set: 16 original CLI passes plus 13 recovered unit passes and five registered known gaps. It is deduplicated evidence from two runs, not one completed all-pass run or all 48 currently collected W1-file cases."
+  },
+  "not_covered": [
+    "W4 phase-D embedding recovery and day/month budget reauthorization",
+    "W5 API-major-2 cutover and legacy review refusal",
+    "Real user Vault/config/Provider or real migration",
+    "SIGKILL, host power loss, hardware/filesystem crash durability",
+    "Held installed Artifact acceptance or release approval"
+  ],
+  "test_environment_repair": {
+    "status": "targeted_and_final_mcp_passed",
+    "classification": "test environment repair, not Outcome product implementation",
+    "source_files": [
+      "tests/offline_entrypoint.py",
+      "tests/unit/test_w3_offline_proxy_isolation.py"
+    ],
+    "cause": "Environment scrub removed NO_PROXY; urllib then exposed the Windows registry proxy. HTTPX did not honor the registry ProxyOverride, so requests were routed beyond the exact synthetic harness endpoint and rejected by the offline network guard.",
+    "change": "Only after synthetic user-config validation and the final scrub, set NO_PROXY=127.0.0.1,localhost for the authorized synthetic Provider child.",
+    "invariants": [
+      "Exact socket endpoint allowlist remains enforced",
+      "Other loopback ports and external DNS remain denied",
+      "Product Provider/config policy unchanged"
+    ],
+    "run_evidence": [
+      "w3-mcp-initial-diagnostic",
+      "w3-mcp-proxy-reproduction",
+      "w3-mcp-proxy-fix-targeted"
+    ],
+    "nodeids": [
+      "tests/unit/test_w3_offline_proxy_isolation.py::test_only_validated_provider_child_bypasses_system_proxy_and_keeps_endpoint_guard[ordinary_child]",
+      "tests/unit/test_w3_offline_proxy_isolation.py::test_only_validated_provider_child_bypasses_system_proxy_and_keeps_endpoint_guard[validated_provider_child]"
+    ],
+    "evidence_boundary": "New unit cases mock Windows registry proxy and use actual HTTPX transport; four actual offline MCP blackboxes then pass. Two exploratory wrapper-rejected probes are not counted as tests."
+  },
+  "p0_recovery_audit": {
+    "status": "verified_by_exact_node_set_comparison",
+    "original_run": "w3-final-p0",
+    "recovery_run": "w3-p0-recovery",
+    "selection_artifact": ".data-test/w3-20261025-evidence/reports/p0-recovery-selection.json",
+    "selection_sha256": "a7bacd541ff6d08f1f62c97e30b5d856474a906bb70a172eceb901c658ee841a",
+    "extraction": {
+      "source": "Final pytest FAILED and ERROR summary lines in archived original log",
+      "failed": 71,
+      "errors": 798,
+      "unique_summary_lines": 869,
+      "unique_complete_test_files": 46,
+      "original_collected_unique_nodes": 3732,
+      "original_nodes_in_selected_files": 1076,
+      "original_nodes_outside_selected_files": 2656,
+      "previously_nonfailed_nodes_reexecuted": 207,
+      "selected_files_original_outcomes": {
+        "passed": 205,
+        "skipped": 2,
+        "failed": 71,
+        "errors": 798
+      },
+      "unselected_files_original_outcomes": {
+        "passed": 2647,
+        "skipped": 9
+      },
+      "selection_matches_all_summary_files": true,
+      "original_pytest_cache": "lastfailed and nodeids cache absent after disk exhaustion; retained log is authoritative",
+      "new_marker_or_known_gap_filter": false
+    },
+    "environment_recovery": {
+      "removed_artifact": "rebuildable jieba.cache only",
+      "removed_count": 505,
+      "removed_file_manifest": ".data-test/w3-20261025-evidence/reports/removed-cache-manifest.json",
+      "removed_file_bytes_total": 4674521390,
+      "observed_free_bytes_before": 0,
+      "observed_free_bytes_after": 4674179072,
+      "observed_net_free_bytes_recovered": 4674179072,
+      "cleanup_log": ".data-test/w3-20261025-evidence/reports/test-cache-cleanup.log",
+      "cleanup_script": ".data-test/w3-20261025-evidence/reports/w3-test-cache-cleanup.ps1",
+      "retained": [
+        "database files",
+        "test logs",
+        "history"
+      ],
+      "interpretation": "File-size sum and observed free-space delta are recorded separately; concurrent allocation/filesystem accounting can differ. No product or user Vault files were changed."
+    },
+    "oracle_correction": {
+      "file": "tests/unit/test_local_wheel_contract.py",
+      "nodeid": "tests/unit/test_local_wheel_contract.py::test_local_wheel_clean_install_uses_only_installed_kernel_and_embedded_resources",
+      "incorrect_expected_code": "outcome_not_found",
+      "contract_expected_code": "outcome_approval_blocked",
+      "product_changed": false,
+      "v3_to_v4_changed_files": [
+        "tests/unit/test_local_wheel_contract.py"
+      ],
+      "interpretation": "Fixes the new wheel probe expectation to existing product contract; does not change missing-brief approval behavior."
+    },
+    "result_verification": {
+      "new_w3_inventory": [
+      {
+        "file": "tests/blackbox/test_w3_outcome_cli_blackbox.py",
+        "cases": 16,
+        "final_evidence": "w3-final-p0"
+      },
+      {
+        "file": "tests/blackbox/test_w3_outcome_mcp_blackbox.py",
+        "cases": 2,
+        "final_evidence": "w3-final-p0"
+      },
+      {
+        "file": "tests/unit/test_w3_offline_proxy_isolation.py",
+        "cases": 2,
+        "final_evidence": "w3-final-p0"
+      },
+      {
+        "file": "tests/unit/test_w3_outcome_migration.py",
+        "cases": 23,
+        "final_evidence": "w3-p0-recovery"
+      },
+      {
+        "file": "tests/unit/test_w3_outcome_process.py",
+        "cases": 10,
+        "final_evidence": "w3-p0-recovery"
+      },
+      {
+        "file": "tests/unit/test_w3_outcome_public.py",
+        "cases": 76,
+        "final_evidence": "w3-p0-recovery"
+      },
+      {
+        "file": "tests/unit/test_w3_outcome_service.py",
+        "cases": 35,
+        "final_evidence": "w3-p0-recovery"
+      },
+      {
+        "file": "tests/unit/test_w3_outcome_store.py",
+        "cases": 65,
+        "final_evidence": "w3-p0-recovery"
+      }
+    ],
+      "new_w3_original_outcomes": {
+        "passed": 90,
+        "errors": 139
+      },
+      "new_w3_original_unselected_passed": 20,
+      "new_w3_recovery_case_target": 209,
+      "original_w1_registry": "tests/contracts/w1_lifecycle_regressions.v1.json",
+      "original_w1_selection_rule": "Exact union of the frozen 19 requirement nodes and 15 control nodes, not all 48 cases now collected from the four W1 files.",
+      "original_w1_original_outcomes": {
+        "passed": 16,
+        "errors": 18
+      },
+      "original_w1_original_unselected_passed": 16,
+      "original_w1_recovery_case_target": 18,
+      "original_869_nodes_terminal_results": {
+        "passed": 854,
+        "skipped": 10,
+        "failed": 5,
+        "errors": 0
+      },
+      "original_failed_71_recovered_outcomes": {
+        "passed": 71
+      },
+      "original_error_798_recovered_outcomes": {
+        "passed": 783,
+        "skipped": 10,
+        "failed": 5,
+        "errors": 0
+      },
+      "recovery_1076_node_set_equals_original_selected_files": true,
+      "missing_nodes": 0,
+      "additional_nodes": 0,
+      "duplicate_nodes": 0,
+      "new_w3_unique_case_target": 229,
+      "new_w3_observed_passed": 229,
+      "new_w3_observed_failed": 0,
+      "new_w3_observed_skipped": 0,
+      "new_w3_observed_errors": 0,
+      "original_w1_case_target": 34,
+      "original_w1_expected_passed": 29,
+      "original_w1_expected_failed": 5,
+      "original_w1_observed_passed": 29,
+      "original_w1_observed_failed": 5,
+      "original_w1_observed_skipped": 0,
+      "original_w1_observed_errors": 0,
+      "remaining_failures_exactly_equal_known_gap_nodeids": true,
+      "deduplicated_p0_outcomes": {
+        "total_selected_nodes": 3732,
+        "passed": 3706,
+        "failed": 5,
+        "skipped": 21,
+        "errors": 0,
+        "is_one_run": false,
+        "rule": "For the exact 1076 recovery nodes use recovery outcomes; for the other 2656 original nodes retain original outcomes."
+      }
+    },
+    "skipped_cases": {
+      "total": 21,
+      "counted_as_passed": false,
+      "new_skip_or_xfail_rules_added": false,
+      "categories": [
+        {
+          "reason": "Symlink creation unavailable in this environment",
+          "count": 15,
+          "nodeids": [
+            "tests/unit/test_migration_publish_safety.py::test_connect_rejects_symlink_db_before_connect",
+            "tests/unit/test_migration_publish_safety.py::test_validate_rejects_symlink_db",
+            "tests/unit/test_processors_text_fallback.py::test_text_fallback_process_file_rejects_symlink",
+            "tests/unit/test_processors_wechat.py::test_wechat_image_write_rejects_symlinked_target",
+            "tests/unit/test_release_build.py::test_dist_root_link_is_rejected_without_touching_target",
+            "tests/unit/test_runtime_layout.py::test_atomic_publish_detects_parent_dir_swap",
+            "tests/unit/test_runtime_layout.py::test_existing_link_as_data_root_is_rejected",
+            "tests/unit/test_runtime_layout.py::test_leaf_parent_replaced_by_link_is_rejected",
+            "tests/unit/test_runtime_layout.py::test_open_user_file_rejects_symlink_leaf",
+            "tests/unit/test_runtime_layout.py::test_redirected_parent_is_rejected_before_creating_data_root",
+            "tests/unit/test_storage_coordinator.py::test_journal_constructor_rejects_redirected_ancestor",
+            "tests/unit/test_vault_path_gateway.py::test_gateway_rejects_link_replacement_in_parent_chain",
+            "tests/unit/test_vault_path_gateway.py::test_gateway_rejects_redirected_parent_before_creating_vault",
+            "tests/unit/test_vault_path_gateway.py::test_markdown_enumeration_fails_closed_on_link_directory",
+            "tests/unit/test_vector_store_safety.py::test_vector_store_rejects_symlinked_index_dir"
+          ]
+        },
+        {
+          "reason": "POSIX-only branch not executed on Windows",
+          "count": 5,
+          "nodeids": [
+            "tests/unit/test_config_embedding_dim.py::test_set_yaml_config_value_forces_private_posix_permissions",
+            "tests/unit/test_migration_publish_safety.py::test_publish_no_clobber_does_not_misclassify_io_errors_as_lock_collision",
+            "tests/unit/test_migration_publish_safety.py::test_publish_no_clobber_link_success_with_unlink_failure_is_success",
+            "tests/unit/test_migration_publish_safety.py::test_validate_uses_no_follow_and_maps_eloop_to_unsafe",
+            "tests/unit/test_vault_path_gateway.py::test_read_text_uses_no_follow_and_maps_eloop_to_link_unsafe"
+          ]
+        },
+        {
+          "reason": "Real PyInstaller closure inputs were not supplied",
+          "count": 1,
+          "nodeids": [
+            "tests/unit/test_w3_packaging_spec.py::test_real_analysis_and_payload_have_no_build_only_module_members"
+          ]
+        }
+      ],
+      "original_error_to_platform_skip": 10,
+      "interpretation": "Ten originally errored nodes now reach existing symlink-unavailable skip guards. These are covered by actual skip outcomes, not counted as repaired passing behavior."
+    },
+    "counting_rule": "Never add 2852 original passes to the recovery passes as if they came from one full run. Report original complete attempt, bounded recovery and deduplicated node-level coverage separately."
+  },
+  "final_acceptance": {
+    "status": "W3_verified_with_registered_W4_W5_gaps",
+    "run_evidence": [
+      "w3-final-p0",
+      "w3-p0-recovery",
+      "w3-final-mcp"
+    ],
+    "source_test_fingerprint_confirmed": true,
+    "fingerprint_recheck_log": ".data-test/w3-20261025-evidence/reports/final-fingerprint-check-v4.log",
+    "single_full_p0_pass": false,
+    "p0_evidence_form": "Original complete failed attempt plus exact-node deduplicated recovery; original 3732-case attempt remains failed_environment_and_oracle.",
+    "local_compatibility_wheel_evidence": {
+      "run_evidence": ["w3-p0-recovery"],
+      "nodeids": ["tests/unit/test_local_wheel_contract.py::test_local_wheel_clean_install_uses_only_installed_kernel_and_embedded_resources"],
+      "result": "passed",
+      "scope": "Offline SDK 0.9.0 compatibility wheel and isolated clean install; no tag, release or held Artifact acceptance."
+    },
+    "root_record": "docs/overview/W3-Outcome一致性与版本审批实施记录-2026-10.md"
+  }
+}

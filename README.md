@@ -3,12 +3,13 @@
 > **AI-First Knowledge Workflow System**
 > 工作流驱动的个人知识管理系统
 
-[![Version](https://img.shields.io/badge/version-0.8.1-blue.svg)](./docs/operations/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0-blue.svg)](./docs/operations/CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.11+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](./LICENSE)
 [![Status](https://img.shields.io/badge/status-alpha_development-yellow.svg)](./docs/history/milestones/)
 
-> 当前仓库基线：`0.8.1`
+> 当前仓库兼容 SDK build：`0.9.0`，API `1.0.0`；历史 held candidate 的 `0.8.1` 身份保持不变。
+> 2026-10-25 W3：新增 Outcome v2 精确版本审批、输入事务、任意版本发布及 014 合成迁移；实现与验证范围见 [W3 记录](./docs/overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)。旧无版本审批处于弃用兼容阶段，W4–W5 与正式发布仍未推进。
 > 说明：`v0.6.0` 是 CLI 首次稳定引入版本，`v0.7.0` 是 MCP 首次稳定引入版本；桌面 GUI 已迁至独立的 `pkv-GUI` 仓库，本仓库只维护无头 Kernel、CLI 与 MCP。
 > 命名说明：当前路线里提到的“当前开发 Phase 1”实际对应 `Phase A：Relation Foundation`；历史文档中的旧 `Phase 1` 已归档完成，两者不是同一时间轴。
 > 2026-07-31 离线收口：Phase C 固定评测为 16 tasks / 119 checks，`overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`；三个探索 Tool 按 `partial-v1` 口径交付，公开合同仍诚实声明 `implementation_level=partial`。
@@ -91,7 +92,7 @@ AI Agent（Claude Code、Cursor 等）通过 MCP 协议直接操作知识库：
 
 M13 只支持 `stdio`。`streamable-http` 与 Bearer Token 认证均未发布；服务入口会在初始化配置、数据或监听端口前拒绝非 stdio transport。
 
-**30 个 Tool（17 个只读 + 13 个写入）**:
+**35 个 Tool（19 个只读 + 16 个写入）**:
 - `search_knowledge` — 智能搜索（BM25/向量/混合）
 - `get_entry` / `list_entries` / `list_tags` / `get_stats` — 只读浏览
 - `get_runtime_status` — 只读检查运行时 readiness 与下一步计划，不初始化、修复或探测 Provider
@@ -109,7 +110,9 @@ M13 只支持 `stdio`。`streamable-http` 与 Bearer Token 认证均未发布；
 - `get_outcome` / `suggest_outcome_evidence` — Provider-free 的可追溯成果读取（含 immutable Markdown pointer/digest 复核）与严格 BM25 候选；路径或带凭据 URL 输入会被拒绝
 - `create_outcome_topic` / `attach_outcome_evidence` / `detach_outcome_evidence` — 明确 Topic 与版本绑定 Evidence
 - `create_outcome_claim` / `revise_outcome_claim` / `link_outcome_claim_evidence` / `unlink_outcome_claim_evidence` — 显式 Claim 与 support/counter 关系
-- `render_outcome_research_brief` / `approve_outcome_research_brief` / `return_outcome_research_brief` — immutable research brief 的人工 review 闭环
+- `render_outcome_research_brief` / `approve_outcome_research_brief` / `return_outcome_research_brief` — 旧 v1 兼容入口；无版本审批已弃用并提示警告
+- `get_outcome_v2` / `get_outcome_research_brief_v2` — 读取带输入版本与发布绑定的 v2 成果
+- `render_outcome_research_brief_v2` / `approve_outcome_research_brief_v2` / `return_outcome_research_brief_v2` — 输入绑定发布与精确版本确认的人工 review
 
 **3 个 Prompt 模板**: `search_and_summarize` / `knowledge_qa` / `idea_sharpen`
 
@@ -151,7 +154,7 @@ personal-knowledge-vault/
 │   ├── kernel/                        # 稳定的无头 Kernel facade
 │   ├── mcp/                           # MCP 服务 (v0.7.0)
 │   │   ├── server.py                  # FastMCP 主入口 (M13: stdio only)
-│   │   ├── tools.py                   # 30 个 Tool handler
+│   │   ├── tools.py                   # 35 个 Tool handler
 │   │   ├── resources.py               # 9 个 Resource handler
 │   │   ├── prompts.py                 # 3 个 Prompt 模板
 │   │   └── utils.py                   # 安全验证 + 序列化
@@ -462,13 +465,13 @@ steps:
 
 ## 📊 项目状态
 
-### 🎉 当前仓库基线: 0.8.1
+### 🎉 当前仓库兼容 SDK build: 0.9.0
 
 **发布状态**: 🧪 拆分前的 M13 W1/W2/W3/W4 Artifact 证据已归档；当前 headless payload 仍是合规 hold 的 test candidate，尚未具备正式发布资格，真实数据验收也未执行。
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| **项目版本** | 0.8.1 | 当前运行时、CLI 和 held test candidate 基线 |
+| **项目版本** | 0.9.0 | 当前运行时/CLI/SDK 兼容 build；API 1.0.0，历史 held candidate 仍为 0.8.1 |
 | **稳定能力基线** | v0.7.0 | MCP 服务 (8 Tool + 4 Resource + 3 Prompt) |
 | **开发进度** | M13 W4（hold） | 历史 W4 10/11 Artifact matrix 已归档；当前 3 项合规 blocker 使 headless candidate 保持 hold |
 | **源代码文件** | 动态维护 | 以仓库树和模块索引为准 |
@@ -587,8 +590,10 @@ live/secret/proxy 环境并安装 Python 级网络与子进程 guard，但它不
 隔离边界见
 [MCP 最小评测闭环](docs/operations/MCP最小评测闭环.md)。
 
-开发 vault 重建入口 `scripts/rebuild-dev-vault.py` 已完成合成演练：
+开发 vault 重建入口 `scripts/rebuild-dev-vault.py` 的历史合成演练记录为：
 `rebuilt -> up_to_date -> checked`，目标 schema `1.2.7`、12 个迁移、3 条 seed。
+W3 当前 schema 为 `1.2.8`、13 个迁移，相关兼容回归见
+[W3 实施记录](docs/overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)。
 这只证明离线合成开发基线可重建；真实快照仍受 U1/G8 与迁移 FT5 阻塞，
 本轮未读取或执行真实数据。M13 W1/W2/W3 与 W4 installed-Artifact 功能验证均在该离线基线上完成；W4 候选仍受合规 hold，且这不等于真实数据验收。
 
@@ -641,10 +646,10 @@ live/secret/proxy 环境并安装 Python 级网络与子进程 guard，但它不
 <div align="center">
 
 **项目代号**: Personal Knowledge Vault
-**当前版本**: 0.8.1
+**当前版本**: 0.9.0（兼容 SDK build，未发布）
 **创建日期**: 2026-01-27
-**文档版本**: v4.3
-**最后更新**: 2026-08-21
+**文档版本**: v4.4
+**最后更新**: 2026-10-25
 
 ---
 

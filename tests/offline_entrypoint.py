@@ -1000,6 +1000,12 @@ def main() -> None:
                 LOAD_LOCAL_SENTINEL: "0",
             }
         )
+        if test_user_config_request is not None:
+            # HTTPX can otherwise rediscover Windows registry proxies after
+            # environment scrubbing.  Only this validated synthetic Provider
+            # child gets a loopback bypass; the exact socket allowlist below
+            # still rejects every endpoint except its published harness.
+            os.environ["NO_PROXY"] = "127.0.0.1,localhost"
         install_offline_network_guard(
             block_raw_sockets=False,
             allowed_stream_endpoints=(

@@ -269,7 +269,7 @@ symlink/reparse 或竞态变化必须失败并保留现场。
 1. 检查当前版本: 1.0.0
 2. 扫描待迁移脚本:
    - 002_add_cli_tables.sql (v1.1.0)
-   - ...（当前链的末端为 013_add_traceable_outcomes.sql，v1.2.7）
+   - ...（当前链的末端为 014_add_lifecycle_consistency.sql，v1.2.8）
 3. 旧实现可选地写入 `.data-backup/`
 4. 执行迁移脚本
 5. 更新 schema_version 表
@@ -317,6 +317,9 @@ CREATE TABLE IF NOT EXISTS cli_stats (
 - 必须包含版本号注释(`-- Version: x.y.z`)
 - 建议包含向下迁移 SQL(注释形式)
 
+014 的幂等单位是经过结构验证的 manager 升级；SQL 与 backfill hook 必须一起执行，不声明
+014 SQL 可独立重放或支持原地降级。它只增加合成验证能力，不开放真实用户库维护入口。
+
 **现有迁移脚本**:
 
 | 脚本 | 版本 | 说明 |
@@ -333,6 +336,7 @@ CREATE TABLE IF NOT EXISTS cli_stats (
 | `011_add_ai_automation_ledger.sql` | 1.2.5 | 内部 AI 自动任务与 token 用量账本 |
 | `012_add_r4_content_submission.sql` | 1.2.6 | R4 Q0 ingress、Q1′ 内容提交/handoff 与 Q2 fenced 用量账本 |
 | `013_add_traceable_outcomes.sql` | 1.2.7 | P1-B Topic、Evidence、Claim 与 research brief 成果合同 |
+| `014_add_lifecycle_consistency.sql` | 1.2.8 | Outcome 输入/发布绑定与 review receipts；由 private work copy 中的事务 hook 完成 |
 
 详见: [scripts/migrations/README.md](./migrations/README.md)
 
@@ -562,6 +566,7 @@ U1/G8/FT5 user-only gate 尚未交付
 | `migrations/011_add_ai_automation_ledger.sql` | 1.2.5 | 内部 AI 自动任务与 token 用量账本 |
 | `migrations/012_add_r4_content_submission.sql` | 1.2.6 | R4 Q0 ingress、Q1′ 内容提交/handoff 与 Q2 fenced 用量账本 |
 | `migrations/013_add_traceable_outcomes.sql` | 1.2.7 | P1-B Topic、Evidence、Claim 与 research brief 成果合同 |
+| `migrations/014_add_lifecycle_consistency.sql` | 1.2.8 | W3 Outcome 一致性；SQL 与 hook 共同迁移，不能单独执行 |
 | `migrations/README.md` | - | 迁移脚本说明 |
 
 ### 文档

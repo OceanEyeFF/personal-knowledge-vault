@@ -66,12 +66,58 @@
 | `outcome create-topic/get/list` | Topic 标题、问题或分页参数 | `pkv_kernel.outcomes` 的 Provider-free Topic 公开投影；`get` 仅 revalidate，不隐式写入 |
 | `outcome attach-evidence/detach-evidence/suggest-evidence` | canonical `pkv://` locator、BM25 query | 只允许 entry/chunk/relation locator；绑定 captured digest，删除不推断替代来源；suggest 只走 BM25 |
 | `outcome create-claim/revise-claim/link-evidence/unlink-evidence` | statement、state、revision、support/counter | 显式维护 Claim 与 Evidence 边；没有有效证据的 Claim 对外显示 `insufficient` |
-| `outcome render/approve/return` | `topic_id` | writer lease 下发布不可覆盖的 Markdown revision；批准仅允许 current Evidence 和满足链接条件的 Claim |
+| `outcome render/approve/return` | `topic_id` | 旧 v1 入口保留；approve/return 已弃用但仍按既有语义执行，不具有 v2 的调用方版本确认保证 |
 | `config show/get` | `get KEY` | 读取并遮罩敏感配置；默认自动化只允许只读子命令 |
 | `config set KEY VALUE` | YAML 点号键 | 写唯一用户配置；不属于自动化/AI 运行边界 |
 | `stats` | 无 | 汇总条目、来源、标签与存储大小 |
 
 全局选项由 `src/main.py` 定义：`--verbose`、`--debug`、`--version`。
+
+## W3 Outcome v2 与兼容期边界
+
+当前本地兼容 build 为 SDK `0.9.0`，Kernel API 仍为 `1.0.0`。既有 v1 capability
+全部保留，新增 `kernel.traceable-outcomes.v2`；没有声明 `kernel.embedding-rebuild.v2`，
+也没有进行 W5 API-major-2 切换。实现与最终同树验收状态见
+[W3 主记录](../../docs/overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)，
+公开字段以 [v2 接口冻结合同](../../docs/specs/interfaces/生命周期一致性v2接口冻结合同-2026-10.md) 为准。
+
+以下五个叶子只调用 `pkv_kernel.outcomes` 的对应 `*_v2` 函数；包括只读叶子在内均要求
+`READY`，不扩大 W2 的 `DEGRADED` 允许列表。get/brief 零写、零 lease、零 Provider；
+render/review 的事务与 writer lease 由 Kernel/Application 执行。
+
+| CLI | 主要参数 | 固定 envelope.operation / 对应 MCP Tool |
+| --- | --- | --- |
+| `outcome get-v2 TOPIC_ID` | Topic 标识 | `get_outcome_v2` |
+| `outcome brief-v2` | `--topic-id ID` / `--outcome-id ID`，必须且只能提供一个 | `get_outcome_research_brief_v2` |
+| `outcome render-v2 TOPIC_ID` | Topic 标识 | `render_outcome_research_brief_v2` |
+| `outcome approve-v2 OUTCOME_ID` | 必填 `--expected-revision N --content-sha256 H --expected-input-revision N` | `approve_outcome_research_brief_v2` |
+| `outcome return-v2 OUTCOME_ID` | 上述四元组，另必填 `--reason-code needs_revision\|insufficient_evidence\|other` | `return_outcome_research_brief_v2` |
+
+标识满足 `[a-z][a-z0-9_-]{0,95}`；SHA256 是 64 位小写十六进制；两项 revision 为
+`1..2**63-1` 的整数。Click 先完成形状、selector、必填项和未知选项校验，错误 exit 2，
+不加载 runtime。review 原样传递用户已展示并确认的四元组，不读取 latest 自动补齐；
+精确同动作重放复用 receipt，旧确认、退回后批准或不同退回原因重放被拒绝。
+
+五个 v2 命令与 MCP 共用封闭响应：
+`{schema:"pkv.lifecycle-response.v2",status,terminal,operation,result,issues}`。
+`status` 与 `terminal` 为 `success` 或 `error`；成功 result 是公开 DTO 或合法 lookup 的
+null，issues 为空；失败 result 为 null，issues 保留稳定 code/message/stage/recoverable。
+operation 固定取上表名称，不含用户标识。成功 JSON 写 stdout、exit 0；业务和 readiness
+错误 JSON 写 stderr、exit 1，不回显 source body、私有路径、凭据或异常原文。
+
+旧 `outcome approve/return TOPIC_ID` 保留签名和成功语义。成功时 stdout 仍是旧 JSON，
+stderr 提示替代 `approve-v2/return-v2` 及 API major 2；业务失败仍输出单个 stderr JSON，
+额外带固定 `deprecation={replacement,removal_api_major:2}`。SDK 同时发出
+`DeprecationWarning`。因此 R-04 旧无版本审批仍是 `known_gap`，只由 W5 的旧入口拒绝
+和 major 切换关闭；不能把 v2 通过写成旧 v1 已获得版本绑定保证。
+
+组件黑盒 `tests/blackbox/test_w3_outcome_cli_blackbox.py` 的
+`test_outcome_cli_v2_exact_review_replay_and_v1_deprecation` 覆盖精确审批、旧确认拒绝、
+退回/幂等 receipt、新进程读取及旧入口弃用；其余节点覆盖解析优先和未 READY envelope。
+该文件与 W3 MCP、既有 Outcome CLI/MCP 四文件合跑为 **21 passed / 230.03s，exit 0**，
+见 [组件日志](../../.data-test/w3-adapter-20261025-full/pytest.log)。这次运行包含启动错误
+stage 透传微调前后的进程，属于组件证据；最终冻结同树结果只按上述 W3 主记录登记。
+该计数不能替代默认全量、MCP coverage 或 Phase C 门禁，也不改变 release hold。
 
 ## 命令树解析与运行时门禁（W2 已实现）
 
@@ -82,7 +128,7 @@ W2（2026-10-24 开始）已修复 `outcome` Group 提前执行 runtime 门禁�
 原 W1 的 16 项解析回归已全部通过，本轮新增覆盖及证据见下表。修复次序见
 [生命周期一致性修复设计与分阶段计划](../../docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md)，
 本轮主记录见 [W2 身份队列与 CLI 门禁修复记录](../../docs/overview/W2-身份队列与CLI门禁修复记录-2026-10.md)。
-这里的完成结论仅适用于命令解析与门禁；不表示 W3 的 Outcome 审批、版本绑定或原子性问题已修复。
+这里的 W2 完成结论仅适用于命令解析与门禁，不能替代上节 W3 的 Outcome 版本审批验收。
 
 门禁须按完整命令路径绑定到叶子，不能假定 root 的直接 child 都是可执行叶子：
 
@@ -101,8 +147,8 @@ W2（2026-10-24 开始）已修复 `outcome` Group 提前执行 runtime 门禁�
 | 叶子类别 | 命令路径 | 解析成功后的门禁 |
 | --- | --- | --- |
 | 只读、已有 degraded 合同 | `search`、`show`、`list`、`tags`、`related`、`stats` | 允许 `READY` / `DEGRADED`；不恢复、不迁移、不隐式写入。 |
-| Outcome 只读 | `outcome get`、`outcome list`、`outcome suggest-evidence` | 本轮保留 `READY` 要求；仅把门禁下移到叶子，不由父 Group 判断。 |
-| 业务 mutation | `archive`、`archive-text`，以及 `outcome` 的 create、attach/detach、revise、link/unlink、render、approve、return 叶子 | 必须 `READY`；writer lease 与领域校验仍由既有 Application/Kernel 合同执行。 |
+| Outcome 只读 | `outcome get`、`outcome list`、`outcome suggest-evidence`，以及 W3 的 `get-v2/brief-v2` | 保留 `READY` 要求；门禁只在叶子执行，不由父 Group 判断。 |
+| 业务 mutation | `archive`、`archive-text`，以及 `outcome` 的 create、attach/detach、revise、link/unlink、render、approve、return 叶子和 W3 的 `render-v2/approve-v2/return-v2` | 必须 `READY`；writer lease 与领域校验仍由既有 Application/Kernel 合同执行。 |
 | Lifecycle | `inspect`、`setup`、`repair`、`embedding inspect`、`embedding rebuild` | 不套普通业务 READY 门禁；各叶子执行自己的 inspect/plan/confirm/execute 合同。 |
 | Config | `config show`、`config get`、`config set` | 只在成功解析后进入配置合同；`config set` 仍不属于默认自动化授权范围。 |
 
@@ -144,7 +190,7 @@ W2 实际运行均使用 `scripts/run-test.ps1 -Direct` 与独立 `.data-test` �
   `tests/blackbox/test_cli_basic.py`、`tests/blackbox/test_cli_blackbox.py`、
   `tests/blackbox/test_outcome_cli_blackbox.py`、`tests/blackbox/test_r4_cli_fullflow.py`；
   **282 passed / 336.29s，exit 0**。这是兼容性回归证据，不能代替上述 case 逐项验收，
-  也不证明尚未实施的 W3 审批修复完成。
+  也不作为 W3 审批修复完成的证据。
 
 ## 实现索引
 
@@ -230,6 +276,6 @@ W2 实际运行均使用 `scripts/run-test.ps1 -Direct` 与独立 `.data-test` �
 - [Retrieval 检索引擎规范](../../docs/specs/interfaces/Retrieval检索引擎规范.md)
 - [TestCase 设计审查与分阶段规划](../../docs/operations/testing/Review-TestCase设计审查与分阶段规划-2026-07-30.md)
 
-**当前版本**：`0.8.1`
+**当前源码/SDK 兼容 build**：`0.9.0`；**Kernel API**：`1.0.0`
 
-**最后核对**：2026-10-25（W2 于 2026-10-24 开始；登记 CLI-01–04 的实现、实际测试证据与损坏配置覆盖边界）
+**最后核对**：2026-10-25（W3 五个 v2 叶子、兼容弃用与组件证据；W2 历史运行记录保留）

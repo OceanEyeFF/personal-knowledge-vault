@@ -2,15 +2,22 @@
 
 > Personal Knowledge Vault - Model Context Protocol 服务端设计
 >
-> **文档版本**: v1.2
+> **文档版本**: v1.3
 > **创建日期**: 2026-02-16
-> **最后更新**: 2026-09-04 (对齐当前 MCP runtime / R4-P1 public rebuild 合同)
+> **最后更新**: 2026-10-25（W3 Outcome v2 兼容准备；历史设计与验收语境保留）
 > **作者**: 幽浮喵 (猫娘工程师)
 > **目标版本**: v0.7.0
 
-> **当前代码补注（2026-09-04）**：
+> **当前 W3 补注（2026-10-25）**：
+> - 当前注册清单为 **35 Tool（19 只读 + 16 写入）**、9 Resource、3 Prompt。新增的五个 Outcome v2 Tool 只通过 `pkv_kernel.outcomes`；原 30 Tool 保留。
+> - SDK `0.9.0` 是本地兼容 build，Kernel API 仍为 `1.0.0`；所有 v1 capability 保留，仅新增 `kernel.traceable-outcomes.v2`，未声明 `kernel.embedding-rebuild.v2`，未执行 W5 major 切换。
+> - v2 使用精确版本四元组、严格原始 JSON 参数与统一 `pkv.lifecycle-response.v2` envelope。旧 approve/return 只发出弃用提示，仍按原签名和既有成功语义执行；R-04 的旧入口 `known_gap` 留待 W5 关闭。
+> - 新旧 Outcome CLI/MCP 黑盒的 `21 passed` 是组件运行证据。最终同树运行、默认全量、MCP coverage 和 Phase C 状态以 [W3 主记录](../../overview/W3-Outcome一致性与版本审批实施记录-2026-10.md) 为准，不据此声明全量或发布通过。
+> - Outcome v1/v2 均保持 READY 门禁和零 Provider 合同；stdio-only、配置隔离、一写多读、路径/凭据脱敏与 release hold 不变。
+
+> **历史代码补注（2026-09-04，R4-P1 时点）**：
 > - 本文主体仍保留 `v0.7.0` 设计稿结构；当前代码真相以 `README.md`、`docs/overview/当前事实基线-2026-03.md` 与 `src/mcp/tools.py` 为准。
-> - 当前 MCP 代码基线为 `18` 个 Tool（15 个只读 + 3 个写入）；`get_runtime_status` 只读报告运行时 readiness 与下一步计划，不会初始化、修复或探测 Provider。`inspect_embedding_rebuild` / `plan_embedding_rebuild` / `execute_embedding_rebuild` 是唯一 public generation maintenance 路径：前两者零写入/零 Provider，后者需精确 plan id、`approved=true` 与 `allow_network=true`，并在当前同根 Config snapshot 上重算、用独立 policy/ledger/replay fence 执行。`query_subgraph`、`explain_relation`、`collect_evidence`、`find_bridges`、`timeline_of`、`contrast` 已落地。
+> - 当时 MCP 代码基线为 `18` 个 Tool（15 个只读 + 3 个写入）；`get_runtime_status` 只读报告运行时 readiness 与下一步计划，不会初始化、修复或探测 Provider。`inspect_embedding_rebuild` / `plan_embedding_rebuild` / `execute_embedding_rebuild` 是 public generation maintenance 路径：前两者零写入/零 Provider，后者需精确 plan id、`approved=true` 与 `allow_network=true`，并在当前同根 Config snapshot 上重算、用独立 policy/ledger/replay fence 执行。`query_subgraph`、`explain_relation`、`collect_evidence`、`find_bridges`、`timeline_of`、`contrast` 已落地。
 > - `find_bridges`、`timeline_of`、`contrast` 仍属于 `partial-v1`，公开 `implementation_level=partial`：当前分别补入 `graph_bridge_signal`、`structured_time_fields`、`relation_graph_signal` 等受限推理信号。
 > - 当前已注册 `9` 条 Resource；chunk、metadata field 和 relation locator 都可直接读取。公开 MCP 的结构化字段不返回本机文件路径，写入 Tool 以 `pkv://entries/{id}` locator 回传新条目；entry Markdown 正文保持原文，不做内容级路径替换。
 > - M13 Developer Preview 只发布 MCP stdio。HTTP transport、监听端口和 Bearer Token 均已从当前入口移除；非 stdio 请求会在读取应用配置、bootstrap 数据或 bind 前 fail-closed。
@@ -71,6 +78,55 @@ AI Agent 可调用的操作能力：
 | `inspect_embedding_rebuild` | 检查 generation binding 与独立 policy | - | 安全 inspection | **P1** |
 | `plan_embedding_rebuild` | 展示确认式 rebuild 计划 | force | 安全 plan | **P1** |
 | `execute_embedding_rebuild` | 执行精确确认的 rebuild | plan_id, approved, allow_network, force | public operation/generation 结果 | **P1** |
+
+P1-B 后续增加以下 12 个 v1 Outcome Tool（2 只读 + 10 写入），形成 W3 前的 30 Tool 清单：
+
+| v1 Tool | 类别 | 保留的公开行为 |
+| --- | --- | --- |
+| `get_outcome`、`suggest_outcome_evidence` | 只读 | revalidated Outcome view 与严格 BM25 候选；不自动绑定或写入 |
+| `create_outcome_topic` | 写入 | 显式创建 Topic |
+| `attach_outcome_evidence`、`detach_outcome_evidence` | 写入 | 显式绑定/解除 canonical evidence |
+| `create_outcome_claim`、`revise_outcome_claim` | 写入 | 显式创建/修订 Claim |
+| `link_outcome_claim_evidence`、`unlink_outcome_claim_evidence` | 写入 | 显式维护 support/counter 边 |
+| `render_outcome_research_brief` | 写入 | 发布 immutable Markdown revision 与 SQLite pointer |
+| `approve_outcome_research_brief`、`return_outcome_research_brief` | 写入、已弃用 | 保留 `topic_id` 签名和旧成功语义，响应增加替代 v2 名与移除 major 提示 |
+
+W3 兼容 build 再增加以下五个显式 v2 Tool，当前共 35 Tool。CLI 与 MCP 的固定 operation
+名称一致，具体 DTO 和错误字段遵循 [v2 冻结合同](../../specs/interfaces/生命周期一致性v2接口冻结合同-2026-10.md)。
+
+| MCP Tool | 输入 | readOnlyHint | 对应 CLI |
+| --- | --- | --- | --- |
+| `get_outcome_v2` | `topic_id` | true | `outcome get-v2 TOPIC_ID` |
+| `get_outcome_research_brief_v2` | `topic_id=null, outcome_id=null`，必须且只能提供一个 | true | `outcome brief-v2 --topic-id ID` 或 `--outcome-id ID` |
+| `render_outcome_research_brief_v2` | `topic_id` | false | `outcome render-v2 TOPIC_ID` |
+| `approve_outcome_research_brief_v2` | `outcome_id, expected_revision, content_sha256, expected_input_revision` | false | `outcome approve-v2 OUTCOME_ID --expected-revision N --content-sha256 H --expected-input-revision N` |
+| `return_outcome_research_brief_v2` | 同四元组，另必填 `reason_code` | false | 同上改为 `return-v2`，增加 `--reason-code CODE` |
+
+五者均只经公开 `pkv_kernel.outcomes` v2 façade；其 get/brief 零写、零 lease、零 Provider，
+但仍要求 READY，不将 `readOnlyHint` 解释为 DEGRADED 访问许可。render/review 使用既有
+root writer lease；state 与 receipt 在 Core 的同一事务提交。adapter 原样转交已经展示并
+确认的四元组，不读取 latest、补当前版本或将 topic ID 当成 outcome ID。旧确认、returned
+后 approve、不同原因 return 重放被拒绝；当前仍匹配的同元组同动作通过 receipt 幂等返回。
+
+新 MCP 请求为封闭对象：`additionalProperties=false`；原始 scalar 在框架转换前校验。
+ID 满足 `[a-z][a-z0-9_-]{0,95}`，SHA256 为 64 位小写十六进制，revision 严格为
+`1..2**63-1` 整数，不接受 bool/float/数字字符串。reason_code 仅允许
+`needs_revision / insufficient_evidence / other`。缺字段、额外字段或无效 selector
+返回安全 `outcome_invalid`，不进入 SDK；合法字符串 `"null"` 不被转换为 null。
+CLI 在叶子门禁前完成相同形状和 selector 校验，语法/类型错误 exit 2 且零 runtime。
+
+五个 v2 adapter 使用
+`{schema:"pkv.lifecycle-response.v2",status,terminal,operation,result,issues}`：
+status/terminal 为 success 或 error，operation 固定为上表 MCP Tool 名；成功 result 为
+公开 DTO 或合法 lookup 的 null，失败为 null；issue 仅包含冻结的安全 code/message/stage/
+recoverable 等字段。CLI 成功 stdout/exit 0，业务错误 stderr/exit 1；MCP 同时返回等价
+JSON 文本和 structured content。source body、私有路径、凭据、底层异常原文均不进入响应。
+
+兼容期旧 MCP approve/return 的响应追加固定
+`deprecation={replacement:"对应 *_v2 Tool",removal_api_major:2}`；旧 CLI 成功在 stderr
+给出替代提示，业务失败仍为单个 JSON 并追加同类信息；SDK 发出 `DeprecationWarning`。
+这些旧入口仍能成功，R-04 的无版本审批缺口保持 `known_gap`，W5 才实施 major-2
+旧入口拒绝与客户端显式握手。当前五个 v2 Tool 的成功不能替代该退出条件。
 
 历史 W2 adapter 合同仍覆盖原有 12 个内容访问只读 Tool：它们返回稳定 `status` 与 `issues`，不能把底层异常伪装成空结果。检索类状态使用 `success/no_hits/invalid/error/degraded`；`degraded` 可以携带仍可用的部分结果，但必须带机器可读 issue。`get_runtime_status` 遵循 [Runtime 生命周期合同](../../specs/interfaces/Runtime生命周期合同.md)，返回无敏感信息的 readiness、issue 与计划，不执行 bootstrap、repair 或 Provider probe。三个 public rebuild Tool 只通过 `pkv_kernel.embedding` 投影安全 DTO，不能以 MCP 的 Store/Provider composition 替代 Kernel；三个探索 Tool 的响应还必须保留 `implementation_level=partial` 和 `limitation_notes`，不得宣称 full。
 
@@ -773,6 +829,8 @@ class SQLiteStore:
 - 数据根采用一写多读：读取 Tool/Resource 可与一个写操作并行，第二个写操作不得并行。
 - 写入 Tool 无法取得 write lease 时返回稳定失败 envelope：
   `{success: false, terminal: "error", error_code: "write_busy", retryable: true, issues: [...]}`。
+- 上述是既有 archive 响应形状；Outcome v2 使用第 2.1 节的统一 error envelope，并保留
+  `issues[].code=write_busy`，不额外混入另一套 success/error_code 字段。
 - Client 可退避后重试；不得把 `write_busy` 转成成功、空结果或另起未协调的写操作。
 
 ### 7.2 输入验证
@@ -799,6 +857,20 @@ class SQLiteStore:
 ## 8. 测试计划
 
 默认门禁只运行离线 unit/integration/blackbox/e2e fixture，通过 `scripts/run-test.ps1` 使用唯一 `.data-test/<scenario>`。测试不得读取真实 key、调用真实 Provider、访问真实网络或真实 Vault；涉及 URL/Provider 的路径使用可控 doubles。MCP 协议矩阵以真实 stdio JSON-RPC 子进程覆盖能力发现和完整调用。
+
+W3 新增 `tests/blackbox/test_w3_outcome_cli_blackbox.py` 与
+`tests/blackbox/test_w3_outcome_mcp_blackbox.py`。主流程节点分别为
+`test_outcome_cli_v2_exact_review_replay_and_v1_deprecation` 和
+`test_outcome_mcp_v2_exact_review_replay_restart_and_v1_deprecation`；它们验证旧确认拒绝、
+精确 receipt replay、退回后拒绝批准、新进程/server 读取，以及旧 v1 可观察弃用。
+同文件另覆盖 CLI 未 READY 解析/统一错误、MCP 22 个 strict/extra 拒绝请求与合法 `"null"`
+控制，不 patch Application、OutcomeService 或 Tool 返回值。
+
+上述新文件与既有 Outcome CLI/MCP 两文件合跑 **21 passed / 230.03s，exit 0**，见
+[组件日志](../../../.data-test/w3-adapter-20261025-full/pytest.log)。运行包含启动错误 stage
+微调前后的进程，只记组件证据；最终冻结同树结果及 P0/MCP coverage/Phase C 状态统一登记于
+[W3 主记录](../../overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)。不将组件通过数
+升级为全量、Artifact、真实迁移或 release 验收。
 
 ### 8.1 单元测试
 
@@ -866,7 +938,7 @@ anyio>=4.0.0          # 异步 I/O 工具库（FastMCP 自身已依赖，通常�
 
 ## 10. 历史 M8/M9 实施路线
 
-> 下列 checkbox 是设计阶段留下的任务清单，不代表当前完成状态，也不是 M13 W2 验收证据。当前源码运行 manifest 为 30 Tool（17 只读 + 13 写入）、9 Resource、3 Prompt；其中 R4-P1 public Embedding rebuild 与 P1-B traceable outcome Tool 只具 source acceptance，历史 W2/W4 的 14 Tool candidate surface/evidence 不被追溯改写。当前状态以本文开头的现行补注、真实注册清单和离线门禁为准。
+> 下列 checkbox 是设计阶段留下的任务清单，不代表当前完成状态，也不是 M13 W2 验收证据。2026-09-04 的 R4-P1/P1-B 源码 manifest 为 30 Tool（17 只读 + 13 写入）、9 Resource、3 Prompt；该时点只具 source acceptance，历史 W2/W4 的 14 Tool candidate surface/evidence 不被追溯改写。W3 当前 35 Tool 的状态以本文开头补注、真实注册清单和 W3 主记录为准。
 
 ### M8: 只读服务 (v0.7.0-alpha)
 

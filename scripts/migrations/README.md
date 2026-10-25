@@ -20,7 +20,8 @@ scripts/migrations/
 ├── 010_add_storage_operation_commits.sql # v1.2.4 新增跨存储提交凭据
 ├── 011_add_ai_automation_ledger.sql # v1.2.5 新增内部 AI 自动任务与 token 用量账本
 ├── 012_add_r4_content_submission.sql # v1.2.6 新增 R4 Q0/Q1′/Q2 durable 生命周期
-└── 013_add_traceable_outcomes.sql     # v1.2.7 新增 P1-B 可追溯成果表
+├── 013_add_traceable_outcomes.sql     # v1.2.7 新增 P1-B 可追溯成果表（保留原脚本）
+└── 014_add_lifecycle_consistency.sql  # v1.2.8 输入绑定、发布与审阅凭据；需事务 hook
 ```
 
 ---
@@ -83,6 +84,17 @@ VALUES ('{版本号}', '{变更描述}');
 
 ## 当前操作边界
 
+014/schema `1.2.8` 已在 W3 实现，但它不是可独立执行的 SQL：MigrationManager 必须在
+private work copy 中将 DDL、`src/storage/outcome_migration.py` backfill、共享 identity
+计算、校验与版本记录作为同一事务执行，再原子发布。直接 `apply_migration(014)` 拒绝。
+SQL、hook 与 identity 源摘要一起进入迁移 manifest；013 不改写。
+
+合成迁移定向验证为 `23 passed`、exit 0（MIG-01–04 及边界扩展）；MIG-05 由 Store 事务组
+覆盖。旧 brief 保留 identity、pointer、版本与历史 state，但 rendered binding 为
+`legacy_unverified`，不能猜测成 approved。完整证据见
+[W3 实施记录](../../docs/overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)。
+这不是全量通过或真实迁移授权；runtime 的升级 action 仍不可执行。
+
 `scripts/migrate.py` 是已停用的原始维护入口。无论裸跑还是经
 `run-test.ps1` 的 Direct Python 调用，它都会在读取 Config 或数据库之前以 exit 2 拒绝。
 因此当前没有可执行的真实/人工迁移命令，也不能把本目录的 SQL 文件当作直接运行的
@@ -118,6 +130,7 @@ VALUES ('{版本号}', '{变更描述}');
 | 1.2.5 | 011_add_ai_automation_ledger.sql | 新增内部 AI 自动任务、reservation 与 token 用量账本 | 2026-08-31 |
 | 1.2.6 | 012_add_r4_content_submission.sql | 新增 R4 Q0 ingress、Q1′ 内容提交/handoff 与 Q2 fenced 用量账本 | 2026-09-01 |
 | 1.2.7 | 013_add_traceable_outcomes.sql | 新增 P1-B Topic、Evidence、Claim 与 research brief 成果合同 | 2026-09-04 |
+| 1.2.8 | 014_add_lifecycle_consistency.sql | Outcome 输入绑定、任意 revision publication 与 review receipts；依赖事务 hook | 2026-10-25 |
 
 ### 版本号规范
 
@@ -135,9 +148,9 @@ VALUES ('{版本号}', '{变更描述}');
 
 1. **幂等性**: 使用 `IF NOT EXISTS`/`IF EXISTS`
 2. **向后兼容**: 新增列时设置默认值
-3. **事务性**: 使用 `BEGIN`/`COMMIT`（对于复杂迁移）
+3. **事务性**: 顶层 `BEGIN`/`COMMIT` 由 MigrationManager 管理，SQL 不得自行控制；014 的版本行由 hook 校验后写入
 4. **文档化**: 详细注释每个变更
-5. **可回滚**: 提供回滚 SQL
+5. **失败边界**: private work 发布前失败保留原库；发布后须重新 inspect 判定完成，不执行未经定义的原地降级
 
 ### ❌ 避免
 
@@ -164,7 +177,8 @@ VALUES ('{版本号}', '{变更描述}');
 
    在临时 SQLite 测试中第二次调用管理器；它只验证“已登记版本不会再次执行”，不能作为 SQL 幂等性证据。
 
-   如果迁移声明 SQL 本身可重复执行，必须另写专门测试，在一次性临时数据库上
+   014 的幂等单位是经完整结构校验的 manager 升级，不声明其 SQL 可以独立重放。
+   如果其他迁移声明 SQL 本身可重复执行，必须另写专门测试，在一次性临时数据库上
    直接执行目标迁移 SQL 两次，并断言第二次成功及 Schema/数据未重复；不能用
    `MigrationManager` 的 pending-version 短路替代。
 
@@ -191,5 +205,5 @@ VALUES ('{版本号}', '{变更描述}');
 
 ---
 
-**最后更新**: 2026-08-13
+**最后更新**: 2026-10-25
 **维护者**: 幽浮酱 ฅ'ω'ฅ

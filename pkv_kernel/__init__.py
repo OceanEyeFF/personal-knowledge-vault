@@ -85,6 +85,7 @@ def require_kernel_compatibility(
     minimum_sdk_version: str | None = None,
     maximum_sdk_version: str | None = None,
     required_capabilities: tuple[str, ...] | list[str] | frozenset[str] = (),
+    required_api_major: int | None = None,
 ) -> KernelCapabilities:
     """Validate Wrapper requirements against the currently imported SDK."""
 
@@ -93,6 +94,7 @@ def require_kernel_compatibility(
         minimum_sdk_version=minimum_sdk_version,
         maximum_sdk_version=maximum_sdk_version,
         required_capabilities=required_capabilities,
+        required_api_major=required_api_major,
     )
 
 

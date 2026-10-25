@@ -1,7 +1,7 @@
 """
 MCP Tool handler 实现
 
-提供 30 个 Tool:
+提供 35 个 Tool:
 - 只读: get_runtime_status, inspect_embedding_rebuild, plan_embedding_rebuild,
   search_knowledge, get_entry, list_tags, list_entries, get_stats,
   get_related, query_subgraph, explain_relation, collect_evidence, find_bridges,
@@ -34,6 +34,7 @@ from src.mcp.server import (
     get_markdown_store,
     get_relation_query_service,
     get_runtime_config_for_lifecycle,
+    valid_outcome_v2_arguments,
 )
 from src.mcp.utils import (
     parse_tags_string, serialize_search_result,
@@ -62,6 +63,7 @@ from src.relations.models import (
     TimelineResult,
 )
 from src.runtime.errors import ErrorCode, PKVRuntimeError
+from src.runtime.bootstrap import project_bootstrap_error
 from src.retrieval.result import (
     RetrievalIssue,
     SearchResponse,
@@ -3629,6 +3631,124 @@ def _outcome_success_payload(*, operation: str, result: object) -> dict[str, obj
     return {"status": "success", "operation": operation, "result": payload}
 
 
+def _outcome_v2_failure_payload(exc: BaseException, *, operation: str) -> dict[str, object]:
+    """One closed, safe envelope for runtime, validation and domain failures."""
+
+    if isinstance(exc, PKVRuntimeError):
+        projected = project_bootstrap_error(exc, adapter="mcp", stage="outcome")
+        code, stage, recoverable = projected["code"], projected["stage"], projected["recoverable"]
+        message = _OUTCOME_PUBLIC_MESSAGES.get(exc.code, "研究成果操作未能完成。")
+        if code == "outcome_render_contract_unsupported":
+            message = "当前成果渲染合同不受支持，需要显式维护。"
+    else:
+        code, stage = "outcome_invalid", "outcome"
+        recoverable = not isinstance(exc, (TypeError, ValueError))
+        message = "研究成果参数无效。" if not recoverable else "研究成果操作暂时不可用。"
+    return {
+        "schema": "pkv.lifecycle-response.v2",
+        "status": "error",
+        "terminal": "error",
+        "operation": operation,
+        "result": None,
+        "issues": [{"code": code, "message": message, "stage": stage, "recoverable": recoverable}],
+    }
+
+
+async def _run_outcome_v2(
+    *, operation: str, sdk_name: str, arguments: dict[str, object], review: bool = False,
+) -> dict[str, object]:
+    """Run only the named SDK v2 call with exactly the caller's confirmation."""
+
+    if not valid_outcome_v2_arguments(operation, arguments):
+        return _outcome_v2_failure_payload(ValueError("invalid outcome request"), operation=operation)
+
+    def _impl() -> dict[str, object]:
+        try:
+            module = _outcome_public_module()
+            sdk_arguments = dict(arguments)
+            if review:
+                sdk_arguments = {
+                    "confirmation": module.ResearchBriefReviewConfirmation(**{
+                        field: arguments[field]
+                        for field in ("outcome_id", "expected_revision", "content_sha256", "expected_input_revision")
+                    }),
+                }
+                if "reason_code" in arguments:
+                    sdk_arguments["reason_code"] = arguments["reason_code"]
+            result = getattr(module, sdk_name)(**sdk_arguments)
+            payload = None if result is None else result.to_dict()
+            if payload is not None and not isinstance(payload, dict):
+                raise TypeError("outcome public result contract invalid")
+            return {
+                "schema": "pkv.lifecycle-response.v2",
+                "status": "success",
+                "terminal": "success",
+                "operation": operation,
+                "result": payload,
+                "issues": [],
+            }
+        except Exception as exc:
+            logger.warning("%s failed: kind=%s", operation, _failure_kind(exc))
+            return _outcome_v2_failure_payload(exc, operation=operation)
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def get_outcome_v2(topic_id: str) -> dict:
+    """读取含输入绑定与精确审阅确认的 v2 成果视图；零写入、零 Provider。"""
+    return await _run_outcome_v2(
+        operation="get_outcome_v2", sdk_name="get_outcome_v2", arguments={"topic_id": topic_id},
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def get_outcome_research_brief_v2(topic_id: str | None = None, outcome_id: str | None = None) -> dict:
+    """仅按一个 selector 读取 v2 brief；不存在返回 null，不创建成果。"""
+    return await _run_outcome_v2(
+        operation="get_outcome_research_brief_v2", sdk_name="get_research_brief_v2",
+        arguments={"topic_id": topic_id, "outcome_id": outcome_id},
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False))
+async def render_outcome_research_brief_v2(topic_id: str) -> dict:
+    """按持久 renderer 合同显式发布绑定输入的 v2 research brief。"""
+    return await _run_outcome_v2(
+        operation="render_outcome_research_brief_v2", sdk_name="render_research_brief_v2",
+        arguments={"topic_id": topic_id},
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False))
+async def approve_outcome_research_brief_v2(
+    outcome_id: str, expected_revision: int, content_sha256: str, expected_input_revision: int,
+) -> dict:
+    """批准已展示并精确确认的四元组；不读取 latest 补齐确认。"""
+    return await _run_outcome_v2(
+        operation="approve_outcome_research_brief_v2", sdk_name="approve_research_brief_v2", review=True,
+        arguments={
+            "outcome_id": outcome_id, "expected_revision": expected_revision,
+            "content_sha256": content_sha256, "expected_input_revision": expected_input_revision,
+        },
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False))
+async def return_outcome_research_brief_v2(
+    outcome_id: str, expected_revision: int, content_sha256: str, expected_input_revision: int, reason_code: str,
+) -> dict:
+    """按精确版本和受限原因显式退回；精确同动作重放不重复提交。"""
+    return await _run_outcome_v2(
+        operation="return_outcome_research_brief_v2", sdk_name="return_research_brief_v2", review=True,
+        arguments={
+            "outcome_id": outcome_id, "expected_revision": expected_revision,
+            "content_sha256": content_sha256, "expected_input_revision": expected_input_revision,
+            "reason_code": reason_code,
+        },
+    )
+
+
 @mcp.tool()
 async def create_outcome_topic(title: str, question: str) -> dict:
     """创建一个显式研究 Topic；不会自动检索、联网或调用 Provider。"""
@@ -3852,7 +3972,7 @@ async def render_outcome_research_brief(topic_id: str) -> dict:
 
 @mcp.tool()
 async def approve_outcome_research_brief(topic_id: str) -> dict:
-    """仅在证据 current 且主张状态可审阅时显式批准 brief。"""
+    """已弃用：请使用 approve_outcome_research_brief_v2；API major 2 移除。"""
 
     def _impl() -> dict[str, object]:
         try:
@@ -3866,12 +3986,14 @@ async def approve_outcome_research_brief(topic_id: str) -> dict:
             logger.warning("approve_outcome_research_brief failed: kind=%s", _failure_kind(exc))
             return _outcome_failure_payload(exc, operation="approve_outcome_research_brief")
 
-    return await anyio.to_thread.run_sync(_impl)
+    payload = await anyio.to_thread.run_sync(_impl)
+    payload["deprecation"] = {"replacement": "approve_outcome_research_brief_v2", "removal_api_major": 2}
+    return payload
 
 
 @mcp.tool()
 async def return_outcome_research_brief(topic_id: str) -> dict:
-    """将已生成 brief 显式退回，等待新的主张/证据/渲染 revision。"""
+    """已弃用：请使用 return_outcome_research_brief_v2；API major 2 移除。"""
 
     def _impl() -> dict[str, object]:
         try:
@@ -3885,7 +4007,9 @@ async def return_outcome_research_brief(topic_id: str) -> dict:
             logger.warning("return_outcome_research_brief failed: kind=%s", _failure_kind(exc))
             return _outcome_failure_payload(exc, operation="return_outcome_research_brief")
 
-    return await anyio.to_thread.run_sync(_impl)
+    payload = await anyio.to_thread.run_sync(_impl)
+    payload["deprecation"] = {"replacement": "return_outcome_research_brief_v2", "removal_api_major": 2}
+    return payload
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))

@@ -3,12 +3,14 @@
 > 范围：`pkv_kernel` 的外部 Wrapper 编程边界。
 > 状态：K1a/K2 公开合同；K1b 的本地安装证据见
 > [Kernel SDK 本地 wheel 验证合同](./KernelSDK本地Wheel验证合同.md)。
-> 2026-10-24 修订：当前版本/导出仍以实现为准；下文明确标注的 v2 是待实现目标。
+> 2026-10-25 修订：当前本地 SDK build 为 `0.9.0`，API 保持 `1.0.0`；W3 已实现
+> Outcome v2 公开入口与兼容期弃用。Embedding v2 和 API-major-2 切换仍未实现。
 > [生命周期一致性修复计划](../../overview/生命周期一致性修复设计与分阶段计划-2026-10.md)
 > 记录已知缺口、兼容迁移及新验收；W2 已验证的 v1 根/快照确认绑定见
 > [W2 修复记录](../../overview/W2-身份队列与CLI门禁修复记录-2026-10.md)，不代表其余缺口已修复。
 > W1 已冻结[生命周期一致性 v2 接口](./生命周期一致性v2接口冻结合同-2026-10.md)的
-> SDK/CLI/MCP 名称、DTO、错误与兼容阶段；新增接口仍未实现，当前清单与版本不变。
+> SDK/CLI/MCP 名称、DTO、错误与兼容阶段；W3 的最终同树验收、wheel 与整体结果统一登记在
+> [W3 实施记录](../../overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)。本页组件通过数不代表整体验收完成。
 
 ## 唯一导入面
 
@@ -48,20 +50,26 @@ mutating bootstrap，`get_kernel()` 的旧 lazy 路径也不等同 R2 检查；�
 from pkv_kernel import require_kernel_compatibility
 
 capabilities = require_kernel_compatibility(
-    minimum_sdk_version="0.8.1",
-    maximum_sdk_version="0.8.1",
+    minimum_sdk_version="0.9.0",
+    maximum_sdk_version="0.9.0",
+    required_api_major=1,
     required_capabilities=(
         "kernel.archive.v1",
         "kernel.configuration-snapshot-reload.v1",
+        "kernel.traceable-outcomes.v2",
     ),
 )
 ```
 
-- `__version__` 是 SDK build 版本，采用 `MAJOR.MINOR.PATCH`。
+- `__version__` 是 SDK build 版本，采用 `MAJOR.MINOR.PATCH`；当前本地兼容 build 为 `0.9.0`。
 - `KERNEL_API_VERSION` 是公开 Python surface 的协议版本；当前为 `1.0.0`。
 - `get_kernel_capabilities()` 返回不可变的 SDK 版本、API 版本、能力集合、Python 范围和平台范围。
 - `require_kernel_compatibility()` 对 Wrapper 的包含式最低/最高 SDK 范围及所需能力 fail-closed；
   不匹配时抛出 `KernelCompatibilityError`，Wrapper 不得猜测或回退到 `src.*`。
+- 包根函数与 `pkv_kernel.contracts.require_kernel_compatibility(sdk_version, ...)` 均新增
+  optional `required_api_major`。当前 `None` 保留旧行为，严格整数 `1` 通过；bool、字符串、
+  浮点数或其他整数均在 metadata 握手阶段拒绝，不打开数据根。旧 Wrapper 显式要求
+  `maximum_sdk_version="0.8.1"` 时仍须拒绝 `0.9.0`，不能用兼容期名义绕过版本上界。
 - 当前 K1a 支持范围为 CPython `>=3.11,<3.13`、Windows。完整跨平台 wheel/安装与测试工程
   留待 Rust 代码版本再重新评估，不由本合同预支。
 
@@ -76,6 +84,10 @@ capabilities = require_kernel_compatibility(
 - `kernel.configuration-snapshot-reload.v1`
 - `kernel.embedding-rebuild.v1`
 - `kernel.traceable-outcomes.v1`
+- `kernel.traceable-outcomes.v2`
+
+W3 只增加 Outcome v2 capability，所有 v1 标识继续保留；当前不存在
+`kernel.embedding-rebuild.v2` capability 或 API-major-2 声明。
 
 ## 兼容与废弃
 
@@ -85,23 +97,24 @@ capabilities = require_kernel_compatibility(
   文档给出替代与移除的下一个 API major。没有该阶段不得移除。
 - 新 API major 必须更新 `KERNEL_API_VERSION`、能力集合、此文档和 executable boundary tests。
 
-### 2026-10 review/rebuild 协议迁移目标（待实现）
+### 2026-10 review/rebuild 兼容迁移状态
 
-当前 SDK `0.8.1`、API `1.0.0` 和 v1 capability 清单不因本文改变。目标 API-major-2
-引入 `kernel.traceable-outcomes.v2` 的强制版本 review 协议，以及
-`kernel.embedding-rebuild.v2` 的 operation inspect/publish-only 继续协议。
-它们不是目前可以请求或调用的能力。
+W3 的 SDK `0.9.0` / API `1.0.0` 已增加独立 Outcome v2 符号。旧
+`approve_research_brief(*, topic_id, kernel=None)` 与 `return_research_brief(*, topic_id, kernel=None)`
+保持原签名和既有成功语义，并实际发出 `DeprecationWarning`，包含对应 `*_v2` 替代名和
+API major 2 将拒绝无版本 review 的说明。CLI/MCP 也提供可观察的替代提示；警告不污染
+JSON stdout 或 MCP 协议帧。v1 DTO 的 `to_dict()` 不增加 v2 字段。
 
-先经至少一个兼容 SDK 版本提供旧 review 符号的 DeprecationWarning、替代协议与下个 major
-说明，再进行 major 切换；本次文档不是该兼容版本的交付证据。切换时要求 major-1 的
-Wrapper 必须握手失败；旧无版本 approve/return 即使留作诊断 stub 也必须明确拒绝，
-不能自动读取最新版并批准。major-1 中不得静默加入必填参数或改变审批成功语义。
-兼容期旧调用仍为 known_gap，直到迁移、切换、拒绝旧调用及 SDK-01 全部验收才可关闭。
+这是兼容准备，不是旧调用安全缺口已经关闭：v1 无版本调用仍是 R-04 `known_gap`，其
+W1 红例须保留到 W5。W4 的 Embedding operation inspect/publish-only v2 尚未交付；W5
+才切换 API-major-2、要求客户端显式 `required_api_major=2`、拒绝旧无版本 review，并
+移除这两个领域的 v1 capability 声明。不能读取 latest 后替旧请求补四元组，也不能在
+major 1 静默增加必填参数。兼容 build、wheel 与最终同树证据以 W3 主记录为准；本页不是发行声明。
 
 W1 的 SDK、CLI、MCP 完整签名、DTO/错误码以
 [v2 接口冻结合同](./生命周期一致性v2接口冻结合同-2026-10.md)为准；SDK-01 验证版本/能力握手、兼容期
-弃用证据、旧入口拒绝、精确版本 review 和无私有 import 回退。版本号变更、弃用发行及
-切换均属后续实施，不由文档改动执行。
+弃用证据、旧入口拒绝、精确版本 review 和无私有 import 回退。OC-10a 的兼容准备属于
+W3；OC-10b/SDK-01 的真实 major 切换与旧入口拒绝属于 W5，不能合并为一个已完成状态。
 
 ## K2 配置快照与 reload
 
@@ -253,9 +266,9 @@ outcomes.link_claim_evidence(
     evidence_id=evidence.evidence_id,
     polarity="support",
 )
-brief = outcomes.render_research_brief(topic_id=topic.topic_id)
-# 当前 v1 的无版本批准存在已知缺口；此示例到生成/审阅 DTO 为止。
-# 不得读取“当前最新版”后替用户构造审阅确认。
+brief = outcomes.render_research_brief_v2(topic_id=topic.topic_id)
+# 展示 brief.to_dict()，并保存该次展示的 review_confirmation 等待用户明确审阅。
+# 审批时传回保存的四元组；不得重新 get 最新版替换用户已审阅的确认。
 ```
 
 - `outcomes` 是 body-free、Provider-free 公开模块：DTO 只包含 user-authored Topic/Claim、
@@ -263,7 +276,8 @@ brief = outcomes.render_research_brief(topic_id=topic.topic_id)
   不暴露 source body、原始网页/凭据、绝对路径、Store、Layout、lease、Provider 或内部 service。
   Topic/question/Claim/BM25 query/候选标题中的绝对路径、`file:` URI 或带凭据 URL 均在此边界
   fail-closed，不会被持久化、渲染或回显。
-- 只读 `get_outcome` / `get_research_brief` / `get_topic` / `list_topics` / `suggest_evidence`
+- 只读 `get_outcome` / `get_research_brief` / `get_outcome_v2` / `get_research_brief_v2` /
+  `get_topic` / `list_topics` / `suggest_evidence`
   不获取 writer lease、不写入状态；它们复核 evidence binding，并把 drift/delete 表示为
   `stale`/`unavailable`、Claim `insufficient` 和 brief effective `needs_review`。
 - 显式 mutation（Topic、attach/detach Evidence、create/revise Claim、link/unlink、render、
@@ -278,7 +292,28 @@ brief = outcomes.render_research_brief(topic_id=topic.topic_id)
 - 这是 source-level capability；它不解锁 Artifact/release、真实 Provider、GUI、自动写作或 Q2
   public resume/retry。
 
-### outcome v2 目标：输入事务、发布与版本审阅
+### Outcome v2：W3 已实现的公开接口
+
+以下十个符号已在 `pkv_kernel.outcomes.__all__` 中单独登记，没有新增公开子模块：
+
+| 类型/操作 | 当前合同 |
+| --- | --- |
+| `ResearchBriefReviewConfirmation` | frozen 四元组：`outcome_id / expected_revision / content_sha256 / expected_input_revision`；只表示用户保留的审阅输入，不是绕过复核的授权能力。 |
+| `ResearchBriefReturnReason` | `needs_revision / insufficient_evidence / other`；不接收自由文本退回原因。 |
+| `ResearchBriefRecordV2` | 独立不可变 DTO，schema 为 `pkv.outcome.brief.v2`；明确包含 publication/input/renderer binding、projection/effective state 与可用时的 `review_confirmation`。 |
+| `OutcomeBundleV2` | schema 为 `pkv.outcome.bundle.v2`；topic 是不可变 mapping，增加稳定 outcome ID 与当前输入绑定；evidence/claims 保留 v1 body-free 字段，brief 使用 v2 DTO。 |
+| `ResearchBriefReviewResultV2` | schema 为 `pkv.outcome.review-result.v2`；仅包含 brief、opaque `review_receipt_id` 和严格 bool `idempotent`。 |
+| `get_outcome_v2(topic_id, *, kernel=None)` | 一致只读 bundle；Topic 不存在返回 `outcome_not_found`。 |
+| `get_research_brief_v2(*, topic_id=None, outcome_id=None, kernel=None)` | selector 必须且只能给一个；合法但不存在时返回 `None`。 |
+| `render_research_brief_v2(*, topic_id, kernel=None)` | 使用持久 renderer 合同发布绑定输入的不可变 revision。 |
+| `approve_research_brief_v2(*, confirmation, kernel=None)` | 校验并批准用户保留的精确四元组，不获取 latest 补值。 |
+| `return_research_brief_v2(*, confirmation, reason_code, kernel=None)` | 校验精确四元组及必填受限原因，返回 receipt 与幂等事实。 |
+
+标识采用冻结的 opaque ID 形状；revision 只接受 `1..2**63-1` 的严格整数，bool 不作为
+整数；摘要只接受 64 位小写十六进制。对象请求拒绝额外字段。上述 DTO 的 `to_dict()`
+只序列化冻结字段，不转发内部 metadata。新版只读入口不初始化、不迁移、不取得 writer
+lease：013/schema 1.2.7 返回 `database_upgrade_required`；伪造最新 version 但缺少必要 CHECK
+等结构时返回 `database_schema_drift`，不能因绕过 bootstrap 取得访问资格。
 
 输入 mutation、Topic `input_revision/input_digest` 更新、已有 brief 的 `needs_review`
 必须同事务提交。brief 保存 `rendered_input_revision/rendered_input_digest`；只读 bundle
@@ -286,8 +321,9 @@ brief = outcomes.render_research_brief(topic_id=topic.topic_id)
 approved。任意 revision 的不可变 publication identity 和 orphan 恢复遵循
 [P1-B 目标合同](../../overview/P1-B-可追溯知识成果最小合同实施计划-2026-09.md)，不局限首次 render。
 
-v2 approve/return 请求必须提交用户实际审阅 DTO 中的以下元组；完整新增 Python 签名见
-[W1 接口合同](./生命周期一致性v2接口冻结合同-2026-10.md)，当前 v1 函数尚未实现此协议：
+v2 approve/return 请求必须提交用户实际审阅 DTO 中的以下元组；完整 Python 类型、字段与
+adapter 映射见 [W1 接口合同](./生命周期一致性v2接口冻结合同-2026-10.md)。旧 v1 函数
+不采用此新签名：
 
 ```text
 outcome_id
@@ -300,7 +336,31 @@ expected_input_revision
 漂移仍按 P1-B 规则拒绝。匹配后才批准或退回，版本变化返回稳定 conflict，要求重新读取/
 审阅。重复的精确请求只有当前元组与目标状态仍匹配时才可幂等成功。禁止省略元组、默认
 latest、把无版本旧请求包装成“先 get 再 approve”，也禁止在旧 major 中悄悄加必填参数。
-兼容迁移按上节执行，OC 与 SDK-01 共同构成关闭条件。
+匹配的 returned revision 只提供同原因 return 的幂等查询，不能再次 approve；后者须显式
+render 新 revision。legacy_unverified、输入/renderer 不匹配或 source/projection 不可验证
+时，不提供 review confirmation。普通 render 保留已持久化 renderer 版本；不支持时返回
+`outcome_render_contract_unsupported`，不随 SDK 升级静默重渲染。
+
+CLI 五个命令为 `outcome get-v2 / brief-v2 / render-v2 / approve-v2 / return-v2`；MCP 五个
+工具为 `get_outcome_v2`、`get_outcome_research_brief_v2`、`render_outcome_research_brief_v2`、
+`approve_outcome_research_brief_v2`、`return_outcome_research_brief_v2`。它们统一使用
+`pkv.lifecycle-response.v2` envelope，operation 固定为相应 MCP Tool 名称；具体参数、
+退出码及 stdout/stderr 规则仍以冻结合同为准。
+
+### W3 组件证据与完成边界
+
+- [SDK/architecture 日志](../../../.data-test/w3-sdk-20261025-boundary/pytest.log)：
+  `tests/unit/test_w3_outcome_public.py`（75 项）与 `tests/unit/test_kernel_wrapper_boundary.py`
+  （9 项），**84 passed / 20.80s，exit 0**。包含直接 SDK 的旧/伪 schema 零写拒绝、
+  严格 DTO、v1 payload/警告兼容以及 package/contracts 握手。
+- [真实 CLI/MCP 黑盒日志](../../../.data-test/w3-adapter-20261025-full/pytest.log)：
+  两份新增 `test_w3_outcome_*_blackbox.py` 的 18 项与既有 Outcome 黑盒 3 项，
+  **21 passed / 230.03s，exit 0**。覆盖旧确认拒绝、精确审批跨进程重放、严格 MCP 参数
+  与旧入口弃用。一次启动错误 stage 透传微调发生在该组件运行中段，最终同树证据由主记录另行固定。
+
+以上是组件证据，不是 P0、MCP 覆盖率、wheel 或整体 W3 已通过的声明。最终冻结指纹、
+完整命令及同树验收统一见 [W3 实施记录](../../overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)。
+R-04 仍须等待 W5 的旧入口拒绝及 OC-10b/SDK-01，不能用新 v2 成功测试关闭。
 
 ## 非目标
 

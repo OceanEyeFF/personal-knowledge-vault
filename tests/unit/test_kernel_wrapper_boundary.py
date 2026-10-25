@@ -179,6 +179,20 @@ _PUBLIC_OUTCOMES_API_V1 = frozenset(
         "unlink_claim_evidence",
     }
 )
+_PUBLIC_OUTCOMES_API_V2_ADDITIONS = frozenset(
+    {
+        "ResearchBriefReviewConfirmation",
+        "ResearchBriefReturnReason",
+        "ResearchBriefRecordV2",
+        "OutcomeBundleV2",
+        "ResearchBriefReviewResultV2",
+        "get_outcome_v2",
+        "get_research_brief_v2",
+        "render_research_brief_v2",
+        "approve_research_brief_v2",
+        "return_research_brief_v2",
+    }
+)
 _KERNEL_CAPABILITIES_V1 = frozenset(
     {
         "kernel.lifecycle.v1",
@@ -192,6 +206,7 @@ _KERNEL_CAPABILITIES_V1 = frozenset(
         "kernel.traceable-outcomes.v1",
     }
 )
+_KERNEL_CAPABILITIES_V2_ADDITIONS = frozenset({"kernel.traceable-outcomes.v2"})
 
 
 def _source_imports(path: Path) -> list[str]:
@@ -250,7 +265,7 @@ def test_wheel_core_packages_have_no_adapter_or_framework_dependency() -> None:
 
 
 def test_pkv_kernel_v1_public_api_is_exactly_frozen() -> None:
-    """Freeze both declared SDK public namespaces without ``src.*`` imports."""
+    """Preserve major-1 exports and freeze the compatible Outcome v2 additions."""
 
     assert frozenset(pkv_kernel.__all__) == _PUBLIC_API_V1
     assert all(hasattr(pkv_kernel, name) for name in _PUBLIC_API_V1)
@@ -266,20 +281,22 @@ def test_pkv_kernel_v1_public_api_is_exactly_frozen() -> None:
     assert all(
         hasattr(pkv_kernel.embedding, name) for name in _PUBLIC_EMBEDDING_API_V1
     )
-    assert frozenset(pkv_kernel.outcomes.__all__) == _PUBLIC_OUTCOMES_API_V1
+    expected_outcomes = _PUBLIC_OUTCOMES_API_V1 | _PUBLIC_OUTCOMES_API_V2_ADDITIONS
+    assert frozenset(pkv_kernel.outcomes.__all__) == expected_outcomes
     assert all(
-        hasattr(pkv_kernel.outcomes, name) for name in _PUBLIC_OUTCOMES_API_V1
+        hasattr(pkv_kernel.outcomes, name) for name in expected_outcomes
     )
 
 
 def test_pkv_kernel_capability_handshake_enforces_wrapper_requirements() -> None:
     capabilities = pkv_kernel.get_kernel_capabilities()
 
-    assert capabilities.sdk_version == pkv_kernel.__version__
+    assert capabilities.sdk_version == pkv_kernel.__version__ == "0.9.0"
     assert capabilities.api_version == "1.0.0"
-    assert capabilities.capabilities == _KERNEL_CAPABILITIES_V1
-    assert pkv_kernel.KERNEL_CAPABILITIES == _KERNEL_CAPABILITIES_V1
-    assert pkv_kernel.contracts.KERNEL_CAPABILITIES == _KERNEL_CAPABILITIES_V1
+    expected_capabilities = _KERNEL_CAPABILITIES_V1 | _KERNEL_CAPABILITIES_V2_ADDITIONS
+    assert capabilities.capabilities == expected_capabilities
+    assert pkv_kernel.KERNEL_CAPABILITIES == expected_capabilities
+    assert pkv_kernel.contracts.KERNEL_CAPABILITIES == expected_capabilities
     assert (
         pkv_kernel.contracts.get_kernel_capabilities(pkv_kernel.__version__)
         == capabilities
@@ -289,7 +306,7 @@ def test_pkv_kernel_capability_handshake_enforces_wrapper_requirements() -> None
     assert (
         pkv_kernel.require_kernel_compatibility(
             minimum_sdk_version="0.8.0",
-            maximum_sdk_version="0.8.1",
+            maximum_sdk_version="0.9.0",
             required_capabilities=(
                 "kernel.archive.v1",
                 "kernel.configuration-snapshot-reload.v1",
@@ -297,9 +314,24 @@ def test_pkv_kernel_capability_handshake_enforces_wrapper_requirements() -> None
         )
         == capabilities
     )
+    assert pkv_kernel.require_kernel_compatibility(required_api_major=1) == capabilities
+    assert (
+        pkv_kernel.contracts.require_kernel_compatibility(
+            pkv_kernel.__version__, required_api_major=1
+        )
+        == capabilities
+    )
 
     with pytest.raises(pkv_kernel.KernelCompatibilityError, match="below"):
-        pkv_kernel.require_kernel_compatibility(minimum_sdk_version="0.8.2")
+        pkv_kernel.require_kernel_compatibility(minimum_sdk_version="0.9.1")
+    with pytest.raises(pkv_kernel.KernelCompatibilityError, match="exceeds"):
+        pkv_kernel.require_kernel_compatibility(maximum_sdk_version="0.8.1")
+    with pytest.raises(pkv_kernel.KernelCompatibilityError):
+        pkv_kernel.require_kernel_compatibility(required_api_major=2)
+    with pytest.raises(pkv_kernel.KernelCompatibilityError):
+        pkv_kernel.contracts.require_kernel_compatibility(
+            pkv_kernel.__version__, required_api_major=2
+        )
     with pytest.raises(pkv_kernel.KernelCompatibilityError, match="missing"):
         pkv_kernel.require_kernel_compatibility(
             required_capabilities=("kernel.unknown.v1",)

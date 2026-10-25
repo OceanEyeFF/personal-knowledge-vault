@@ -169,19 +169,39 @@ class SQLiteStore:
 ### OutcomeStore（内部 P1-B authority）
 
 `OutcomeStore` 仅使用已存在、已迁移的 SQLite 数据库，且所有 mutation 都要求
-`knowledge_outcomes` root writer lease。它不解析 source locator、不读取 Markdown body、
+`knowledge_outcomes` root writer lease。它不读取 locator 指向的 source 或 Markdown body、
 不创建 schema，也不写 outcome Markdown；这些 policy 分别属于 OutcomeService 与
 Application。Evidence 保留 canonical `pkv://` locator、captured digest、状态和 limitation，
 而非网页正文、私有路径、Provider 请求/响应或凭据。
 
 对 entry/chunk Evidence，OutcomeService 只在该 Entry 的 Markdown 主记录与 SQLite/chunk
 projection 一致时绑定其 opaque digest；任一侧随后漂移都会在 readonly revalidation 中外显为
-`stale`，Markdown 缺失/不可读则为 `unavailable`。不一致的 source 不会被隐式修复或重绑。
+`stale`，可确认的 Markdown 缺失为 `unavailable`；权限或 I/O 状态不确定时安全失败。
+不一致的 source 不会被隐式修复或重绑，read/render/review 的复核都不自行修改 input binding。
 
-渲染时 Application 先以原子方式发布不可覆盖的 `outcomes/topic-<id>/<outcome>-rNNNN.md`，
-再在同一 writer-owned 操作中提交 SQLite pointer。进程在二者之间终止时，孤儿文件不被 reader
-跟随；相同 render input 才可收养字节完全相同的 orphan，已变更的首次输入会使用新的 immutable
-identity。不会出现指向未发布文件的成功 brief，也不会因旧 orphan 永久阻塞新输入。
+W3/schema `1.2.8` 中，Topic 创建事务保留稳定 `outcome_id`；所有实际输入变更在单一 SQLite
+事务内修改 Topic/Evidence/Claim/边、推进一次 `input_revision`、计算 `input_digest` 并将已有 brief
+标记为 `needs_review`。规范化 no-op 不推动版本或失效，Evidence/Claim/边变更不冒充 Topic
+自身字段 revision。输入摘要在模型转换前验证原始持久类型、精确字段与 locator 派生 ID，
+普通 mutation 不能为损坏输入重新签名。
+
+渲染时先发布不可覆盖的
+`outcomes/topic-<topic_id>/<outcome_id>-r<revision:04d>-p<publication_id>.md`，再提交 SQLite pointer。
+`publication_id` 包含稳定 outcome、候选 revision 与完整 input digest；相同输入可收养字节相同
+的 orphan，不同输入产生不同 publication，规则同样覆盖 r1/r2/rN。Store 的 pointer CAS 比较
+旧 `(outcome_id, revision, path, content_sha256, publication_id)` 或 absent，以及捕获的
+`(input_revision, input_digest, render_contract_version)`；失败保留当前 pointer 与文件。
+
+Store 连接显式 `BEGIN`，bundle 的输入、边、pointer 与 receipt 校验共享 read snapshot。
+即使调用方直接构造 Application/Store，也会在该连接上复用迁移结构校验，验证 DDL、索引、
+外键、跨 Topic 边及 locator 派生 ID；旧 schema 返回 `database_upgrade_required`，伪版本或
+结构/绑定损坏返回 `database_schema_drift`，读取不升级数据库。
+
+版本审阅在同一 writer-owned 事务内核对精确确认元组、rendered/current input binding 与状态，
+CAS review state 并追加 `outcome_review_receipts`。幂等重放要求相同 receipt 且当前仍为目标
+状态；旧 approve 不得撤销后来 return，return reason 不同也不能复用回执。历史未绑定 brief
+保持 `legacy_unverified` 并外显 `needs_review`，不推定历史批准凭据。W3 保留 major-1 的旧无版本
+入口作为已知兼容缺口，R04 的最终关闭仍取决于 W5 major-2 切换与验收。
 
 已发布 pointer 的每次只读解析都通过同一 containment/no-follow gateway 读取 Markdown 并核对
 `content_sha256`。只有可直接确认缺失的文件或字节已变时，SQLite 结构行仍保留，但 public DTO
@@ -416,6 +436,23 @@ Storage 层为 MCP Server 提供核心数据访问:
 在隔离 fault-injection tests 中验证 Q1′ proof 的 Markdown/SQLite revision 一致，以及 Q2
 的 staged generation 仅在 validate + pointer CAS 后被读取；这不是用户可执行的重建流程。
 
+W3 Store 专项命令：
+
+```powershell
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\w3-store-final-v3 pytest tests/unit/test_w3_outcome_store.py -vv --tb=short
+```
+
+2026-10-25 此命令为 **65 passed**（exit 0），覆盖八类输入 mutation 的三处 SQL 故障切点、
+no-op、完整 pointer CAS、review/receipt 原子性与重放、独立 WAL writer 下的 snapshot、
+原始字段损坏拒绝及伪 schema 只读门禁。逐 nodeid 日志保存在
+`.data-test/w3-outcome-store-evidence/reports/final-65-passed.log`；集成范围及剩余边界见
+[W3 实施记录](../../docs/overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)。
+随后将 snapshot barrier 的成功断言移到 SQLite trace callback 外，避免 callback 吞掉异常；
+同一文件的 `test_read_bundle_uses_one_snapshot_across_independent_writer` 在
+`.data-test/w3-store-snapshot-final` 单独重跑 **1 passed**，日志为
+`.data-test/w3-outcome-store-evidence/reports/snapshot-oracle-1-passed.log`，不是新增第 66 个 case。
+此处不预先宣称正在进行的跨模块全量回归通过，也不代表对用户 Vault 执行了迁移。
+
 ---
 
 ## 常见问题 (FAQ)
@@ -471,6 +508,8 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 | `vector_store.py` | 向量语义层 (hnswlib) -- 含 `get_doc_vector()` |
 | `migration_manager.py` | 数据库增量迁移管理器 |
 | `outcome_store.py` | P1-B Topic/Evidence/Claim/research brief SQLite authority |
+| `outcome_migration.py` | 014 原始输入 backfill、只读结构和绑定校验 |
+| `../outcomes/identity.py` | input/publication/review receipt 的冻结 canonical hash |
 
 ### 测试文件
 
@@ -480,6 +519,7 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 | `tests/unit/test_sqlite_store_queries.py` 等 | SQLite 投影、查询和初始化兼容性测试 |
 | `tests/unit/test_vector_store_safety.py` | 向量索引一致性与只读安全测试 |
 | `tests/unit/test_storage_coordinator.py` | 跨 Markdown / SQLite / Vector 终态协调测试 |
+| `tests/unit/test_w3_outcome_store.py` | Outcome 输入事务、版本 CAS、receipt 与 snapshot 故障矩阵 |
 
 ### 文档
 
@@ -517,6 +557,6 @@ cursor.execute("SELECT * FROM knowledge_fts WHERE knowledge_fts MATCH ?", (token
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-09-04
+**最后更新**: 2026-10-25
 
 *本文档由 Claude Code 自动生成*

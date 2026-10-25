@@ -43,6 +43,7 @@ EXPECTED_WHEEL_RESOURCE_PAYLOAD = frozenset(
         "pkv_kernel/_resources/scripts/migrations/011_add_ai_automation_ledger.sql",
         "pkv_kernel/_resources/scripts/migrations/012_add_r4_content_submission.sql",
         "pkv_kernel/_resources/scripts/migrations/013_add_traceable_outcomes.sql",
+        "pkv_kernel/_resources/scripts/migrations/014_add_lifecycle_consistency.sql",
         "pkv_kernel/_resources/src/ai/prompts/extract_tags.txt",
         "pkv_kernel/_resources/src/ai/prompts/summarize.txt",
     }
@@ -299,6 +300,7 @@ import importlib.util
 import os
 import socket
 import sys
+import warnings
 from pathlib import Path
 
 network_attempts = []
@@ -372,18 +374,53 @@ import pkv_kernel
 capabilities = pkv_kernel.require_kernel_compatibility(
     minimum_sdk_version=pkv_kernel.__version__,
     maximum_sdk_version=pkv_kernel.__version__,
+    required_api_major=1,
     required_capabilities=(
         "kernel.lifecycle.v1",
         "kernel.runtime-lifecycle.v1",
         "kernel.configuration-snapshot-reload.v1",
+        "kernel.traceable-outcomes.v1",
+        "kernel.traceable-outcomes.v2",
     ),
 )
 inspection = pkv_kernel.lifecycle.inspect_runtime()
 plan = pkv_kernel.lifecycle.plan_runtime(inspection)
 kernel = pkv_kernel.bootstrap_kernel()
+topic = pkv_kernel.outcomes.create_topic(
+    title="Installed compatibility build", question="Is the v2 surface installed?", kernel=kernel,
+)
+bundle = pkv_kernel.outcomes.get_outcome_v2(topic.topic_id, kernel=kernel).to_dict()
+assert bundle["schema"] == "pkv.outcome.bundle.v2"
+assert bundle["topic"]["input_revision"] == 1
+assert bundle["brief"] is None
+assert pkv_kernel.outcomes.get_research_brief_v2(topic_id=topic.topic_id, kernel=kernel) is None
+confirmation = pkv_kernel.outcomes.ResearchBriefReviewConfirmation(
+    outcome_id=bundle["topic"]["outcome_id"], expected_revision=1,
+    content_sha256="a" * 64, expected_input_revision=1,
+)
+assert confirmation.to_dict()["expected_input_revision"] == 1
+with warnings.catch_warnings(record=True) as recorded:
+    warnings.simplefilter("always", DeprecationWarning)
+    try:
+        pkv_kernel.outcomes.approve_research_brief(topic_id=topic.topic_id, kernel=kernel)
+    except pkv_kernel.PKVRuntimeError as error:
+        assert error.code.value == "outcome_approval_blocked"
+    else:
+        raise AssertionError("An unrendered topic must not be approved")
+assert len(recorded) == 1 and recorded[0].category is DeprecationWarning
+assert "approve_research_brief_v2" in str(recorded[0].message)
+assert "major 2" in str(recorded[0].message)
+try:
+    pkv_kernel.require_kernel_compatibility(required_api_major=2)
+except pkv_kernel.KernelCompatibilityError:
+    pass
+else:
+    raise AssertionError("The compatible build must not claim API major 2")
 print(json.dumps({
     "api_version": capabilities.api_version,
     "sdk_version": capabilities.sdk_version,
+    "outcome_schema": bundle["schema"],
+    "legacy_review_warning": str(recorded[0].message),
     "generation": kernel.configuration_generation,
     "kernel_file": str(Path(pkv_kernel.__file__).resolve()),
     "facade_file": str(Path(importlib.util.find_spec("src.kernel.facade").origin).resolve()),
@@ -422,6 +459,9 @@ print(json.dumps({
         assert resource_root.name == "_resources"
         assert f"Version: {evidence['sdk_version']}" in metadata
         assert evidence["api_version"] == "1.0.0"
+        assert evidence["sdk_version"] == "0.9.0"
+        assert evidence["outcome_schema"] == "pkv.outcome.bundle.v2"
+        assert "approve_research_brief_v2" in evidence["legacy_review_warning"]
         assert evidence["generation"] >= 1
         assert evidence["lifecycle_readiness"] == "setup_required"
         assert isinstance(evidence["lifecycle_plan_id"], str)

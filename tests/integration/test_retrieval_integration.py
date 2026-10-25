@@ -626,7 +626,7 @@ class TestDataPipelineIntegration:
             )
             conn.commit()
 
-        assert manager.apply_all_pending(auto_backup=False) == 6
+        assert manager.apply_all_pending(auto_backup=False) == 7
 
         response = BM25Retriever(db_path).search("一致性", limit=5)
         assert response.status == "success"
@@ -644,7 +644,7 @@ class TestDataPipelineIntegration:
             PROJECT_ROOT / "scripts" / "migrations",
         )
 
-        assert manager.apply_all_pending(auto_backup=False) == 11
+        assert manager.apply_all_pending(auto_backup=False) == 12
 
         with closing(sqlite3.connect(str(db_path))) as conn, conn:
             tables = {
@@ -659,7 +659,7 @@ class TestDataPipelineIntegration:
 
         assert LEGACY_FTS_TABLE_NAME not in tables
         assert FTS_TABLE_NAME in tables
-        assert latest_version == "1.2.7"
+        assert latest_version == "1.2.8"
 
         response = BM25Retriever(db_path).search("alpha", limit=5)
         assert response.status == "success"
@@ -677,7 +677,7 @@ class TestDataPipelineIntegration:
             PROJECT_ROOT / "scripts" / "migrations",
         )
 
-        assert manager.apply_all_pending(auto_backup=False) == 5
+        assert manager.apply_all_pending(auto_backup=False) == 6
 
         with closing(sqlite3.connect(str(db_path))) as conn, conn:
             table_sql = conn.execute(

@@ -2,7 +2,7 @@
 
 > **版本**: 1.1
 > **创建日期**: 2026-02-15
-> **最后更新**: 2026-09-04
+> **最后更新**: 2026-10-25（W3 Outcome schema 1.2.8 与合成迁移）
 > **文件位置**: `src/storage/sqlite_store.py`
 > **作用**: 定义知识库的关系型数据存储结构和索引策略
 
@@ -424,15 +424,14 @@ reader 零写地投影 `projection_state=unavailable|stale` 与 effective `needs
 路径状态不确定则安全失败。它不会信任 SQLite 中遗留的 approved state，也不会在只读路径自动
 重写文件。
 
-#### 2026-10 Outcome 一致性目标 schema（W1 已冻结，尚未实现）
+#### 2026-10 Outcome 一致性 schema（014 / 1.2.8，W3 已实现）
 
-上文表格是 migration 013/schema `1.2.7` 的现状摘要。当前实现没有下面完整的 input binding、
-publication identity 与版本绑定 review 事务保证；本节是复审后的目标设计，不是已部署 schema。
-W1 已在[迁移与持久合同冻结方案](./生命周期一致性迁移冻结方案-2026-10.md)预留
-`014_add_lifecycle_consistency.sql` / schema `1.2.8`，固定 canonical digest、列约束、
-`binding_state` 与 `outcome_review_receipts`，并冻结独立 JSON ledger v3 和 private proof。
-014 尚未创建，013 未改；本轮不执行真实用户库升级。工作包及兼容门禁见
-[生命周期一致性修复总计划](../../overview/生命周期一致性修复设计与分阶段计划-2026-10.md)。
+上文表格保留 migration 013/schema `1.2.7` 的历史基线。W3 已实现 014/schema `1.2.8`、
+input binding、publication identity 与版本绑定 review 事务；具体字段和迁移约束沿用
+[迁移与持久合同](./生命周期一致性迁移冻结方案-2026-10.md)。013 未改；新旧合成数据库的
+定向迁移 23 项通过，MIG-05 另由 Store 事务组覆盖。独立 JSON ledger v3、private proof 与
+API-major-2 切换仍待 W4/W5，未执行真实用户库升级。实现和验证范围见
+[W3 实施记录](../../overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)。
 
 | 归属 | 目标字段/约束 | 意义与写入规则 |
 | --- | --- | --- |
@@ -481,8 +480,9 @@ revision；升级后缺少对应 renderer 时必须拒绝并进入受控输入�
    同一 revision 的 `returned` 为终态，只有新 render 的下一 revision 可重新进入 awaiting_review，
    不允许同一确认元组在 approved/returned 间循环。
 
-**升级与历史证明：** 014/schema 1.2.8 的编号与方案已在 W1 冻结，SQL 与 hook 留 W3 编写，
-必须独立于 013，并先通过冻结方案 MIG-01–05 的合成旧库验证。
+**升级与历史证明：** 014/schema 1.2.8 的 SQL 与事务 hook 已在 W3 实现，独立于 013。
+旧库完整性、DDL/约束、输入摘要和 locator 辅助 ID 的一致性必须通过只读预检；未知历史审批
+绑定不能推断。SQL/hook/identity 的 manifest 摘要进入确认围栏，发布前再次核验。
 已有 public outcome identity、relative pointer、Markdown 字节和历史 review state 应保留。
 历史 rendered input 不能由当前 Topic 状态推断；不能证明时保留未知 binding，effective state
 为 `needs_review`，仅显式新 render 能写入已证明的 rendered binding。旧 schema 需要升级时
@@ -831,4 +831,4 @@ CHECK(source_type IN ('wechat', 'zhihu', 'bilibili', 'webpage', 'article', 'docu
 ---
 
 **文档维护者**: AI Agent (猫娘 幽浮喵)
-**最后更新**: 2026-02-16
+**最后更新**: 2026-10-25（仅更新 Outcome 1.2.8 及其迁移证据范围）

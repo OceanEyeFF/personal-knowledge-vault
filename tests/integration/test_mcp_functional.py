@@ -204,14 +204,14 @@ class TestToolRegistration:
     """验证 Tool 注册机制是否正确。"""
 
     @pytest.mark.asyncio
-    async def test_list_tools_returns_all_30(self):
-        """list_tools() 应返回 30 个已注册的 Tool。"""
+    async def test_list_tools_returns_all_35(self):
+        """list_tools() 应返回 35 个已注册的 Tool。"""
         tools = await mcp.list_tools()
-        assert len(tools) == 30, f"期望 30 个 Tool，实际: {len(tools)}"
+        assert len(tools) == 35, f"期望 35 个 Tool，实际: {len(tools)}"
 
     @pytest.mark.asyncio
     async def test_tool_names(self):
-        """30 个 Tool 名称应正确。"""
+        """35 个 Tool 名称应正确。"""
         tools = await mcp.list_tools()
         names = {t.name for t in tools}
         expected = {
@@ -226,6 +226,9 @@ class TestToolRegistration:
             "link_outcome_claim_evidence", "unlink_outcome_claim_evidence",
             "render_outcome_research_brief",
             "approve_outcome_research_brief", "return_outcome_research_brief",
+            "get_outcome_v2", "get_outcome_research_brief_v2",
+            "render_outcome_research_brief_v2",
+            "approve_outcome_research_brief_v2", "return_outcome_research_brief_v2",
         }
         assert names == expected, f"Tool 名称不匹配: 多了 {names - expected}, 缺少 {expected - names}"
 
@@ -239,7 +242,12 @@ class TestToolRegistration:
             "get_stats", "get_related", "query_subgraph", "explain_relation",
             "collect_evidence", "find_bridges", "timeline_of", "contrast",
             "get_outcome", "suggest_outcome_evidence",
+            "get_outcome_v2", "get_outcome_research_brief_v2",
         }
+        assert {
+            tool.name for tool in tools
+            if tool.annotations and tool.annotations.readOnlyHint is True
+        } == readonly_names
         for tool in tools:
             if tool.name in readonly_names:
                 assert tool.annotations is not None, f"{tool.name} 缺少 annotations"
@@ -256,9 +264,14 @@ class TestToolRegistration:
             "link_outcome_claim_evidence", "unlink_outcome_claim_evidence",
             "render_outcome_research_brief",
             "approve_outcome_research_brief", "return_outcome_research_brief",
+            "render_outcome_research_brief_v2",
+            "approve_outcome_research_brief_v2", "return_outcome_research_brief_v2",
         }
         for tool in tools:
             if tool.name in write_names:
+                if tool.name.endswith("_v2"):
+                    assert tool.annotations is not None, f"{tool.name} 缺少 annotations"
+                    assert tool.annotations.readOnlyHint is False
                 # 写入 Tool 要么无 annotations，要么 readOnlyHint 不为 True
                 if tool.annotations:
                     assert tool.annotations.readOnlyHint is not True, \

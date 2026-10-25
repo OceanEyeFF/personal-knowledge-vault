@@ -37,6 +37,7 @@ KERNEL_RESOURCE_MANIFEST: tuple[tuple[str, str], ...] = (
     ("scripts/migrations/011_add_ai_automation_ledger.sql", "scripts/migrations/011_add_ai_automation_ledger.sql"),
     ("scripts/migrations/012_add_r4_content_submission.sql", "scripts/migrations/012_add_r4_content_submission.sql"),
     ("scripts/migrations/013_add_traceable_outcomes.sql", "scripts/migrations/013_add_traceable_outcomes.sql"),
+    ("scripts/migrations/014_add_lifecycle_consistency.sql", "scripts/migrations/014_add_lifecycle_consistency.sql"),
     ("src/ai/prompts/extract_tags.txt", "src/ai/prompts/extract_tags.txt"),
     ("src/ai/prompts/summarize.txt", "src/ai/prompts/summarize.txt"),
 )

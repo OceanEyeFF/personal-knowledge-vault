@@ -44,6 +44,7 @@ def test_migration_versions_are_monotonic_for_active_chain(tmp_path: Path) -> No
         "011_add_ai_automation_ledger.sql",
         "012_add_r4_content_submission.sql",
         "013_add_traceable_outcomes.sql",
+        "014_add_lifecycle_consistency.sql",
     ]
     parsed_versions = [
         manager._parse_version_from_file(MIGRATIONS_DIR / name)
@@ -63,6 +64,7 @@ def test_migration_versions_are_monotonic_for_active_chain(tmp_path: Path) -> No
         "1.2.5",
         "1.2.6",
         "1.2.7",
+        "1.2.8",
     ]
 
 
@@ -88,6 +90,7 @@ def test_get_pending_migrations_keeps_007_when_version_missing_even_if_columns_e
         "1.2.5",
         "1.2.6",
         "1.2.7",
+        "1.2.8",
     ]
     assert [path.name for _, path in pending] == [
         "004_add_chat_sessions.sql",
@@ -100,6 +103,7 @@ def test_get_pending_migrations_keeps_007_when_version_missing_even_if_columns_e
         "011_add_ai_automation_ledger.sql",
         "012_add_r4_content_submission.sql",
         "013_add_traceable_outcomes.sql",
+        "014_add_lifecycle_consistency.sql",
     ]
 
 
@@ -167,6 +171,7 @@ def test_get_pending_migrations_keeps_007_for_legacy_schema(tmp_path: Path) -> N
         "1.2.5",
         "1.2.6",
         "1.2.7",
+        "1.2.8",
     ]
 
 
@@ -447,7 +452,7 @@ def test_apply_all_pending_rebuilds_fts_after_alignment_migrations(
 
     migrated = manager.apply_all_pending(auto_backup=False)
 
-    assert migrated == 12
+    assert migrated == 13
     assert len(rebuild_calls) == 1
     assert rebuild_calls[0] != manager.db_path
     assert manager.inspect_database().state is DatabaseState.READY

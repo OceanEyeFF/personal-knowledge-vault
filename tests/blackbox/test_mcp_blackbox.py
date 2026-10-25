@@ -373,8 +373,8 @@ class TestServerStartup:
                 assert caps is not None
 
     @pytest.mark.asyncio
-    async def test_list_tools_returns_30(self, empty_db_path):
-        """list_tools 应返回 30 个已发布 Tool。"""
+    async def test_list_tools_returns_35(self, empty_db_path):
+        """list_tools 应返回 35 个已发布 Tool。"""
         params = get_server_params(empty_db_path)
 
         async with stdio_client(params) as (read, write):
@@ -383,7 +383,7 @@ class TestServerStartup:
                 tools_result = await session.list_tools()
                 tool_names = {t.name for t in tools_result.tools}
 
-                assert len(tool_names) == 30, f"期望 30 个 Tool，实际: {tool_names}"
+                assert len(tool_names) == 35, f"期望 35 个 Tool，实际: {tool_names}"
                 expected = {
                     "get_runtime_status", "inspect_embedding_rebuild", "plan_embedding_rebuild",
                     "execute_embedding_rebuild", "search_knowledge", "get_entry", "list_tags", "list_entries",
@@ -396,6 +396,9 @@ class TestServerStartup:
                     "link_outcome_claim_evidence", "unlink_outcome_claim_evidence",
                     "render_outcome_research_brief",
                     "approve_outcome_research_brief", "return_outcome_research_brief",
+                    "get_outcome_v2", "get_outcome_research_brief_v2",
+                    "render_outcome_research_brief_v2",
+                    "approve_outcome_research_brief_v2", "return_outcome_research_brief_v2",
                 }
                 assert tool_names == expected
 
@@ -415,7 +418,7 @@ class TestServerStartup:
         tool_names = {tool.name for tool in tools_result.tools}
         status = parse_tool_content(status_result)
         stats = parse_tool_content(stats_result)
-        assert len(tool_names) == 30
+        assert len(tool_names) == 35
         assert "get_runtime_status" in tool_names
         assert status["status"] == "success"
         # The generic offline child creates declared directories before it
@@ -1236,12 +1239,27 @@ class TestEndToEnd:
                     "approve_outcome_research_brief",
                     "return_outcome_research_brief",
                 }
-                assert readonly_names | public_rebuild_readonly | p1b_readonly == tool_names - {
+                outcome_v2_readonly = {
+                    "get_outcome_v2", "get_outcome_research_brief_v2",
+                }
+                outcome_v2_writes = {
+                    "render_outcome_research_brief_v2",
+                    "approve_outcome_research_brief_v2", "return_outcome_research_brief_v2",
+                }
+                expected_readonly = (
+                    readonly_names | public_rebuild_readonly | p1b_readonly | outcome_v2_readonly
+                )
+                assert expected_readonly == tool_names - {
                     "archive_url",
                     "archive_text",
                     "execute_embedding_rebuild",
                     *p1b_writes,
+                    *outcome_v2_writes,
                 }
+                assert {
+                    tool.name for tool in tools_result.tools
+                    if tool.annotations and tool.annotations.readOnlyHint is True
+                } == expected_readonly
 
                 # 历史版本化 fixture 只覆盖 W2 readonly Tool；R4-P1 的三个
                 # public maintenance Tool 有独立真实 stdio blackbox，不让其

@@ -196,7 +196,7 @@ def test_apply_all_pending_allows_legacy_fts_repair_upgrade(tmp_path: Path) -> N
         )
         conn.commit()
 
-    assert manager.apply_all_pending(auto_backup=False) == 11
+    assert manager.apply_all_pending(auto_backup=False) == 12
 
     with closing(sqlite3.connect(str(db_path))) as conn:
         tables = {
@@ -209,7 +209,7 @@ def test_apply_all_pending_allows_legacy_fts_repair_upgrade(tmp_path: Path) -> N
 
     assert "knowledge_fts" not in tables
     assert "knowledge_items_fts" in tables
-    assert version == "1.2.7"
+    assert version == "1.2.8"
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +403,7 @@ def test_apply_all_pending_closes_every_connection_on_success_and_failure(
 
     # 成功: fresh 链全部执行, 每个句柄恰好关闭一次。
     ok_manager = MigrationManager(tmp_path / "ok.db", MIGRATIONS_DIR)
-    assert ok_manager.apply_all_pending(auto_backup=False) == 12
+    assert ok_manager.apply_all_pending(auto_backup=False) == 13
     assert_all_closed()
     assert ok_manager.inspect_database().state is DatabaseState.READY
 

@@ -251,6 +251,38 @@ class KnowledgeKernel:
     def get_outcome_research_brief(self, **kwargs: Any) -> Any:
         return self._application.get_outcome_research_brief(**kwargs)
 
+    def get_outcome_bundle_v2(self, *, topic_id: str) -> Any:
+        return self._application.get_outcome_bundle_v2(topic_id=topic_id)
+
+    def get_outcome_research_brief_v2(
+        self, *, topic_id: str | None = None, outcome_id: str | None = None,
+    ) -> Any:
+        return self._application.get_outcome_research_brief_v2(
+            topic_id=topic_id, outcome_id=outcome_id,
+        )
+
+    def render_outcome_research_brief_v2(self, *, topic_id: str) -> Any:
+        return self._application.render_outcome_research_brief_v2(topic_id=topic_id)
+
+    def approve_outcome_research_brief_v2(
+        self, *, outcome_id: str, expected_revision: int, content_sha256: str,
+        expected_input_revision: int,
+    ) -> Any:
+        return self._application.approve_outcome_research_brief_v2(
+            outcome_id=outcome_id, expected_revision=expected_revision,
+            content_sha256=content_sha256, expected_input_revision=expected_input_revision,
+        )
+
+    def return_outcome_research_brief_v2(
+        self, *, outcome_id: str, expected_revision: int, content_sha256: str,
+        expected_input_revision: int, reason_code: str,
+    ) -> Any:
+        return self._application.return_outcome_research_brief_v2(
+            outcome_id=outcome_id, expected_revision=expected_revision,
+            content_sha256=content_sha256, expected_input_revision=expected_input_revision,
+            reason_code=reason_code,
+        )
+
     def chat_settings(self) -> Any:
         return self._application.chat_settings()
 

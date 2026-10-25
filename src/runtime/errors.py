@@ -78,6 +78,7 @@ class ErrorCode(str, Enum):
     OUTCOME_STATE_CONFLICT = "outcome_state_conflict"
     OUTCOME_EVIDENCE_STALE = "outcome_evidence_stale"
     OUTCOME_APPROVAL_BLOCKED = "outcome_approval_blocked"
+    OUTCOME_RENDER_CONTRACT_UNSUPPORTED = "outcome_render_contract_unsupported"
 
 
 class OperationStatus(str, Enum):

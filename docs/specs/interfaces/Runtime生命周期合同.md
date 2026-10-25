@@ -7,7 +7,7 @@ CLI/MCP 等适配器只能投影本合同，不能重新解释或绕过它。R4 
 2026-10-24：上述是原基线的 source 证据。当前工作树另含 R4-P1 public rebuild 与 P1-B，
 其本轮已知缺口和待实现修订见
 [生命周期一致性修复计划](../../overview/生命周期一致性修复设计与分阶段计划-2026-10.md)。
-本文标注的目标状态、字段和恢复入口均未因文档修订成为产品能力。
+在该冻结时点，本文标注的目标状态、字段和恢复入口均未因文档修订成为产品能力。
 W1 的具体协议与持久字段分别以
 [v2 接口冻结合同](./生命周期一致性v2接口冻结合同-2026-10.md) 和
 [迁移冻结方案](../database/生命周期一致性迁移冻结方案-2026-10.md) 为准；红测试证据不表示修复完成。
@@ -16,8 +16,16 @@ W1 的具体协议与持久字段分别以
 identity/Kernel 定向运行 `49 passed、7 deselected`、身份 CLI/MCP 黑盒 `7 passed`，
 最终组合公共流程黑盒 `9 passed`，均 exit 0；具体范围与日志见
 [W2 修复记录](../../overview/W2-身份队列与CLI门禁修复记录-2026-10.md)。
-这些运行不累加为全量计数。v1 durable replay 算法保持，v2 API/schema/ledger/grant 迁移
-未实施；R-02 的 D 阶段恢复及 R-06 的预算重入继续为 known_gap。
+这些运行不累加为全量计数。W2 保持 v1 durable replay 算法；该阶段尚未实施 v2 API/schema/
+ledger/grant 迁移，R-02 的 D 阶段恢复及 R-06 的预算重入继续为 known_gap。
+
+2026-10-25 W3 更新：Outcome 输入事务、任意版本发布、四元组 review 与 SQLite `014` /
+schema `1.2.8` 已实现。SDK `0.9.0` 为本地兼容 build，API 保持 `1.0.0`；新 v2 入口与
+旧入口并存，legacy review 发出弃用警告但保留原签名和既有语义，R-04 仍为 known_gap。
+Embedding v2、ledger 3、grant 2 / publish-ready proof 尚待 W4，API-major-2 切换尚待 W5。
+组件证据与最终验收状态以
+[W3 实施记录](../../overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)为准；
+本地 build 和合成迁移不改变 release hold，也不表示已执行用户数据迁移。
 
 ## 决策
 
@@ -66,7 +74,7 @@ Provider 的 structural validation 只验证本地配置结构。实际 LLM/Embe
 ```yaml
 schema_version: 1
 database:
-  schema_version: "1.2.7" # bundled migration chain 的 canonical semver
+  schema_version: "1.2.8" # W3 bundled migration chain 的 canonical semver
 embedding:
   provider: openai_compatible
   fingerprint:
@@ -213,18 +221,24 @@ Q0/Q1′/Q2 生命周期，也不触发 runtime setup、Provider probe 或 gener
 - P1-B 不把 Topic/Claim/brief 写回 Vault 内容、FTS 或 vector generation，不引入 daemon、网络、
   LLM/Embedding、Q2 resume/retry 或 release acceptance。
 
-2026-10 目标修订（当前 schema 1.2.7 尚不具备全部字段）：
+2026-10-25 W3 已实现下列 Outcome 修订，并通过 `014` 增至 schema `1.2.8`；
+组件及整体验收证据以 W3 实施记录为准：
 
 - 影响 render input 的 mutation、input_revision/input_digest 更新、已有 brief 失效同 SQLite
   事务提交；lease 只能互斥，不能代替该原子性。brief 记录 rendered_input_revision/digest。
 - 任何 revision 均通过绑定 outcome/candidate revision/input digest 的 publication_id 发布，
   相同输入可验证收养相同字节 orphan，新输入使用不同 identity；pointer CAS 同时检查旧
   pointer 与当前输入。不得覆盖 orphan 或把后续版本恢复限制为第一次生成。
-- approve/return 绑定用户审阅的 outcome_id、expected_revision、content_sha256、
+- 新 v2 approve/return 绑定用户审阅的 outcome_id、expected_revision、content_sha256、
   expected_input_revision，事务内重检后改变状态；只读输入或 projection 失配不保持
   approved。API-major-2 迁移与旧入口处理见 Kernel SDK 合同，不在当前 major 静默改签名。
-- 缺少输入绑定的旧 brief 必须经显式迁移/重新生成判定；无法证明历史批准对象时不得猜测
-  继承 approved。迁移只在后续授权的合成 fixture 验证，本轮没有新增或执行迁移。
+- `014` 保留旧 brief 的持久 state、版本、pointer 与文件字节，并标记为 legacy_unverified；
+  其有效状态为 needs_review，须显式重新生成与审阅，不伪造历史绑定或 receipt。迁移仅在
+  授权的合成 fixture 中验证，未执行用户数据迁移。
+
+当前兼容阶段旧无版本 review 仍以 topic 定位最新成果，弃用警告不会使其具备 exact review
+保证；R-04 保持 known_gap。W5 才执行 major 2、旧入口明确拒绝与客户端握手迁移，不能以
+W3 新入口通过验收替代该退出条件。Embedding v2 的恢复/预算修订继续属于 W4。
 
 价格卡是 bundled、审阅的可选资源；无 card 时只记录 token，Provider 未报告的 usage 字段保持
 `NULL`。任何 policy、model 或 card digest 变化都要求重新确认，绝不能复用旧 reservation。

@@ -232,6 +232,12 @@ class TopicRecord:
     created_at: str
     updated_at: str
 
+    # Internal v2 identity; v1 serialization deliberately remains unchanged.
+    outcome_id: str | None = None
+    input_revision: int | None = None
+    input_digest: str | None = None
+    render_contract_version: str | None = None
+
     def __post_init__(self) -> None:
         _require_identifier(self.topic_id, label="topic_id")
         object.__setattr__(
@@ -254,8 +260,14 @@ class TopicRecord:
         )
         if type(self.state) is not TopicState:
             raise TypeError("topic state无效")
-        if type(self.revision) is not int or self.revision < 1:
+        if type(self.revision) is not int or not 1 <= self.revision <= 2**63 - 1:
             raise ValueError("topic revision无效")
+        if self.outcome_id is not None:
+            _require_identifier(self.outcome_id, label="outcome_id")
+        if self.input_revision is not None and (type(self.input_revision) is not int or not 1 <= self.input_revision <= 2**63 - 1):
+            raise ValueError("topic input_revision无效")
+        if self.input_digest is not None and (type(self.input_digest) is not str or _SHA256.fullmatch(self.input_digest) is None):
+            raise ValueError("topic input_digest无效")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -363,7 +375,7 @@ class ClaimRecord:
         if type(self.state) is not ClaimState:
             raise TypeError("claim state无效")
         object.__setattr__(self, "limitation_codes", normalize_limitation_codes(self.limitation_codes))
-        if type(self.revision) is not int or self.revision < 1:
+        if type(self.revision) is not int or not 1 <= self.revision <= 2**63 - 1:
             raise ValueError("claim revision无效")
         links = tuple(self.evidence_links)
         if any(type(link) is not ClaimEvidenceLink for link in links):
@@ -399,6 +411,14 @@ class ResearchBriefRecord:
     updated_at: str
     effective_state: OutcomeState | None = None
     projection_state: str = "current"
+    binding_state: str = "legacy_unverified"
+    publication_id: str | None = None
+    rendered_input_revision: int | None = None
+    rendered_input_digest: str | None = None
+    render_contract_version: str | None = None
+    current_input_revision: int | None = None
+    current_input_digest: str | None = None
+    current_render_contract_version: str | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.outcome_id, label="outcome_id")
@@ -407,7 +427,7 @@ class ResearchBriefRecord:
             raise TypeError("outcome state无效")
         if self.effective_state is not None and type(self.effective_state) is not OutcomeState:
             raise TypeError("outcome effective_state无效")
-        if type(self.revision) is not int or self.revision < 1:
+        if type(self.revision) is not int or not 1 <= self.revision <= 2**63 - 1:
             raise ValueError("outcome revision无效")
         if (
             type(self.markdown_relative_path) is not str
@@ -424,6 +444,19 @@ class ResearchBriefRecord:
             or self.projection_state not in _BRIEF_PROJECTION_STATES
         ):
             raise ValueError("outcome projection_state无效")
+        if self.binding_state not in {"verified", "legacy_unverified"}:
+            raise ValueError("outcome binding_state无效")
+        binding = (self.publication_id, self.rendered_input_revision, self.rendered_input_digest, self.render_contract_version)
+        if self.binding_state == "verified":
+            if any(value is None for value in binding):
+                raise ValueError("outcome verified binding缺失")
+            if type(self.rendered_input_revision) is not int or not 1 <= self.rendered_input_revision <= 2**63 - 1:
+                raise ValueError("outcome rendered_input_revision无效")
+            for value in (self.publication_id, self.rendered_input_digest):
+                if type(value) is not str or _SHA256.fullmatch(value) is None:
+                    raise ValueError("outcome binding digest无效")
+        elif any(value is not None for value in binding):
+            raise ValueError("outcome legacy binding不能包含推定身份")
 
     @property
     def visible_state(self) -> OutcomeState:
@@ -455,6 +488,15 @@ class ResearchBriefRecord:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+
+
+@dataclass(frozen=True)
+class ReviewCommitResult:
+    """Internal atomic review result; adapters own its explicit v2 projection."""
+
+    brief: ResearchBriefRecord
+    receipt_id: str
+    idempotent: bool
 
 
 @dataclass(frozen=True)

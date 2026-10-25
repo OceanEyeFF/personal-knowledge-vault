@@ -52,6 +52,7 @@ KERNEL_CAPABILITIES = frozenset(
         "kernel.configuration-snapshot-reload.v1",
         "kernel.embedding-rebuild.v1",
         "kernel.traceable-outcomes.v1",
+        "kernel.traceable-outcomes.v2",
     }
 )
 
@@ -89,6 +90,7 @@ def require_kernel_compatibility(
     minimum_sdk_version: str | None = None,
     maximum_sdk_version: str | None = None,
     required_capabilities: Iterable[str] = (),
+    required_api_major: int | None = None,
 ) -> KernelCapabilities:
     """Validate a Wrapper requirement and return the negotiated capabilities.
 
@@ -96,6 +98,11 @@ def require_kernel_compatibility(
     release ``MAJOR.MINOR.PATCH`` values: pre-release policy is deferred until
     an actual distribution channel exists, rather than guessed here.
     """
+
+    if required_api_major is not None and (
+        type(required_api_major) is not int or required_api_major != 1
+    ):
+        raise KernelCompatibilityError("Kernel API major does not match the Wrapper requirement")
 
     capabilities = get_kernel_capabilities(sdk_version)
     current = _version_tuple(capabilities.sdk_version, label="SDK version")

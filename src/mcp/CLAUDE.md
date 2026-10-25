@@ -10,7 +10,7 @@
 
 ### 核心能力
 
-- **30 个 Tool**: 17 只读 + 13 写入
+- **35 个 Tool**: 19 只读 + 16 写入
 - **9 个 Resource**: 条目全文/元数据、精确 chunk、时间字段、关系边、标签与统计
 - **3 个 Prompt 模板**: 搜索总结/知识问答/思想磨砺
 - **安全加固**: URL DNS/连接目标/重定向/子资源 SSRF 重校验 + 文本长度验证
@@ -65,13 +65,13 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；�
 
 ## 对外接口
 
-### Tools (30 个)
+### Tools (35 个)
 
 #### 只读 Tool (readOnlyHint=True)
 
 | Tool | 参数 | 返回 | 说明 |
 |------|------|------|------|
-| `get_runtime_status` | (无) | `{status, readiness, inspection, plan, issues}` | 只读检查运行时与下一步计划；未就绪数据根唯一可调用 Tool，不初始化/迁移/修复/Provider 探测 |
+| `get_runtime_status` | (无) | `{status, readiness, inspection, plan, issues}` | 未就绪数据根仍可只读检查；不初始化/迁移/修复/Provider 探测 |
 | `inspect_embedding_rebuild` | (无) | `{terminal, inspection, plan: null, issues}` | 只读检查 generation binding 与独立手动重建预算；零写、零 Provider、零 task drain |
 | `plan_embedding_rebuild` | `force?` | `{terminal, inspection, plan, issues}` | 生成安全、无路径/正文/凭据的 public rebuild 计划；`ready` generation 需精确 `force=true` |
 | `search_knowledge` | `query`, `strategy?`, `top_k?`, `source_type?`, `tag?` | `{status, strategy, total, results[], issues[]}` | 搜索知识库，支持 auto/bm25/vector/hybrid 五态响应 |
@@ -88,6 +88,8 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；�
 | `contrast` | `topic_a`, `topic_b`, `top_k?` | `{shared_tags, only_a_tags, only_b_tags, ...}` | 基于候选表面字段与来源 provenance 做主题对比（partial-v1） |
 | `get_outcome` | `topic_id` | `{status, operation, result:{topic,evidence,claims,brief}}` | 零写入地重验 evidence binding；drift 显示为 `stale/unavailable` 与 brief 的 effective `needs_review` |
 | `suggest_outcome_evidence` | `topic_id`, `query`, `limit?` | `{strategy:"bm25",status,suggestions,issues}` | 仅用严格 BM25 提供待显式 attach 的 entry locator；不构造 QueryRouter、Provider 或 vector generation |
+| `get_outcome_v2` | `topic_id` | v2 envelope，result 为 `OutcomeBundleV2` | 同一输入 snapshot 的 Topic/Evidence/Claim/brief 与精确 review confirmation |
+| `get_outcome_research_brief_v2` | `topic_id=null`, `outcome_id=null` | v2 envelope，result 为 `ResearchBriefRecordV2` 或 null | 必须且只能提供一个 selector；不存在合法 selector 返回 null，零写入 |
 
 #### 写入 Tool
 
@@ -101,7 +103,10 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；�
 | `create_outcome_claim` / `revise_outcome_claim` | statement、state、revision | public Claim DTO | 记录用户明确的 Claim；无有效 evidence 时外显为 `insufficient` |
 | `link_outcome_claim_evidence` / `unlink_outcome_claim_evidence` | claim/evidence id、polarity | public Claim DTO | 显式维护 support/counter 边；跨 Topic 关系 fail-closed |
 | `render_outcome_research_brief` | `topic_id` | public brief DTO | current binding 下发布 immutable Markdown revision，再提交 SQLite pointer |
-| `approve_outcome_research_brief` / `return_outcome_research_brief` | `topic_id` | public brief DTO | 人工显式 review；批准不回写 Entry/关系/检索语料 |
+| `approve_outcome_research_brief` / `return_outcome_research_brief` | `topic_id` | public brief DTO，附弃用信息 | 旧 v1 签名与成功语义保留；不具有调用方的精确版本确认保证，替代入口为下列 v2 Tool |
+| `render_outcome_research_brief_v2` | `topic_id` | v2 envelope，result 为 `ResearchBriefRecordV2` | 使用持久 renderer 合同发布绑定当前输入的 immutable revision |
+| `approve_outcome_research_brief_v2` | `outcome_id`, `expected_revision`, `content_sha256`, `expected_input_revision` | v2 envelope，result 为 `ResearchBriefReviewResultV2` | 精确四元组批准，state 与 review receipt 同事务；同动作精确重放幂等 |
+| `return_outcome_research_brief_v2` | 同四元组，必填 `reason_code` | v2 envelope，result 为 `ResearchBriefReviewResultV2` | 原因限 `needs_revision / insufficient_evidence / other`；不同原因重放拒绝 |
 
 两种 archive 写入 Tool 均只进入 `KnowledgeApplication` 的 R4 Q0 → Q1′ → Q2 内部生命周期：
 Q0/Q1′ 未完成时返回稳定 processing 投影，只有 `core_committed` 后才称文档已保存；
@@ -113,6 +118,36 @@ P1-B outcome Tool 同样只投影公开 Kernel façade。它们读取或保存 S
 不返回 source body、私有路径、raw URL/credential、Store、lease 或 Provider。读 Tool 不写入；
 mutation 在 Application 的 root writer lease 下审计执行，且不构造 LLM、Embedding 或 QueryRouter。
 
+### W3 v2 协议与兼容期
+
+SDK `0.9.0` 是本地兼容 build，Kernel API 保持 `1.0.0`；全部 v1 capability 保留，
+新增 `kernel.traceable-outcomes.v2`，未声明 `kernel.embedding-rebuild.v2`，未进行 W5
+major 切换。上述五个新 Tool 只调用 `pkv_kernel.outcomes` 的对应 `*_v2` 函数，
+不让客户端提供 Config、路径、Store 或 lease，也不读取 latest 补齐 review 四元组。
+其中两个 get 的 `readOnlyHint=true`，三个 mutation 为 false；五者仍要求 READY，
+不扩大未就绪或 DEGRADED 根的 Outcome 访问权限。
+
+原始 JSON 参数在 FastMCP 转换前校验，五个 inputSchema 均为 `additionalProperties=false`。
+标识须满足 `[a-z][a-z0-9_-]{0,95}`，摘要须为 64 位小写十六进制，两项 revision
+为 `1..2**63-1` 的严格整数，不接受 bool、float 或数字字符串；reason 为三值枚举。
+缺必填项、额外字段、双/空 selector 返回 `outcome_invalid`，不进入 SDK 或写入。
+已合法的字符串原样传递，包括字符串 `"null"`；不把它 JSON 解码成空 selector。
+
+CLI 与 MCP 统一使用
+`{schema:"pkv.lifecycle-response.v2",status,terminal,operation,result,issues}`。
+status/terminal 为 success 或 error；operation 固定为对应 MCP Tool 名（CLI 亦然），
+成功 result 是公开 DTO 或合法 lookup 的 null，失败 result 为 null。issues 仅含稳定
+code/message/stage/recoverable 等冻结字段，不回显输入或异常原文；MCP 的结构化 content
+与 JSON 文本承载相同对象。只读 lookup 不迁移旧 schema、不创建历史 review 凭据；
+`legacy_unverified` 或 stale binding 必须显式重新生成/审阅。
+
+旧无版本 approve/return Tool 仍可按原语义成功，响应额外带固定
+`deprecation={replacement:"对应 *_v2 Tool",removal_api_major:2}`，SDK 同时发出
+`DeprecationWarning`。这不是 major-2 拒绝 stub；R-04 仍有旧入口 `known_gap`，
+须由 W5 的 major 切换和旧调用拒绝关闭，不能凭新入口通过宣称已关闭。
+详见 [v2 冻结合同](../../docs/specs/interfaces/生命周期一致性v2接口冻结合同-2026-10.md)
+与 [W3 实施主记录](../../docs/overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)。
+
 `execute_embedding_rebuild` 是独立的 `pkv_kernel.embedding` 前台维护路径，不是 Q2 resume：
 它只从已经提交的 Markdown + SQLite projection 生成新的向量 generation，Provider 调用位于
 root writer lease 之外，且不会重新抓取、重写正文、修改 `ai.automation` 或暴露 task drain/
@@ -120,7 +155,8 @@ retry 接口。独立 `ai.embedding_rebuild` token hard cap 缺失或耗尽时�
 `embedding_rebuild_authorization_required` 或 `embedding_budget_paused`。
 
 共享数据根实行**一写多读**：CLI、MCP 与未来 GUI 可并行读取，但不允许两个写操作
-并行。若 MCP 写入 Tool 发现其他应用持有数据根 write lease，它立即返回失败终态，至少含：
+并行。若写入 Tool 发现其他应用持有数据根 write lease，它返回稳定 `write_busy`。
+既有 archive 响应形状如下；Outcome v2 使用上节统一 error envelope 和对应 issue：
 
 ```json
 {
@@ -229,8 +265,10 @@ HTTP transport 或 Bearer 认证。
 
 MCP 启动只解析 Config 并执行只读 `inspect_runtime()`，绝不调用历史 mutating
 bootstrap、迁移、恢复或 Provider probe。未 READY 时仍保留 stdio 会话与
-`get_runtime_status`，其他 Tool/Resource 以稳定 readiness issue 拒绝，且不创建
-数据库、runtime snapshot、Provider 或文件日志。
+`get_runtime_status`；普通业务 Tool/Resource（包括全部 Outcome v1/v2）以稳定 readiness
+issue 拒绝，不创建数据库、runtime snapshot、Provider 或文件日志。既有
+`inspect_embedding_rebuild` / `plan_embedding_rebuild` 走独立只读维护入口，按其 lifecycle
+合同取得当前同根 Config，不装配 Application；这一窄例外不授予 Outcome 读取或写入权限。
 
 首次 READY 的后端请求才以启动时捕获的不可变 Config snapshot 配置一次
 `KnowledgeApplication`。Server 中的 `get_sqlite_store()`、`get_markdown_store()`
@@ -324,7 +362,7 @@ transport
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-layer2 -Command @("pytest", "tests/integration", "-k", "mcp", "-v")
 
 # Layer 3: stdio 黑盒测试 (最慢,启动子进程)
-.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-layer3 -Command @("pytest", "tests/blackbox/test_mcp_blackbox.py", "tests/blackbox/test_r4_mcp_fullflow.py", "tests/blackbox/test_outcome_mcp_blackbox.py", "-v")
+.\scripts\run-test.ps1 -Direct -DataRoot .data-test\mcp-layer3 -Command @("pytest", "tests/blackbox/test_mcp_blackbox.py", "tests/blackbox/test_r4_mcp_fullflow.py", "tests/blackbox/test_outcome_mcp_blackbox.py", "tests/blackbox/test_w3_outcome_mcp_blackbox.py", "-v")
 
 # 正式 MCP 覆盖率门禁：固定版本化目标集、离线 selector 与 95% 阈值
 .\scripts\test-conda.ps1 -EnvironmentName py311-private -Suite MCP
@@ -333,6 +371,16 @@ transport
 `-k mcp` 仅适合本地临时定位，不是覆盖率 gate：它会随着其他测试名称变化而扩大或缩小。
 `-Suite MCP` 的目标集固定覆盖 unit、integration、blackbox 与 E2E MCP 用例，并经
 `run-test.ps1` 为本次运行建立新的 `.data-test/conda-*/mcp-coverage` 根。
+
+W3 新旧 Outcome CLI/MCP 四文件组件合跑为 **21 passed / 230.03s，exit 0**，见
+[组件日志](../../.data-test/w3-adapter-20261025-full/pytest.log)。新 MCP 主节点是
+`tests/blackbox/test_w3_outcome_mcp_blackbox.py::test_outcome_mcp_v2_exact_review_replay_restart_and_v1_deprecation`，
+覆盖旧确认拒绝、exact receipt replay、退回后拒绝审批、重启读取及旧 Tool 弃用；同文件
+`test_outcome_mcp_v2_rejects_coercion_missing_and_extra_fields_without_writes` 覆盖 22 个
+无效请求、合法 `"null"` selector 和零写入。该次组件运行包含启动错误 stage 微调前后的
+进程；最终同树结果、默认全量、MCP coverage 与 Phase C 状态只按
+[W3 主记录](../../docs/overview/W3-Outcome一致性与版本审批实施记录-2026-10.md) 登记。
+组件计数不能替代这些门禁，也不是 Artifact/release 验收。
 
 ---
 
@@ -383,7 +431,7 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 | `__init__.py` | 模块入口,描述模块结构 |
 | `__main__.py` | 支持 `python -m src.mcp.server` 启动 |
 | `server.py` | FastMCP 主入口,单例管理,注册子模块 |
-| `tools.py` | 30 个 Tool handler 实现 |
+| `tools.py` | 35 个 Tool handler 实现 |
 | `resources.py` | 9 个 Resource handler 实现 |
 | `prompts.py` | 3 个 Prompt 模板实现 |
 | `utils.py` | 辅助工具(序列化/安全验证/参数约束) |
@@ -401,6 +449,7 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 | `tests/blackbox/test_mcp_blackbox.py` | stdio 协议级黑盒测试 (Layer 3) |
 | `tests/blackbox/test_r4_mcp_fullflow.py` | 真正 `archive_text`、关闭 server 后重启并 vector/hybrid 命中的 R4 source blackbox |
 | `tests/blackbox/test_outcome_mcp_blackbox.py` | 真 stdio Topic → Evidence → Claim → research brief → restart read 的 P1-B blackbox |
+| `tests/blackbox/test_w3_outcome_mcp_blackbox.py` | W3 v2 exact review/replay、strict scalar/extra fields、旧 v1 弃用和重启读取 |
 
 ### 配置文件
 
@@ -412,6 +461,12 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-10-25（W3 Outcome v2 兼容准备）
+- 增加 2 个只读与 3 个写入 v2 Tool，当前共 35 Tool（19 只读 + 16 写入）；原 30 个保留。
+- 新入口采用封闭参数、精确版本确认与统一 v2 envelope；旧无版本 review 已弃用但仍可执行，
+  R-04 旧入口缺口保留至 W5。SDK `0.9.0` / API `1.0.0`，仅新增 Outcome v2 capability。
+- 记录组件黑盒证据及 W3 主记录链接；未以该组件通过数宣称全量、coverage、Phase C 或发布通过。
 
 ### 2026-09-04 (P1-B traceable outcomes)
 - 新增 10 个 outcome 写入 Tool 与 2 个只读 Tool，全部只通过 `pkv_kernel.outcomes`。
@@ -456,6 +511,6 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-09-04
+**最后更新**: 2026-10-25（W3 v2 入口与兼容阶段；历史证据保持原语境）
 
 *本文档由 Claude Code 自动生成*

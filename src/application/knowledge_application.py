@@ -527,6 +527,73 @@ class KnowledgeApplication:
 
         return self.outcome_service.get_bundle(topic_id)
 
+    def get_outcome_bundle_v2(self, *, topic_id: str) -> Any:
+        return self.outcome_service.get_bundle(topic_id)
+
+    def get_outcome_research_brief_v2(
+        self, *, topic_id: str | None = None, outcome_id: str | None = None,
+    ) -> Any:
+        return self.outcome_service.get_research_brief_v2(
+            topic_id=topic_id, outcome_id=outcome_id,
+        )
+
+    def render_outcome_research_brief_v2(self, *, topic_id: str) -> Any:
+        return self._run_outcome_mutation(
+            "outcome_render_v2", {"topic_id": topic_id},
+            lambda: self.outcome_service.render_research_brief(topic_id=topic_id),
+        )
+
+    def _run_outcome_review_v2(self, *, action: str, **confirmation: Any) -> Any:
+        from src.runtime.audit import AuditTraceError
+
+        with (
+            self._write_lease_scope(),
+            self._runtime_file_log_scope(owner="knowledge_outcomes"),
+            self._audit_mutation(f"outcome_{action}_v2", confirmation) as audit,
+        ):
+            try:
+                committed = self.outcome_service.review_research_brief_v2(
+                    action=action, **confirmation,
+                )
+            except PKVRuntimeError as error:
+                try:
+                    audit.fail_runtime_error(error)
+                except AuditTraceError:
+                    # Keep the exact review/CAS error even if its secondary
+                    # audit event cannot be appended.
+                    pass
+                raise
+            try:
+                self._finish_mutation_audit(audit, {
+                    "receipt_id": committed.receipt_id,
+                    "idempotent": committed.idempotent,
+                })
+            except AuditTraceError:
+                # SQLite committed the state and authoritative receipt together.
+                # Do not let the audit context fabricate a failed business event
+                # or retry a terminal append after this successful review.
+                audit.mark_completion_pending_after_commit()
+            return committed
+
+    def approve_outcome_research_brief_v2(
+        self, *, outcome_id: str, expected_revision: int, content_sha256: str,
+        expected_input_revision: int,
+    ) -> Any:
+        return self._run_outcome_review_v2(
+            action="approve", outcome_id=outcome_id, expected_revision=expected_revision,
+            content_sha256=content_sha256, expected_input_revision=expected_input_revision,
+        )
+
+    def return_outcome_research_brief_v2(
+        self, *, outcome_id: str, expected_revision: int, content_sha256: str,
+        expected_input_revision: int, reason_code: str,
+    ) -> Any:
+        return self._run_outcome_review_v2(
+            action="return", outcome_id=outcome_id, expected_revision=expected_revision,
+            content_sha256=content_sha256, expected_input_revision=expected_input_revision,
+            reason_code=reason_code,
+        )
+
     def get_outcome_research_brief(
         self,
         *,

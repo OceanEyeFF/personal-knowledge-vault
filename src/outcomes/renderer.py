@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from src.outcomes.models import OutcomeBundle, OutcomeState
+from src.outcomes.identity import RENDER_CONTRACT_VERSION
+from src.runtime.errors import ErrorCode, PKVRuntimeError
 
 
 def _markdown_text(value: str) -> str:
@@ -32,6 +34,12 @@ def render_research_brief(
     retaining the storage/privacy boundary.
     """
 
+    if bundle.topic.render_contract_version != RENDER_CONTRACT_VERSION:
+        raise PKVRuntimeError(
+            ErrorCode.OUTCOME_RENDER_CONTRACT_UNSUPPORTED,
+            "当前软件不支持该研究主题绑定的渲染合同。",
+            stage="outcome_brief", recoverable=True,
+        )
     lines = [
         f"# Research Brief: {_markdown_text(bundle.topic.title)}",
         "",
@@ -39,6 +47,9 @@ def render_research_brief(
         f"- Topic revision: `{bundle.topic.revision}`",
         f"- Outcome ID: `{outcome_id}`",
         f"- Outcome revision: `{revision}`",
+        f"- Input revision: `{bundle.topic.input_revision}`",
+        f"- Input digest: `{bundle.topic.input_digest}`",
+        f"- Render contract: `{bundle.topic.render_contract_version}`",
         f"- Review state: `{OutcomeState.AWAITING_REVIEW.value}`",
         "",
         "## Inquiry",
@@ -51,7 +62,7 @@ def render_research_brief(
     evidence_by_id = {evidence.evidence_id: evidence for evidence in bundle.evidence}
     if not bundle.claims:
         lines.extend(["No claims have been recorded.", ""])
-    for claim in bundle.claims:
+    for claim in sorted(bundle.claims, key=lambda item: (item.ordinal, item.claim_id)):
         lines.extend(
             [
                 f"### C{claim.ordinal}: `{claim.state.value}`",
@@ -64,7 +75,7 @@ def render_research_brief(
         )
         if not claim.evidence_links:
             lines.append("  - none")
-        for link in claim.evidence_links:
+        for link in sorted(claim.evidence_links, key=lambda item: item.evidence_id):
             evidence = evidence_by_id.get(link.evidence_id)
             if evidence is None:
                 # A detached source must never be silently rebound.  In normal
@@ -84,7 +95,7 @@ def render_research_brief(
     lines.extend(["## Evidence Ledger", ""])
     if not bundle.evidence:
         lines.extend(["No evidence has been attached.", ""])
-    for evidence in bundle.evidence:
+    for evidence in sorted(bundle.evidence, key=lambda item: (item.ordinal, item.evidence_id)):
         lines.extend(
             [
                 f"### E{evidence.ordinal}",

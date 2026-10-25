@@ -34,7 +34,7 @@ request、`PreparedDocument` 与 `DerivationPatch` 仅存在受身份/hash 校�
 
 ## P1-B 可追溯成果边界
 
-schema `1.2.7` 的 `outcome_*` 表保存 Topic、Evidence、Claim、Claim↔Evidence 边与
+W3/schema `1.2.8` 的 `outcome_*` 表保存 Topic、Evidence、Claim、Claim↔Evidence 边与
 `research_brief` pointer。其 authority 与 R4 content ledger 分离：它不复制 Entry 正文、不进入
 FTS/vector generation，也不改变 archive 的 Q0/Q1′/Q2 写入顺序。
 
@@ -46,26 +46,34 @@ FTS/vector generation，也不改变 archive 的 Q0/Q1′/Q2 写入顺序。
 - `OutcomeService` 先将 deterministic、不可覆盖的 Markdown revision 发布到 layout-owned
   `outcomes/`，再将 relative path/digest 写入 `outcome_briefs`。reader 只跟随已提交 pointer，
   因而 pre-commit orphan 不会被误报为有效成果。
-- source revalidation 的 read path 零写；显式 render/review mutation 才可以持久标记
-  stale/needs_review。全线无 Provider、Embedding、网络或隐藏 test mode。
+- source revalidation 在 read/render/review 中都不自行修改 input binding；持久输入状态变化
+  须经显式 input mutation 原子推进版本和 brief 失效。全线无 Provider、Embedding、网络或隐藏 test mode。
 
-### 2026-10 一致性修复目标（尚未实现）
+### 2026-10 W3 一致性合同与实现边界
 
-上述 schema `1.2.7` 是现有持久化基线，不代表它已满足下列新合同。2026-10-24 复审确认输入
-mutation 与 brief 失效分开提交、r2+ orphan 阻塞重试、review 未绑定被审阅版本三项缺口。修复
-顺序由[生命周期一致性修复总计划](../../overview/生命周期一致性修复设计与分阶段计划-2026-10.md)
-控制；以下只规定目标 Store 边界，不修改产品代码、SQL migration 或当前公开 API。
+历史 schema `1.2.7` 存在输入 mutation 与 brief 失效分开提交、r2+ orphan 阻塞重试，以及 review
+未绑定被审阅版本的缺口。W3 已实现下列 Store 事务、发布身份与新版本审阅协议；major-1 旧
+无版本入口仍按兼容计划保留，不能据此宣称 R04 已关闭。后续边界由
+[生命周期一致性修复总计划](../../overview/生命周期一致性修复设计与分阶段计划-2026-10.md)控制。
 
 W1 的具体持久合同已冻结于
 [迁移冻结方案](../database/生命周期一致性迁移冻结方案-2026-10.md)：014/schema 1.2.8、
 canonical input/publication/receipt hash、完整列约束与合成迁移矩阵。公开签名与错误见
-[v2 接口冻结合同](./生命周期一致性v2接口冻结合同-2026-10.md)。这些目标尚未部署。
+[v2 接口冻结合同](./生命周期一致性v2接口冻结合同-2026-10.md)。本次仅验证合成库，未迁移用户 Vault。
+
+**结构门禁。** Store 不依赖调用方曾经 bootstrap；在当前连接的 read transaction 内复用迁移
+校验，比较冻结 DDL/索引/外键与跨 Topic 关系，并核对 locator 与其派生 ID。声明 `1.2.8` 或
+存在同名列不能替代这些检查。旧库返回 `database_upgrade_required`；结构/绑定不符合声明时
+返回 `database_schema_drift`，只读入口不创建、升级或修复 schema。
 
 **输入事务。** Topic 的 `input_revision/input_digest` 表示完整 body-free render input。所有
 实际改变 Topic/Evidence/Claim/边或其持久 binding state 的操作，必须在一个 SQLite 事务内
 完成输入修改、input revision 恰好递增一次、digest 更新及已有 brief=`needs_review`。
 Store 不得提前提交输入、再由另一次连接标记失效；root writer lease 与 audit 均不能替代这个
 原子提交点。规范化后的 no-op 不递增、不额外失效；render 与 review state 不属于 input mutation。
+Evidence 删除及其级联边只计一次输入变化；批量 evidence state 更新每个受影响 Topic 只推进一次。
+Evidence/Claim/边变更不增加 Topic 自身字段 revision。修改前须验证原始持久输入，新摘要也从
+同连接的原始字段生成，不能借模型的类型转换、字段重建或 JSON 归一化掩盖损坏并重新签名。
 
 digest 的 canonical 字段、排序和 renderer 合同版本已由 W1 冻结，包含 `input_revision` 与
 所有影响渲染字节的输入；不含 source body、绝对路径、审计/观察时间或 brief review state。
@@ -84,14 +92,16 @@ render 从一致输入与已提交 pointer 计算 `candidate_revision = committe
 orphan 保留、不覆盖，不能因旧 orphan 占据 revision 名称而永久失败。
 
 文件发布后，在 writer lease 下复核 source/投影，再由一个 SQLite pointer CAS 事务比较旧
-pointer、捕获的 `input_revision/input_digest`，共同提交新 relative path、`publication_id`、
+pointer 全元组 `(outcome_id, revision, markdown_relative_path, content_sha256, publication_id)`
+或首次 absent，以及捕获的 `(input_revision, input_digest, render_contract_version)`，共同提交新 relative path、`publication_id`、
 `content_sha256`、`rendered_input_revision/rendered_input_digest`、`awaiting_review` 与新
 committed revision。仅该 commit 能推进 brief revision；失败时不改变当前已提交 pointer，
 包括竞争者已发布的版本，也不得退回捕获时的旧 pointer。文件保留；仅未被已提交 pointer 引用
 的 publication 才是 orphan，同输入竞争者已引用的同一 publication 仍是有效投影。pointer
 commit 后响应前中断，新进程直接读取已提交版本。
 
-**读取与 review。** bundle 必须来自同一个 SQLite read transaction；除 source 和投影复核外，
+**读取与 review。** Store 连接显式 `BEGIN`，bundle 的输入、边、pointer 与 receipt 校验来自同一个
+SQLite read transaction；除 source 和投影复核外，
 还必须比较 rendered input binding 与当前 input binding。缺失或不匹配时 effective state 为
 `needs_review`，不更改 stored state 或文件，也不误报为投影字节损坏。外部 source 漂移不一定
 推进 Topic revision，故 source revalidation 仍是独立必需条件。
@@ -112,8 +122,17 @@ publication/rendered binding 保持 NULL，不为历史 state 合成有效 recei
 
 历史 brief 不能通过把当前 input binding 回填为 rendered binding 来保留 approved；无法证明
 时保留旧文件/pointer 并外显 `needs_review`，等待显式重新 render/review。迁移字段与约束见
-[SQLite Schema 目标设计](../database/SQLite_Schema完整规范.md)。实现验收必须覆盖 P1-B 计划中
-`OC-01`–`OC-12` 的事务故障、跨进程恢复、review 竞争与零写读取；这些新验收项当前均未通过。
+[SQLite Schema 规范](../database/SQLite_Schema完整规范.md)。Store 专项已在
+`tests/unit/test_w3_outcome_store.py` 验证 **65 passed**（2026-10-25，exit 0），包括输入/失效
+SQL 切点、完整 CAS、receipt/state 双切点与重放、独立 WAL 连接 snapshot、伪 schema 和异常原始
+输入零写拒绝。命令为 `scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-store-final-v3 pytest
+tests/unit/test_w3_outcome_store.py -vv --tb=short`，逐 case 日志为
+`.data-test/w3-outcome-store-evidence/reports/final-65-passed.log`。
+snapshot barrier 成功断言随后移到 SQLite trace callback 外；相同 nodeid 在
+`.data-test/w3-store-snapshot-final` 单独重跑 **1 passed**，证据为
+`.data-test/w3-outcome-store-evidence/reports/snapshot-oracle-1-passed.log`（仍为上述 65 个独立用例）。
+`OC-01`–`OC-12` 的跨进程、公开接口和完整集成状态以
+[W3 实施记录](../../overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)为准；此处不预写全量通过。
 
 ---
 

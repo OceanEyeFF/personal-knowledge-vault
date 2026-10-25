@@ -133,6 +133,9 @@ class RuntimeInspection:
     journal_record_count: int
     runtime_snapshot: str
     _config: Any = field(repr=False, compare=False, default=None)
+    _pending_database_versions: tuple[str, ...] = field(repr=False, default=())
+    _outcome_legacy_brief_count: int = field(repr=False, default=0)
+    _database_migration_effects: tuple[str, ...] = field(repr=False, default=())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1270,6 +1273,15 @@ def inspect_runtime(config: Any | None = None) -> RuntimeInspection:
             "current_version": database.current_version if database is not None else None,
             "latest_version": database.latest_version if database is not None else None,
             "pending_versions": database.pending_versions if database is not None else (),
+            "migration_manifest_sha256": (
+                database.migration_manifest_sha256 if database is not None else None
+            ),
+            "outcome_legacy_brief_count": (
+                database.outcome_legacy_brief_count if database is not None else 0
+            ),
+            "migration_effects": (
+                database.migration_effects if database is not None else ()
+            ),
             "marker": _path_marker(Path(layout.db_path)),
         },
         "tokenizer_cache": tokenizer_cache_marker,
@@ -1287,6 +1299,11 @@ def inspect_runtime(config: Any | None = None) -> RuntimeInspection:
         journal_record_count=journal_count,
         runtime_snapshot=snapshot_state,
         _config=config,
+        _pending_database_versions=database.pending_versions if database is not None else (),
+        _outcome_legacy_brief_count=(
+            database.outcome_legacy_brief_count if database is not None else 0
+        ),
+        _database_migration_effects=database.migration_effects if database is not None else (),
     )
 
 
@@ -1349,10 +1366,19 @@ def plan_runtime(inspection: RuntimeInspection) -> RuntimePlan:
                 )
             )
     elif inspection.readiness is RuntimeReadiness.UPGRADE_REQUIRED:
+        impact = "需要先备份后执行显式数据库升级；本基础层不会自动升级。"
+        if "outcome_input_binding" in inspection._database_migration_effects:
+            versions = "、".join(inspection._pending_database_versions)
+            impact = (
+                f"待升级版本：{versions}，包含 014 Outcome 输入绑定迁移。"
+                f"{inspection._outcome_legacy_brief_count} 份旧成果缺少可证明的历史输入绑定，"
+                "将标记为需重新生成和审阅；保留原审批记录、版本与文件指针，"
+                "不改 Markdown 正文或向量。需要先备份后显式升级；此入口只展示计划。"
+            )
         actions.append(
             _action(
                 RuntimeActionKind.UPGRADE_DATABASE,
-                "需要先备份后执行显式数据库升级；本基础层不会自动升级。",
+                impact,
                 requires_confirmation=True,
                 executable=False,
             )

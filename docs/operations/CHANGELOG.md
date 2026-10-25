@@ -4,14 +4,25 @@
 
 ---
 
-> 版本口径说明（2026-03-06）：
+> 版本口径说明（2026-10-25）：
 >
-> - 当前运行时、CLI 与 held test candidate 基线版本：`0.8.1`
+> - 当前源码运行时、CLI 与 SDK 兼容 build：`0.9.0`，API `1.0.0`；历史 held test candidate 仍为 `0.8.1`
 > - `v0.6.0` 表示 CLI 入口首次稳定引入
 > - `v0.7.0` 表示 MCP 能力层首次稳定引入
 > - `history/` 下的 `v0.8.0-beta / v0.8.0` 里程碑文档保留阶段性背景，不直接作为当前仓库发布标签
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
+
+### W3 Outcome 一致性、版本审批与合成迁移（2026-10-25）
+
+- 输入变更、规范化 digest/revision 与 brief 失效原子提交；发布文件绑定输入版本，并以
+  完整 pointer CAS 支持任意版本重试。新 v2 审批绑定四元组，receipt 与 state 同事务。
+- SQLite 014/schema 1.2.8 使用经验证的私有 work database 合成迁移；旧 brief 保留
+  state/pointer/字节，缺失绑定标为 `legacy_unverified`，不伪造审批历史。
+- 新增五个 Outcome v2 SDK/CLI/MCP 入口；MCP 当前为 35 Tool（19 只读、16 写入）。
+  SDK 0.9.0/API 1.0.0 保留 v1 capabilities，旧无版本审批发出弃用警告；其 R-04
+  兼容缺口留待 W5。验收与已知失败见 [W3 实施记录](../overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)。
+- 本轮不推进 W4 manual rebuild 恢复/预算或 W5 major 切换，不改变 held Artifact/release hold。
 
 ### P1-B traceable knowledge outcomes（2026-09-04，source implementation in progress）
 

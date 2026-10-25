@@ -126,14 +126,27 @@ def test_research_brief_is_revisioned_bound_and_drift_invalidates_review(
     assert observed.brief.state.value == "approved"
     assert observed.brief.visible_state.value == "needs_review"
 
+    # W3 observes source drift without changing the captured input contract or
+    # the durable pointer.  Only an explicit input mutation may change those.
+    stored_before = application.outcome_service._stored_bundle(topic.topic_id)
+    database_before = config.db_path.read_bytes()
+    projection_before = markdown_path.read_bytes()
     with pytest.raises(PKVRuntimeError) as stale_render:
         application.render_outcome_research_brief(topic_id=topic.topic_id)
     assert stale_render.value.code is ErrorCode.OUTCOME_EVIDENCE_STALE
 
     persisted = application.get_outcome_research_brief(topic_id=topic.topic_id)
     assert persisted is not None
-    assert persisted.state.value == "needs_review"
+    assert persisted.state.value == "approved"
     assert persisted.visible_state.value == "needs_review"
+    assert application.outcome_service._stored_bundle(topic.topic_id) == stored_before
+    assert config.db_path.read_bytes() == database_before
+    assert markdown_path.read_bytes() == projection_before
+    from pkv_kernel import KnowledgeKernel, outcomes
+    public_brief = outcomes.get_research_brief_v2(
+        topic_id=topic.topic_id, kernel=KnowledgeKernel._from_application(application),
+    )
+    assert public_brief.review_confirmation is None
     assert application._query_routers == {}
 
 

@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -89,6 +91,7 @@ EXPECTED_TABLES_BY_VERSION = {
         "outcome_claim_evidence",
         "outcome_briefs",
     ),
+    "1.2.8": ("outcome_review_receipts",),
 }
 APPLICATION_TABLES_BY_MIGRATION = {
     "001_initial_schema.sql": frozenset(
@@ -134,6 +137,9 @@ APPLICATION_TABLES_BY_MIGRATION = {
             "outcome_briefs",
         }
     ),
+    "014_add_lifecycle_consistency.sql": frozenset(
+        {"outcome_topics", "outcome_briefs", "outcome_review_receipts"}
+    ),
 }
 FTS_REBUILD_VERSIONS = {"1.2.2", "1.2.3"}
 LATEST_REQUIRED_TABLES = frozenset(
@@ -167,6 +173,7 @@ LATEST_REQUIRED_TABLES = frozenset(
         "outcome_claims",
         "outcome_claim_evidence",
         "outcome_briefs",
+        "outcome_review_receipts",
     }
 )
 
@@ -186,6 +193,9 @@ class DatabaseInspection:
     current_version: str
     latest_version: str
     pending_versions: tuple[str, ...] = ()
+    migration_manifest_sha256: str = ""
+    outcome_legacy_brief_count: int = 0
+    migration_effects: tuple[str, ...] = ()
 
 
 class MigrationManager:
@@ -231,8 +241,9 @@ class MigrationManager:
                 f"MigrationManager is read-only; cannot perform {operation}"
             )
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self, *, read_only: bool | None = None) -> sqlite3.Connection:
         """Open the database, optionally enforcing SQLite read-only mode."""
+        readonly = self.read_only or read_only is True
         if self._work_file_fd is not None:
             verify_fd_matches_path(
                 self._work_file_fd,
@@ -249,7 +260,7 @@ class MigrationManager:
             else:
                 connection = connect_existing_sqlite(
                     self.db_path,
-                    read_only=self.read_only,
+                    read_only=readonly,
                 )
             try:
                 verify_fd_matches_path(
@@ -264,9 +275,9 @@ class MigrationManager:
         if os.path.lexists(self.db_path):
             return connect_existing_sqlite(
                 self.db_path,
-                read_only=self.read_only,
+                read_only=readonly,
             )
-        if self.read_only:
+        if readonly:
             return connect_existing_sqlite(self.db_path, read_only=True)
         # Writable missing targets are used only as off-path migration work DBs.
         return sqlite3.connect(self.db_path)
@@ -282,9 +293,9 @@ class MigrationManager:
         return os.fstat(self._work_file_fd).st_size == 0
 
     @contextmanager
-    def _connection(self):
+    def _connection(self, *, read_only: bool = False):
         """Transaction-aware connection context that always closes the handle."""
-        conn = self._connect()
+        conn = self._connect(read_only=True) if read_only else self._connect()
         try:
             with conn:
                 yield conn
@@ -307,7 +318,7 @@ class MigrationManager:
         self._validate_database_file()
 
         try:
-            with self._connection() as conn:
+            with self._connection(read_only=True) as conn:
                 if not self._table_exists(conn, "schema_version"):
                     raise PKVRuntimeError(
                         ErrorCode.DATABASE_VERSION_TABLE_MISSING,
@@ -348,6 +359,30 @@ class MigrationManager:
             )
         return migrations[-1][0]
 
+    def migration_manifest_sha256(self) -> str:
+        """Bind bundled SQL and the executable 014/hash closure into plans."""
+
+        chain = self._migration_chain()
+        resources = [(f"scripts/migrations/{path.name}", path) for _, path in chain]
+        if any(path.name == "014_add_lifecycle_consistency.sql" for _, path in chain):
+            source = Path(__file__).parent
+            resources.extend((
+                ("src/storage/outcome_migration.py", source / "outcome_migration.py"),
+                ("src/outcomes/identity.py", source.parent / "outcomes" / "identity.py"),
+            ))
+        manifest = []
+        try:
+            for name, path in sorted(resources):
+                with open_user_file_nofollow(path, "rb", label="迁移绑定资源") as handle:
+                    digest = hashlib.sha256(handle.read()).hexdigest()
+                manifest.append({"resource": name, "sha256": digest})
+        except OSError as exc:
+            raise PKVRuntimeError(
+                ErrorCode.RESOURCE_NOT_READABLE, "迁移绑定资源无法安全读取。",
+            ) from exc
+        encoded = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(b"pkv.migration.manifest.v1\0" + encoded).hexdigest()
+
     def inspect_database(self) -> DatabaseInspection:
         """Classify startup state without mutating the database or filesystem."""
 
@@ -366,13 +401,14 @@ class MigrationManager:
         """
 
         latest = self.latest_version()
+        manifest = self.migration_manifest_sha256()
         if not os.path.lexists(self.db_path):
-            return DatabaseInspection(DatabaseState.FRESH, "0.0.0", latest)
+            return DatabaseInspection(DatabaseState.FRESH, "0.0.0", latest, migration_manifest_sha256=manifest)
         if self._guarded_work_file_is_empty():
-            return DatabaseInspection(DatabaseState.FRESH, "0.0.0", latest)
+            return DatabaseInspection(DatabaseState.FRESH, "0.0.0", latest, migration_manifest_sha256=manifest)
 
         current = self.get_current_version()
-        with self._connection() as conn:
+        with self._connection(read_only=True) as conn:
             self._validate_integrity(conn)
             applied = tuple(
                 str(row[0])
@@ -385,7 +421,7 @@ class MigrationManager:
         chain_versions = tuple(version for version, _ in migration_chain)
         comparison = self._version_compare(current, latest)
         if comparison > 0:
-            return DatabaseInspection(DatabaseState.FUTURE_VERSION, current, latest)
+            return DatabaseInspection(DatabaseState.FUTURE_VERSION, current, latest, migration_manifest_sha256=manifest)
 
         unknown = [version for version in applied if version not in chain_versions]
         if unknown:
@@ -405,7 +441,7 @@ class MigrationManager:
                 "schema_version 不是 bundled migration chain 的完整前缀",
             )
 
-        with self._connection() as conn:
+        with self._connection(read_only=True) as conn:
             tables = {
                 str(row[0])
                 for row in conn.execute(
@@ -425,17 +461,43 @@ class MigrationManager:
                 f"数据库缺少已声明版本必需表: {', '.join(missing)}",
             )
 
+        if "1.2.7" in applied:
+            from src.storage.outcome_migration import validate_outcome_schema
+
+            with self._connection(read_only=True) as conn:
+                validate_outcome_schema(
+                    conn,
+                    legacy_sql=_read_migration_text(self.migrations_dir / "013_add_traceable_outcomes.sql"),
+                    target_sql=(
+                        _read_migration_text(self.migrations_dir / "014_add_lifecycle_consistency.sql")
+                        if "1.2.8" in applied else None
+                    ),
+                )
+
         if comparison < 0:
             pending = tuple(
                 version
                 for version in chain_versions
                 if self._version_compare(version, current) > 0
             )
+            legacy_brief_count = 0
+            migration_effects: tuple[str, ...] = ()
+            if "1.2.8" in pending:
+                if "outcome_briefs" in tables:
+                    with self._connection(read_only=True) as conn:
+                        legacy_brief_count = int(conn.execute("SELECT count(*) FROM outcome_briefs").fetchone()[0])
+                migration_effects = (
+                    "outcome_input_binding", "legacy_briefs_need_review",
+                    "markdown_unchanged", "vectors_unchanged",
+                )
             return DatabaseInspection(
                 DatabaseState.UPGRADE_REQUIRED,
                 current,
                 latest,
                 pending,
+                manifest,
+                legacy_brief_count,
+                migration_effects,
             )
 
         missing = sorted(LATEST_REQUIRED_TABLES - tables)
@@ -444,7 +506,7 @@ class MigrationManager:
                 ErrorCode.DATABASE_SCHEMA_DRIFT,
                 f"数据库缺少当前版本必需表: {', '.join(missing)}",
             )
-        return DatabaseInspection(DatabaseState.READY, current, latest)
+        return DatabaseInspection(DatabaseState.READY, current, latest, migration_manifest_sha256=manifest)
 
     def require_ready(self) -> DatabaseInspection:
         """Return READY/FRESH inspection or raise a stable startup rejection."""
@@ -515,6 +577,8 @@ class MigrationManager:
                     ErrorCode.MIGRATION_FAILED,
                     f"fresh 初始化未达到 READY: {ready.state.value}",
                 )
+            if self.migration_manifest_sha256() != inspection.migration_manifest_sha256:
+                raise PKVRuntimeError(ErrorCode.MIGRATION_FAILED, "迁移绑定资源在初始化期间发生变化。")
             if os.path.lexists(self.db_path):
                 raise PKVRuntimeError(
                     ErrorCode.MIGRATION_LOCKED,
@@ -892,7 +956,7 @@ class MigrationManager:
         }
 
         if db_info["db_exists"]:
-            with self._connection() as conn:
+            with self._connection(read_only=True) as conn:
                 cursor = conn.execute(
                     """
                     SELECT name FROM sqlite_master
@@ -958,6 +1022,11 @@ class MigrationManager:
                     for version, path in pending
                 ]
 
+            try:
+                self.inspect_database()
+            except PKVRuntimeError as exc:
+                issues.append(f"数据库严格合同检查失败: {exc.code.value}")
+
         return {
             "healthy": len(issues) == 0,
             "scripts": script_checks,
@@ -977,6 +1046,11 @@ class MigrationManager:
             Exception: 迁移执行失败
         """
         self._require_writable("apply_migration")
+        if migration_file.name == "014_add_lifecycle_consistency.sql" and self._work_file_fd is None:
+            raise PKVRuntimeError(
+                ErrorCode.MIGRATION_FAILED,
+                "014 只允许在受保护的迁移工作副本中执行。",
+            )
         logger.info("开始迁移")
         ensure_safe_directory(self.db_path.parent, label="数据库目录")
         metadata = self._read_migration_metadata(migration_file)
@@ -1018,7 +1092,10 @@ class MigrationManager:
 
             # ``executescript`` otherwise commits implicitly. An explicit
             # wrapper makes DDL, data changes and schema_version one unit.
-            conn.executescript(f"BEGIN IMMEDIATE;\n{sql}\nCOMMIT;")
+            if migration_file.name == "014_add_lifecycle_consistency.sql":
+                self._apply_outcome_migration(conn, sql, description)
+            else:
+                conn.executescript(f"BEGIN IMMEDIATE;\n{sql}\nCOMMIT;")
 
             logger.info("✓ 迁移成功")
 
@@ -1040,6 +1117,28 @@ class MigrationManager:
 
         finally:
             conn.close()
+
+    def _apply_outcome_migration(self, conn: sqlite3.Connection, sql: str, description: str) -> None:
+        """Run 014 DDL, canonical backfill and version as one work-copy commit."""
+
+        from src.storage.outcome_migration import backfill_outcome_bindings, validate_outcome_schema
+
+        legacy_sql = _read_migration_text(self.migrations_dir / "013_add_traceable_outcomes.sql")
+        validate_outcome_schema(conn, legacy_sql=legacy_sql)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            conn.executescript(f"BEGIN IMMEDIATE;\n{sql}")
+            backfill_outcome_bindings(conn)
+            validate_outcome_schema(conn, legacy_sql=legacy_sql, target_sql=sql)
+            self._validate_integrity(conn)
+            self._record_schema_version(conn, "1.2.8", description)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
+        self._validate_integrity(conn)
 
     def _tables_created_by_pending(self) -> frozenset[str]:
         """Tables the pending migration chain will (re)create for this db."""
@@ -1079,6 +1178,7 @@ class MigrationManager:
         pending = self.get_pending_migrations()
 
         if not pending:
+            self.require_ready()
             logger.info("没有待执行的迁移")
             return 0
 
@@ -1103,6 +1203,8 @@ class MigrationManager:
             locked_inspection = self._inspect_database(
                 exempt_tables=self._tables_created_by_pending()
             )
+            if locked_inspection.migration_manifest_sha256 != inspection.migration_manifest_sha256:
+                raise PKVRuntimeError(ErrorCode.MIGRATION_FAILED, "迁移绑定资源在取锁前发生变化。")
             if locked_inspection.state is DatabaseState.READY:
                 logger.info("迁移链已由其他进程完成，无需重复执行")
                 return 0
@@ -1172,6 +1274,8 @@ class MigrationManager:
                         ErrorCode.MIGRATION_LOCKED,
                         "迁移期间数据库被其他进程修改，拒绝发布结果",
                     )
+                if self.migration_manifest_sha256() != locked_inspection.migration_manifest_sha256:
+                    raise PKVRuntimeError(ErrorCode.MIGRATION_FAILED, "迁移绑定资源在执行期间发生变化。")
                 verify_fd_matches_path(
                     descriptor, work_path, label="迁移工作数据库"
                 )
@@ -1214,7 +1318,7 @@ class MigrationManager:
             except Exception as exc:
                 raise PKVRuntimeError(
                     ErrorCode.MIGRATION_FAILED,
-                    "迁移链失败，原数据库保持不变",
+                    "迁移未能确认完成；请重新检查数据库状态。",
                 ) from exc
             finally:
                 if descriptor_open:

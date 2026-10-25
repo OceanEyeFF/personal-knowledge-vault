@@ -1908,7 +1908,9 @@ def _emit_outcome_payload(payload: dict[str, object], *, error: bool = False) ->
     )
 
 
-def _outcome_failure(exc: BaseException, *, operation: str) -> None:
+def _outcome_failure(
+    exc: BaseException, *, operation: str, deprecation: dict[str, object] | None = None,
+) -> None:
     """Project outcome errors without echoing an input locator, path, or body."""
 
     if isinstance(exc, PKVRuntimeError):
@@ -1923,21 +1925,21 @@ def _outcome_failure(exc: BaseException, *, operation: str) -> None:
         code = ErrorCode.OUTCOME_INVALID
         message = "研究成果操作暂时不可用。"
         recoverable = True
-    _emit_outcome_payload(
-        {
-            "status": "error",
-            "operation": operation,
-            "issues": [
-                {
-                    "code": code.value,
-                    "message": message,
-                    "stage": "outcome",
-                    "recoverable": recoverable,
-                }
-            ],
-        },
-        error=True,
-    )
+    payload = {
+        "status": "error",
+        "operation": operation,
+        "issues": [
+            {
+                "code": code.value,
+                "message": message,
+                "stage": "outcome",
+                "recoverable": recoverable,
+            }
+        ],
+    }
+    if deprecation is not None:
+        payload["deprecation"] = deprecation
+    _emit_outcome_payload(payload, error=True)
     raise click.exceptions.Exit(1)
 
 
@@ -1951,9 +1953,164 @@ def _outcome_result_payload(*, operation: str, result: object) -> dict[str, obje
     return {"status": "success", "operation": operation, "result": payload}
 
 
+def _outcome_v2_failure(
+    exc: BaseException, *, operation: str, startup: bool = False,
+    startup_projection: dict[str, object] | None = None,
+) -> None:
+    """Project v2 errors without reflecting input values or exception text."""
+
+    if isinstance(exc, PKVRuntimeError) or startup:
+        projected = startup_projection if startup_projection is not None else project_bootstrap_error(
+            exc, adapter="cli", stage="runtime_configuration" if startup else "outcome",
+        )
+        code = projected["code"]
+        stage = projected["stage"]
+        recoverable = projected["recoverable"]
+        message = _OUTCOME_PUBLIC_MESSAGES.get(getattr(exc, "code", None), "研究成果操作未能完成。")
+        if code == "outcome_render_contract_unsupported":
+            message = "当前成果渲染合同不受支持，需要显式维护。"
+    else:
+        code, stage = "outcome_invalid", "outcome"
+        recoverable = not isinstance(exc, (TypeError, ValueError))
+        message = "研究成果参数无效。" if not recoverable else "研究成果操作暂时不可用。"
+    _emit_outcome_payload(
+        {
+            "schema": "pkv.lifecycle-response.v2",
+            "status": "error",
+            "terminal": "error",
+            "operation": operation,
+            "result": None,
+            "issues": [{"code": code, "message": message, "stage": stage, "recoverable": recoverable}],
+        },
+        error=True,
+    )
+    raise click.exceptions.Exit(1)
+
+
+def _run_outcome_v2(
+    *, operation: str, sdk_name: str,
+    confirmation_fields: dict[str, object] | None = None, **arguments: object,
+) -> None:
+    """Dispatch one explicit public SDK v2 operation; never fill confirmation fields."""
+
+    try:
+        from pkv_kernel import outcomes as kernel_outcomes
+
+        if confirmation_fields is not None:
+            arguments["confirmation"] = kernel_outcomes.ResearchBriefReviewConfirmation(**confirmation_fields)
+        result = getattr(kernel_outcomes, sdk_name)(**arguments)
+        payload = None if result is None else result.to_dict()
+        if payload is not None and not isinstance(payload, dict):
+            raise TypeError("outcome public result contract invalid")
+        _emit_outcome_payload({
+            "schema": "pkv.lifecycle-response.v2",
+            "status": "success",
+            "terminal": "success",
+            "operation": operation,
+            "result": payload,
+            "issues": [],
+        })
+    except click.exceptions.Exit:
+        raise
+    except Exception as exc:
+        _outcome_v2_failure(exc, operation=operation)
+
+
+class _OutcomeIdentifierType(click.ParamType):
+    name = "outcome-id"
+
+    def convert(self, value: object, param: click.Parameter | None, ctx: click.Context | None) -> str:
+        if type(value) is not str or re.fullmatch(r"[a-z][a-z0-9_-]{0,95}", value) is None:
+            self.fail("must be a valid outcome identifier", param, ctx)
+        return value
+
+
+class _OutcomeSha256Type(click.ParamType):
+    name = "sha256"
+
+    def convert(self, value: object, param: click.Parameter | None, ctx: click.Context | None) -> str:
+        if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            self.fail("must be a lowercase SHA256 digest", param, ctx)
+        return value
+
+
+class _OutcomeBriefSelectorCommand(click.Command):
+    def invoke(self, ctx: click.Context) -> object:
+        if (ctx.params.get("topic_id") is None) == (ctx.params.get("outcome_id") is None):
+            raise click.UsageError("Provide exactly one of --topic-id and --outcome-id.", ctx)
+        return super().invoke(ctx)
+
+
+def _outcome_review_options(command):
+    command = click.option("--expected-input-revision", type=click.IntRange(min=1, max=2**63 - 1), required=True)(command)
+    command = click.option("--content-sha256", type=_OutcomeSha256Type(), required=True)(command)
+    command = click.option("--expected-revision", type=click.IntRange(min=1, max=2**63 - 1), required=True)(command)
+    return click.argument("outcome_id", type=_OutcomeIdentifierType())(command)
+
+
 @cli.group("outcome")
 def outcome() -> None:
     """维护可追溯 Topic、Evidence、Claim 和 research brief。"""
+
+
+@outcome.command("get-v2")
+@click.argument("topic_id", type=_OutcomeIdentifierType())
+def outcome_get_v2(topic_id: str) -> None:
+    """读取含精确输入绑定和审阅确认的 v2 成果视图。"""
+    _run_outcome_v2(operation="get_outcome_v2", sdk_name="get_outcome_v2", topic_id=topic_id)
+
+
+@outcome.command("brief-v2", cls=_OutcomeBriefSelectorCommand)
+@click.option("--topic-id", type=_OutcomeIdentifierType())
+@click.option("--outcome-id", type=_OutcomeIdentifierType())
+def outcome_brief_v2(topic_id: str | None, outcome_id: str | None) -> None:
+    """通过且仅通过一个标识读取 v2 research brief。"""
+    _run_outcome_v2(
+        operation="get_outcome_research_brief_v2", sdk_name="get_research_brief_v2",
+        topic_id=topic_id, outcome_id=outcome_id,
+    )
+
+
+@outcome.command("render-v2")
+@click.argument("topic_id", type=_OutcomeIdentifierType())
+def outcome_render_v2(topic_id: str) -> None:
+    """显式发布绑定当前规范输入的 v2 research brief。"""
+    _run_outcome_v2(
+        operation="render_outcome_research_brief_v2", sdk_name="render_research_brief_v2", topic_id=topic_id,
+    )
+
+
+@outcome.command("approve-v2")
+@_outcome_review_options
+def outcome_approve_v2(
+    outcome_id: str, expected_revision: int, content_sha256: str, expected_input_revision: int,
+) -> None:
+    """仅批准已经展示并精确确认的 research brief 版本。"""
+    _run_outcome_v2(
+        operation="approve_outcome_research_brief_v2", sdk_name="approve_research_brief_v2",
+        confirmation_fields={
+            "outcome_id": outcome_id, "expected_revision": expected_revision,
+            "content_sha256": content_sha256, "expected_input_revision": expected_input_revision,
+        },
+    )
+
+
+@outcome.command("return-v2")
+@_outcome_review_options
+@click.option("--reason-code", type=click.Choice(["needs_revision", "insufficient_evidence", "other"]), required=True)
+def outcome_return_v2(
+    outcome_id: str, expected_revision: int, content_sha256: str,
+    expected_input_revision: int, reason_code: str,
+) -> None:
+    """按精确版本和受限原因显式退回 research brief。"""
+    _run_outcome_v2(
+        operation="return_outcome_research_brief_v2", sdk_name="return_research_brief_v2",
+        confirmation_fields={
+            "outcome_id": outcome_id, "expected_revision": expected_revision,
+            "content_sha256": content_sha256, "expected_input_revision": expected_input_revision,
+        },
+        reason_code=reason_code,
+    )
 
 
 @outcome.command("create-topic")
@@ -2274,16 +2431,21 @@ def outcome_approve(topic_id: str) -> None:
     try:
         from pkv_kernel import outcomes as kernel_outcomes
 
+        result = kernel_outcomes.approve_research_brief(topic_id=topic_id)
+        click.echo("Deprecated: outcome approve; use outcome approve-v2. Removal: API major 2.", err=True)
         _emit_outcome_payload(
             _outcome_result_payload(
                 operation="approve_research_brief",
-                result=kernel_outcomes.approve_research_brief(topic_id=topic_id),
+                result=result,
             )
         )
     except click.exceptions.Exit:
         raise
     except BaseException as exc:
-        _outcome_failure(exc, operation="approve_research_brief")
+        _outcome_failure(
+            exc, operation="approve_research_brief",
+            deprecation={"replacement": "outcome approve-v2", "removal_api_major": 2},
+        )
 
 
 @outcome.command("return")
@@ -2294,16 +2456,21 @@ def outcome_return(topic_id: str) -> None:
     try:
         from pkv_kernel import outcomes as kernel_outcomes
 
+        result = kernel_outcomes.return_research_brief(topic_id=topic_id)
+        click.echo("Deprecated: outcome return; use outcome return-v2. Removal: API major 2.", err=True)
         _emit_outcome_payload(
             _outcome_result_payload(
                 operation="return_research_brief",
-                result=kernel_outcomes.return_research_brief(topic_id=topic_id),
+                result=result,
             )
         )
     except click.exceptions.Exit:
         raise
     except BaseException as exc:
-        _outcome_failure(exc, operation="return_research_brief")
+        _outcome_failure(
+            exc, operation="return_research_brief",
+            deprecation={"replacement": "outcome return-v2", "removal_api_major": 2},
+        )
 
 
 @cli.command("archive")

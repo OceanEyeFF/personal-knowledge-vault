@@ -168,7 +168,7 @@ def test_cli_version_command(cli: CLITester):
     """测试 --version 命令。"""
     result = cli.run_cli("--version")
     assert result.returncode == 0
-    assert "0.8.1" in result.stdout
+    assert "0.9.0" in result.stdout
 
 
 def test_archive_help(cli: CLITester):
@@ -267,7 +267,7 @@ def test_unready_runtime_does_not_block_help_or_click_validation(
     assert help_result.returncode == 0
     assert "URL_OR_PATH" in help_result.stdout
     assert version_result.returncode == 0
-    assert "0.8.1" in version_result.stdout
+    assert "0.9.0" in version_result.stdout
     assert validation_result.returncode == 2
     assert "Missing argument 'QUERY'" in validation_result.stderr
     assert "runtime_readiness" not in validation_result.stderr
