@@ -4,7 +4,7 @@
 
 ## 模块职责
 
-`src/cli/` 提供基于 Click 与 Rich 的命令行适配层。运行入口是 `src.main`；`LazyCLIGroup` 按需加载 `archive`、`archive-text`、`search`、`show`、`list`、`tags`、`related`、`outcome`、`config`、`inspect`、`setup`、`repair`、`embedding` 与 `stats`，避免 `--version` 导入重依赖。
+`src/cli/` 提供基于 Click 与 Rich 的命令行适配层。运行入口是 `src.main`；正式的 `python -m src.cli.commands` 也委托该入口，共用 `LazyCLIGroup` 和叶子门禁。`LazyCLIGroup` 按需加载 `archive`、`archive-text`、`search`、`show`、`list`、`tags`、`related`、`outcome`、`config`、`inspect`、`setup`、`repair`、`embedding` 与 `stats`，避免标准入口的 `--version` 导入重依赖。
 
 关键调用关系与应满足的接口合同：
 
@@ -22,8 +22,8 @@
 - 两个 archive 命令在内部走 R4 Q0 admission → Q1′ core commit/handoff → Q2 AI
   derivation。只有 `core_committed` 后才投影为已保存；Q2 的
   `retry_required` / `budget_paused` / `authorization_required` 是可观察的
-  degraded 状态。`embedding inspect` / `embedding rebuild` 只经 `pkv_kernel.embedding`
-  执行独立、一次确认的 generation maintenance；它不直接 drain 或 resume 内部 Q2 task。
+  degraded 状态。`embedding` 的 v1/v2 叶子只经 `pkv_kernel.embedding` 执行独立、明确确认的
+  generation maintenance；v2 可继续发布原操作的完整封存产物，不直接 drain 或 resume 内部 Q2 task。
 - `search` 调用 `application.search()`，并原样消费五态 `SearchResponse`；BM25
   路径不提前创建 Provider。
 - `show`、`list`、`tags`、`stats` 与 `related` 都通过 application 的领域操作；
@@ -63,6 +63,10 @@
 | `setup` / `repair` | `--apply`、`--confirm PLAN_ID`、`--allow-network` | 默认仅展示计划；只有精确确认的计划才可执行，网络探测另需明确许可 |
 | `embedding inspect` | 无 | 只读输出 generation binding 与独立 manual-rebuild policy；不创建 Provider、stage 或 lease |
 | `embedding rebuild` | `--force`、`--apply --confirm PLAN_ID --allow-network` | 只经公开 Kernel façade 执行；当前 Config/policy drift、replay 与并发都 fail-closed，Provider 仅在 writer lease 外运行 |
+| `embedding inspect-v2` | 无 | 只读 v2 inspection，展示当前预算期间与 legacy ledger 升级影响 |
+| `embedding rebuild-v2` | `--force`、`--apply --confirm PLAN_ID --allow-network` | 默认只展示网络计划；执行须精确确认并授权网络 |
+| `embedding operation-v2 OPERATION_ID` | 原 operation 标识 | 只读投影封存证明、pointer 与账本所支持的 effective state，不对齐持久状态 |
+| `embedding publish-v2 OPERATION_ID` | `--apply --confirm PLAN_ID` | 默认只展示 publish-only/完成对齐计划；不接受 force 或 network 选项，零 Provider、零新预留 |
 | `outcome create-topic/get/list` | Topic 标题、问题或分页参数 | `pkv_kernel.outcomes` 的 Provider-free Topic 公开投影；`get` 仅 revalidate，不隐式写入 |
 | `outcome attach-evidence/detach-evidence/suggest-evidence` | canonical `pkv://` locator、BM25 query | 只允许 entry/chunk/relation locator；绑定 captured digest，删除不推断替代来源；suggest 只走 BM25 |
 | `outcome create-claim/revise-claim/link-evidence/unlink-evidence` | statement、state、revision、support/counter | 显式维护 Claim 与 Evidence 边；没有有效证据的 Claim 对外显示 `insufficient` |
@@ -73,11 +77,41 @@
 
 全局选项由 `src/main.py` 定义：`--verbose`、`--debug`、`--version`。
 
+## W4 Embedding v2 与继续发布（已完成范围验收）
+
+当前本地兼容 build 为 SDK `0.10.0` / API `1.0.0`，全部 v1 入口继续保留。
+Embedding v2 按冻结合同 §6 作为兼容增量实现，`kernel.embedding-rebuild.v2` 已声明；公开
+链路已取得组件证据，W4 范围验收完成。W5 的 API-major-2 和旧 Outcome 拒绝尚未推进。当前证据统一见
+[W4 主记录](../../docs/overview/W4-Embedding继续发布与预算恢复实施记录-2026-10.md)。
+
+四个新叶子均属于 lifecycle，不套普通业务 READY 门禁。Click 先校验形状、必填参数和
+未知选项；错误 exit 2，不读取 runtime。operation ID 必须满足
+`embedding-rebuild-[0-9a-f]{32}`，确认 ID 是 64 位小写十六进制。跨进程执行重新检查当前
+根和材料并重算 plan，精确比较提交的 ID 后才由 façade 创建确认；不以 operation ID 单独授权。
+
+| 叶子 | 固定 envelope.operation / 对应 MCP Tool |
+| --- | --- |
+| `inspect-v2` | `inspect_embedding_rebuild_v2` |
+| `rebuild-v2` 默认 / `--apply` | `plan_embedding_rebuild_v2` / `execute_embedding_rebuild_v2` |
+| `operation-v2` | `inspect_embedding_operation_v2` |
+| `publish-v2` 默认 / `--apply` | `plan_embedding_publication_v2` / `execute_embedding_publication_v2` |
+
+新叶子共用 `pkv.lifecycle-response.v2`：成功 JSON 到 stdout、exit 0；业务错误 JSON 到
+stderr、exit 1。成功 result 的 completion-pending 警告必须保留在 issues，不能清空后称完全
+收口。A 争锁返回 `write_busy`；完整 C 封存后 D 争锁返回 `embedding_publication_pending`，
+details 包含原 operation、`effective_state=awaiting_publish`、`provider_effect=completed`
+和 `publish_only_required=true`。v1 rebuild 也透传此 code 与原顶层 details，v1 不新增 lookup/
+publish；操作者转用 v2 inspect operation → plan → confirm → publish，不能重跑 Provider。
+
+只读入口不迁移 ledger。legacy 1/2 的 v1 mutation 返回 `embedding_ledger_upgrade_required`；
+v2 的升级影响绑定 plan，确认后在 A 的 lease 内先原子升级 ledger 3。封存 proof 与 grant 2
+允许新进程验证原产物；publish-only 不申请新的网络预算，旧 grant 到期不能授权续写。
+
 ## W3 Outcome v2 与兼容期边界
 
-当前本地兼容 build 为 SDK `0.9.0`，Kernel API 仍为 `1.0.0`。既有 v1 capability
-全部保留，新增 `kernel.traceable-outcomes.v2`；没有声明 `kernel.embedding-rebuild.v2`，
-也没有进行 W5 API-major-2 切换。实现与最终同树验收状态见
+W3 的历史兼容 build 为 SDK `0.9.0` / API `1.0.0`，当时仅新增
+`kernel.traceable-outcomes.v2` 并保留全部 v1 capability。当前 W4 版本与 Embedding 增量见上节，
+W5 API-major-2 仍未切换。Outcome 实现与 W3 最终同树验收状态见
 [W3 主记录](../../docs/overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)，
 公开字段以 [v2 接口冻结合同](../../docs/specs/interfaces/生命周期一致性v2接口冻结合同-2026-10.md) 为准。
 
@@ -149,7 +183,7 @@ W2（2026-10-24 开始）已修复 `outcome` Group 提前执行 runtime 门禁�
 | 只读、已有 degraded 合同 | `search`、`show`、`list`、`tags`、`related`、`stats` | 允许 `READY` / `DEGRADED`；不恢复、不迁移、不隐式写入。 |
 | Outcome 只读 | `outcome get`、`outcome list`、`outcome suggest-evidence`，以及 W3 的 `get-v2/brief-v2` | 保留 `READY` 要求；门禁只在叶子执行，不由父 Group 判断。 |
 | 业务 mutation | `archive`、`archive-text`，以及 `outcome` 的 create、attach/detach、revise、link/unlink、render、approve、return 叶子和 W3 的 `render-v2/approve-v2/return-v2` | 必须 `READY`；writer lease 与领域校验仍由既有 Application/Kernel 合同执行。 |
-| Lifecycle | `inspect`、`setup`、`repair`、`embedding inspect`、`embedding rebuild` | 不套普通业务 READY 门禁；各叶子执行自己的 inspect/plan/confirm/execute 合同。 |
+| Lifecycle | `inspect`、`setup`、`repair`、`embedding inspect/rebuild` 及 `embedding inspect-v2/rebuild-v2/operation-v2/publish-v2` | 不套普通业务 READY 门禁；各叶子执行自己的 inspect/plan/confirm/execute 合同。 |
 | Config | `config show`、`config get`、`config set` | 只在成功解析后进入配置合同；`config set` 仍不属于默认自动化授权范围。 |
 
 ### CLI 修复验收用例
@@ -196,7 +230,7 @@ W2 实际运行均使用 `scripts/run-test.ps1 -Direct` 与独立 `.data-test` �
 
 ### `commands.py`
 
-- `cli()`：直接模块入口；常规启动由 `src.main.LazyCLIGroup` 负责。
+- `cli()`：内部命令注册组；原生模块执行与常规启动均由 `src.main.LazyCLIGroup` 分派，不能直接执行注册组来绕过门禁。
 - `archive()` / `archive_text()`：验证 CLI 输入、调用 application 异步归档并渲染结果。
 - `search()`：调用 application 搜索、输出 table/JSON/Markdown。
 - `show()` / `list_entries()` / `tags()` / `related()` / `stats()`：调用 application
@@ -252,7 +286,11 @@ W2 实际运行均使用 `scripts/run-test.ps1 -Direct` 与独立 `.data-test` �
 .\scripts\run-test.ps1 -Direct -DataRoot .data-test\cli-blackbox -Command @("python", "-m", "pytest", "tests/blackbox/test_cli_basic.py", "tests/blackbox/test_cli_blackbox.py", "tests/blackbox/test_r4_cli_fullflow.py", "tests/blackbox/test_embedding_rebuild_cli_blackbox.py", "tests/blackbox/test_outcome_cli_blackbox.py", "-m", "not network and not manual", "-v")
 ```
 
-黑盒用例只经 `tests/offline_entrypoint.py cli` 启动真实子进程，主责退出码、stdout/stderr、JSON 边界和临时存储副作用；不使用进程内 `CliRunner` 代替协议边界。
+标准入口黑盒经 `tests/offline_entrypoint.py cli` 启动真实子进程；原生模块入口回归经该受保护入口的 `python -m src.cli.commands` 路径，由 `runpy` 实际执行模块，不先重映射到标准入口。两者主责退出码、stdout/stderr、JSON 边界和临时存储副作用；不使用进程内 `CliRunner` 代替协议边界。
+
+W1–W3 评审补充要求两种入口具有相同的 readiness、解析优先与 v2 envelope 行为；验收见
+[CodeReview 修复记录](../../docs/overview/W1-W3-CodeReview修复验收记录-2026-10.md)。历史 W2
+黑盒只覆盖标准入口，其计数不能作为原生模块入口的既有验证证据。
 
 ## TestCase 设计注意事项
 
@@ -276,6 +314,6 @@ W2 实际运行均使用 `scripts/run-test.ps1 -Direct` 与独立 `.data-test` �
 - [Retrieval 检索引擎规范](../../docs/specs/interfaces/Retrieval检索引擎规范.md)
 - [TestCase 设计审查与分阶段规划](../../docs/operations/testing/Review-TestCase设计审查与分阶段规划-2026-07-30.md)
 
-**当前源码/SDK 兼容 build**：`0.9.0`；**Kernel API**：`1.0.0`
+**当前源码/SDK 兼容 build**：`0.10.0`；**Kernel API**：`1.0.0`
 
-**最后核对**：2026-10-25（W3 五个 v2 叶子、兼容弃用与组件证据；W2 历史运行记录保留）
+**最后核对**：2026-10-26（W4 四个 Embedding v2 叶子已完成范围验收；W1–W3 历史运行记录保留）

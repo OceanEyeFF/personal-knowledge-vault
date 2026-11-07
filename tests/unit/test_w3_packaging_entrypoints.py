@@ -96,8 +96,8 @@ def test_product_version_has_one_python_source_of_truth() -> None:
                     (path.relative_to(PROJECT_ROOT).as_posix(), value.value)
                 )
 
-    assert __version__ == "0.9.0"
-    assert assignments == [("src/__init__.py", "0.9.0")]
+    assert __version__ == "0.10.0"
+    assert assignments == [("src/__init__.py", "0.10.0")]
 
 
 def test_bootstrap_error_projection_is_stable_and_does_not_publish_message() -> None:

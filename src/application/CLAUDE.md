@@ -40,6 +40,13 @@ scoped Workflow/Processor creation for one validated runtime configuration.
   degraded result. Read-only operations never drain these tasks.
 - This is bounded work in the current Application process, not a daemon or public
   resume/rebuild API. A later public adapter must be designed and tested separately.
+- A Q1 `repair_required` task may enter local reconciliation after Storage recovery.
+  It is never reclaimed for execution merely because a later trigger arrives. Under
+  the root writer lease, the original journal and SQLite commit proof must match the
+  task's operation, action, target, revisions and projection path. One transaction
+  rechecks the captured task/fence and advances directly to `core_committed`; absent
+  or uncertain proof preserves repair/backoff and blocks dependent work. Independent
+  targets retain bounded progress, and this path cannot start a Provider attempt.
 - P1-B traceable outcomes are Provider-free: `OutcomeService` binds only canonical
   PKV entry/chunk/relation locators plus captured revisions, keeps SQLite as the
   authority, and publishes deterministic Markdown projections under `outcomes/`.

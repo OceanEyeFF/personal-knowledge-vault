@@ -978,6 +978,17 @@ def main() -> None:
     test_user_config_path = (
         test_user_config_request[0] if test_user_config_request is not None else None
     )
+    # Payload-external W4 acceptance only: consume its strictly isolated budget
+    # clock before scrub, then install after G0. The product sees no test flag,
+    # and lease/grant clocks plus actual Provider/network behavior are unchanged.
+    from tests.harness.w4_embedding_lifecycle import consume_clock_request
+
+    embedding_budget_instant = consume_clock_request(
+        os.environ,
+        target=target,
+        load_local=load_local,
+        synthetic_provider_config=test_user_config_request is not None,
+    )
     if leave_data_root_absent and (load_local or target not in {"cli", "mcp"}):
         raise RuntimeError(
             "absent-data-root child is available only for offline CLI/MCP tests"
@@ -1036,6 +1047,12 @@ def main() -> None:
         _bind_test_config_factory(config_factory)
     if not load_local:
         mark_offline_runtime_ready(process_guarded=target == "python")
+    if embedding_budget_instant is not None:
+        # Budget modules are product imports too: the validated Config and all
+        # offline guards must already be installed before loading the seam.
+        from tests.harness.w4_embedding_lifecycle import install_budget_clock
+
+        install_budget_clock(embedding_budget_instant)
     if target == "cli":
         _run_cli(config_factory)
         return

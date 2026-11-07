@@ -1,0 +1,1750 @@
+{
+  "schema_version": "pkv.lifecycle.w4-repairs.v1",
+  "truth_source": "docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md",
+  "sources": {
+    "interface_contract": "docs/specs/interfaces/生命周期一致性v2接口冻结合同-2026-10.md",
+    "migration_contract": "docs/specs/database/生命周期一致性迁移冻结方案-2026-10.md",
+    "case_matrix": "docs/overview/R4-P1-公共Embedding重建适配器实施计划-2026-09.md",
+    "implementation_record": "docs/overview/W4-Embedding继续发布与预算恢复实施记录-2026-10.md",
+    "historical_registries": [
+      "tests/contracts/w1_lifecycle_regressions.v1.json",
+      "tests/contracts/w2_lifecycle_repairs.v1.json",
+      "tests/contracts/w3_lifecycle_repairs.v1.json",
+      "tests/contracts/w1_w3_review_repairs.v1.json"
+    ]
+  },
+  "purpose": "W4 source implementation and synthetic acceptance evidence. Component iterations, final gates and preserved W5 failures are distinct; overlapping counts are never additive.",
+  "lane": "source",
+  "default_collection": true,
+  "skip_or_xfail_added": false,
+  "scope": {
+    "phase": "W4",
+    "resolved_in_implementation": [
+      "R-02",
+      "R-06"
+    ],
+    "acceptance_status": "w4_scope_accepted",
+    "legacy_known_gap": [
+      "R-04"
+    ],
+    "out_of_scope": [
+      "W5 API-major-2 cutover and MIG-10",
+      "unsealed unknown Provider B/C kill recovery",
+      "Q2 resume/retry, daemon, cleanup or rollback",
+      "real user data migration or real Provider access",
+      "artifact, installer, PyInstaller, wheelhouse or public release"
+    ],
+    "acceptance_statement": "W4 范围验收完成；全仓保留 2 项 W5 普通失败和 21 项既有环境跳过。原始 P0 exit 1，不声明全部门禁通过。"
+  },
+  "versions": {
+    "sdk": "0.10.0",
+    "api": "1.0.0",
+    "api_major": 1,
+    "sqlite_schema": "1.2.8",
+    "migration": "014_add_lifecycle_consistency.sql",
+    "manual_ledger": 3,
+    "private_grant": 2,
+    "sealed_proof": "pkv.embedding.publish-ready.v1",
+    "new_capabilities": [
+      "kernel.embedding-rebuild.v2"
+    ],
+    "all_v1_capabilities_retained": true,
+    "embedding_v2_advertised": true,
+    "public_functions_added": 8,
+    "opaque_handles_added": 7,
+    "mcp_tools": {
+      "total": 41,
+      "read_only": 23,
+      "write": 18
+    },
+    "legacy_review": "v1 approve/return signatures and semantics retained with deprecation; refusal belongs to W5."
+  },
+  "provenance": {
+    "git_commit": "b725deb2fd0c6a1294f2fac9bca122b3a0635b0f",
+    "worktree": "W4 changes on checkpoint b725deb with the pre-existing uncommitted W1-W3 CodeReview fixes retained.",
+    "pre_w4_diff": {
+      "path": ".data-test/w4-20261025-evidence/reports/pre-w4-tracked.diff",
+      "sha256": "f21452f591cf6c0d7cc45fbc052048f2f1346721e63f364666764d70590ce244"
+    },
+    "pre_w4_baseline_directory": ".data-test/w4-20261025-evidence/baseline",
+    "pre_w4_baseline_files": 11,
+    "source_test_manifest": {
+      "path": ".data-test/w4-20261025-evidence/reports/final-source-tests.sha256",
+      "sha256": "4322db7e74ec2d4f3d65201bda466c42d6401e3f33d0b1fa157f5f7d513fb624"
+    },
+    "manifest_scope": "Tracked and untracked src, pkv_kernel, scripts, tests, packaging, config plus pyproject/requirements/pytest; module guides and this registry excluded. evals and post-freeze expiry test use supplementary manifests.",
+    "component_counts_are_not_additive": true,
+    "component_provenance": "Component runs predate final freeze. Blackbox component overlapped tests-only G0 clock-install ordering; final combined/P0/MCP take precedence. Final combined predates the independent expiry execution supplement. The earlier 123-pass adapter component preceded stricter SDK pending-details construction; final combined later exposed a real v1 adapter bug, reproduced and repaired separately. The 438-case discovery run also overlapped the src/mcp/tools.py repair: parent imports and later child processes can differ, so no aggregate or node result from it is final same-tree acceptance.",
+    "extended_source_test_manifest": {
+      "path": ".data-test/w4-20261025-evidence/reports/final-source-tests-extended.sha256",
+      "sha256": "68f5bf4712aabe3958e69f3543c23de060b8b38fce61cc4fd8187a8a41e8ae0d"
+    },
+    "phase_c_source_manifest": {
+      "path": ".data-test/w4-20261025-evidence/reports/phase-c-source.sha256",
+      "sha256": "6c8d9319fa4caec6584a0738eff369a91843f176c411eb2869a529de953a9290"
+    },
+    "extended_manifest_change": "First extended snapshot adds evals and independent expiry execution file to the original 447 entries. Original entries were identical at creation. Subsequent MCP projection repair requires a new manifest.",
+    "validation_checkout": {
+      "path": "C:/Users/fdch0/.codex/worktrees/pkv-w4-validation-20261025",
+      "status": "verified_before_gate_execution",
+      "head": "b725deb2fd0c6a1294f2fac9bca122b3a0635b0f",
+      "detached": true,
+      "verified_manifest_files": 456,
+      "tracked_files_compared": 594,
+      "tracked_file_differences": 0,
+      "reason": "C: has sufficient disk for full isolated P0/MCP data. Main E: repository and existing evidence remain in place.",
+      "copy_result": {
+        "path": ".data-test/w4-20261025-evidence/reports/validation-worktree-copy-result.json",
+        "sha256": "d4cc4af917c00bfe4e74857657bab22daf5af13366861def1bc157686768c516"
+      },
+      "frozen_check": {
+        "path": ".data-test/w4-20261025-evidence/reports/validation-worktree-frozen-check.log",
+        "sha256": "4e940514a47cb04c511db5134c7e94ef3276b5330541e7f1711dfaed5b322959"
+      },
+      "tracked_check": {
+        "path": ".data-test/w4-20261025-evidence/reports/validation-worktree-tracked-final.json",
+        "sha256": "75d979107ac62a4ae891fb3ed4eab14330c7d86e520c9f49d2f0837c248a27a1"
+      },
+      "setup_note": "Initial Git checkout line-ending conversion failed byte equivalence. Files were synchronized and all tracked SHA256 values plus final source manifest were verified before tests started; setup mismatch is not a product test failure.",
+      "role": "Complete original P0 on the unchanged verified checkout. Final MCP and W3 public recovery run in E: with exactly three corrected test-oracle files; product/evals bytes match."
+    },
+    "pre_w4_baseline_manifest": {
+      "path": ".data-test/w4-20261025-evidence/reports/pre-w4-baseline.sha256",
+      "sha256": "49ea289d082aaedfaf710ed00b5b3691ad24bdefb30b9b4fcd31d1c2b202aab8",
+      "root": ".data-test/w4-20261025-evidence/baseline"
+    },
+    "manifest_status": "Final complete source is frozen. Exact manifest comparison verifies 456 paths with 453 identical files, three authorized test-oracle changes and zero product/evals changes. Completed P0 failure inventory and exact recovery node sets are reconciled in acceptance-node-closure.json.",
+    "verified_source_test_manifest": {
+      "path": ".data-test/w4-20261025-evidence/reports/final-source-tests-verified.sha256",
+      "sha256": "efb7f24ba76d6184408f1a8553065e973125b53b765433385fe5de54bc94c924"
+    },
+    "intermediate_oracle_manifest": {
+      "path": ".data-test/w4-20261025-evidence/reports/intermediate-source-tests-oracles.sha256",
+      "sha256": "44724ec211ac3019188c447b73e3bcc3621f2774794db85a9d7d66fc347587d8",
+      "role": "Intermediate test-oracle correction before the independent review required post-manual Q2 spool/commit and exact vector-root assertions."
+    },
+    "accepted_source_test_manifest": {
+      "path": ".data-test/w4-20261025-evidence/reports/final-source-tests-accepted.sha256",
+      "sha256": "1a4c3f9bbdcf3fdcb5f820cd81fe92990cfcd00184ab0dcdb318843d97d62026"
+    },
+    "acceptance_source_delta": {
+      "path": ".data-test/w4-20261025-evidence/reports/acceptance-source-delta.json",
+      "sha256": "44652997a0512128e1dfbf9f76eef1d5c20c5ba22be9a46be6959bedc65a931a",
+      "previous_files": 456,
+      "accepted_files": 456,
+      "unchanged_files": 454,
+      "product_changes": 0,
+      "changed_files": [
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py",
+        "tests/blackbox/test_mcp_blackbox.py"
+      ]
+    },
+    "complete_source_test_manifest": {
+      "path": ".data-test/w4-20261025-evidence/reports/final-source-tests-complete.sha256",
+      "sha256": "72136533e0c0bd99cc8adf996a09d094b52090e65225004dc15c38b57057333a"
+    },
+    "complete_source_delta": {
+      "path": ".data-test/w4-20261025-evidence/reports/complete-source-delta.json",
+      "sha256": "be43cceb628063321d1873b4d942b9eaa90d393d8fa3b5acd72b7264c03982fa",
+      "previous_files": 456,
+      "complete_files": 456,
+      "unchanged_files": 453,
+      "product_changes": 0,
+      "changed_files": [
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py",
+        "tests/blackbox/test_mcp_blackbox.py",
+        "tests/unit/test_w3_outcome_public.py"
+      ]
+    }
+  },
+  "runs": [
+    {
+      "id": "core-existing",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-core-existing pytest tests/unit/test_embedding_lifecycle.py -q --tb=short",
+      "data_root": ".data-test/w4-core-existing",
+      "job_id": "j-z6c3tf",
+      "log": ".data-test/w4-20261025-evidence/reports/component-core-existing.log",
+      "log_sha256": "e51c1b341f5cc6dd18066ebf935546830c0ce22e3c6c35b3f9b4ec14e629c559",
+      "exit_code": 0,
+      "passed": 26,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 210.37,
+      "interpretation": "",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "core-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-core-copy pytest tests/unit/test_w4_embedding_core.py -q --tb=short",
+      "data_root": ".data-test/w4-core-copy",
+      "job_id": "j-3bqepc",
+      "log": ".data-test/w4-20261025-evidence/reports/component-core-copy-diagnostic.log",
+      "log_sha256": "19a4fdbfbf36151cc3e3ea924934739d6393736456defb90dd571c2daf4e2320",
+      "exit_code": 1,
+      "passed": 2,
+      "failed": 2,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 32.43,
+      "interpretation": "Product boundary leaked path/index errors instead of repair_required; repaired before core-repaired.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "core-repaired",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-core-copy-r2 pytest tests/unit/test_w4_embedding_core.py -q --tb=short",
+      "data_root": ".data-test/w4-core-copy-r2",
+      "job_id": "j-4keykd",
+      "log": ".data-test/w4-20261025-evidence/reports/component-core-copy-repaired.log",
+      "log_sha256": "c7f299b40a2ef2fc88abdae51f3871fe9f10242a86e92d521edafe89a83929ca",
+      "exit_code": 0,
+      "passed": 4,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 30.26,
+      "interpretation": "",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "core-component",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-core-copy-final pytest tests/unit/test_w4_embedding_core.py -q --tb=short",
+      "data_root": ".data-test/w4-core-copy-final",
+      "job_id": "j-bvmpzr",
+      "log": ".data-test/w4-20261025-evidence/reports/component-core-copy-final.log",
+      "log_sha256": "ec526ad630ef3df3fe5995c53cb4feabbc0b5211087d7a1d2dcda8c96e4bca1b",
+      "exit_code": 0,
+      "passed": 5,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 36.41,
+      "interpretation": "Five cases before ER-03 was added; final combined contains six.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "core-extended",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-core-extended pytest tests/unit/test_w4_embedding_publication_extended.py -q --tb=short",
+      "data_root": ".data-test/w4-core-extended",
+      "job_id": "j-pjcx9u",
+      "log": ".data-test/w4-20261025-evidence/reports/component-core-extended.log",
+      "log_sha256": "b2aebbeac9885310b04136c882a9ea34da7c6790e2dc262bf48a148f35cfce46",
+      "exit_code": 0,
+      "passed": 5,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 71.31,
+      "interpretation": "",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "w1-embedding",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-core-w1 pytest tests/unit/test_w1_embedding_regressions.py -q --tb=short",
+      "data_root": ".data-test/w4-core-w1",
+      "job_id": "j-oxmgsk",
+      "log": ".data-test/w4-20261025-evidence/reports/component-core-w1.log",
+      "log_sha256": "f092758d191aad588a7d782f73a6a7eed202e412ff7fbbc9e1df1f8c570fffc5",
+      "exit_code": 0,
+      "passed": 6,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 24.73,
+      "interpretation": "Includes R-02/R-06 historical red cases; overlaps ledger-final and final combined.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "ledger-final",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-ledger-e pytest tests/unit/test_w4_embedding_ledger.py tests/unit/test_embedding_rebuild_ledger.py tests/unit/test_w1_embedding_regressions.py -q --tb=short",
+      "data_root": ".data-test/w4-ledger-e",
+      "job_id": "j-chaxl5",
+      "log": ".data-test/w4-20261025-evidence/reports/component-ledger-final.log",
+      "log_sha256": "138b118329718a538bf41c7861218a40a92995547f58dec7d84bbe15e98e2e5e",
+      "exit_code": 0,
+      "passed": 85,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 48.04,
+      "interpretation": "71 new ledger + 8 existing ledger + 6 W1. Review fixes were tested green; no failed ledger development run claimed.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "audit-first",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-completion-audit pytest tests/unit/test_w4_embedding_completion_audit.py -q --tb=short",
+      "data_root": ".data-test/w4-completion-audit",
+      "job_id": "j-oq95qx",
+      "log": ".data-test/w4-20261025-evidence/reports/component-audit-first.log",
+      "log_sha256": "beacf9a089792363006f24a8f6fa48efa8a8b6014168918ad2b6b770aa3d9925",
+      "exit_code": 0,
+      "passed": 31,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 1.04,
+      "interpretation": "Before previous_generation conflict regression was added.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "publication-fixture-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-publication pytest tests/unit/test_w4_embedding_publication.py tests/unit/test_w4_embedding_completion_audit.py -q --tb=short",
+      "data_root": ".data-test/w4-publication",
+      "job_id": "j-0r156t",
+      "log": ".data-test/w4-20261025-evidence/reports/component-publication-fixture-diagnostic.log",
+      "log_sha256": "e6f6fae4185631c327b8e883d75e0c1df27114e7a1759f1deb33fa19fba2ccc9",
+      "exit_code": 1,
+      "passed": 34,
+      "failed": 8,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 66.12,
+      "interpretation": "All eight failures: test Provider fixture omitted client=self and was rejected by the official adapter; fixture corrected.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "publication-import-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-publication-r3 pytest tests/unit/test_w4_embedding_publication.py tests/unit/test_w4_embedding_completion_audit.py -q --tb=short",
+      "data_root": ".data-test/w4-publication-r3",
+      "job_id": "j-lyl3i2",
+      "log": ".data-test/w4-20261025-evidence/reports/component-publication-import-diagnostic.log",
+      "log_sha256": "b4a43d959ba0c974b988c9a4ab0b549b53a2ec0ca0f4e9eb09c76caca2d1f00a",
+      "exit_code": 1,
+      "passed": 47,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 151.54,
+      "interpretation": "All 32 audit cases passed; sole failure was misspelled test import src.runtime.generation_stage_grant, corrected to generation_stage.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "publication-repaired",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-publication-r4 pytest tests/unit/test_w4_embedding_publication.py -q --tb=short",
+      "data_root": ".data-test/w4-publication-r4",
+      "job_id": "j-jsl3m4",
+      "log": ".data-test/w4-20261025-evidence/reports/component-publication-r4.log",
+      "log_sha256": "17ca99afcd2f9cca365f2aef7681aa10a810e32d0217e8b487afa3c5200c4d0e",
+      "exit_code": 0,
+      "passed": 19,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 192.54,
+      "interpretation": "",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "publication-config",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-publication-config pytest tests/unit/test_w4_embedding_publication.py -k 'current_contract_drift or in_process_publication_handle' -q --tb=short",
+      "data_root": ".data-test/w4-publication-config",
+      "job_id": "j-z3t2bp",
+      "log": ".data-test/w4-20261025-evidence/reports/component-publication-config.log",
+      "log_sha256": "838bc397d3d842c61ba7320b42f6d0b93de4be5590a145a81d094fcf08c088de",
+      "exit_code": 0,
+      "passed": 2,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 22.45,
+      "interpretation": "Two final configuration drift cases; 19 deselected.",
+      "deselected": 19,
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "adapters-in-progress",
+      "status": "diagnostic_failure",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-adapter-regression pytest tests/unit/test_w4_embedding_adapters.py tests/unit/test_w2_cli_leaf_gate.py tests/unit/test_w3_packaging_entrypoints.py tests/integration/test_mcp_functional.py::TestToolRegistration -q --tb=short",
+      "data_root": ".data-test/w4-adapter-regression",
+      "job_id": null,
+      "log": ".data-test/w4-20261025-evidence/reports/adapter-regression-in-progress.log",
+      "log_sha256": "cbc2f7c41a55e1cad2de91aa650fdb44f77d2e07f8b555e0ccb7e938e6bbc496",
+      "exit_code": 1,
+      "passed": 120,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 8.14,
+      "interpretation": "Version synchronization was incomplete: existing packaging oracle expected SDK 0.10.0 while runtime still 0.9.0.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "adapters-reviewed",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-adapter-regression-reviewed pytest tests/unit/test_w4_embedding_adapters.py tests/unit/test_w2_cli_leaf_gate.py tests/unit/test_w3_packaging_entrypoints.py tests/integration/test_mcp_functional.py::TestToolRegistration -q --tb=short",
+      "data_root": ".data-test/w4-adapter-regression-reviewed",
+      "job_id": null,
+      "log": ".data-test/w4-20261025-evidence/reports/adapter-regression-reviewed.log",
+      "log_sha256": "fb6238f973e80a1f2c5cf16e4e62df757e82d82d03ad6f45cc66f3b66172044e",
+      "exit_code": 0,
+      "passed": 123,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 9.69,
+      "interpretation": "Final component includes two safe error-stage projection cases added after 121-pass iteration.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "p0-contract",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-p0-gate-contract pytest tests/unit/test_p0_test_contract.py -q --tb=short",
+      "data_root": ".data-test/w4-p0-gate-contract",
+      "job_id": null,
+      "log": ".data-test/w4-20261025-evidence/reports/p0-gate-contract.log",
+      "log_sha256": "d8f24d5e59bb2cb1a99e3db6987caf9a0ee38db915e5ffb9a902ccc4067ac2e8",
+      "exit_code": 0,
+      "passed": 8,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 5.61,
+      "interpretation": "MCP fixed target list includes W4 adapters and actual MCP blackbox; this is gate configuration testing, not the whole P0 run.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "recovery-guard-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-recovery-process-focused pytest tests/unit/test_w4_embedding_recovery_process.py::test_completion_recovers_after_real_worker_exit[pointer_after_commit] -vv --tb=short",
+      "data_root": ".data-test/w4-recovery-process-focused",
+      "job_id": "j-1ji6yu",
+      "log": ".data-test/w4-20261025-evidence/reports/recovery-process-guard-correction.log",
+      "log_sha256": "7f1ac65c7cde9b8db3a05905b5e1f1853fc71dd32b283b34ce0387bd5a782499",
+      "exit_code": 1,
+      "passed": 0,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 5.78,
+      "interpretation": "Child pytest basetemp did not use selected DATA_DIR; G0 refused before product work. Corrected fixture without weakening guard.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "recovery-focused",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-recovery-process-focused2 pytest tests/unit/test_w4_embedding_recovery_process.py::test_completion_recovers_after_real_worker_exit[pointer_after_commit] -vv --tb=short",
+      "data_root": ".data-test/w4-recovery-process-focused2",
+      "job_id": "j-03j96z",
+      "log": ".data-test/w4-20261025-evidence/reports/recovery-process-focused.log",
+      "log_sha256": "0c51c9b794a008adea2a330ba7c285ee55aff484166b1466b1a4d4e86d6117c1",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 30.82,
+      "interpretation": "Repaired guard setup.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "recovery-process",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-recovery-process-final pytest tests/unit/test_w4_embedding_recovery_process.py -vv --tb=short",
+      "data_root": ".data-test/w4-recovery-process-final",
+      "job_id": "j-icftmd",
+      "log": ".data-test/w4-20261025-evidence/reports/recovery-process-final.log",
+      "log_sha256": "7a7ef9f1e25d6179e48d7b806a5ab3a2e64073a0a0215cbb2592507d54ae2052",
+      "exit_code": 0,
+      "passed": 5,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 144.55,
+      "interpretation": "15 distinct child workers across five fault boundaries. Empty source: 0 Provider calls; checks one factory, CAS, settlement and completion append. Nonzero Provider request oracle is in actual CLI/MCP blackboxes.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "blackbox-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-blackbox-dev1 pytest tests/blackbox/test_w4_embedding_cli_blackbox.py tests/blackbox/test_w4_embedding_mcp_blackbox.py -vv --tb=short",
+      "data_root": ".data-test/w4-blackbox-dev1",
+      "job_id": "j-q1vr6q",
+      "log": ".data-test/w4-20261025-evidence/reports/component-blackbox-diagnostic.log",
+      "log_sha256": "e7487d26765fd5f434350ef29edd91306108c7e8c63a0788bebf3b67256e71ae",
+      "exit_code": 1,
+      "passed": 4,
+      "failed": 2,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 333.07,
+      "interpretation": "Valid sealed work was reported as repair by force-plan because new root fence ignored proof. Core made inspection proof-aware.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "blackbox-repaired",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-blackbox-d-fix pytest tests/blackbox/test_w4_embedding_cli_blackbox.py tests/blackbox/test_w4_embedding_mcp_blackbox.py -k sealed_pending -vv --tb=short",
+      "data_root": ".data-test/w4-blackbox-d-fix",
+      "job_id": "j-wfe87v",
+      "log": ".data-test/w4-20261025-evidence/reports/component-blackbox-repaired.log",
+      "log_sha256": "697650887c910e3b4b13210b524469d908a9cf8f6f7b7ffa2f03ba98c76e988f",
+      "exit_code": 0,
+      "passed": 2,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 95.62,
+      "interpretation": "Four deselected budget cases; corrected sealed-work scenarios.",
+      "deselected": 4,
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "blackbox-component",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-blackbox-final1 pytest tests/unit/test_w4_embedding_clock_harness.py tests/blackbox/test_w4_embedding_cli_blackbox.py tests/blackbox/test_w4_embedding_mcp_blackbox.py -vv --tb=short",
+      "data_root": ".data-test/w4-blackbox-final1",
+      "job_id": "j-3li6ti",
+      "log": ".data-test/w4-20261025-evidence/reports/component-blackbox-final.log",
+      "log_sha256": "e27d867ff81b57ee5dbfe50122571a3a81427659440aa6e50e1a47ab2b1ebffe",
+      "exit_code": 0,
+      "passed": 52,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 369.89,
+      "interpretation": "6 actual blackboxes + 46 clock guard cases. This run overlapped the tests-only G0 clock installation ordering adjustment; final frozen-tree runs take precedence.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "core-a-busy",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-core-a-busy pytest tests/unit/test_w4_embedding_core.py::test_public_v2_a_real_writer_contention_has_no_operation_or_side_effects -q --tb=short",
+      "data_root": ".data-test/w4-core-a-busy",
+      "job_id": "j-l4lvmd",
+      "log": ".data-test/w4-20261025-evidence/reports/component-core-a-busy.log",
+      "log_sha256": "d22d3caf88c7e9c1f6982eb8fc27976eed7eed06a8119387cbb0deda7374c21a",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 13.07,
+      "interpretation": "Added before original final manifest; public v2 and real writer, complete zero-side-effect oracle in one case.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "grant-final",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-grant-final2 pytest tests/unit/test_w4_embedding_stage_proof.py tests/unit/test_generation_stage.py -q --tb=short",
+      "data_root": ".data-test/w4-grant-final2",
+      "job_id": "j-6cyrin",
+      "log": ".data-test/w4-20261025-evidence/reports/component-grant-final.log",
+      "log_sha256": "c93d6014ccdd51fc0801bc43f87c198c7a528eee82f7f84018e3a5710e7fa19f",
+      "exit_code": 0,
+      "passed": 53,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 31.21,
+      "interpretation": "50 new stage/proof + 3 existing grant tests, including uncertain proof lstat refusal. No failed stage/proof development run: two earlier 52-pass iterations preceded the final lstat case.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "expiry-execution",
+      "status": "passed",
+      "evidence_scope": "post_freeze_supplement",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-expiry-execution pytest tests/unit/test_w4_embedding_expiry_execution.py -q --tb=short",
+      "data_root": ".data-test/w4-expiry-execution",
+      "job_id": "j-kdnqvp",
+      "log": ".data-test/w4-20261025-evidence/reports/component-expiry-execution.log",
+      "log_sha256": "177604054802d3dd3f34f3b7068f91541a7466687aacf1327897d8c74108ae6a",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 12.65,
+      "interpretation": "Added as a separate new test file after original final freeze. Real public SDK execution advances only the captured grant clock past expiry; original stage/marker/proof bytes unchanged, no renewed grant or extra Provider/reservation."
+    },
+    {
+      "id": "sdk-final",
+      "status": "passed",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-sdk-20261025-release-candidate pytest tests/unit/test_w4_embedding_public.py tests/unit/test_kernel_wrapper_boundary.py tests/unit/test_local_wheel_contract.py -q --tb=short",
+      "data_root": ".data-test/w4-sdk-20261025-release-candidate",
+      "job_id": "j-lwjsb6",
+      "log": ".data-test/w4-20261025-evidence/reports/component-sdk-final.log",
+      "log_sha256": "39fc07df003e4f7eeaa5520f2d7e4101e3c6cdc9ddef29e0c280c097a34a45de",
+      "exit_code": 0,
+      "passed": 65,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 57.05,
+      "interpretation": "65 passing cases cover public SDK, wrapper boundary and local wheel. Historical subgroup counts are not claimed. Local root name does not authorize a release.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "sdk-dto-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-sdk-20261025-real pytest tests/unit/test_w4_embedding_public.py tests/unit/test_kernel_wrapper_boundary.py -q --tb=short",
+      "data_root": ".data-test/w4-sdk-20261025-real",
+      "job_id": null,
+      "log": ".data-test/w4-20261025-evidence/reports/attempt-real-dto.log",
+      "log_sha256": "4b2e2e86b6fa0099f68f0ae44d9a0756e92573b9d8864676b90cf634b8c31508",
+      "exit_code": 1,
+      "passed": 52,
+      "failed": 2,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 17.19,
+      "interpretation": "Closed DTO rejected existing informational embedding_initial_generation_pending; explicit approved code added.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "sdk-wheel-policy-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-sdk-20261025-verify pytest tests/unit/test_w4_embedding_public.py tests/unit/test_kernel_wrapper_boundary.py tests/unit/test_local_wheel_contract.py -q --tb=short",
+      "data_root": ".data-test/w4-sdk-20261025-verify",
+      "job_id": null,
+      "log": ".data-test/w4-20261025-evidence/reports/attempt-sdk-wheel-policy.log",
+      "log_sha256": "2a755da7239ce7bc3a36a5042e9b81f361ad51ac8ce5926ac98949ee6dcc30e0",
+      "exit_code": 1,
+      "passed": 59,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 48.02,
+      "interpretation": "Source-free venv lacks Conda IANA timezone data; corrected formal tzdata dependency and verified local dependency fixture.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "wheel-policy-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-sdk-20261025-wheel pytest tests/unit/test_local_wheel_contract.py -q --tb=short",
+      "data_root": ".data-test/w4-sdk-20261025-wheel",
+      "job_id": null,
+      "log": ".data-test/w4-20261025-evidence/reports/attempt-wheel-policy.log",
+      "log_sha256": "bd87f86ba1d19cb9f0b4cea277a938bb1c6e5da4b90b87021a8514738e463b68",
+      "exit_code": 1,
+      "passed": 0,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 36.98,
+      "interpretation": "Source-free wheel timezone/policy diagnostic; later sdk-final passed.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "wheel-timezone-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-sdk-20261025-wheel-check pytest tests/unit/test_local_wheel_contract.py -q --tb=short",
+      "data_root": ".data-test/w4-sdk-20261025-wheel-check",
+      "job_id": null,
+      "log": ".data-test/w4-20261025-evidence/reports/attempt-wheel-timezone.log",
+      "log_sha256": "f6076a376900b65847da83400491d23bea2cf283133faa9d88219b291626858a",
+      "exit_code": 1,
+      "passed": 0,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 30.94,
+      "interpretation": "Conda venv IANA path absence; dependency fixture verifies source Conda package hashes before copying data.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "sdk-wheel-snapshot-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-sdk-20261025-wheel-final pytest tests/unit/test_w4_embedding_public.py tests/unit/test_kernel_wrapper_boundary.py tests/unit/test_local_wheel_contract.py -q --tb=short",
+      "data_root": ".data-test/w4-sdk-20261025-wheel-final",
+      "job_id": null,
+      "log": ".data-test/w4-20261025-evidence/reports/attempt-sdk-wheel-snapshot.log",
+      "log_sha256": "1a4fa062f1ec272fd00ebe4310efe6e290b178c75410d89832b5516d38469d76",
+      "exit_code": 1,
+      "passed": 64,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 56.36,
+      "interpretation": "Wheel probe lacked public lifecycle-managed runtime snapshot; fixture corrected through public lifecycle.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "wheel-fresh-setup-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-sdk-20261025-wheel-ready pytest tests/unit/test_local_wheel_contract.py -q --tb=short",
+      "data_root": ".data-test/w4-sdk-20261025-wheel-ready",
+      "job_id": null,
+      "log": ".data-test/w4-20261025-evidence/reports/attempt-wheel-fresh-setup.log",
+      "log_sha256": "d0adf99cee19799dd0459bac3806e76625695d2158f29a1d661bb68fd56a388f",
+      "exit_code": 1,
+      "passed": 5,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 28.98,
+      "interpretation": "Wheel probe bootstrap followed by local record-snapshot was required; final probe makes no Provider call.",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault"
+    },
+    {
+      "id": "mcp-pending-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "final_combined_failure_reproduction",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-adapter-pending-isolated pytest tests/unit/test_w4_embedding_adapters.py::test_mcp_pending_projection_retains_v1_and_v2_safe_details[False] -vv --tb=long",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "data_root": ".data-test/w4-adapter-pending-isolated",
+      "job_id": "j-zk44pm",
+      "log": ".data-test/w4-20261025-evidence/reports/adapter-pending-isolated-failure.log",
+      "log_sha256": "832a6137e5a509cf3553ea5f4e4775a5c365a982a9bef37f9f73d12fba31335d",
+      "exit_code": 1,
+      "passed": 0,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 3.2,
+      "interpretation": "Actual product bug: v1 MCP stable-message projection reconstructed PKVRuntimeError without required publication-pending details, raising ValueError after SDK details were tightened. Not cross-test contamination."
+    },
+    {
+      "id": "mcp-pending-repaired",
+      "status": "passed",
+      "evidence_scope": "post_combined_product_repair",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-adapter-pending-fixed pytest tests/unit/test_w4_embedding_adapters.py tests/unit/test_w2_cli_leaf_gate.py tests/unit/test_w3_packaging_entrypoints.py tests/integration/test_mcp_functional.py::TestToolRegistration -q --tb=short",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "data_root": ".data-test/w4-adapter-pending-fixed",
+      "job_id": "j-rjuybh",
+      "log": ".data-test/w4-20261025-evidence/reports/adapter-pending-fixed.log",
+      "log_sha256": "f215570ebd50717c16c32ffc5e1287bcec3d7f271166d780a4afc70ac830edfe",
+      "exit_code": 0,
+      "passed": 123,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 7.37,
+      "interpretation": "Minimal src/mcp/tools.py correction takes the stable message directly from its existing safe mapping, preserving approved pending details. Test source unchanged. Full P0/MCP pending."
+    },
+    {
+      "id": "combined-discovery",
+      "status": "completed_diagnostic_failures",
+      "job_id": "j-t62bnc",
+      "data_root": ".data-test/w4-final-combined-20261025",
+      "log": ".data-test/w4-20261025-evidence/reports/final-combined.log",
+      "collection_total": 438,
+      "log_sha256": "4e971fc570515c035f5110909433cc587b20b122785454563379ee992dd7ce58",
+      "exit_code": 1,
+      "interpretation": "Completed mixed-tree discovery run: one reproduced/repaired v1 MCP projection bug and two retained W5 ordinary failures. No skips or errors; not final same-tree acceptance.",
+      "evidence_scope": "mixed_tree_development_diagnostic",
+      "execution_tree": "in_progress_mixed",
+      "initial_source_manifest": ".data-test/w4-20261025-evidence/reports/final-source-tests.sha256",
+      "mutation_during_run": "src/mcp/tools.py stable-message projection fix was written while the pytest parent retained the old import; later child processes may have read the repaired file.",
+      "passed": 435,
+      "failed": 3,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "warnings": 2,
+      "duration_seconds": 1073.85,
+      "failed_nodeids": [
+        "tests/unit/test_w4_embedding_adapters.py::test_mcp_pending_projection_retains_v1_and_v2_safe_details[False]",
+        "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[approve]",
+        "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[return]"
+      ],
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-final-combined-20261025 pytest tests/unit/test_w4_embedding_adapters.py tests/unit/test_w4_embedding_clock_harness.py tests/unit/test_w4_embedding_completion_audit.py tests/unit/test_w4_embedding_core.py tests/unit/test_w4_embedding_ledger.py tests/unit/test_w4_embedding_public.py tests/unit/test_w4_embedding_publication.py tests/unit/test_w4_embedding_publication_extended.py tests/unit/test_w4_embedding_recovery_process.py tests/unit/test_w4_embedding_stage_proof.py tests/blackbox/test_w4_embedding_cli_blackbox.py tests/blackbox/test_w4_embedding_mcp_blackbox.py tests/unit/test_w1_embedding_regressions.py tests/unit/test_w1_outcome_regressions.py tests/unit/test_w1_q1_regressions.py tests/blackbox/test_w1_cli_parse_regressions.py tests/unit/test_kernel_embedding_rebuild.py tests/unit/test_embedding_rebuild_ledger.py tests/unit/test_generation_stage.py tests/unit/test_kernel_wrapper_boundary.py tests/unit/test_local_wheel_contract.py -vv --tb=short"
+    },
+    {
+      "id": "old-mcp-oracle-probe",
+      "status": "diagnostic_failure",
+      "evidence_scope": "test_oracle_migration_diagnostic",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-old-mcp-probe pytest tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_stdio_public_rebuild_activates_and_searches_after_new_server -vv --tb=short",
+      "working_directory": "C:/Users/fdch0/.codex/worktrees/pkv-w4-validation-20261025",
+      "data_root": ".data-test/w4-old-mcp-probe",
+      "job_id": null,
+      "log": ".data-test/w4-20261025-evidence/reports/old-mcp-probe.log",
+      "log_sha256": "cc10d9bf85784c2f3af2c06eb89e5299a9a10a691ebe2653cc607948a6c9e494",
+      "exit_code": 1,
+      "passed": 0,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 31.15,
+      "interpretation": "Product reached READY and preserved usage. The pre-W4 test incorrectly reused the Q2 global-empty-staging oracle after manual rebuild; W4 deliberately retains its original sealed stage. Test-only oracle migration required; no product bug attributed."
+    },
+    {
+      "id": "mcp-oracle-discovery",
+      "status": "completed_diagnostic_failures",
+      "evidence_scope": "verified_checkout_oracle_discovery",
+      "working_directory": "C:/Users/fdch0/.codex/worktrees/pkv-w4-validation-20261025",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-conda.ps1 -EnvironmentName py311-private -Suite MCP > E:/repos/personal/personal-knowledge-vault/.data-test/w4-20261025-evidence/reports/final-mcp.log 2>&1",
+      "wrapper_chain": "scripts/test-conda.ps1 -> scripts/run-test.ps1 -> tests/offline_entrypoint.py",
+      "data_root": ".data-test/conda-280955a9/mcp-coverage",
+      "job_id": "j-ibrbx5",
+      "log": ".data-test/w4-20261025-evidence/reports/final-mcp.log",
+      "log_sha256": "a6bd1373a8662da61d58ebc63c2fcb9c4693307c4cc958820ebc6fc5b8ce35de",
+      "exit_code": 1,
+      "source_manifest": ".data-test/w4-20261025-evidence/reports/final-source-tests-verified.sha256",
+      "pip_check": "No broken requirements found.",
+      "marker_expression": "not manual and not network and not artifact and not windows_release_env",
+      "final_gate_eligible": false,
+      "interpretation": "Uniform pre-oracle-correction C: checkout. Two obsolete test expectations: global empty staging after manual rebuild, and discovery set missing the six new v2 Tools. Coverage threshold passed but the test gate failed. No aggregate final acceptance claimed.",
+      "passed": 906,
+      "failed": 2,
+      "errors": 0,
+      "skipped": 0,
+      "deselected": 5,
+      "xfail": 0,
+      "warnings": 0,
+      "duration_seconds": 905.29,
+      "collected": 908,
+      "collection_total": 913,
+      "coverage": {
+        "statements": 2178,
+        "missed": 95,
+        "percent": 95.64,
+        "required_percent": 95,
+        "threshold_passed": true,
+        "test_gate_passed": false
+      },
+      "failed_nodeids": [
+        "tests/blackbox/test_mcp_blackbox.py::TestEndToEnd::test_discovery_then_invoke",
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_stdio_public_rebuild_activates_and_searches_after_new_server"
+      ],
+      "ascii_review": {
+        "path": ".data-test/w4-20261025-evidence/reports/final-mcp.ascii-review.log",
+        "sha256": "3bf170b5ddd26009c34ee9e11e27c0ffaeba7d64e97bc6b6861fba36b0cd5665",
+        "interpretation": "Derived display copy replacing non-ASCII bytes; original mixed-encoding raw log and its SHA256 remain authoritative. ASCII counts/nodeids/coverage are unchanged."
+      }
+    },
+    {
+      "id": "old-mcp-oracle-lock-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "test_oracle_migration",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-old-mcp-oracle-fixed pytest tests/blackbox/test_embedding_rebuild_mcp_blackbox.py tests/blackbox/test_r4_mcp_fullflow.py -vv --tb=short",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "data_root": ".data-test/w4-old-mcp-oracle-fixed",
+      "job_id": "j-6ebb3d",
+      "log": ".data-test/w4-20261025-evidence/reports/old-mcp-oracle-fixed.log",
+      "log_sha256": "e6cd634f10f39ee07948e97c6b9b001229b6657e4ac18fbc3eb477c29c210bae",
+      "exit_code": 1,
+      "passed": 3,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 118.13,
+      "interpretation": "Test-only expected stage inventory omitted the four pre-existing VectorStore one-byte NUL lock sidecars. No product change or C: checkout change."
+    },
+    {
+      "id": "old-mcp-oracle-verified",
+      "status": "passed",
+      "evidence_scope": "intermediate_test_oracle_migration",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-old-mcp-oracle-verified pytest tests/blackbox/test_embedding_rebuild_mcp_blackbox.py tests/blackbox/test_r4_mcp_fullflow.py -vv --tb=short",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "data_root": ".data-test/w4-old-mcp-oracle-verified",
+      "job_id": "j-12qrw0",
+      "log": ".data-test/w4-20261025-evidence/reports/old-mcp-oracle-verified.log",
+      "log_sha256": "ccdaeaede7c7e2a2d19360c62b4c2778bbbea77f17c21b01768c3081720c8560",
+      "exit_code": 0,
+      "passed": 4,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 134.92,
+      "interpretation": "Q2 global-empty-stage assertion runs before manual rebuild. Afterward assert exactly the bound original sealed stage, 11 exact private files including lock sidecars, five exact published files, unchanged logical SQLite/Markdown facts and retained reservation/usage. Intermediate evidence only: later independent review required post-manual Q2 patch-spool content/commit binding and exact vector-root directory assertions before acceptance."
+    },
+    {
+      "id": "mcp-discovery-oracle-verified",
+      "status": "passed",
+      "evidence_scope": "test_oracle_migration",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-mcp-discovery-oracle-fixed pytest tests/blackbox/test_mcp_blackbox.py::TestEndToEnd::test_discovery_then_invoke -vv --tb=short",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "data_root": ".data-test/w4-mcp-discovery-oracle-fixed",
+      "job_id": "j-ws6fes",
+      "log": ".data-test/w4-20261025-evidence/reports/mcp-discovery-oracle-fixed.log",
+      "log_sha256": "2b225387986f4cd3717946424793fb1e03a84c0120ad3a774c833a4f389ee277",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 13.45,
+      "interpretation": "Exact discovery sets now include the four new read and two write v2 Tools, for 41 total/23 read/18 write. Product and running C: gate checkout unchanged."
+    },
+    {
+      "id": "mcp-oracle-interrupted",
+      "status": "interrupted",
+      "evidence_scope": "interrupted_intermediate_oracle_diagnostic",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-conda.ps1 -EnvironmentName py311-private -Suite MCP > .data-test/w4-20261025-evidence/reports/final-mcp-oracles.log 2>&1",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "data_root": ".data-test/conda-2bc6c5d4/mcp-coverage",
+      "job_id": "j-nplfug",
+      "log": ".data-test/w4-20261025-evidence/reports/final-mcp-oracles.log",
+      "log_sha256": "ee4b70289913d81a828dee67b78f0683bdb80bdfdfe9f0b5a6b6f8a8128df669",
+      "exit_code": null,
+      "termination": "Root explicitly killed the job and confirmed termination.",
+      "source_manifest": ".data-test/w4-20261025-evidence/reports/intermediate-source-tests-oracles.sha256",
+      "interpretation": "Interrupted before final pytest/coverage summary to harden post-manual Q2 spool/commit and exact vector-root assertions. Partial progress is not a passed count or final gate."
+    },
+    {
+      "id": "old-mcp-oracle-preserved",
+      "status": "passed",
+      "evidence_scope": "accepted_test_oracle_component",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-old-mcp-oracle-preserved pytest tests/blackbox/test_embedding_rebuild_mcp_blackbox.py tests/blackbox/test_r4_mcp_fullflow.py -vv --tb=short",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "data_root": ".data-test/w4-old-mcp-oracle-preserved",
+      "job_id": "j-v30fto",
+      "log": ".data-test/w4-20261025-evidence/reports/old-mcp-oracle-preserved.log",
+      "log_sha256": "2e4d1154e5314158b0151b3e826a82e436f5309e6f126024b313eb0c6cad04fb",
+      "exit_code": 0,
+      "passed": 4,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "duration_seconds": 137.3,
+      "interpretation": "Complete test-oracle preservation after independent review: checks post-manual original Q2 patch-spool content and commit binding, exact vector-root generations/staging, the one bound sealed manual stage with 11 files and exact five published files. Product source and C: P0 checkout unchanged."
+    },
+    {
+      "id": "mcp-accepted-collection",
+      "status": "passed",
+      "evidence_scope": "selection_only",
+      "tests_executed": 0,
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-mcp-accepted-collection pytest tests/unit/test_mcp_citation_url_security.py tests/unit/test_mcp_coverage_contract.py tests/unit/test_mcp_prompts.py tests/unit/test_mcp_quality_scorer.py tests/unit/test_mcp_resources.py tests/unit/test_mcp_security.py tests/unit/test_mcp_server_w2.py tests/unit/test_mcp_tools.py tests/unit/test_w4_embedding_adapters.py tests/integration/test_mcp_client_simulation.py tests/integration/test_mcp_functional.py tests/integration/test_mcp_integration.py tests/integration/test_mcp_quality_eval.py tests/integration/test_mcp_ssrf_zero_write.py tests/blackbox/test_mcp_blackbox.py tests/blackbox/test_r4_mcp_fullflow.py tests/blackbox/test_embedding_rebuild_mcp_blackbox.py tests/blackbox/test_outcome_mcp_blackbox.py tests/blackbox/test_w3_outcome_mcp_blackbox.py tests/blackbox/test_w4_embedding_mcp_blackbox.py tests/e2e/test_mcp_e2e_archive.py tests/e2e/test_mcp_e2e_knowledge_qa.py tests/e2e/test_mcp_e2e_search.py -m 'not manual and not network and not artifact and not windows_release_env' --collect-only -q > .data-test/w4-20261025-evidence/reports/final-mcp-accepted-collection.log 2>&1",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "data_root": ".data-test/w4-mcp-accepted-collection",
+      "job_id": "j-796q66",
+      "log": ".data-test/w4-20261025-evidence/reports/final-mcp-accepted-collection.log",
+      "log_sha256": "c7ff547641d7878c8878b7bcf7aae6960af39c98fbab840ba9b8a4af8e7298b6",
+      "exit_code": 0,
+      "collection_total": 913,
+      "collected": 908,
+      "deselected": 5,
+      "duration_seconds": 4.04,
+      "source_manifest": ".data-test/w4-20261025-evidence/reports/final-source-tests-accepted.sha256",
+      "targets": [
+        "tests/unit/test_mcp_citation_url_security.py",
+        "tests/unit/test_mcp_coverage_contract.py",
+        "tests/unit/test_mcp_prompts.py",
+        "tests/unit/test_mcp_quality_scorer.py",
+        "tests/unit/test_mcp_resources.py",
+        "tests/unit/test_mcp_security.py",
+        "tests/unit/test_mcp_server_w2.py",
+        "tests/unit/test_mcp_tools.py",
+        "tests/unit/test_w4_embedding_adapters.py",
+        "tests/integration/test_mcp_client_simulation.py",
+        "tests/integration/test_mcp_functional.py",
+        "tests/integration/test_mcp_integration.py",
+        "tests/integration/test_mcp_quality_eval.py",
+        "tests/integration/test_mcp_ssrf_zero_write.py",
+        "tests/blackbox/test_mcp_blackbox.py",
+        "tests/blackbox/test_r4_mcp_fullflow.py",
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py",
+        "tests/blackbox/test_outcome_mcp_blackbox.py",
+        "tests/blackbox/test_w3_outcome_mcp_blackbox.py",
+        "tests/blackbox/test_w4_embedding_mcp_blackbox.py",
+        "tests/e2e/test_mcp_e2e_archive.py",
+        "tests/e2e/test_mcp_e2e_knowledge_qa.py",
+        "tests/e2e/test_mcp_e2e_search.py"
+      ],
+      "marker_expression": "not manual and not network and not artifact and not windows_release_env",
+      "interpretation": "Independent guarded collection of exactly the 23 accepted MCP targets and identical marker. Coverage-measurement flags are omitted because no tests execute. Provides durable exact selected node IDs; successful test-conda removes its temporary DataRoot/cache."
+    },
+    {
+      "id": "w3-handshake-oracle-diagnostic",
+      "status": "diagnostic_failure",
+      "evidence_scope": "test_oracle_migration_diagnostic",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-sdk-20261026-w3-handshake-repro pytest tests/unit/test_w3_outcome_public.py -k test_handshake_keeps_major1_compatibility_and_sdk_bounds -vv --tb=short",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "data_root": ".data-test/w4-sdk-20261026-w3-handshake-repro",
+      "job_id": "j-4d3vma",
+      "log": ".data-test/w4-20261025-evidence/reports/w4-sdk-w3-handshake-repro-20261026.log",
+      "log_sha256": "f9c97ba1cca506dbd47fdfe06a79e2a1d2450ebd42196050f3473f8f1417f833",
+      "exit_code": 1,
+      "passed": 0,
+      "failed": 2,
+      "errors": 0,
+      "skipped": 0,
+      "deselected": 74,
+      "xfail": 0,
+      "duration_seconds": 2.54,
+      "interpretation": "Pre-W4 stage oracle still required embedding v2 capability to be absent for client API None/1. W4 intentionally advertises the additive capability under unchanged API major 1. No product failure attributed."
+    },
+    {
+      "id": "w3-public-oracle-repaired",
+      "status": "passed",
+      "evidence_scope": "complete_changed_test_file_recovery",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-sdk-20261026-w3-public-regression pytest tests/unit/test_w3_outcome_public.py -vv --tb=short",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "data_root": ".data-test/w4-sdk-20261026-w3-public-regression",
+      "job_id": "j-7umpgs",
+      "log": ".data-test/w4-20261025-evidence/reports/w4-sdk-w3-public-regression-20261026.log",
+      "log_sha256": "6cdb3866a2e0cbfdb1f5cd057a84996e62b10a82fbc0223a9f14ae3bad63de3f",
+      "exit_code": 0,
+      "passed": 76,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "deselected": 0,
+      "xfail": 0,
+      "duration_seconds": 22.45,
+      "source_manifest": ".data-test/w4-20261025-evidence/reports/final-source-tests-complete.sha256",
+      "interpretation": "One-line not-in to in capability oracle update; unchanged API 1, all v1 capabilities and SDK-bounds assertions remain. Entire 76-case file re-executed with verbose exact node results; no product change and no W5 refusal implementation."
+    }
+  ],
+  "final_gates": [
+    {
+      "id": "final-p0",
+      "status": "failed_with_registered_and_recovered_failures",
+      "evidence_scope": "complete_verified_checkout_p0",
+      "working_directory": "C:/Users/fdch0/.codex/worktrees/pkv-w4-validation-20261025",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-conda.ps1 -EnvironmentName py311-private -Suite P0 > E:/repos/personal/personal-knowledge-vault/.data-test/w4-20261025-evidence/reports/final-p0.log 2>&1",
+      "wrapper_chain": "scripts/test-conda.ps1 -> scripts/run-test.ps1 -> tests/offline_entrypoint.py",
+      "data_root": ".data-test/conda-b409af39/offline",
+      "job_id": "j-n812cv",
+      "log": ".data-test/w4-20261025-evidence/reports/final-p0.log",
+      "log_sha256": "64c60cf8150a9a14b7d33494955ddd0088ad24937bec232acbb685d8e9a2cb86",
+      "exit_code": 1,
+      "source_manifest": ".data-test/w4-20261025-evidence/reports/final-source-tests-verified.sha256",
+      "pip_check": "No broken requirements found.",
+      "marker_expression": "not manual and not network and not artifact and not windows_release_env",
+      "collection_contract": {
+        "status": "passed",
+        "data_root": ".data-test/conda-b409af39/collect",
+        "collection_total": 4375,
+        "collected": 4156,
+        "deselected": 219,
+        "duration_seconds": 15.52
+      },
+      "final_gate_eligible": false,
+      "interpretation": "The complete unchanged C: checkout ran all 4156 selected tests. Four failures are old test oracles recovered by complete accepted MCP and W3 public runs; two ordinary W5 failures and 21 existing environment skips remain. P0 keeps exit 1. Exact node reconciliation, not addition of overlapping pass counts, establishes W4 scope acceptance.",
+      "passed": 4129,
+      "failed": 6,
+      "errors": 0,
+      "skipped": 21,
+      "deselected": 219,
+      "warnings": 37,
+      "xfail": 0,
+      "duration_seconds": 4071.72,
+      "collected": 4156,
+      "collection_total": 4375,
+      "failed_nodeids": [
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_stdio_public_rebuild_activates_and_searches_after_new_server",
+        "tests/blackbox/test_mcp_blackbox.py::TestEndToEnd::test_discovery_then_invoke",
+        "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[approve]",
+        "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[return]",
+        "tests/unit/test_w3_outcome_public.py::test_handshake_keeps_major1_compatibility_and_sdk_bounds[None]",
+        "tests/unit/test_w3_outcome_public.py::test_handshake_keeps_major1_compatibility_and_sdk_bounds[1]"
+      ],
+      "failure_classification": {
+        "recovered_test_oracles": 4,
+        "retained_w5_ordinary_failures": 2,
+        "unresolved_w4_failures": 0
+      },
+      "existing_skips": {
+        "count": 21,
+        "posix_only": 5,
+        "windows_symlink_privilege_or_capability": 15,
+        "missing_real_pyinstaller_closure_paths": 1,
+        "w4_skips": 0,
+        "new_skips_added": 0,
+        "exact_outcomes": ".data-test/w4-20261025-evidence/reports/final-p0-node-outcomes.json",
+        "original_summary": ".data-test/w4-20261025-evidence/reports/final-gate-accepted-summary.json"
+      },
+      "readable_derivative": {
+        "path": ".data-test/w4-20261025-evidence/reports/final-p0.ascii-review.log",
+        "sha256": "12346351f1ec5cb07dc3dad2394b8658b9aeb4ef7b0945df4c3587c2b813fe50",
+        "role": "Non-ASCII bytes replaced for readable analysis of the mixed-encoding raw log; does not replace authoritative raw evidence."
+      }
+    },
+    {
+      "id": "phase-c-before-projection-repair",
+      "status": "passed",
+      "job_id": "j-wan19c",
+      "data_root": ".data-test/w4-phase-c-final-20261025",
+      "log": ".data-test/w4-20261025-evidence/reports/final-phase-c.log",
+      "report": ".data-test/w4-20261025-evidence/reports/phase-c.json",
+      "exit_code": 0,
+      "tasks": 16,
+      "passed_tasks": 16,
+      "checks": 151,
+      "failed_checks": 0,
+      "overall_score": 1,
+      "targets_met": true,
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-phase-c-final-20261025 python -m evals.mcp_quality --output .data-test/w4-phase-c-final-20261025/reports/phase-c.json --enforce-thresholds",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "log_sha256": "bba5fae2709a21e319d650990b1b8a79d8675067e92bcca1c127686406b665d4",
+      "report_sha256": "68128c27befd70fc16f4fd5f8cbf523f78b547e813a12f90331d5f4d262f34c0",
+      "source_manifest": ".data-test/w4-20261025-evidence/reports/phase-c-source.sha256",
+      "dimensions": {
+        "citability": 1,
+        "degradation": 1,
+        "evidence_relevance": 1,
+        "parameters": 1,
+        "result": 1,
+        "tool_selection": 1
+      },
+      "interpretation": "Existing fixed gold taskset: 16 tasks and 151 check_id entries; not 151 pytest cases and not a new W4 taskset. A later v1 MCP projection repair changed src/mcp/tools.py; a fresh Phase C run will be the final gate.",
+      "evidence_scope": "pre_mcp_projection_repair"
+    },
+    {
+      "id": "ruff-before-projection-repair",
+      "status": "passed",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-static-final ruff check src pkv_kernel scripts tests --select E9,F63,F7,F82",
+      "data_root": ".data-test/w4-static-final",
+      "log": ".data-test/w4-20261025-evidence/reports/final-ruff.log",
+      "log_sha256": "9eacdb8ee36b2bc93250e4139dcc6e5e3ba72df28a7b82089c286bb968bd4ef0",
+      "exit_code": 0,
+      "evidence_scope": "pre_mcp_projection_repair"
+    },
+    {
+      "id": "final-phase-c",
+      "status": "passed",
+      "job_id": "j-69lazu",
+      "data_root": ".data-test/w4-phase-c-verified-20261025",
+      "log": ".data-test/w4-20261025-evidence/reports/final-phase-c-verified.log",
+      "report": ".data-test/w4-20261025-evidence/reports/phase-c-verified.json",
+      "exit_code": 0,
+      "tasks": 16,
+      "passed_tasks": 16,
+      "checks": 151,
+      "failed_checks": 0,
+      "overall_score": 1,
+      "targets_met": true,
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-phase-c-verified-20261025 python -m evals.mcp_quality --output .data-test/w4-phase-c-verified-20261025/reports/phase-c.json --enforce-thresholds",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "log_sha256": "fcda6f651b0a2804d473353efd9f05875d3849ef1e57b0bdde9482e87dccddf0",
+      "report_sha256": "cd2c0d5004b6aed1c5c01c40a5b24d02a8d4c47e069971e29a344bfe704d9583",
+      "source_manifest": ".data-test/w4-20261025-evidence/reports/final-source-tests-verified.sha256",
+      "dimensions": {
+        "citability": 1,
+        "degradation": 1,
+        "evidence_relevance": 1,
+        "parameters": 1,
+        "result": 1,
+        "tool_selection": 1
+      },
+      "interpretation": "Final verified source. Existing fixed gold taskset has 16 tasks/151 check_id entries and all thresholds met; no new W4 taskset is claimed.",
+      "evidence_scope": "verified_source_final_gate",
+      "accepted_product_equivalence": "complete-source-delta.json verifies all product/evals bytes unchanged; only three test-oracle files differ from this run's manifest."
+    },
+    {
+      "id": "ruff-before-oracle-correction",
+      "status": "passed",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-static-verified ruff check src pkv_kernel scripts tests --select E9,F63,F7,F82",
+      "data_root": ".data-test/w4-static-verified",
+      "log": ".data-test/w4-20261025-evidence/reports/final-ruff-verified.log",
+      "log_sha256": "934b6646a0868b5a6f7364de681050c60604935aa54f4ca580eb1609e3fa17ec",
+      "exit_code": 0,
+      "evidence_scope": "pre_test_oracle_correction",
+      "job_id": "j-4tl0jr",
+      "source_manifest": ".data-test/w4-20261025-evidence/reports/final-source-tests-verified.sha256"
+    },
+    {
+      "id": "final-mcp",
+      "status": "passed",
+      "evidence_scope": "accepted_source_complete_mcp_gate",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-conda.ps1 -EnvironmentName py311-private -Suite MCP > .data-test/w4-20261025-evidence/reports/final-mcp-accepted.log 2>&1",
+      "wrapper_chain": "scripts/test-conda.ps1 -> scripts/run-test.ps1 -> tests/offline_entrypoint.py",
+      "data_root": ".data-test/conda-ea4953a5/mcp-coverage",
+      "job_id": "j-6uy0f4",
+      "log": ".data-test/w4-20261025-evidence/reports/final-mcp-accepted.log",
+      "log_sha256": "948efc51f63572e22bd89b5d0a0967e84734c62fe5a61946755f3a84e67861f1",
+      "exit_code": 0,
+      "source_manifest": ".data-test/w4-20261025-evidence/reports/final-source-tests-accepted.sha256",
+      "pip_check": "No broken requirements found.",
+      "marker_expression": "not manual and not network and not artifact and not windows_release_env",
+      "passed": 908,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "deselected": 5,
+      "xfail": 0,
+      "warnings": 0,
+      "duration_seconds": 1078.87,
+      "collected": 908,
+      "collection_total": 913,
+      "coverage": {
+        "statements": 2178,
+        "missed": 95,
+        "percent": 95.64,
+        "required_percent": 95,
+        "threshold_passed": true,
+        "test_gate_passed": true
+      },
+      "selection_run": "mcp-accepted-collection",
+      "data_root_retention": "Removed automatically by successful scripts/test-conda.ps1 finally; durable selected-node evidence is the separate authorized collection-only log.",
+      "interpretation": "Complete accepted-tree MCP target set passed, including every test in both corrected oracle files. Overlaps the full P0 selection; passed counts must not be added."
+    },
+    {
+      "id": "ruff-before-handshake-oracle-correction",
+      "status": "passed",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-static-accepted ruff check src pkv_kernel scripts tests --select E9,F63,F7,F82 > .data-test/w4-20261025-evidence/reports/final-ruff-accepted.log 2>&1",
+      "data_root": ".data-test/w4-static-accepted",
+      "log": ".data-test/w4-20261025-evidence/reports/final-ruff-accepted.log",
+      "log_sha256": "497a94310d97e3775cecf700cf601b470fda8707e6818eaa286a39f98ee33b5a",
+      "exit_code": 0,
+      "evidence_scope": "two_oracle_snapshot_static",
+      "job_id": "j-1ifj5m",
+      "source_manifest": ".data-test/w4-20261025-evidence/reports/final-source-tests-accepted.sha256"
+    },
+    {
+      "id": "final-ruff",
+      "status": "passed",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w4-static-complete ruff check src pkv_kernel scripts tests --select E9,F63,F7,F82 > .data-test/w4-20261025-evidence/reports/final-ruff-complete.log 2>&1",
+      "data_root": ".data-test/w4-static-complete",
+      "log": ".data-test/w4-20261025-evidence/reports/final-ruff-complete.log",
+      "log_sha256": "0caecc10af3c8b3b28df38c0cc6a74129cf9359db89c63a714e342e2af673281",
+      "exit_code": 0,
+      "evidence_scope": "complete_source_final_static_gate",
+      "job_id": "j-noqaur",
+      "source_manifest": ".data-test/w4-20261025-evidence/reports/final-source-tests-complete.sha256"
+    }
+  ],
+  "cases": [
+    {
+      "id": "ER-01",
+      "rule": "Public confirmation binds data-root identity and rejects cross-root reuse before Provider/write.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/unit/test_w4_embedding_public.py::test_real_v2_confirmation_is_bound_to_root_before_provider_use",
+        "tests/unit/test_w1_embedding_regressions.py::test_r01_er01_public_plan_confirmation_identity_is_bound_to_data_root",
+        "tests/unit/test_w4_embedding_public.py::test_missing_rejected_cross_plan_and_mixed_confirmations_never_execute",
+        "tests/blackbox/test_embedding_rebuild_cli_blackbox.py::test_public_cli_rebuild_confirmation_is_root_bound_and_process_stable",
+        "tests/blackbox/test_embedding_rebuild_mcp_blackbox.py::test_mcp_rebuild_confirmation_is_root_bound_across_fresh_servers"
+      ],
+      "evidence_layer": "Actual v2 SDK root-mismatch plan; v2 facade callback counter seam; existing public v1 CLI/MCP root-bound no-side-effect regression.",
+      "component_runs": [
+        "w1-embedding",
+        "sdk-final"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": "The actual v2 cross-root case asserts stale confirmation; the closed-handle confirmation test separately asserts no execute/publish callback. Existing transport regressions provide root filesystem and Provider observations."
+    },
+    {
+      "id": "ER-02",
+      "rule": "Same-root public identity is stable across hosts; complete snapshot bytes participate in stale confirmation.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/unit/test_w4_embedding_public.py::test_real_public_plan_uses_frozen_hash_material_and_reads_do_not_write",
+        "tests/unit/test_w2_embedding_identity.py::test_er02_full_snapshot_change_invalidates_public_confirmation",
+        "tests/blackbox/test_w4_embedding_cli_blackbox.py::test_cli_sealed_pending_restarts_across_day_and_month_without_provider",
+        "tests/blackbox/test_w4_embedding_mcp_blackbox.py::test_mcp_sealed_pending_restarts_across_day_and_month_without_provider",
+        "tests/blackbox/test_embedding_rebuild_cli_blackbox.py::test_public_cli_rebuild_confirmation_is_root_bound_and_process_stable"
+      ],
+      "evidence_layer": "public SDK material oracle, existing W2 snapshot cases and actual independent CLI/MCP hosts",
+      "component_runs": [
+        "blackbox-component",
+        "sdk-final"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": "Historical W1 same-root test alone is same-process; cross-process confirmation reconstruction comes from actual adapter tests."
+    },
+    {
+      "id": "ER-03",
+      "rule": "A lease contention yields write_busy with no operation, reservation, Provider, stage, snapshot or business-audit effects.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/unit/test_w4_embedding_core.py::test_public_v2_a_real_writer_contention_has_no_operation_or_side_effects"
+      ],
+      "evidence_layer": "single public v2 SDK case with real competing root writer",
+      "component_runs": [
+        "core-a-busy"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": "Explicitly distinguishes initial A contention from existing active-operation replay."
+    },
+    {
+      "id": "ER-04",
+      "rule": "C seal plus D contention exposes original awaiting_publish identity and explicit publish-only recovery without duplicate Provider.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/unit/test_w1_embedding_regressions.py::test_r02_er04_completed_stage_contention_exposes_publish_only_recovery",
+        "tests/unit/test_w4_embedding_publication.py::test_lookup_and_plan_after_d_busy_are_read_only_and_publish_reuses_reservation",
+        "tests/blackbox/test_w4_embedding_cli_blackbox.py::test_cli_sealed_pending_restarts_across_day_and_month_without_provider",
+        "tests/blackbox/test_w4_embedding_mcp_blackbox.py::test_mcp_sealed_pending_restarts_across_day_and_month_without_provider"
+      ],
+      "evidence_layer": "Core seam, real writer contention, actual public CLI/MCP subprocesses",
+      "component_runs": [
+        "w1-embedding",
+        "publication-repaired",
+        "blackbox-component"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": ""
+    },
+    {
+      "id": "ER-05",
+      "rule": "Closed original host can be followed by a new host; expired grant never permits writes and valid in-time seal remains adoptable.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/blackbox/test_w4_embedding_cli_blackbox.py::test_cli_sealed_pending_restarts_across_day_and_month_without_provider",
+        "tests/blackbox/test_w4_embedding_mcp_blackbox.py::test_mcp_sealed_pending_restarts_across_day_and_month_without_provider",
+        "tests/unit/test_w4_embedding_stage_proof.py::test_legitimate_seal_is_readable_after_expiry_without_any_write",
+        "tests/unit/test_w4_embedding_expiry_execution.py::test_public_publication_adopts_expired_legitimate_seal_without_renewing_grant"
+      ],
+      "evidence_layer": "actual new CLI/MCP hosts plus isolated grant-clock public SDK execution",
+      "component_runs": [
+        "blackbox-component",
+        "grant-final",
+        "expiry-execution"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": "Budget-clock blackboxes do not advance lease/grant clocks. Expiry execution is a separate supplement, absent from the initial 438-case combined selection."
+    },
+    {
+      "id": "ER-06",
+      "rule": "Root/source/contract/pointer/proof/operation drift rejects publication while retaining incurred cost.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/unit/test_w4_embedding_stage_proof.py::test_all_operation_bindings_are_revalidated",
+        "tests/unit/test_w4_embedding_stage_proof.py::test_any_tampered_bound_file_fails_closed",
+        "tests/unit/test_w4_embedding_publication.py::test_snapshot_drift_rejects_publication_and_conservatively_settles",
+        "tests/unit/test_w4_embedding_publication.py::test_current_contract_drift_keeps_original_proof_valid_but_refuses_publication",
+        "tests/unit/test_w4_embedding_publication.py::test_in_process_publication_handle_detects_config_file_change_without_old_hmac_replay",
+        "tests/unit/test_w4_embedding_publication.py::test_d_revalidates_proof_after_c_before_pointer_mutation",
+        "tests/unit/test_embedding_lifecycle.py::test_source_change_during_staged_build_leaves_old_generation_active",
+        "tests/unit/test_embedding_lifecycle.py::test_r2_base_and_user_config_source_revision_gate_provider_work",
+        "tests/unit/test_embedding_lifecycle.py::test_second_generation_retains_previous_and_config_contract_drift_is_visible"
+      ],
+      "evidence_layer": "strict reader field tampering, Core publication fault/drift injection",
+      "component_runs": [
+        "publication-repaired",
+        "publication-config",
+        "core-existing",
+        "grant-final"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": "Full runtime-snapshot byte drift binds the pointer as part of the snapshot; source drift and retained-pointer behavior also use existing Core regressions. No additional standalone pointer-only fault is inferred from a test name."
+    },
+    {
+      "id": "ER-07",
+      "rule": "Zero-effect budget pause permits a newly confirmed operation after day/month recovery; monthly cap remains binding after day rollover.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery",
+        "tests/unit/test_w4_embedding_ledger.py::test_monthly_cap_remains_after_day_rollover_and_resets_only_next_month",
+        "tests/blackbox/test_w4_embedding_cli_blackbox.py::test_cli_budget_period_recovery_requires_new_public_confirmation",
+        "tests/blackbox/test_w4_embedding_mcp_blackbox.py::test_mcp_budget_period_recovery_requires_new_public_confirmation"
+      ],
+      "evidence_layer": "ledger period seam and actual public CLI/MCP processes with external numeric-loopback Provider",
+      "component_runs": [
+        "ledger-final",
+        "blackbox-component"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": ""
+    },
+    {
+      "id": "ER-08",
+      "rule": "Cross-period publication uses original reservation and active/sealed work cannot replay using force, new period or different material.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/unit/test_w1_embedding_regressions.py::test_r06_er08_period_change_does_not_replay_an_active_operation",
+        "tests/unit/test_w4_embedding_ledger.py::test_same_material_remains_consumed_across_month_boundary",
+        "tests/unit/test_w4_embedding_ledger.py::test_unsettled_effect_blocks_different_material_after_restart",
+        "tests/unit/test_w4_embedding_publication.py::test_sealed_work_is_pending_in_network_inspection_and_blocks_force",
+        "tests/blackbox/test_w4_embedding_cli_blackbox.py::test_cli_sealed_pending_restarts_across_day_and_month_without_provider",
+        "tests/blackbox/test_w4_embedding_mcp_blackbox.py::test_mcp_sealed_pending_restarts_across_day_and_month_without_provider"
+      ],
+      "evidence_layer": "ledger reload, Core inspection and actual public processes",
+      "component_runs": [
+        "ledger-final",
+        "publication-repaired",
+        "blackbox-component"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": ""
+    },
+    {
+      "id": "ER-09",
+      "rule": "Only live proof of Provider not started can release reservation and enable fresh operation; unknown external effects fail closed.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/unit/test_w4_embedding_ledger.py::test_unknown_effect_requires_live_no_start_proof_to_release",
+        "tests/unit/test_w4_embedding_ledger.py::test_settlement_never_fabricates_usage_or_double_counts_reservation",
+        "tests/unit/test_w4_embedding_ledger.py::test_reported_overrun_counts_before_final_settlement_after_restart",
+        "tests/unit/test_w4_embedding_publication.py::test_partial_provider_usage_survives_seal_and_settles_known_overrun"
+      ],
+      "evidence_layer": "ledger state-transition seam and synthetic Provider usage faults",
+      "component_runs": [
+        "ledger-final",
+        "publication-repaired"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": "Ledger _seal seam is not an end-to-end Provider execution. Unknown B/C hard kill without proof remains out of scope."
+    },
+    {
+      "id": "ER-10",
+      "rule": "Activation intent, committed pointer, audit and settlement recover idempotently without repeat CAS or Provider.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/unit/test_w4_embedding_publication.py::test_post_cas_audit_failure_reconciles_without_provider_or_pointer_cas",
+        "tests/unit/test_w4_embedding_publication.py::test_post_cas_ledger_failure_is_durable_completed_lookup_and_reconciles",
+        "tests/unit/test_w4_embedding_publication.py::test_pointer_cas_response_loss_is_recognized_without_second_cas",
+        "tests/unit/test_w4_embedding_recovery_process.py::test_completion_recovers_after_real_worker_exit",
+        "tests/unit/test_w4_embedding_completion_audit.py::test_retry_after_successful_fsync_lost_response_adds_no_second_record",
+        "tests/unit/test_w4_embedding_publication_extended.py::test_retained_completed_generation_reconciles_accounting_without_reactivating",
+        "tests/unit/test_w4_embedding_publication.py::test_corrupt_audit_after_committed_pointer_never_marks_operation_failed",
+        "tests/unit/test_w4_embedding_completion_audit.py::test_same_completion_identity_cannot_disagree_on_previous_generation"
+      ],
+      "evidence_layer": "same-process injected failures plus 15 independent workers at five real process-exit boundaries",
+      "component_runs": [
+        "publication-repaired",
+        "recovery-process",
+        "publication-import-diagnostic",
+        "core-extended"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": "Completion recovery worker uses empty source; actual nonzero request counts are separately covered by public blackboxes."
+    },
+    {
+      "id": "MIG-06",
+      "rule": "Strict readonly classification of legacy ledgers 1/2; explicit raw-byte CAS upgrade to 3 preserves facts, refuses malformed data and unbound stage adoption.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/unit/test_w4_embedding_ledger.py::test_legacy_readonly_classification_preserves_original_facts",
+        "tests/unit/test_w4_embedding_ledger.py::test_explicit_upgrade_is_atomic_and_old_confirmation_becomes_stale",
+        "tests/unit/test_w4_embedding_ledger.py::test_upgrade_cas_binds_raw_bytes_not_just_equivalent_json",
+        "tests/unit/test_w4_embedding_ledger.py::test_bad_second_legacy_record_refuses_whole_upgrade",
+        "tests/unit/test_w4_embedding_ledger.py::test_legacy_underreported_settlement_is_not_a_paid_terminal_exception",
+        "tests/unit/test_w4_embedding_publication_extended.py::test_legacy_completed_reconcile_explicitly_upgrades_without_provider_or_cas",
+        "tests/unit/test_w4_embedding_publication_extended.py::test_legacy_processing_cannot_adopt_an_unbound_existing_stage"
+      ],
+      "evidence_layer": "synthetic legacy JSON fixtures and explicit Core reconciliation",
+      "component_runs": [
+        "ledger-final",
+        "core-extended"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": ""
+    },
+    {
+      "id": "MIG-07",
+      "rule": "Atomic ledger upgrade and exclusive proof persistence withstand interruption; no invented historical seal.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/unit/test_w4_embedding_ledger.py::test_upgrade_replace_interruption_retains_complete_old_or_new_document",
+        "tests/unit/test_w4_embedding_ledger.py::test_upgrade_rechecks_original_bytes_at_atomic_replace_boundary",
+        "tests/unit/test_w4_embedding_stage_proof.py::test_interrupted_exclusive_seal_revokes_capability_without_adoptable_proof",
+        "tests/unit/test_w4_embedding_publication.py::test_seal_fsync_response_loss_recovers_exact_proof_without_second_provider"
+      ],
+      "evidence_layer": "filesystem boundary fault injection and raw-byte CAS",
+      "component_runs": [
+        "ledger-final",
+        "publication-repaired",
+        "grant-final"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": ""
+    },
+    {
+      "id": "MIG-08",
+      "rule": "Grant v2 has bound lifetime, sealed proof revokes writes, expired valid seal is adopted readonly, tampering fails closed.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/unit/test_w4_embedding_stage_proof.py::test_v2_marker_and_seal_have_exact_canonical_raw_digests",
+        "tests/unit/test_w4_embedding_stage_proof.py::test_seal_revokes_every_later_write_and_cannot_be_overwritten",
+        "tests/unit/test_w4_embedding_stage_proof.py::test_seal_outside_original_grant_lifetime_is_refused",
+        "tests/unit/test_w4_embedding_stage_proof.py::test_legitimate_seal_is_readable_after_expiry_without_any_write",
+        "tests/unit/test_w4_embedding_expiry_execution.py::test_public_publication_adopts_expired_legitimate_seal_without_renewing_grant",
+        "tests/unit/test_w4_embedding_stage_proof.py::test_every_bound_file_is_opened_through_nofollow_gateway"
+      ],
+      "evidence_layer": "strict grant/proof reader and separate public execution supplement",
+      "component_runs": [
+        "grant-final",
+        "expiry-execution"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": "Expiry execution advances only captured grant clock; no product clock hook or renewal is introduced."
+    },
+    {
+      "id": "MIG-09",
+      "rule": "Cross-period accounting preserves known usage and original reservation; committed pointer audit/ledger completion reconciles across hosts exactly once.",
+      "status": "verified_in_final_p0",
+      "test_selectors": [
+        "tests/unit/test_w4_embedding_ledger.py::test_native_stage_effect_proof_and_original_period_survive_restart",
+        "tests/unit/test_w4_embedding_ledger.py::test_policy_changes_do_not_erase_tokens_already_spent_in_current_period",
+        "tests/unit/test_w4_embedding_ledger.py::test_timezone_change_conservatively_counts_overlapping_original_period",
+        "tests/unit/test_w4_embedding_publication.py::test_partial_provider_usage_survives_seal_and_settles_known_overrun",
+        "tests/unit/test_w4_embedding_recovery_process.py::test_completion_recovers_after_real_worker_exit",
+        "tests/blackbox/test_w4_embedding_cli_blackbox.py::test_cli_sealed_pending_restarts_across_day_and_month_without_provider",
+        "tests/blackbox/test_w4_embedding_mcp_blackbox.py::test_mcp_sealed_pending_restarts_across_day_and_month_without_provider",
+        "tests/unit/test_w4_embedding_publication_extended.py::test_retained_completed_generation_reconciles_accounting_without_reactivating"
+      ],
+      "evidence_layer": "ledger reload/usage seam, actual worker exit, actual CLI/MCP transport",
+      "component_runs": [
+        "ledger-final",
+        "publication-repaired",
+        "recovery-process",
+        "blackbox-component",
+        "core-extended"
+      ],
+      "final_runs": [
+        "final-p0"
+      ],
+      "limitations": "Cross-period public blackboxes prove accounting period/reservation retention; post-CAS fault proof is the separate worker lane."
+    }
+  ],
+  "retained_known_failures": {
+    "phase": "W5",
+    "count": 2,
+    "issue": "R-04 / OC-10b / SDK-01 legacy unversioned review refusal",
+    "nodeids": [
+      "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[approve]",
+      "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[return]"
+    ],
+    "xfail_or_skip_added": false,
+    "interpretation": "Expected ordinary failures remain collected. A P0 run containing them is not wholly green.",
+    "observed_run": "final-p0",
+    "observed_status": "ordinary_failed"
+  },
+  "excluded_cases": [
+    {
+      "id": "MIG-10",
+      "phase": "W5",
+      "status": "not_implemented"
+    },
+    {
+      "id": "MIG-01..05",
+      "status": "historical_contracts_unchanged"
+    }
+  ],
+  "evidence_boundaries": {
+    "isolation": "All product execution uses scripts/run-test.ps1 and isolated .data-test roots; deterministic external numeric-loopback Provider only.",
+    "public_blackbox_requests": {
+      "sealed_pending_each_protocol": 2,
+      "publish_only_additional": 0,
+      "budget_recovery_each_day_month_protocol": 4,
+      "rejected_budget_stale_or_missing_network_additional": 0
+    },
+    "clock": "PKV_TEST_EMBEDDING_CLOCK is a guarded test-only offline_entrypoint input consumed after G0; only ledger budget time changes. Existing host is fixed; new host reads new selected-root UTC clock. No lease/grant/global time is altered.",
+    "same_process_fault_tests": "Publication/audit fault injection creates new readers within one OS process; it is not evidence of process exit.",
+    "source_free_wheel": "Existing local-wheel fixture uses a checkout-external disposable clean-install venv and a separately guarded synthetic home; the parent run still uses run-test.ps1 and selected .data-test. Source Conda IANA files are hash-verified before copying. This is local packaging contract evidence, not a PyPI dependency installation, complete artifact or release."
+  },
+  "metadata_validation": {
+    "status": "passed",
+    "method": "Native PowerShell metadata only: JSON shape, referenced path/SHA, completed log outcomes, exact node evidence and case references; no product imports, test execution or network.",
+    "script": ".data-test/w4-20261025-evidence/reports/validate-w4-registry.ps1",
+    "report": ".data-test/w4-20261025-evidence/reports/registry-validation.json",
+    "log": ".data-test/w4-20261025-evidence/reports/registry-validation.log",
+    "script_sha256": "09544afc57ec00da6078c7dff8d1f60972c35a588193dcaee96f9f3b941c3f5f",
+    "diff_check": {
+      "status": "passed",
+      "working_directory": "E:/repos/personal/personal-knowledge-vault",
+      "command": "git diff --check",
+      "exit_code": 0,
+      "log": ".data-test/w4-20261025-evidence/reports/final-diff-check.log",
+      "log_sha256": "274486032c0ea6d5f1c1408c9b32fc2f7043f255a5cd7622351157d17c1962a8",
+      "interpretation": "Root ran the repository-wide diff check after documentation freeze. Only Git LF-to-CRLF conversion warnings were emitted; no whitespace errors. Untracked registry JSON is validated separately."
+    }
+  },
+  "dependency_evidence": {
+    "timezone": {
+      "path": ".data-test/w4-sdk-20261025-release-candidate/reports/timezone-dependency.json",
+      "sha256": "311aef95e656b8bd45ed92e30617a10a25f37acc91aff8c4ef3dcfb467f0e64f",
+      "conda_package_sha256": "52adc4b0a9cce2ffb8ad319d54b7c940ae7961f7caf7ce6851eec4b3f542c368",
+      "verified_files": 606,
+      "interpretation": "Conda 2026c IANA data copied after per-file source hash verification into source-free wheel venv; this does not claim a network/PyPI installation of tzdata."
+    },
+    "sdk_manifest": {
+      "path": ".data-test/w4-sdk-20261025-release-candidate/reports/sdk-files.sha256",
+      "sha256": "73ec9a5123db20e9d9d36e89de5e7a7ba2435c9f58e75bb9517c1e89fe0e7267"
+    }
+  },
+  "red_to_green": {
+    "historical_registry": "tests/contracts/w1_lifecycle_regressions.v1.json",
+    "historical_run": "w1-lifecycle-20261024-final",
+    "historical_log": {
+      "path": ".data-test/w1-lifecycle-20261024-final/reports/pytest.log",
+      "sha256": "19747903b250efa863767a3053bd5c692f352cebf66b9404209eb9a0f4102a17"
+    },
+    "defects": [
+      {
+        "id": "R-02",
+        "original_red_nodeids": [
+          "tests/unit/test_w1_embedding_regressions.py::test_r02_er04_completed_stage_contention_exposes_publish_only_recovery"
+        ],
+        "green_runs": [
+          "w1-embedding",
+          "ledger-final"
+        ],
+        "final_runs": [
+          "final-p0"
+        ]
+      },
+      {
+        "id": "R-06",
+        "original_red_nodeids": [
+          "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[day]",
+          "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[month]"
+        ],
+        "green_runs": [
+          "w1-embedding",
+          "ledger-final"
+        ],
+        "final_runs": [
+          "final-p0"
+        ]
+      }
+    ],
+    "historical_green_control": "ER-08 active-operation cross-period replay was already a W1 green control, not a new red-to-green claim."
+  },
+  "acceptance_method": {
+    "status": "w4_scope_accepted_with_registered_w5_failures_and_existing_skips",
+    "method": "Full P0 on unchanged C: product source plus complete accepted MCP and the complete W3 public regression file on identical product bytes with exactly three test-oracle file deltas. Node-set coverage is deduplicated; this is not one wholly green P0 run.",
+    "required_checks": [
+      "Original/final manifest path sets match; content differences are exactly the three authorized test-oracle files and no product/evals bytes differ.",
+      "Final MCP selected nodes reconcile with completed 908-pass summary using independent guarded collection; complete W3 public verbose results contain all 76 passing nodes.",
+      "Every P0 node in all three changed files is covered by the appropriate successful complete-file/complete-suite recovery.",
+      "Actual P0 non-W5 failures must be exactly the four old-oracle nodes recovered by MCP/W3 public; any additional failure or error prevents closure.",
+      "Keep the original P0 exit 1, skip summaries and two ordinary W5 failures visible; never add overlapping passed counts."
+    ],
+    "selection_source": "Full P0's completed default collection and independent accepted MCP collection-only log; no reliance on the successful MCP temporary cache, which test-conda deletes.",
+    "is_single_green_full_run": false,
+    "all_repository_gates_passed": false,
+    "original_p0_exit_code": 1,
+    "deduplicated_outcomes": {
+      "selected": 4156,
+      "passed": 4133,
+      "failed": 2,
+      "skipped": 21,
+      "errors": 0,
+      "xfail": 0
+    },
+    "new_w4_outcomes": {
+      "selected": 363,
+      "passed": 363,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0
+    },
+    "node_closure": {
+      "path": ".data-test/w4-20261025-evidence/reports/acceptance-node-closure.json",
+      "sha256": "66bc4a1e5d12b5a09533510ec8a71b68f8efc8e70119b9037e7c1c0d3f60b734"
+    },
+    "gate_summary": {
+      "path": ".data-test/w4-20261025-evidence/reports/final-gate-accepted-summary.json",
+      "sha256": "88f382707a25f088d1683e84eff2240a300ce1d33dd123137d8dd45b77597d94"
+    },
+    "p0_node_outcomes": {
+      "path": ".data-test/w4-20261025-evidence/reports/final-p0-node-outcomes.json",
+      "sha256": "100aa778c2a56cd7a81e100069a5a49374f215bc21a7b32b8bb5c94f210dcafa"
+    },
+    "p0_selected_nodes": {
+      "path": ".data-test/w4-20261025-evidence/reports/final-p0-accepted-collected-nodeids.json",
+      "sha256": "a393298e45930c467d66af49a74e85bf8b2ee1d50ca07f1df783d4572f7f4936"
+    },
+    "mcp_selected_nodes": {
+      "path": ".data-test/w4-20261025-evidence/reports/final-mcp-accepted-collected-nodeids.json",
+      "sha256": "c8d1a2c0adcabecc595cc4e21b3a3fd167928f1ec014f303593d27e184e159df"
+    },
+    "sdk_public_passed_nodes": {
+      "path": ".data-test/w4-20261025-evidence/reports/final-w3-public-passed-nodeids.json",
+      "sha256": "fca7450cede05b7748763cba3c0709a8bd9d2ab9360fe3a7234e8319da9843b5"
+    },
+    "outcome_method": "Map each actual P0 outcome character to the exact ordered collection; verify every progress percentage, summary count and failure identity. Replace only exact passing recovery node sets from accepted MCP and W3 public. The resulting 4133/21/2/0 counts are deduplicated node outcomes, never added suite totals.",
+    "acceptance_runs": [
+      "final-p0",
+      "final-mcp",
+      "w3-public-oracle-repaired"
+    ],
+    "metadata_scripts": [
+      ".data-test/w4-20261025-evidence/reports/summarize-final-gates.ps1",
+      ".data-test/w4-20261025-evidence/reports/verify-acceptance-node-closure.ps1",
+      ".data-test/w4-20261025-evidence/reports/verify-acceptance-delta.ps1"
+    ]
+  }
+}

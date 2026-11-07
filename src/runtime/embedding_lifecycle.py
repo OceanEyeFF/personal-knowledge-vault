@@ -22,7 +22,7 @@ import sqlite3
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -763,8 +763,22 @@ def _validate_manifest(
 ) -> tuple[dict[str, Any], str]:
     """Validate a complete generation without creating sidecars or providers."""
 
+    return _validate_generation_directory(
+        config, generation_id, generation_dir=_generation_dir(config, generation_id),
+        expected_contract=expected_contract,
+    )
+
+
+def _validate_generation_directory(
+    config: Any,
+    generation_id: str,
+    *,
+    generation_dir: Path,
+    expected_contract: EmbeddingContract | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Use the same strict reader for retained generations and sealed stages."""
+
     layout = config.layout
-    generation_dir = _generation_dir(config, generation_id)
     try:
         layout.validate_user_directory(
             generation_dir,
@@ -826,7 +840,11 @@ def _validate_manifest(
         # malformed HNSW payload must make inspect/binding fail closed too.
         # ``open_readonly`` is the production strict path and never creates a
         # directory, lock, sidecar, migration, or Provider.
-        vector_config = _VectorRuntimeConfigSnapshot.capture(config, contract)
+        # Readonly verification binds to the manifest's validated contract. A
+        # later Config may use another model/endpoint; that makes publication
+        # stale, but must not turn otherwise valid historical evidence into a
+        # corrupt index. No raw endpoint is needed by the strict v2 reader.
+        vector_config = _VectorRuntimeConfigSnapshot(config.layout, contract, "")
         readonly = VectorStore.open_readonly(
             generation_dir,
             dim=contract.dimension,
@@ -847,6 +865,38 @@ def _validate_manifest(
             "已发布 Embedding generation 不完整或不可验证，需要修复。",
             stage="embedding_generation",
         ) from exc
+
+
+def _validate_staged_generation(
+    config: Any,
+    stage_dir: Path,
+    *,
+    expected_generation_id: str,
+    expected_manifest_sha: str,
+    expected_contract: EmbeddingContract,
+    expected_source: EmbeddingSourceSummary,
+) -> tuple[dict[str, Any], str]:
+    """Read and fully validate a private stage, without extending its grant."""
+
+    try:
+        manifest, manifest_sha = _validate_generation_directory(
+            config, expected_generation_id, generation_dir=stage_dir,
+            expected_contract=expected_contract,
+        )
+    except PKVRuntimeError as exc:
+        raise _safe_runtime_error(
+            ErrorCode.REPAIR_REQUIRED,
+            "Embedding 封存 generation 不能通过严格只读验证。",
+            stage="embedding_generation",
+        ) from exc
+    if (manifest_sha != expected_manifest_sha
+            or _parse_source_summary(manifest.get("source")) != expected_source):
+        raise _safe_runtime_error(
+            ErrorCode.RUNTIME_PLAN_STALE,
+            "Embedding 封存 generation 与原始源绑定不一致。",
+            stage="embedding_generation",
+        )
+    return manifest, manifest_sha
 
 
 def _runtime_embedding_base_matches(
@@ -1839,6 +1889,7 @@ def _publish_generation_directory(
     expected_manifest_sha: str,
     expected_contract: EmbeddingContract,
     expected_source: EmbeddingSourceSummary,
+    preserve_stage: bool = False,
 ) -> tuple[str, str]:
     """Reserve then materialize a validated stage without replacing a generation.
 
@@ -1872,15 +1923,60 @@ def _publish_generation_directory(
                 stage="embedding_generation",
             )
         layout.validate_user_directory(final_dir, label="Embedding generation 目录", allow_missing=True)
+        existing_final = False
         try:
             final_dir.mkdir()
         except FileExistsError as exc:
-            raise _safe_runtime_error(
-                ErrorCode.RUNTIME_PLAN_STALE,
-                "目标 Embedding generation 已存在；请重新生成计划。",
-                stage="embedding_generation",
-            ) from exc
+            if not preserve_stage:
+                raise _safe_runtime_error(
+                    ErrorCode.RUNTIME_PLAN_STALE,
+                    "目标 Embedding generation 已存在；请重新生成计划。",
+                    stage="embedding_generation",
+                ) from exc
+            existing_final = True
         layout.validate_user_directory(final_dir, label="Embedding generation 目录", allow_missing=False)
+        if preserve_stage:
+            # A sealed manual stage is durable recovery evidence. Copy exactly
+            # the public generation's five artifacts; never move its grant or
+            # publish-ready proof into the retained reader directory. A crash
+            # may leave a partial, unreferenced final directory. Existing final
+            # directories are adopted only when complete; partial copies require
+            # repair and must not be silently completed or overwritten.
+            filenames = (*_PAIR_FILENAMES, _GENERATION_MANIFEST_NAME)
+            if any(child.name not in filenames for child in final_dir.iterdir()):
+                raise ValueError("unexpected retained generation artifact")
+            if existing_final:
+                manifest, manifest_sha = _validate_manifest(
+                    config, generation_id, expected_contract=expected_contract,
+                )
+                if (manifest_sha != expected_manifest_sha
+                        or _parse_source_summary(manifest.get("source")) != expected_source):
+                    raise ValueError("existing generation manifest changed")
+            for filename in filenames:
+                child, destination = stage_dir / filename, final_dir / filename
+                layout.validate_user_file(destination, label="Embedding generation 文件", allow_missing=True)
+                with layout.open_user_file(child, "rb", label="Embedding staging 文件") as source:
+                    if os.path.lexists(destination):
+                        with layout.open_user_file(destination, "rb", label="Embedding generation 文件") as retained:
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if chunk != retained.read(1024 * 1024):
+                                    raise ValueError("retained generation artifact mismatch")
+                                if not chunk:
+                                    break
+                    else:
+                        with layout.open_user_file(destination, "xb", label="Embedding generation 文件") as target:
+                            while chunk := source.read(1024 * 1024):
+                                target.write(chunk)
+                            target.flush()
+                            os.fsync(target.fileno())
+            manifest, manifest_sha = _validate_manifest(
+                config, generation_id, expected_contract=expected_contract,
+            )
+            if (manifest_sha != expected_manifest_sha
+                    or _parse_source_summary(manifest.get("source")) != expected_source):
+                raise ValueError("published generation manifest changed")
+            return generation_id, manifest_sha
         # Move each leaf only into our freshly reserved, unreferenced directory.
         # A crash leaves an unreferenced partial generation for later diagnosis;
         # it cannot affect any reader because pointer activation has not begun.
@@ -1909,9 +2005,15 @@ def _publish_generation_directory(
         ):
             raise ValueError("published generation manifest changed")
         return generation_id, manifest_sha
-    except PKVRuntimeError:
-        raise
-    except OSError as exc:
+    except PKVRuntimeError as exc:
+        if not preserve_stage or exc.code in {ErrorCode.RUNTIME_PLAN_STALE, ErrorCode.REPAIR_REQUIRED}:
+            raise
+        raise _safe_runtime_error(
+            ErrorCode.REPAIR_REQUIRED,
+            "Embedding 保留 generation 不完整或不可验证。",
+            stage="embedding_generation",
+        ) from exc
+    except (OSError, ValueError) as exc:
         raise _safe_runtime_error(
             ErrorCode.REPAIR_REQUIRED,
             "Embedding generation 无法安全发布到保留目录。",
@@ -2117,6 +2219,10 @@ def execute_embedding_rebuild(
             for method in required_observer_methods
         ):
             raise TypeError("execution_observer 缺少 Embedding rebuild accounting 回调")
+    manual_stage = execution_observer is not None and all(
+        callable(getattr(execution_observer, method, None))
+        for method in ("stage_metadata", "stage_allocated", "seal_stage", "adopt_stage")
+    )
 
     def _require_embedder(value: RebuildEmbedder | None) -> RebuildEmbedder:
         if (
@@ -2217,12 +2323,16 @@ def execute_embedding_rebuild(
                             "Embedding rebuild 独立账本返回了无效 operation identity。",
                             stage="embedding_rebuild_ledger",
                         )
-                stage_grant = GenerationStageGrant.allocate(
-                    plan._config,
-                    plan_id=plan.plan_id,
-                    source_revision=current._config_source_revision,
-                    operation_id=observer_operation_id,
-                )
+                stage_metadata = {
+                    "plan_id": plan.plan_id,
+                    "source_revision": current._config_source_revision,
+                    "operation_id": observer_operation_id,
+                }
+                if manual_stage:
+                    stage_metadata.update(execution_observer.stage_metadata(plan, current))
+                stage_grant = GenerationStageGrant.allocate(plan._config, **stage_metadata)
+                if manual_stage:
+                    execution_observer.stage_allocated(stage_grant.operation_id, stage_grant)
 
                 from src.runtime.audit import AuditTrace
 
@@ -2283,6 +2393,19 @@ def execute_embedding_rebuild(
             embedder=effective_embedder,
             stage_grant=stage_grant,
         )
+        stage_proof = None
+        if manual_stage:
+            _validate_staged_generation(
+                plan._config, stage_dir,
+                expected_generation_id=staged_generation_id,
+                expected_manifest_sha=staged_manifest_sha,
+                expected_contract=plan.inspection.contract,
+                expected_source=captured.summary,
+            )
+            stage_proof = execution_observer.seal_stage(
+                stage_grant.operation_id, stage_grant,
+                staged_generation_id, staged_manifest_sha,
+            )
     except PKVRuntimeError as error:
         # Failure telemetry is best effort and may only be appended while a new
         # root lease is held.  It must never replace the typed Provider/staging
@@ -2313,8 +2436,32 @@ def execute_embedding_rebuild(
 
     # Phase D: fence/source/config recheck, then strictly validate and atomically
     # publish.  A stale capture leaves the private stage unreferenced.
+    @contextmanager
+    def publication_lease():
+        # Only lease acquisition failure is reclassified. Once C has sealed a
+        # manual stage, no root-wide ledger, snapshot, audit or log write is
+        # permitted until another owner relinquishes this lease.
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(lease_factory(plan._config))
+            except PKVRuntimeError as error:
+                if error.code is ErrorCode.WRITE_BUSY and manual_stage:
+                    raise PKVRuntimeError(
+                        ErrorCode.EMBEDDING_PUBLICATION_PENDING,
+                        "Embedding 已完成，等待显式继续发布。",
+                        stage="embedding_publication", recoverable=True,
+                        details={
+                            "operation_id": stage_grant.operation_id,
+                            "effective_state": "awaiting_publish",
+                            "provider_effect": "completed",
+                            "publish_only_required": True,
+                        },
+                    ) from error
+                raise
+            yield
+
     pointer_committed = False
-    with lease_factory(plan._config), runtime_file_log_scope(
+    with publication_lease(), runtime_file_log_scope(
         _log_binding(), owner="embedding_generation"
     ):
         try:
@@ -2328,6 +2475,12 @@ def execute_embedding_rebuild(
             assert current.contract is not None
             assert current._snapshot is not None
             assert current._captured_source is not None
+            if manual_stage:
+                from src.runtime.embedding_rebuild_v2 import finish_manual_publication
+
+                return finish_manual_publication(
+                    plan, current, stage_grant, stage_proof, execution_observer,
+                )
             stage_grant.consume_for_publish()
 
             from src.runtime.audit import AuditTrace, AuditTraceError

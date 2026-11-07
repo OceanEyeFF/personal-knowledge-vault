@@ -4,7 +4,9 @@
 > 绑定、D 阶段争锁和预算暂停重入存在缺口。W2 已修复并定向验证 **R-01 的 v1 根/完整
 > snapshot 确认绑定**，证据见第 10 节及
 > [W2 修复记录](./W2-身份队列与CLI门禁修复记录-2026-10.md)。R-02、R-06 和 W4 的 v2
-> 恢复/预算/迁移规则仍**待实现、待验收**；不能由 R-01 通过推导恢复入口可用。实施顺序见
+> 恢复/预算/迁移规则于 2026-10-26 **范围验收完成**，当前 SDK `0.10.0` / API `1.0.0`；
+> 状态见 [W4 主记录](./W4-Embedding继续发布与预算恢复实施记录-2026-10.md)。不能由 R-01
+> 或历史 source acceptance 通过推导恢复入口已验收。实施顺序见
 > [生命周期一致性修复设计与分阶段计划](./生命周期一致性修复设计与分阶段计划-2026-10.md)。
 >
 > 前置基线：R1–R4 与 R3.1 已完成 source acceptance；R4 的 Q0 → Q1′ → Q2
@@ -80,8 +82,8 @@ façade 已放在 `pkv_kernel.embedding`，并通过新增 capability
 
 执行命令/Tool 在当前 Config snapshot 上重新 inspect 与 plan，再精确比较用户提交的 public
 `plan_id`。因此客户端不必持有服务端 plan cache，新进程也可执行仍未过期的同一计划。public
-identity 的目标合同必须绑定以下安全、跨进程稳定的 material projection；当前 v1 与未来
-v2 的实现边界见本节末：
+identity 的目标合同必须绑定以下安全、跨进程稳定的 material projection；v1 历史修复与 W4
+v2 增量的实施边界见本节末：
 
 - `data_root_identity_sha256`：当前 canonical data-root identity 的摘要；内容、配置相同的
   两个不同根必须产生不同 public plan id，不能靠当前进程重新生成 Core plan 补救原根绑定。
@@ -106,14 +108,14 @@ snapshot 的稳定摘要；不能删除一个混合 revision 后遗漏其承担�
 Plan payload 不包含本机路径、endpoint 原文、密钥、正文、chunk 文本、audit payload 或可重建
 私有 handle 的字段。
 
-**W2 当前实现：**v1 public plan id 已在原材料中增加 `data_root_identity_sha256` 与
+**W2 历史交付边界：**v1 public plan id 已在原材料中增加 `data_root_identity_sha256` 与
 `runtime_snapshot_sha256`；后者复用本次已验证 inspection 捕获的完整原始字节摘要，不重新
 读取 snapshot、不散列可编辑用户配置。原 v1 action、source/count、pointer/manifest、contract、
 policy 与 force 继续参与确认。跨根、snapshot 扩展字段或原始字节变化均拒绝旧确认；同根
 同材料可由新 CLI/MCP 进程重算。旧 public plan id 须重新 inspect/plan/confirm。
 这次修复没有新增 v1 DTO 字段、API major 或 capability，也没有引入 v2 分域 identity、
-`budget_check_period`、publish-only 身份或 ledger v3；这些仍属 W4。v1 durable replay key
-保留原材料和编码，兼容已落盘 active operation 的围栏；其状态规则缺口仍见第 4.1 节。
+`budget_check_period`、publish-only 身份或 ledger v3；这些在 W4 单独实施验收。W2 当时的 v1
+durable replay key 保留原材料和编码，兼容已落盘 active operation 的围栏；W4 状态规则见第 4.1 节。
 ER-01/02 与旧 replay 兼容性验证见第 10 节。
 
 ### 2.4 Provider 调用必须在 root writer lease 之外
@@ -166,19 +168,20 @@ publish plan 确认**，在 lease 内重检根、source、contract、policy、sn
 否则等待窗口会再次成为永久阻塞。源或目标已漂移则终结旧发布操作或返回明确 repair 状态，
 在可取得 lease 时按原事实/保守估算结算用量；不得悄悄生成新向量。
 
-**当前产品尚无该完成凭据、`awaiting_publish` 对齐合同或公开继续入口。**目标随
-API-major-2 与 `kernel.embedding-rebuild.v2` 交付；lookup、publish-plan、confirm + execute 的
-准确签名、DTO 与错误投影已在 W1 的
+**W4 已实现完成凭据、`awaiting_publish` 对齐和公开继续入口，并完成范围验收。**按 W1 冻结合同第 6 节，
+`kernel.embedding-rebuild.v2` 已在公开链路实现与组件验证后于 SDK `0.10.0` / API `1.0.0` 中
+作为兼容增量声明，并保留 v1；W4 范围验收完成，它不以 W5 的 API-major-2 切换为前提。lookup、publish-plan、
+confirm + execute 的准确签名、DTO 与错误投影已在 W1 的
 [v2 接口冻结合同](../specs/interfaces/生命周期一致性v2接口冻结合同-2026-10.md) 固定；
 ledger v3、grant v2 与 proof 见[迁移冻结方案](../specs/database/生命周期一致性迁移冻结方案-2026-10.md)。
-它们仍未实现，不能把现有 execute 重放称为已支持恢复。
+当前验收状态以 W4 主记录为准，不能把普通 rebuild execute 重放称为 publish-only 恢复。
 这项正常 D 争锁修复不开放 Q2 task resume，也不依赖第 8 节后置的 B/C 强杀回收。
 
 ## 3. 当前 v1 协议与 v2 冻结入口
 
 ### 3.1 Kernel façade
 
-下列为当前 v1 API；新增 v2 的具体名称与 DTO 以 W1 冻结合同为准，本轮不修改 registry：
+下列 v1 API 保留；W4 在同一模块增加独立 v2 名称与 DTO，具体形状以 W1 冻结合同为准：
 
 ```python
 from pkv_kernel import embedding
@@ -204,11 +207,11 @@ execution = embedding.execute_embedding_rebuild(plan, confirmation)
 
 “operation id”只用于审计关联和受控状态投影，不是 public resume token。v1 不增加
 `get_embedding_operation` 或 `resume_embedding_operation`。这是现有 v1 surface 的事实；
-第 2.5 节的 manual `awaiting_publish` 继续入口是已冻结、待实现的显式增量，不能由这条
+第 2.5 节的 manual `awaiting_publish` 继续入口是 W4 已实现并完成范围验收的显式 v2 增量，不能由这条
 历史限制推导出“正常 D 争锁可以永久卡住”，也不能假称现有 v1 已具备该能力。
 
-修复目标的 `kernel.embedding-rebuild.v2` 随 API-major-2 一并提供下列语义，外部调用者须先
-进行版本/capability 握手；本节不宣称这些方法名或参数已经存在：
+`kernel.embedding-rebuild.v2` 已按冻结 §6 的兼容增量规则实现并声明下列语义，外部调用者须先
+进行版本/capability 握手；W4 范围验收完成，不能以 capability 声明替代最终结果：
 
 - lookup：只读返回指定 manual operation 的安全 effective state、publication/usage 状态；
   不对齐 ledger，不调 Provider，不返回 stage 路径、正文或私有 capability。
@@ -249,8 +252,24 @@ MCP envelope 必须包含 `terminal` / `status`、可操作的 stable `issues` �
 generation ids；不得以空 `results`、成功或内部异常文本替代 degraded/error。所有 Tool 通过
 同一 Kernel/Application port，不增加 MCP 的 Store 或 Provider composition。
 
-MCP manifest 从 15 Tool 变为 18 Tool 是显式 public-contract 变更；需要同步 Tool discovery、
-MCP quality taskset/score、coverage gate 和文档，不能只改实现。
+2026-09 的 MCP manifest 从 15 Tool 变为 18 Tool 是当时的 public-contract 变更。W3 增量后的
+历史总数为 35；W4 再增加 6 个，当前为 41（23 只读 + 18 写入）。Tool discovery、MCP quality
+taskset/score、coverage gate 和文档必须同步，不能只改实现或复用历史计数。
+
+### 3.4 W4 独立 v2 表面
+
+SDK 保留全部 v1，增加八个函数：`inspect / plan / confirm / execute_embedding_rebuild_v2`、
+`inspect_embedding_operation_v2` 以及 `plan / confirm / execute_embedding_publication_v2`。
+返回七个 facade-only opaque handle（publication execute 复用 rebuild execution 类型），禁止
+直接构造、copy、pickle 或由展示 DTO 恢复执行能力。完整类型名称见
+[SDK 公开合同](../specs/interfaces/KernelSDK公开合同.md)。
+
+CLI 增加 `embedding inspect-v2`、`rebuild-v2 [--force] [--apply --confirm ID --allow-network]`、
+`operation-v2 OPERATION_ID`、`publish-v2 OPERATION_ID [--apply --confirm ID]`。publish 不接收
+force/network；默认只读计划，写入必须明确确认。MCP 增加 inspect rebuild、plan rebuild、inspect
+operation、plan publication 四个只读 v2 Tool，以及 execute rebuild/publication 两个写入 v2 Tool。
+新入口使用 `pkv.lifecycle-response.v2`，operation 固定为对应 MCP 名，不接收客户端路径、Config
+或私有 handle。v1 pending code/details 保留旧形状，lookup/publish 仅在 v2 提供。
 
 ## 4. 费用、授权与状态规则
 
@@ -269,10 +288,12 @@ public rebuild 是一次性、显式确认的网络 mutation，plan 必须显示
    不能被无 Provider 的历史拒绝永久挡在 replay fence 前。
 4. Provider 返回 usage 时按阶段记录；未报告字段保持 unknown/`NULL`，不是零。
 
-独立 manual-rebuild ledger 已存在，但它的 replay/状态规则尚不满足上述恢复目标。必须先
-冻结第 4.1 节的状态和兼容合同，再改 ledger；不得绕过费用控制或复用 Q2 的验收结论。
+W4 按已冻结的第 4.1 节与迁移合同实施 ledger 3、replay/状态规则和 grant 2/proof；完整验收
+单列在 W4 主记录，不得绕过费用控制或复用 Q2 的验收结论。legacy 1/2 只读分类后在明确
+确认的 v2 mutation 中升级；v1 不隐式迁移。legacy schema 1 缺 public_plan_id，公开
+original_plan_id 保持 null，不以 Core 私有 plan_id 代填。
 
-### 4.1 phase / 状态 × replay × reservation（待实现的规范）
+### 4.1 phase / 状态 × replay × reservation（W4 已完成范围验收的冻结规范）
 
 material transition identity 用于并发去重，operation identity 用于一次已接受执行的事实关联；
 二者不能混用为“见过此 source 即永不再执行”。`force` 不得绕过同一 transition 的并发围栏。
@@ -364,7 +385,7 @@ source acceptance。
 | inspect / plan 零副作用 | Kernel、真实 CLI 子进程、MCP stdio | 不创建 DataRoot/Provider/stage/audit；无 source/path/credential 泄露。 |
 | 确认门禁 | CLI、MCP、Kernel | 缺 `approved`、`allow_network` 或 plan id 不匹配时零 Provider、零 generation 变更。 |
 | A stale / write busy | Core + 公共入口 | admission 前的 drift 或竞争在 Provider 前失败；无 operation/reservation/audit/stage/pointer 副作用。 |
-| D write busy | Core + 公共继续入口（待实现） | 持久 publish-ready proof 支撑 effective `awaiting_publish`，争锁期间不写共享 ledger；取得 lease 后对齐并显式继续发布，不重复 Provider/预算。 |
+| D write busy | Core + W4 公共继续入口 | 持久 publish-ready proof 支撑 effective `awaiting_publish`，争锁期间不写共享 ledger；取得 lease 后对齐并显式继续发布，不重复 Provider/预算。 |
 | Provider lease 边界 | 外置 deterministic harness barrier | Provider 活跃期间，另一 writer 可取得/释放 root lease；stage 仅能通过有效 grant 写自己的叶子。 |
 | Provider/stage 失败 | Core + public envelope | active pointer 不变，reader 不退回 flat index，错误可操作且不泄密。 |
 | 成功重建 | CLI 与 MCP 真进程 | 新 READY generation 绑定、previous retained、usage/reservation/audit 事实正确；新进程 vector/hybrid 命中。 |
@@ -372,8 +393,8 @@ source acceptance。
 | 安全回归 | CLI/MCP blackbox | 无真实网络/凭据/Vault；无固定端口、sleep 或全局 Config 污染；MCP 仍 stdio-only。 |
 
 以下是 2026-10-24 复审建立的修复验收门槛。W2 已取得 ER-01/02 的第 10 节证据；
-其余行仍为后续验收要求，不能因同一表内部分用例通过而视为完成。特别是 R-02/R-06 与
-W4 的公开继续协议、预算恢复和迁移仍未完成。
+其余行是本次 W4 的验收要求，不能因同一表内部分用例通过而视为完成。R-02/R-06 与
+W4 的公开继续协议、预算恢复和迁移当前范围验收完成；最终逐项结果、节点与指纹见 W4 主记录。
 
 | Case ID | 场景与边界 | 必须断言 |
 | --- | --- | --- |
@@ -413,7 +434,7 @@ OpenAI-compatible harness 或正式 test doubles。LM Studio、真实 Provider�
 | --- | --- |
 | Q2 task public resume / retry | 需要独立 durable operation/status/authorization 产品设计，不能由 rebuild 代替。 |
 | public rollback / generation cleanup | 需要 retention、可见影响、确认与恢复合同。 |
-| Provider 中强杀后的即时 reclaim / recovery | 限定为 B/C 尚无可验证完整 stage 凭据、Provider 完成事实不确定的强杀。当前 fail-closed 行为保留 `processing` + reserved ledger，占用 replay key 与预算且不自动清理；后续需 claim-time / provider-start、expiry/reconciliation 与 cleanup 合同。**不包含**进程正常存活时的 D 普通争锁，或已完整封存的 awaiting_publish 跨进程继续；后两者是本轮待实现、待验收的修复目标。 |
+| Provider 中强杀后的即时 reclaim / recovery | 限定为 B/C 尚无可验证完整 stage 凭据、Provider 完成事实不确定的强杀。fail-closed 保留未知外部影响与 reservation，占用 replay 围栏和预算，不自动清理或重试；后续需 claim-time / provider-start、expiry/reconciliation 与 cleanup 合同。**不包含**进程正常存活时的 D 普通争锁，或已完整封存的 awaiting_publish 跨进程继续；后两者已完成 W4 范围验收。 |
 | `archive_url` 成功离线黑盒 | 当前没有同时满足 SSRF fail-closed 与公开 fetch harness 的合同。 |
 | release / Artifact | 当前 3 项 compliance blocker 与 held candidate 状态完全独立。 |
 

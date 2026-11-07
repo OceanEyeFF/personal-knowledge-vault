@@ -6,6 +6,7 @@
 pyyaml==6.0.1              # YAML 解析
 click>=8.0.0              # CLI 框架
 rich==13.7.0               # 终端 UI
+tzdata>=2024.1             # Windows IANA 时区数据（日/月预算边界）
 
 # Storage & Database
 hnswlib==0.8.0             # 向量检索 (HNSW 算法)

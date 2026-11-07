@@ -35,6 +35,7 @@ from src.mcp.server import (
     get_relation_query_service,
     get_runtime_config_for_lifecycle,
     valid_outcome_v2_arguments,
+    valid_embedding_v2_arguments,
 )
 from src.mcp.utils import (
     parse_tags_string, serialize_search_result,
@@ -148,6 +149,10 @@ _PUBLIC_RUNTIME_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.EMBEDDING_REBUILD_REQUIRED: "当前 Embedding generation 需要显式重建",
     ErrorCode.EMBEDDING_BUDGET_PAUSED: "手动 Embedding 重建已达到 token 预算",
     ErrorCode.EMBEDDING_REBUILD_AUTHORIZATION_REQUIRED: "手动 Embedding 重建尚未通过策略授权",
+    ErrorCode.EMBEDDING_PUBLICATION_PENDING: "Embedding 已生成，等待显式继续发布；请勿重复重建。",
+    ErrorCode.EMBEDDING_OPERATION_NOT_FOUND: "当前数据根中不存在该 Embedding 操作。",
+    ErrorCode.EMBEDDING_OPERATION_COMPLETED: "该 Embedding 操作已完成，无需继续发布。",
+    ErrorCode.EMBEDDING_LEDGER_UPGRADE_REQUIRED: "手动重建账本需要通过 v2 计划显式升级。",
 }
 _ERROR_CODE_VALUES = frozenset(item.value for item in ErrorCode)
 _ARCHIVE_STEP_IDS = frozenset(
@@ -3468,6 +3473,8 @@ _PUBLIC_EMBEDDING_REBUILD_STAGES = frozenset(
         "embedding_rebuild_provider",
         "embedding_rebuild_config",
         "embedding_stage_grant",
+        "embedding_publication",
+        "embedding_operation",
         "runtime_readiness",
         "runtime_snapshot",
         "write_lease",
@@ -3490,22 +3497,24 @@ def _embedding_rebuild_failure_payload(exc: BaseException) -> dict[str, object]:
         code = ErrorCode.REPAIR_REQUIRED
         recoverable = True
         stage = "embedding_rebuild_ledger"
-    return {
+    payload = {
         "status": "error",
         "terminal": "error",
         "operation": "embedding_rebuild",
         "issues": [
             {
                 "code": code.value,
-                "message": _stable_runtime_message(
-                    PKVRuntimeError(code, "", stage=stage, recoverable=recoverable),
-                    "Embedding 重建当前不可用",
-                ),
+                "message": _PUBLIC_RUNTIME_MESSAGES.get(code, "Embedding 重建当前不可用"),
                 "stage": stage,
                 "recoverable": recoverable,
             }
         ],
     }
+    if isinstance(exc, PKVRuntimeError):
+        details = exc.to_dict().get("details")
+        if details is not None:
+            payload["issues"][0]["details"] = details
+    return payload
 
 
 def _embedding_rebuild_success_payload(
@@ -3561,6 +3570,126 @@ async def inspect_embedding_rebuild() -> dict:
             return _embedding_rebuild_failure_payload(exc)
 
     return await anyio.to_thread.run_sync(_impl)
+
+
+def _embedding_v2_failure_payload(exc: BaseException, *, operation: str) -> dict[str, object]:
+    if isinstance(exc, (TypeError, ValueError)):
+        exc = PKVRuntimeError(
+            ErrorCode.RUNTIME_PLAN_STALE, "Embedding 参数无效。",
+            stage="embedding_plan", recoverable=False,
+        )
+    projected = project_bootstrap_error(exc, adapter="mcp", stage="embedding_rebuild")
+    issue = {key: projected[key] for key in ("code", "stage", "recoverable")}
+    if "details" in projected:
+        issue["details"] = projected["details"]
+    issue["message"] = {
+        "embedding_publication_pending": "Embedding 已生成，等待显式继续发布；请勿重复重建。",
+        "embedding_operation_not_found": "当前数据根中不存在该 Embedding 操作。",
+        "embedding_operation_completed": "该 Embedding 操作已完成，无需继续发布。",
+        "embedding_ledger_upgrade_required": "手动重建账本需要通过 v2 计划显式升级。",
+        "confirmation_required": "执行需要明确批准并确认当前计划。",
+        "runtime_plan_stale": "计划或参数无效，请重新检查并确认。",
+    }.get(issue["code"], _PUBLIC_RUNTIME_MESSAGES.get(
+        getattr(exc, "code", None), "Embedding 操作当前不可用，需要检查运行时状态。",
+    ))
+    return {
+        "schema": "pkv.lifecycle-response.v2", "status": "error", "terminal": "error",
+        "operation": operation, "result": None, "issues": [issue],
+    }
+
+
+async def _run_embedding_v2(*, operation: str, arguments: dict[str, object]) -> dict[str, object]:
+    if not valid_embedding_v2_arguments(operation, arguments):
+        return _embedding_v2_failure_payload(ValueError("invalid embedding request"), operation=operation)
+
+    def _impl() -> dict[str, object]:
+        try:
+            from pkv_kernel import embedding as kernel_embedding
+
+            config = get_runtime_config_for_lifecycle(require_ready=False)
+            publication = operation in {
+                "inspect_embedding_operation_v2", "plan_embedding_publication_v2",
+                "execute_embedding_publication_v2",
+            }
+            if publication:
+                result = kernel_embedding.inspect_embedding_operation_v2(arguments["operation_id"], config=config)
+                if operation != "inspect_embedding_operation_v2":
+                    result = kernel_embedding.plan_embedding_publication_v2(result)
+            else:
+                result = kernel_embedding.inspect_embedding_rebuild_v2(config)
+                if operation != "inspect_embedding_rebuild_v2":
+                    result = kernel_embedding.plan_embedding_rebuild_v2(result, force=arguments.get("force", False))
+            if operation.startswith("execute_"):
+                if arguments["plan_id"] != result.plan_id:
+                    raise PKVRuntimeError(
+                        ErrorCode.RUNTIME_PLAN_STALE, "确认不属于当前计划。",
+                        stage="embedding_plan", recoverable=True,
+                    )
+                if publication:
+                    confirmation = kernel_embedding.confirm_embedding_publication_v2(
+                        result, approved=arguments.get("approved", False),
+                    )
+                    result = kernel_embedding.execute_embedding_publication_v2(result, confirmation)
+                else:
+                    confirmation = kernel_embedding.confirm_embedding_rebuild_v2(
+                        result, approved=arguments.get("approved", False),
+                        allow_network=arguments.get("allow_network", False),
+                    )
+                    result = kernel_embedding.execute_embedding_rebuild_v2(result, confirmation)
+            payload = result.to_dict()
+            if type(payload) is not dict:
+                raise TypeError("Embedding public result contract invalid")
+            return {
+                "schema": "pkv.lifecycle-response.v2", "status": "success", "terminal": "success",
+                "operation": operation, "result": payload, "issues": payload.get("issues", []),
+            }
+        except Exception as exc:
+            logger.warning("%s failed: kind=%s", operation, _failure_kind(exc))
+            return _embedding_v2_failure_payload(exc, operation=operation)
+
+    return await anyio.to_thread.run_sync(_impl)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def inspect_embedding_rebuild_v2() -> dict:
+    """只读检查 v2 重建状态、预算和账本升级影响。"""
+    return await _run_embedding_v2(operation="inspect_embedding_rebuild_v2", arguments={})
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def plan_embedding_rebuild_v2(force: bool = False) -> dict:
+    """展示当前配置下的 v2 重建计划；不调用 Provider。"""
+    return await _run_embedding_v2(operation="plan_embedding_rebuild_v2", arguments={"force": force})
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False))
+async def execute_embedding_rebuild_v2(
+    plan_id: str, approved: bool = False, allow_network: bool = False, force: bool = False,
+) -> dict:
+    """重新核验精确计划和显式批准，执行一次网络重建。"""
+    return await _run_embedding_v2(operation="execute_embedding_rebuild_v2", arguments={
+        "plan_id": plan_id, "approved": approved, "allow_network": allow_network, "force": force,
+    })
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def inspect_embedding_operation_v2(operation_id: str) -> dict:
+    """只读检查原手动重建操作及封存证明；不推进状态。"""
+    return await _run_embedding_v2(operation="inspect_embedding_operation_v2", arguments={"operation_id": operation_id})
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def plan_embedding_publication_v2(operation_id: str) -> dict:
+    """展示原操作的继续发布或完成对齐计划，不创建网络预留。"""
+    return await _run_embedding_v2(operation="plan_embedding_publication_v2", arguments={"operation_id": operation_id})
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False))
+async def execute_embedding_publication_v2(operation_id: str, plan_id: str, approved: bool = False) -> dict:
+    """精确确认后继续发布原操作；不构造 Provider 或重新预留预算。"""
+    return await _run_embedding_v2(operation="execute_embedding_publication_v2", arguments={
+        "operation_id": operation_id, "plan_id": plan_id, "approved": approved,
+    })
 
 
 # ============================================================

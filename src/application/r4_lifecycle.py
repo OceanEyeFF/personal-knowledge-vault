@@ -296,6 +296,7 @@ class R4ContentLifecycle:
             ContentMutationState.PROCESSING,
             ContentMutationState.CORE_COMMITTED,
             ContentMutationState.AI_HANDOFF_PENDING,
+            ContentMutationState.REPAIR_REQUIRED,
         }:
             self._discard_completed_prepared(task)
             return self._result_for(task)
@@ -331,7 +332,15 @@ class R4ContentLifecycle:
     def _recover_one_sync(self, task: ContentMutationTask) -> R4Q1Result | None:
         """Synchronous equivalent of the journal-only recovery portion."""
 
-        if task.state is ContentMutationState.PROCESSING:
+        if task.state is ContentMutationState.REPAIR_REQUIRED:
+            # A repair task is never a new execution claim.  Storage recovery
+            # has had a chance to settle its journal; the Store now verifies the
+            # same operation's SQLite proof and advances the fenced task in one
+            # transaction, without a retryable PROCESSING intermediate state.
+            record = self._application.storage_coordinator.journal.read(task.operation_id)
+            task = self.store.reconcile_repair_committed(task, record=record)
+            self._fault("core_committed", task)
+        elif task.state is ContentMutationState.PROCESSING:
             if self._journal_proves_core_commit(task):
                 task = self.store.reclaim_processing_task(task.task_id)
                 task = self._record_core_from_journal(task)

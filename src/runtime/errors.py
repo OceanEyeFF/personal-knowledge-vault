@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import Enum
+import re
 
 
 class ErrorCode(str, Enum):
@@ -44,6 +46,10 @@ class ErrorCode(str, Enum):
     EMBEDDING_PROCESSING = "embedding_processing"
     EMBEDDING_RETRY_REQUIRED = "embedding_retry_required"
     EMBEDDING_BUDGET_PAUSED = "embedding_budget_paused"
+    EMBEDDING_PUBLICATION_PENDING = "embedding_publication_pending"
+    EMBEDDING_OPERATION_NOT_FOUND = "embedding_operation_not_found"
+    EMBEDDING_OPERATION_COMPLETED = "embedding_operation_completed"
+    EMBEDDING_LEDGER_UPGRADE_REQUIRED = "embedding_ledger_upgrade_required"
     EMBEDDING_REBUILD_AUTHORIZATION_REQUIRED = (
         "embedding_rebuild_authorization_required"
     )
@@ -115,11 +121,20 @@ class PKVRuntimeError(RuntimeError):
         *,
         stage: str | None = None,
         recoverable: bool = False,
+        details: Mapping[str, object] | None = None,
     ) -> None:
+        safe_details = _validated_details(code, details)
         super().__init__(message)
         self.code = code
         self.stage = stage
         self.recoverable = recoverable
+        self._details = safe_details
+
+    @property
+    def details(self) -> dict[str, object] | None:
+        """Return a detached copy of the explicitly approved public facts."""
+
+        return None if self._details is None else dict(self._details)
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -129,4 +144,52 @@ class PKVRuntimeError(RuntimeError):
         }
         if self.stage:
             payload["stage"] = self.stage
+        if self._details is not None:
+            # Revalidate even if private state was modified by internal code;
+            # this method is an adapter boundary, never a context serializer.
+            payload["details"] = _validated_details(self.code, self._details)
         return payload
+
+
+def _validated_details(
+    code: ErrorCode, details: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    if details is None:
+        if code is ErrorCode.EMBEDDING_PUBLICATION_PENDING:
+            raise ValueError("Publication pending requires its approved operation details")
+        return None
+    if not isinstance(details, Mapping):
+        raise TypeError("Runtime error details must be an approved mapping")
+    value = dict(details)
+    operation_id = value.get("operation_id")
+    if type(operation_id) is not str or re.fullmatch(
+        r"embedding-rebuild-[0-9a-f]{32}", operation_id
+    ) is None:
+        raise ValueError("Runtime error details contain an invalid operation identity")
+    if code is ErrorCode.EMBEDDING_PUBLICATION_PENDING:
+        if (
+            set(value) != {
+                "operation_id", "effective_state", "provider_effect", "publish_only_required"
+            }
+            or type(value["effective_state"]) is not str
+            or type(value["provider_effect"]) is not str
+            or value["effective_state"] != "awaiting_publish"
+            or value["provider_effect"] != "completed"
+            or value["publish_only_required"] is not True
+        ):
+            raise ValueError("Runtime error details do not match the publication contract")
+    elif code in {ErrorCode.EMBEDDING_PROCESSING, ErrorCode.EMBEDDING_OPERATION_COMPLETED}:
+        allowed_states = (
+            {"completed"}
+            if code is ErrorCode.EMBEDDING_OPERATION_COMPLETED
+            else {"processing", "awaiting_publish", "activation_intent"}
+        )
+        if (
+            set(value) != {"operation_id", "effective_state"}
+            or type(value["effective_state"]) is not str
+            or value["effective_state"] not in allowed_states
+        ):
+            raise ValueError("Runtime error details do not match the operation contract")
+    else:
+        raise ValueError("Runtime error details are not approved for this code")
+    return value

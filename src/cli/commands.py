@@ -1881,6 +1881,138 @@ def embedding_rebuild(
     )
 
 
+class _EmbeddingV2IdentifierType(click.ParamType):
+    name = "operation-id"
+
+    def convert(self, value: object, param: click.Parameter | None, ctx: click.Context | None) -> str:
+        if type(value) is not str or re.fullmatch(r"embedding-rebuild-[0-9a-f]{32}", value) is None:
+            self.fail("must be a valid Embedding operation identifier", param, ctx)
+        return value
+
+
+class _EmbeddingV2PlanIdType(click.ParamType):
+    name = "plan-id"
+
+    def convert(self, value: object, param: click.Parameter | None, ctx: click.Context | None) -> str:
+        if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            self.fail("must be a lowercase SHA256 plan ID", param, ctx)
+        return value
+
+
+def _embedding_v2_failure(exc: BaseException, *, operation: str) -> None:
+    projected = project_bootstrap_error(exc, adapter="cli", stage="embedding_rebuild")
+    issue = {key: projected[key] for key in ("code", "stage", "recoverable")}
+    issue["message"] = {
+        "embedding_publication_pending": "Embedding 已生成，等待显式继续发布；请勿重复重建。",
+        "embedding_operation_not_found": "当前数据根中不存在该 Embedding 操作。",
+        "embedding_operation_completed": "该 Embedding 操作已完成，无需继续发布。",
+        "embedding_ledger_upgrade_required": "手动重建账本需要通过 v2 计划显式升级。",
+        "confirmation_required": "执行需要明确批准并确认当前计划。",
+        "runtime_plan_stale": "计划已变化，请重新检查并确认。",
+        "embedding_rebuild_authorization_required": "重建需要明确网络许可和策略授权。",
+        "embedding_budget_paused": "当前手动重建预算不足。",
+        "embedding_processing": "同一 Embedding 操作仍在处理中。",
+        "write_busy": "另一个应用正在写入知识库，请稍后重试。",
+    }.get(projected["code"], "Embedding 操作当前不可用，需要检查运行时状态。")
+    if "details" in projected:
+        issue["details"] = projected["details"]
+    _emit_lifecycle_payload({
+        "schema": "pkv.lifecycle-response.v2", "status": "error", "terminal": "error",
+        "operation": operation, "result": None, "issues": [issue],
+    }, error=True)
+    raise click.exceptions.Exit(1)
+
+
+def _run_embedding_v2(
+    *, action: str, operation_id: str | None = None, force: bool = False,
+    apply: bool = False, confirm: str | None = None, allow_network: bool = False,
+) -> None:
+    """Reconstruct current public handles; never reuse an old confirmation."""
+
+    operation = {
+        "inspect": "inspect_embedding_rebuild_v2",
+        "rebuild": "execute_embedding_rebuild_v2" if apply else "plan_embedding_rebuild_v2",
+        "operation": "inspect_embedding_operation_v2",
+        "publish": "execute_embedding_publication_v2" if apply else "plan_embedding_publication_v2",
+    }[action]
+    try:
+        if (not apply and (confirm is not None or allow_network)) or (apply and confirm is None):
+            raise PKVRuntimeError(
+                ErrorCode.CONFIRMATION_REQUIRED, "需要显式确认当前计划。",
+                stage="embedding_plan", recoverable=True,
+            )
+        from pkv_kernel import embedding as kernel_embedding
+
+        config = _load_config()
+        if action in {"inspect", "rebuild"}:
+            inspection = kernel_embedding.inspect_embedding_rebuild_v2(config)
+            result = inspection
+            if action == "rebuild":
+                result = kernel_embedding.plan_embedding_rebuild_v2(inspection, force=force)
+        else:
+            inspection = kernel_embedding.inspect_embedding_operation_v2(operation_id, config=config)
+            result = inspection
+            if action == "publish":
+                result = kernel_embedding.plan_embedding_publication_v2(inspection)
+        if apply:
+            if confirm != result.plan_id:
+                raise PKVRuntimeError(
+                    ErrorCode.RUNTIME_PLAN_STALE, "确认不属于当前计划。",
+                    stage="embedding_plan", recoverable=True,
+                )
+            if action == "rebuild":
+                confirmation = kernel_embedding.confirm_embedding_rebuild_v2(
+                    result, approved=True, allow_network=allow_network,
+                )
+                result = kernel_embedding.execute_embedding_rebuild_v2(result, confirmation)
+            else:
+                confirmation = kernel_embedding.confirm_embedding_publication_v2(result, approved=True)
+                result = kernel_embedding.execute_embedding_publication_v2(result, confirmation)
+        payload = result.to_dict()
+        if type(payload) is not dict:
+            raise TypeError("Embedding public result contract invalid")
+        _emit_lifecycle_payload({
+            "schema": "pkv.lifecycle-response.v2", "status": "success", "terminal": "success",
+            "operation": operation, "result": payload, "issues": payload.get("issues", []),
+        })
+    except click.exceptions.Exit:
+        raise
+    except Exception as exc:
+        _embedding_v2_failure(exc, operation=operation)
+
+
+@embedding.command("inspect-v2")
+def embedding_inspect_v2() -> None:
+    """只读检查重建状态、预算和账本升级影响。"""
+    _run_embedding_v2(action="inspect")
+
+
+@embedding.command("rebuild-v2")
+@click.option("--force", is_flag=True)
+@click.option("--apply", is_flag=True)
+@click.option("--confirm", type=_EmbeddingV2PlanIdType(), metavar="PLAN_ID")
+@click.option("--allow-network", is_flag=True)
+def embedding_rebuild_v2(force: bool, apply: bool, confirm: str | None, allow_network: bool) -> None:
+    """展示或执行精确确认的 v2 重建计划。"""
+    _run_embedding_v2(action="rebuild", force=force, apply=apply, confirm=confirm, allow_network=allow_network)
+
+
+@embedding.command("operation-v2")
+@click.argument("operation_id", type=_EmbeddingV2IdentifierType())
+def embedding_operation_v2(operation_id: str) -> None:
+    """只读检查原重建操作及其待发布或待对齐状态。"""
+    _run_embedding_v2(action="operation", operation_id=operation_id)
+
+
+@embedding.command("publish-v2")
+@click.argument("operation_id", type=_EmbeddingV2IdentifierType())
+@click.option("--apply", is_flag=True)
+@click.option("--confirm", type=_EmbeddingV2PlanIdType(), metavar="PLAN_ID")
+def embedding_publish_v2(operation_id: str, apply: bool, confirm: str | None) -> None:
+    """展示或确认原操作的继续发布计划；不再次调用 Provider。"""
+    _run_embedding_v2(action="publish", operation_id=operation_id, apply=apply, confirm=confirm)
+
+
 _OUTCOME_PUBLIC_MESSAGES = {
     ErrorCode.OUTCOME_NOT_FOUND: "请求的研究成果对象不存在。",
     ErrorCode.OUTCOME_INVALID: "研究成果参数无效。",
@@ -3247,4 +3379,8 @@ def stats() -> None:
 
 
 if __name__ == "__main__":
-    cli()
+    # The documented module invocation shares the same parser, leaf policies,
+    # readiness checks and safe startup-error projection as the main entrypoint.
+    from src.main import main
+
+    main()

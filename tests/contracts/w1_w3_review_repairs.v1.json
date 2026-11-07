@@ -1,0 +1,405 @@
+{
+  "schema_version": "pkv.lifecycle.w1-w3-review-repairs.v1",
+  "date": "2026-10-25",
+  "truth_source": "docs/overview/W1-W3-CodeReview修复验收记录-2026-10.md",
+  "scope": {
+    "acceptance_status": "verified_three_review_fixes_with_registered_W4_W5_gaps",
+    "baseline_commit": "b725deb2fd0c6a1294f2fac9bca122b3a0635b0f",
+    "resolved_review_ids": [
+      "CR-01",
+      "CR-02",
+      "CR-03"
+    ],
+    "unchanged_versions": {
+      "sdk": "0.9.0",
+      "api": "1.0.0",
+      "sqlite_schema": "1.2.8"
+    },
+    "w4_w5_advanced": false,
+    "out_of_scope": [
+      "Embedding publication recovery and budget reauthorization",
+      "API-major-2 cutover",
+      "real user data migration",
+      "full PyInstaller artifact build",
+      "release"
+    ],
+    "skip_or_xfail_added": false
+  },
+  "provenance": {
+    "source_test_manifest": ".data-test/w1-w3-review-fixes-20261025-evidence/reports/source-tests.sha256",
+    "source_test_manifest_sha256": "2086722c512f0e62fb61a1d28c3c310ef41b2ac2632e99b42f839daf5c8b8ba2",
+    "manifest_file_count": 11,
+    "manifest_sha256_check": "passed",
+    "registry_excluded_from_manifest": true,
+    "historical_registries_unchanged": [
+      "tests/contracts/w1_lifecycle_regressions.v1.json",
+      "tests/contracts/w2_lifecycle_repairs.v1.json",
+      "tests/contracts/w3_lifecycle_repairs.v1.json"
+    ],
+    "component_counts_are_not_additive": true,
+    "full_p0_rerun": false,
+    "full_mcp_coverage_rerun": false,
+    "real_vault_or_provider_used": false,
+    "review": "Independent static review verified frozen resource provenance, actual native-module execution, and proof-only Q1 recovery; no additional confirmed issue remained."
+  },
+  "cases": [
+    {
+      "id": "CR-01",
+      "priority": "P1",
+      "status": "passed",
+      "lane": "packaging-contract",
+      "new_case_count": 22,
+      "rule": "Frozen migration inspection must bind the same SQL/code identities as source and wheel without shipping prohibited raw Python source.",
+      "oracle": "Execute the real spec with lightweight build classes; generated JSON binds only the two allowed modules from the actual Analysis input. Fresh/READY inspection matches source identity; missing/malformed manifests fail closed; drift invalidates confirmation; incomplete, changed or unexpected build inputs are rejected.",
+      "limitations": "No complete PyInstaller executable/package was rebuilt. Existing held-artifact and payload-policy decisions are unchanged.",
+      "red_runs": [
+        "cr01-red"
+      ],
+      "green_runs": [
+        "cr01-final",
+        "final-combined"
+      ],
+      "nodeids": [
+        "tests/unit/test_w3_review_packaging.py::test_frozen_database_inspection_matches_source_identity[fresh]",
+        "tests/unit/test_w3_review_packaging.py::test_frozen_database_inspection_matches_source_identity[ready]",
+        "tests/unit/test_w3_review_packaging.py::test_frozen_code_fingerprint_rejects_missing_or_malformed_resource[missing]",
+        "tests/unit/test_w3_review_packaging.py::test_frozen_code_fingerprint_rejects_missing_or_malformed_resource[schema]",
+        "tests/unit/test_w3_review_packaging.py::test_frozen_code_fingerprint_rejects_missing_or_malformed_resource[extra]",
+        "tests/unit/test_w3_review_packaging.py::test_frozen_code_fingerprint_rejects_missing_or_malformed_resource[missing_resource]",
+        "tests/unit/test_w3_review_packaging.py::test_frozen_code_fingerprint_rejects_missing_or_malformed_resource[extra_resource]",
+        "tests/unit/test_w3_review_packaging.py::test_frozen_code_fingerprint_rejects_missing_or_malformed_resource[duplicate_resource]",
+        "tests/unit/test_w3_review_packaging.py::test_frozen_code_fingerprint_rejects_missing_or_malformed_resource[invalid_hash]",
+        "tests/unit/test_w3_review_packaging.py::test_frozen_code_fingerprint_rejects_missing_or_malformed_resource[duplicate_key]",
+        "tests/unit/test_w3_review_packaging.py::test_frozen_code_fingerprint_rejects_missing_or_malformed_resource[extra_item_key]",
+        "tests/unit/test_w3_review_packaging.py::test_frozen_code_fingerprint_rejects_missing_or_malformed_resource[oversized]",
+        "tests/unit/test_w3_review_packaging.py::test_frozen_code_fingerprint_drift_rejects_existing_confirmation[src/outcomes/identity.py]",
+        "tests/unit/test_w3_review_packaging.py::test_frozen_code_fingerprint_drift_rejects_existing_confirmation[src/storage/outcome_migration.py]",
+        "tests/unit/test_w3_review_packaging.py::test_fingerprint_builder_rejects_analysis_input_mismatch[changed_source]",
+        "tests/unit/test_w3_review_packaging.py::test_fingerprint_builder_rejects_analysis_input_mismatch[unexpected_source]",
+        "tests/unit/test_w3_review_packaging.py::test_fingerprint_builder_rejects_analysis_input_mismatch[missing_module]",
+        "tests/unit/test_w3_review_packaging.py::test_fingerprint_builder_recomputes_changed_source_without_raw_source_payload",
+        "tests/unit/test_w3_review_packaging.py::test_fingerprint_builder_requires_complete_closed_source_allowlist[names0]",
+        "tests/unit/test_w3_review_packaging.py::test_fingerprint_builder_requires_complete_closed_source_allowlist[names1]",
+        "tests/unit/test_w3_review_packaging.py::test_fingerprint_builder_requires_complete_closed_source_allowlist[names2]",
+        "tests/unit/test_w3_review_packaging.py::test_fingerprint_builder_requires_complete_closed_source_allowlist[names3]"
+      ]
+    },
+    {
+      "id": "CR-02",
+      "priority": "P1",
+      "status": "passed",
+      "lane": "source",
+      "new_case_count": 15,
+      "rule": "The documented python -m src.cli.commands route must share standard leaf readiness and parser behavior.",
+      "oracle": "Real child processes execute offline_entrypoint.py python -m src.cli.commands, not its cli remapping. Missing/damaged snapshots reject v1/v2 mutations with unchanged business data and matching stable envelopes; READY writes are visible to both fresh entrypoints; parser errors/help/version precede runtime. Lazy package export retains the Click group and missing-dependency cause.",
+      "limitations": "Broken Config loader is an in-process unit seam; missing/damaged runtime snapshots are real child-process fixtures. G0 and test entrypoint were not modified.",
+      "red_runs": [
+        "cr02-red"
+      ],
+      "green_runs": [
+        "cr02-green",
+        "cr02-regression",
+        "final-combined"
+      ],
+      "nodeids": [
+        "tests/unit/test_w3_review_cli_entry.py::test_module_parse_never_reads_broken_config[arguments0-0]",
+        "tests/unit/test_w3_review_cli_entry.py::test_module_parse_never_reads_broken_config[arguments1-0]",
+        "tests/unit/test_w3_review_cli_entry.py::test_module_parse_never_reads_broken_config[arguments2-2]",
+        "tests/unit/test_w3_review_cli_entry.py::test_module_parse_never_reads_broken_config[arguments3-2]",
+        "tests/unit/test_w3_review_cli_entry.py::test_package_cli_export_keeps_registered_click_group",
+        "tests/unit/test_w3_review_cli_entry.py::test_package_cli_export_preserves_missing_module_fallback",
+        "tests/blackbox/test_w3_review_cli_entry.py::test_native_module_rejects_unready_mutations_like_standard_entry[v1-mutation-missing]",
+        "tests/blackbox/test_w3_review_cli_entry.py::test_native_module_rejects_unready_mutations_like_standard_entry[v1-mutation-damaged]",
+        "tests/blackbox/test_w3_review_cli_entry.py::test_native_module_rejects_unready_mutations_like_standard_entry[v2-mutation-missing]",
+        "tests/blackbox/test_w3_review_cli_entry.py::test_native_module_rejects_unready_mutations_like_standard_entry[v2-mutation-damaged]",
+        "tests/blackbox/test_w3_review_cli_entry.py::test_native_module_ready_write_is_visible_to_both_fresh_entries",
+        "tests/blackbox/test_w3_review_cli_entry.py::test_native_module_parser_precedes_damaged_runtime[arguments0-0---expected-revision]",
+        "tests/blackbox/test_w3_review_cli_entry.py::test_native_module_parser_precedes_damaged_runtime[arguments1-0-version]",
+        "tests/blackbox/test_w3_review_cli_entry.py::test_native_module_parser_precedes_damaged_runtime[arguments2-2-Invalid value]",
+        "tests/blackbox/test_w3_review_cli_entry.py::test_native_module_parser_precedes_damaged_runtime[arguments3-2-No such option]"
+      ]
+    },
+    {
+      "id": "CR-03",
+      "priority": "P2",
+      "status": "passed",
+      "lane": "source",
+      "new_case_count": 19,
+      "rule": "Repair tasks with recovered original-operation commit proof must converge without re-executing content or authorizing a Provider attempt.",
+      "oracle": "A real commit with response loss and a transient unreadable proof recovers across sync/async/recovery bridges. The task and owner fence transition directly to core_committed in one transaction after matching journal and SQLite proof. Missing, unreadable or conflicting evidence remains blocked with backoff; independent targets progress. Original archive/delete proofs, legacy existing-proof journal format, stale fence, missing lease and SQL rollback are checked.",
+      "limitations": "Controlled local fault injection and database authorizers; not arbitrary process-kill or power-loss acceptance. No schema, public resume API, Q2 retry or Provider attempt is added.",
+      "red_runs": [
+        "cr03-red",
+        "cr03-binding-red"
+      ],
+      "green_runs": [
+        "cr03-regression",
+        "cr03-binding-green",
+        "cr03-read-failure-green",
+        "final-combined"
+      ],
+      "nodeids": [
+        "tests/unit/test_w3_review_q1_recovery.py::test_resolved_patch_repair_unblocks_delete_without_reapplying[sync]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_resolved_patch_repair_unblocks_delete_without_reapplying[async]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_resolved_patch_repair_unblocks_delete_without_reapplying[recovery]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_resolved_patch_repair_unblocks_delete_without_reapplying[existing_proof_journal]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_unproven_repair_stays_blocked_without_starving_independent_work[missing_proof]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_unproven_repair_stays_blocked_without_starving_independent_work[unreadable_proof]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_unproven_repair_stays_blocked_without_starving_independent_work[other_operation]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_unproven_repair_stays_blocked_without_starving_independent_work[other_target]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_unproven_repair_stays_blocked_without_starving_independent_work[previous_revision]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_unproven_repair_stays_blocked_without_starving_independent_work[resulting_revision]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_unproven_repair_stays_blocked_without_starving_independent_work[path]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_unproven_repair_stays_blocked_without_starving_independent_work[journal_action]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_unproven_repair_stays_blocked_without_starving_independent_work[journal_not_committed]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_unproven_repair_stays_blocked_without_starving_independent_work[journal_resulting_revision]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_repair_reconciliation_rejects_stale_fence_and_requires_lease",
+        "tests/unit/test_w3_review_q1_recovery.py::test_original_archive_and_delete_proofs_reconcile_repair[sync-archive]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_original_archive_and_delete_proofs_reconcile_repair[sync-delete]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_original_archive_and_delete_proofs_reconcile_repair[async-archive]",
+        "tests/unit/test_w3_review_q1_recovery.py::test_original_archive_and_delete_proofs_reconcile_repair[async-delete]"
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "id": "final-combined",
+      "job_id": "j-vntf98",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w1-w3-review-final-20261025 pytest tests/unit/test_w3_review_packaging.py tests/unit/test_w3_review_cli_entry.py tests/blackbox/test_w3_review_cli_entry.py tests/unit/test_w3_review_q1_recovery.py tests/unit/test_r4_content_lifecycle.py tests/unit/test_r4_derivation_patch.py tests/unit/test_storage_coordinator.py tests/unit/test_w1_embedding_regressions.py tests/unit/test_w1_outcome_regressions.py tests/blackbox/test_r4_cli_fullflow.py tests/blackbox/test_r4_mcp_fullflow.py tests/blackbox/test_w3_outcome_cli_blackbox.py tests/blackbox/test_w3_outcome_mcp_blackbox.py tests/unit/test_kernel_wrapper_boundary.py -vv --tb=short",
+      "log": ".data-test/w1-w3-review-fixes-20261025-evidence/reports/final-combined.log",
+      "log_sha256": "bef09beee29359251d3aa382a161248ecdcc7ea527687080f222c0ed134b35b4",
+      "exit_code": 1,
+      "collected": 142,
+      "passed": 136,
+      "failed": 5,
+      "skipped": 1,
+      "errors": 0,
+      "warnings": 2,
+      "duration_seconds": 583.43,
+      "interpretation": "Final selected-file combined run includes and passes all 56 new nodes (22 packaging, 15 CLI, 19 Q1), including unreadable_proof. The only failures exactly equal retained_known_failures. Existing R4 CLI/MCP full flows, W3 Outcome CLI/MCP and nine Kernel boundary cases pass. This is not a full repository or MCP coverage run."
+    },
+    {
+      "id": "cr01-red",
+      "job_id": "j-p3772x",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-review-packaging-red pytest tests/unit/test_w3_review_packaging.py -k frozen_database_inspection -vv --tb=short",
+      "log": ".data-test/w3-review-packaging-evidence/reports/red.log",
+      "log_sha256": "68492495aec257c9c2696e5b43e45a8cad7821b76653943bdc03ba3842559016",
+      "exit_code": 1,
+      "passed": 0,
+      "failed": 2,
+      "skipped": 0,
+      "deselected": 10,
+      "duration_seconds": 4.44,
+      "interpretation": "Pre-fix fresh and READY frozen layouts both fail because the original runtime expects raw source files. Test file then had 12 collected nodes."
+    },
+    {
+      "id": "cr01-migration-regression",
+      "job_id": "j-49byqq",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-review-packaging-green pytest tests/unit/test_w3_review_packaging.py tests/unit/test_w3_packaging_spec.py tests/unit/test_runtime_resource_manifest.py tests/unit/test_w3_outcome_migration.py -vv --tb=short",
+      "log": ".data-test/w3-review-packaging-evidence/reports/green-with-migration.log",
+      "log_sha256": "d6873fac5032f1b8338d1f3a012df9376233f4a2f853feb909e082bfe4459598",
+      "exit_code": 0,
+      "passed": 50,
+      "failed": 0,
+      "skipped": 1,
+      "deselected": 0,
+      "duration_seconds": 69.99,
+      "interpretation": "Includes 22 new packaging cases and 23 migration cases. Later spec-only namespace module handling was rechecked in cr01-final; migration runtime code did not change afterwards."
+    },
+    {
+      "id": "cr01-final",
+      "job_id": "j-t8y7di",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-review-packaging-final pytest tests/unit/test_w3_review_packaging.py tests/unit/test_w3_packaging_spec.py tests/unit/test_runtime_resource_manifest.py tests/unit/test_release_build.py::test_payload_policy_contract_rejects_security_weakening -vv --tb=short",
+      "log": ".data-test/w3-review-packaging-evidence/reports/final.log",
+      "log_sha256": "7737b4cd0c62e174a13e17408f19c675b249303a54855877ed1e0cc765412175",
+      "exit_code": 0,
+      "passed": 28,
+      "failed": 0,
+      "skipped": 1,
+      "deselected": 0,
+      "duration_seconds": 16.44,
+      "interpretation": "Final spec handles namespace entries with source=None. The actual spec runs using lightweight build-class fixtures; this is packaging-contract evidence, not a full PyInstaller artifact build."
+    },
+    {
+      "id": "cr02-red",
+      "job_id": "j-4bc43m",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-review-cli-red-exact-20261025 pytest tests/unit/test_w3_review_cli_entry.py tests/blackbox/test_w3_review_cli_entry.py -vv --tb=short",
+      "log": ".data-test/w3-review-cli-evidence-20261025/reports/cli-red.log",
+      "log_sha256": "cfaa72c6bb4ca00fa1f4e2dc2763611e0e8c9c217424e8e156aaa2d3039f5653",
+      "exit_code": 1,
+      "passed": 7,
+      "failed": 6,
+      "skipped": 0,
+      "deselected": 0,
+      "duration_seconds": 119.32,
+      "interpretation": "Corrected synthetic missing-snapshot fixture. Thirteen nodes: four mutation readiness/envelope failures and two version-entry failures, with seven controls passing. v2 red assertions also expose unfiltered runpy-warning contamination."
+    },
+    {
+      "id": "cr02-green",
+      "job_id": "j-nw1myq",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-review-cli-green-20261025 pytest tests/unit/test_w3_review_cli_entry.py tests/blackbox/test_w3_review_cli_entry.py -vv --tb=short",
+      "log": ".data-test/w3-review-cli-evidence-20261025/reports/cli-green.log",
+      "log_sha256": "bc6c1d9363918f62aebc2b56f357ad821ad562f857d957495b8d12960eacf4e0",
+      "exit_code": 0,
+      "passed": 15,
+      "failed": 0,
+      "skipped": 0,
+      "deselected": 0,
+      "duration_seconds": 117.53,
+      "interpretation": "All 13 earlier nodes plus two package-export/fallback controls pass. Unit helper uses a fresh __main__ run_path to avoid cached module warnings; the nine real-process native-module blackboxes are unchanged and do not filter stderr."
+    },
+    {
+      "id": "cr02-regression",
+      "job_id": "j-ed1wa6",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-review-cli-regression-20261025 pytest tests/unit/test_w2_cli_leaf_gate.py tests/unit/test_cli_runtime_gate.py tests/blackbox/test_w1_cli_parse_regressions.py tests/blackbox/test_w3_outcome_cli_blackbox.py tests/unit/test_offline_runtime.py -vv --tb=short",
+      "log": ".data-test/w3-review-cli-evidence-20261025/reports/cli-regression.log",
+      "log_sha256": "bf2bef5d6690d7745fabf2bc76c887d6a506397e7afdd070426007d455ae024b",
+      "exit_code": 0,
+      "passed": 159,
+      "failed": 0,
+      "skipped": 0,
+      "deselected": 0,
+      "duration_seconds": 300.5,
+      "interpretation": "Existing leaf/readiness/parser, W3 Outcome CLI, and offline guard regression. W3 Outcome CLI cases overlap the final combined run; counts must not be added as disjoint evidence."
+    },
+    {
+      "id": "cr03-red",
+      "job_id": "j-aamqo4",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-review-q1-red pytest tests/unit/test_w3_review_q1_recovery.py -vv --tb=short",
+      "log": ".data-test/w1-w3-review-fixes-20261025-evidence/reports/q1-core-red.log",
+      "log_sha256": "aee0650af9326ca018f9fb754824236c9c597085dbe9fdd6db9cddb77a9948ed",
+      "exit_code": 1,
+      "passed": 0,
+      "failed": 3,
+      "skipped": 0,
+      "deselected": 0,
+      "duration_seconds": 17.86,
+      "interpretation": "Real patch commit followed by response loss and one failed proof read leaves repair_required permanently blocking the sync, async and recovery bridges."
+    },
+    {
+      "id": "cr03-core-green",
+      "job_id": "j-0ad45e",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-review-q1-green pytest tests/unit/test_w3_review_q1_recovery.py -vv --tb=short",
+      "log": ".data-test/w1-w3-review-fixes-20261025-evidence/reports/q1-core-green.log",
+      "log_sha256": "904d1e26070e0292c34217129e102aca6946dfdb1b98ec945f4793b4b8908edf",
+      "exit_code": 0,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "deselected": 0,
+      "duration_seconds": 18.33,
+      "interpretation": "Original three recovery scenarios pass after proof-only reconciliation."
+    },
+    {
+      "id": "cr03-regression",
+      "job_id": "j-9di6rj",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-review-q1-regression pytest tests/unit/test_w3_review_q1_recovery.py tests/unit/test_w1_q1_regressions.py tests/unit/test_w2_q1_lifecycle.py -vv --tb=short",
+      "log": ".data-test/w1-w3-review-fixes-20261025-evidence/reports/q1-related.log",
+      "log_sha256": "238169e9443684d9e3fb274ed40c3c691dd2601f2a87caacea5c76c2ee9d7dbb",
+      "exit_code": 0,
+      "passed": 43,
+      "failed": 0,
+      "skipped": 0,
+      "deselected": 0,
+      "duration_seconds": 305.63,
+      "interpretation": "Sixteen new and 27 existing Q1 cases. Process began before the final redundant-journal-revision equality check; this component result is not presented as the final frozen-tree run."
+    },
+    {
+      "id": "cr03-binding-red",
+      "job_id": "j-rr4om7",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-review-q1-binding-red pytest tests/unit/test_w3_review_q1_recovery.py -k journal_resulting_revision -vv --tb=short",
+      "log": ".data-test/w1-w3-review-fixes-20261025-evidence/reports/q1-binding-red.log",
+      "log_sha256": "3880c6c55bcfc87ebf40160c04cdce8054b13efce3aceb267a3fca27aadba13a",
+      "exit_code": 1,
+      "passed": 0,
+      "failed": 1,
+      "skipped": 0,
+      "deselected": 16,
+      "duration_seconds": 12.06,
+      "interpretation": "Additional negative oracle catches contradictory resulting_revision_sha256 in a repair journal. The final implementation rejects this contradiction."
+    },
+    {
+      "id": "cr03-binding-green",
+      "job_id": "j-hqldtj",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-review-q1-binding-green pytest tests/unit/test_w3_review_q1_recovery.py -k \"journal_resulting_revision or existing_proof_journal\" -vv --tb=short",
+      "log": ".data-test/w1-w3-review-fixes-20261025-evidence/reports/q1-binding-green.log",
+      "log_sha256": "f785fb06ee397157dc91e9cfafae883c7177ecf47e4071cc9cdd663d350d25d9",
+      "exit_code": 0,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "deselected": 16,
+      "duration_seconds": 17.35,
+      "interpretation": "Verifies contradiction rejection and the real existing-proof journal_created format that omits the redundant field while binding SQLite's resulting revision."
+    },
+    {
+      "id": "cr03-read-failure-green",
+      "job_id": "j-cf4cj0",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w3-review-q1-read-failure pytest tests/unit/test_w3_review_q1_recovery.py -k unreadable_proof -vv --tb=short",
+      "log": ".data-test/w1-w3-review-fixes-20261025-evidence/reports/q1-proof-read-green.log",
+      "log_sha256": "8321c6db64a1d736016cc1856db307ee4483aab1f0618ef9608123c62df6500c",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "deselected": 18,
+      "duration_seconds": 11.06,
+      "interpretation": "SQLite authorizer denies the proof read. Repair remains blocked, independent work progresses and no patch/Provider is re-executed. This node is also present in the final combined collection."
+    },
+    {
+      "id": "static",
+      "job_id": "j-kxpzlb",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-test.ps1 -Direct -DataRoot .data-test/w1-w3-review-static-20261025 ruff check src/application/r4_lifecycle.py src/cli/__init__.py src/cli/commands.py src/storage/content_lifecycle.py src/storage/migration_manager.py tests/unit/test_w3_review_packaging.py tests/unit/test_w3_review_cli_entry.py tests/blackbox/test_w3_review_cli_entry.py tests/unit/test_w3_review_q1_recovery.py --select E9,F63,F7,F82",
+      "log": ".data-test/w1-w3-review-fixes-20261025-evidence/reports/static.log",
+      "log_sha256": "c3121090bc0bc9351b4b6c2c2c1737ddd167abeea2cbe588b7179a4ee943bd0b",
+      "exit_code": 0,
+      "interpretation": "Selected serious syntax/control errors pass; not a full style lint or test-suite claim."
+    }
+  ],
+  "diagnostics": [
+    {
+      "id": "cli-fixture-diagnostic",
+      "job_id": "j-890a50",
+      "log": ".data-test/w3-review-cli-evidence-20261025/reports/cli-red-fixture-diagnostic.log",
+      "log_sha256": "521e2ae90a0a42550df311b66b1fe3269970f79f6d9556c62b7f2ea38a3b6a5f",
+      "interpretation": "Earlier fixture had not warmed its synthetic jieba cache, so a missing snapshot could be classified as repair_required before setup_required. Excluded as the exact red acceptance baseline; corrected fixture evidence is cr02-red."
+    }
+  ],
+  "retained_known_failures": [
+    "tests/unit/test_w1_embedding_regressions.py::test_r02_er04_completed_stage_contention_exposes_publish_only_recovery",
+    "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[day]",
+    "tests/unit/test_w1_embedding_regressions.py::test_r06_er07_budget_rejection_can_be_reauthorized_after_period_recovery[month]",
+    "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[approve]",
+    "tests/unit/test_w1_outcome_regressions.py::test_r04_unversioned_review_cannot_change_unreviewed_replacement[return]"
+  ],
+  "existing_skips": [
+    {
+      "nodeid": "tests/unit/test_w3_packaging_spec.py::test_real_analysis_and_payload_have_no_build_only_module_members",
+      "reason": "real PyInstaller closure paths were not supplied",
+      "runs": [
+        "cr01-migration-regression",
+        "cr01-final"
+      ],
+      "interpretation": "One existing artifact-input boundary, counted as skipped rather than passed. No new test uses skip or xfail."
+    },
+    {
+      "nodeid": "tests/unit/test_storage_coordinator.py::test_journal_constructor_rejects_redirected_ancestor",
+      "reason": "Current Windows host does not permit creation of directory symlinks.",
+      "runs": [
+        "final-combined"
+      ],
+      "interpretation": "One existing platform limitation in this combined run, separate from the packaging component's missing-artifact-input skip."
+    }
+  ],
+  "completion": {
+    "status": "verified",
+    "new_unique_cases": 56,
+    "new_passed_in_final_combined": 56,
+    "unexpected_final_failures": 0,
+    "final_errors": 0,
+    "retained_known_failures": 5,
+    "final_combined_run": "final-combined",
+    "full_repository_green_claim": false,
+    "overlap_policy": "Each run remains separately scoped. Repeated component counts are not added; all 56 new case nodeids are explicitly matched to PASSED entries in final-combined."
+  }
+}

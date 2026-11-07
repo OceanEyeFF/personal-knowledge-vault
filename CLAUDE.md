@@ -3,11 +3,33 @@
 > **AI-First Knowledge Workflow System**
 > 工作流驱动的个人知识管理系统
 
-**最后更新**: 2026-10-25（W3 Outcome 输入事务、版本发布与审批；W4–W5 未推进）
+**最后更新**: 2026-10-26（W4 Embedding 继续发布与预算恢复范围验收完成；W5 未推进）
 
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-10-25–26（W4 Embedding v2 范围验收完成）
+
+- 当前本地兼容 build 为 SDK `0.10.0` / API `1.0.0`；保留全部 v1 符号，按冻结合同
+  增加 Embedding v2 的 8 个函数、7 个 opaque handle、4 个 CLI 叶子及 6 个 MCP Tool。
+  当前 MCP 表面共 41 Tool（23 只读 + 18 写入）；`kernel.embedding-rebuild.v2` 已实现并声明，
+  W4 新增 363 项全部通过；三轮按节点去重为 4133 passed、21 skipped、2 项 W5 普通失败、
+  0 errors。原 P0 exit 1 保留，不称单轮全仓全绿。
+- ledger 3、grant 2 与 sealed proof 支持原 operation 的显式 publish-only 和完成对齐；
+  预算恢复保留原期间/费用事实，不授权重复 Provider。实施与 ER/MIG 验收状态见
+  [W4 主记录](./docs/overview/W4-Embedding继续发布与预算恢复实施记录-2026-10.md)。
+- W1–W3 及 CodeReview 记录保留为历史证据；W4 不能引用这些旧通过数替代当前验收。
+  W5 API-major-2 与旧无版本 Outcome 拒绝尚未推进，Artifact/release hold 不变。
+
+### 2026-10-25（W1–W3 CodeReview 修复）
+
+- 冻结包通过构建期代码摘要资源保留迁移身份绑定，不夹带禁止的原始源码；原生 CLI
+  模块统一进入既有门禁；Q1 repair 仅在原操作提交证明重新验证后恢复推进，不重新执行。
+- 新增 56 项全部通过，最终联合 `136 passed, 5 known failures, 1 skipped`；CLI 相关
+  159 项通过。五项失败仍为 W4/W5 已登记缺口，没有新增失败或关闭阶段外问题。
+- 补充验收与边界见 [CodeReview 修复记录](./docs/overview/W1-W3-CodeReview修复验收记录-2026-10.md)。
+  原阶段的全仓结果保留历史语境；本轮未完整重打 PyInstaller、重跑 P0 或 MCP coverage。
 
 ### 2026-10-25（W3 Outcome 一致性与兼容接口）
 
@@ -259,7 +281,7 @@ CLI/MCP 是本仓库的外围适配器；外部 GUI Wrapper 也只经 `pkv_kerne
 │  + Rich 终端界面 (进度条/表格/面板)      │
 ├─────────────────────────────────────────┤
 │  MCP 服务层 (src/mcp/)        [M8+M9]  │
-│  + 35 Tools (19只读 + 16写入)            │
+│  + 41 Tools (23只读 + 18写入)            │
 │  + 9 Resources (正文/chunk/关系/统计等)  │
 │  + 3 Prompts (搜索总结/知识问答/思想磨砺)│
 │  + 安全层 (SSRF 重校验/文本验证)        │
@@ -356,7 +378,7 @@ graph TD
 | **无头 Kernel** | `src/kernel/` | 稳定产品操作与外围 Wrapper 端口 | [CLAUDE.md](./src/kernel/CLAUDE.md) |
 | **Application 组合** | `src/application/` | 同一 validated config 下的惰性依赖与工作流组装 | [CLAUDE.md](./src/application/CLAUDE.md) |
 | **CLI 交互层** | `src/cli/` | Click 命令行界面、Rich 终端 UI | [CLAUDE.md](./src/cli/CLAUDE.md) |
-| **MCP 服务层** | `src/mcp/` | MCP stdio -- 35 Tool（19 只读 + 16 写入）+ 9 Resource + 3 Prompt + 安全加固 | [CLAUDE.md](./src/mcp/CLAUDE.md) |
+| **MCP 服务层** | `src/mcp/` | MCP stdio -- 41 Tool（23 只读 + 18 写入）+ 9 Resource + 3 Prompt + 安全加固 | [CLAUDE.md](./src/mcp/CLAUDE.md) |
 | **工作流引擎** | `src/workflow/` | 编排步骤、进度追踪、错误处理 | [CLAUDE.md](./src/workflow/CLAUDE.md) |
 | **内容处理器** | `src/processors/` | 插件化内容抓取与解析(微信/知乎/聊天/AI 聊天/文本回退) | [CLAUDE.md](./src/processors/CLAUDE.md) |
 | **检索引擎** | `src/retrieval/` | BM25/向量/混合检索与智能路由 | [CLAUDE.md](./src/retrieval/CLAUDE.md) |
@@ -497,7 +519,7 @@ conda activate py311-private
 
 ## 当前开发状态
 
-### 当前版本: 0.9.0（W3 本地兼容 build；API 1.0.0）
+### 当前版本: 0.10.0（W4 本地兼容 build；API 1.0.0，范围验收完成）
 
 历史 held test candidate 仍为 0.8.1；源码版本递增不代表重新打包或发布该候选。
 
@@ -531,8 +553,9 @@ held test candidate 打包和 installed-Artifact 功能验证。该 W4 证据属
 5. **当前优先：生命周期一致性修复**：R4-P1 public rebuild 与 P1-B 知识成果已在当前
    工作树形成实现；其八项复审缺口按
    [W0–W5 分阶段计划](./docs/overview/生命周期一致性修复设计与分阶段计划-2026-10.md)
-   收敛。W0/W1、W2 身份/Q1/CLI 和 W3 Outcome 修复及相关回归已完成；W4–W5 尚未实施，
-   R-04 旧无版本审批仍为兼容缺口。旧 R4 内部 source acceptance 不替代
+   收敛。W0/W1、W2 身份/Q1/CLI、W3 Outcome 及其 CodeReview 修复已完成；W4 的
+   Embedding 继续发布、预算恢复与合成迁移已完成范围验收，见 [W4 主记录](./docs/overview/W4-Embedding继续发布与预算恢复实施记录-2026-10.md)。
+   W5 尚未推进，R-04 旧无版本审批仍为兼容缺口。旧 R4 内部 source acceptance 不替代
    public adapter、Outcome 或 v2 协议的新验收。之后再推进已确认但未实现的 AI 原子发布/
    URL 谱系；`partial-v1` 的 full 语义仍按真实场景逐 Tool 补专属评测。
 6. **Windows-first 与可选 Node / Docker**：当前自动化与内部验证只以 Windows 为支持基线；完整跨平台测试工程留待 Rust 代码版本再重新评估。桌面封包、Qt/OS smoke、生命周期和升级策略只在 `pkv-GUI` 仓库演进；只有后台任务、并发写入或资源复用出现可测需求，且单写者与持久任务前置完成后才评估 Node；Docker 与云端进一步后置。
@@ -543,9 +566,9 @@ held test candidate 打包和 installed-Artifact 功能验证。该 W4 证据属
 
 ---
 
-**文档版本**: v5.12
-**最近文档核验**: 2026-10-25（W3 实施与分阶段验收；不宣称八项缺陷全部关闭）
+**文档版本**: v5.15
+**最近文档核验**: 2026-10-26（W4 合同同步，范围验收完成；历史证据原样保留）
 **项目代号**: Personal Knowledge Vault
-**当前版本**: 0.9.0（API 1.0.0；历史 held candidate 0.8.1）
+**当前版本**: 0.10.0（API 1.0.0；历史 held candidate 0.8.1）
 
 *本文档由 Claude Code 自动生成并维护*

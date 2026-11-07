@@ -185,6 +185,13 @@ W3/schema `1.2.8` 中，Topic 创建事务保留稳定 `outcome_id`；所有实�
 自身字段 revision。输入摘要在模型转换前验证原始持久类型、精确字段与 locator 派生 ID，
 普通 mutation 不能为损坏输入重新签名。
 
+014 迁移计划摘要同时绑定 SQL 与 `outcome_migration.py` / `outcomes/identity.py` 的源码摘要。
+源码及 wheel 布局读取源码；PyInstaller 在 Analysis 前后核对同一构建输入及模块来源，生成
+仅含两个逻辑资源名和 SHA256 的严格 JSON，冻结运行时读取该资源。两种形式使用相同的
+逻辑清单与摘要算法；缺失、畸形或重复字段不得回退为未绑定计划。禁止原始 `.py` 进入
+release payload 的既有规则保持不变。补充验收见
+[CodeReview 修复记录](../../docs/overview/W1-W3-CodeReview修复验收记录-2026-10.md)。
+
 渲染时先发布不可覆盖的
 `outcomes/topic-<topic_id>/<outcome_id>-r<revision:04d>-p<publication_id>.md`，再提交 SQLite pointer。
 `publication_id` 包含稳定 outcome、候选 revision 与完整 input digest；相同输入可收养字节相同

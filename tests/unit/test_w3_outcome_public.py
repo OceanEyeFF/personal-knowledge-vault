@@ -273,7 +273,7 @@ def test_handshake_keeps_major1_compatibility_and_sdk_bounds(required):
     result = pkv_kernel.require_kernel_compatibility(required_api_major=required)
     assert result.api_version == "1.0.0"
     assert "kernel.traceable-outcomes.v1" in result.capabilities
-    assert "kernel.embedding-rebuild.v2" not in result.capabilities
+    assert "kernel.embedding-rebuild.v2" in result.capabilities
     assert pkv_kernel.contracts.require_kernel_compatibility(
         pkv_kernel.__version__, required_api_major=required,
     ) == result

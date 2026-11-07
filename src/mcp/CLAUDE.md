@@ -10,7 +10,7 @@
 
 ### 核心能力
 
-- **35 个 Tool**: 19 只读 + 16 写入
+- **41 个 Tool**: 23 只读 + 18 写入（W4 v2 增量，当前范围验收完成）
 - **9 个 Resource**: 条目全文/元数据、精确 chunk、时间字段、关系边、标签与统计
 - **3 个 Prompt 模板**: 搜索总结/知识问答/思想磨砺
 - **安全加固**: URL DNS/连接目标/重定向/子资源 SSRF 重校验 + 文本长度验证
@@ -65,7 +65,7 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；�
 
 ## 对外接口
 
-### Tools (35 个)
+### Tools (41 个)
 
 #### 只读 Tool (readOnlyHint=True)
 
@@ -74,6 +74,10 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；�
 | `get_runtime_status` | (无) | `{status, readiness, inspection, plan, issues}` | 未就绪数据根仍可只读检查；不初始化/迁移/修复/Provider 探测 |
 | `inspect_embedding_rebuild` | (无) | `{terminal, inspection, plan: null, issues}` | 只读检查 generation binding 与独立手动重建预算；零写、零 Provider、零 task drain |
 | `plan_embedding_rebuild` | `force?` | `{terminal, inspection, plan, issues}` | 生成安全、无路径/正文/凭据的 public rebuild 计划；`ready` generation 需精确 `force=true` |
+| `inspect_embedding_rebuild_v2` | 无 | v2 envelope，result 为 inspection DTO | 当前预算期间、ledger schema 与升级影响；零写、零 lease、零 Provider |
+| `plan_embedding_rebuild_v2` | `force=false` | v2 envelope，result 为 rebuild plan DTO | 网络计划绑定当前期间及升级影响，默认不授权网络 |
+| `inspect_embedding_operation_v2` | `operation_id` | v2 envelope，result 为 operation DTO | 只读复核 proof、pointer 与账本事实，不在读路径对齐状态 |
+| `plan_embedding_publication_v2` | `operation_id` | v2 envelope，result 为 publication plan DTO | 显式 publish-only/完成对齐计划；零 Provider、零新预留 |
 | `search_knowledge` | `query`, `strategy?`, `top_k?`, `source_type?`, `tag?` | `{status, strategy, total, results[], issues[]}` | 搜索知识库，支持 auto/bm25/vector/hybrid 五态响应 |
 | `get_entry` | `knowledge_id` | `{knowledge_id, title, tags, content, ...}` | 获取条目完整内容(含 Markdown 全文) |
 | `list_tags` | (无) | `{total_tags, tags[{name, count}]}` | 列出所有标签及计数 |
@@ -98,6 +102,8 @@ Windows 客户端必须通过 `run-windows.ps1` 固定使用 `py311-private`；�
 | `archive_url` | `url` | `{success, knowledge_id, title, ...}` | 归档网页 (含 SSRF 防护) |
 | `archive_text` | `text`, `title?` | `{success, knowledge_id, title, ...}` | 归档纯文本 (含长度验证) |
 | `execute_embedding_rebuild` | `plan_id`, `approved`, `allow_network`, `force?` | `{terminal, inspection, plan, execution, issues}` | 重新核验同一 public plan 后执行一次 fenced generation rebuild；显式确认才允许构造 Provider |
+| `execute_embedding_rebuild_v2` | `plan_id`, `approved=false`, `allow_network=false`, `force=false` | v2 envelope，result 为 execution DTO | 精确重算确认后在 lease 内接纳；Provider 在 lease 外，完整 stage 封存后发布 |
+| `execute_embedding_publication_v2` | `operation_id`, `plan_id`, `approved=false` | v2 envelope，result 为 execution DTO | 原 operation + 当前确认只发布完整封存产物或对齐完成；不接收 force/network 参数 |
 | `create_outcome_topic` | `title`, `question` | public Topic DTO | 创建一次明确 inquiry；不自动检索、联网或调用 Provider |
 | `attach_outcome_evidence` / `detach_outcome_evidence` | canonical locator / `evidence_id` | public Evidence DTO / stable id | 显式绑定或解除 entry/chunk/relation evidence；绝不自动重绑来源 |
 | `create_outcome_claim` / `revise_outcome_claim` | statement、state、revision | public Claim DTO | 记录用户明确的 Claim；无有效 evidence 时外显为 `insufficient` |
@@ -118,11 +124,34 @@ P1-B outcome Tool 同样只投影公开 Kernel façade。它们读取或保存 S
 不返回 source body、私有路径、raw URL/credential、Store、lease 或 Provider。读 Tool 不写入；
 mutation 在 Application 的 root writer lease 下审计执行，且不构造 LLM、Embedding 或 QueryRouter。
 
+### W4 Embedding v2 协议（已完成范围验收）
+
+SDK `0.10.0` / API `1.0.0` 保留全部 v1 表面，按冻结合同 §6 增加 Embedding v2 的
+4 个只读与 2 个写入 Tool；总计 41 Tool（23 只读 + 18 写入）。`kernel.embedding-rebuild.v2`
+已实现并声明，W4 范围验收完成，ER/MIG 证据见 [W4 主记录](../../docs/overview/W4-Embedding继续发布与预算恢复实施记录-2026-10.md)，
+不能由历史 W3/MCP coverage 数字推导 W4 已完成。W5 major 切换与旧 Outcome 拒绝尚未实施。
+
+六个新 Tool 仅调用 `pkv_kernel.embedding`；inputSchema 封闭为
+`additionalProperties=false`，原始 JSON 在 FastMCP 转换前校验。布尔值不接受数值或字符串，
+plan ID 为 64 位小写十六进制，operation ID 为 `embedding-rebuild-[0-9a-f]{32}`。
+execute 在当前 Config 重算 plan，精确匹配后创建同一 plan 的确认，不把 operation ID 当授权。
+这些 Tool 走独立 lifecycle 合同，不扩大普通业务 Tool 或 Outcome 的 READY 访问边界。
+
+响应使用 `pkv.lifecycle-response.v2`，operation 固定为当前 Tool 名。成功 result 中的
+completion-pending 警告也保留在 issues；不能将 pointer 已提交误报为需重新生成。A 争锁返回
+`write_busy`；完整 C 封存后 D 争锁返回 `embedding_publication_pending`，safe details 说明原
+operation、awaiting_publish、Provider completed 和 publish-only 要求。v1 Tool 保留旧形状，
+在 `issues[0].details` 透传这些信息；继续操作只能转用 v2 lookup/plan/execute。
+
+Ledger 3 升级是明确确认 mutation 的一部分，inspect/plan 不升级；legacy 1/2 的 v1 写入
+返回 `embedding_ledger_upgrade_required`。publish-only 在 lease 内验证 grant 2 和完整 sealed
+proof，沿用原 reservation/usage，不构造 Provider、不新增预算；缺失/不可验证 proof 不自动重试。
+
 ### W3 v2 协议与兼容期
 
-SDK `0.9.0` 是本地兼容 build，Kernel API 保持 `1.0.0`；全部 v1 capability 保留，
-新增 `kernel.traceable-outcomes.v2`，未声明 `kernel.embedding-rebuild.v2`，未进行 W5
-major 切换。上述五个新 Tool 只调用 `pkv_kernel.outcomes` 的对应 `*_v2` 函数，
+W3 的历史兼容 build 为 SDK `0.9.0` / API `1.0.0`，当时只新增 Outcome v2 capability。
+当前 W4 build 与 Embedding 增量见上节，全部 v1 capability 保留，未进行 W5 major 切换。
+上述五个 Outcome v2 Tool 只调用 `pkv_kernel.outcomes` 的对应 `*_v2` 函数，
 不让客户端提供 Config、路径、Store 或 lease，也不读取 latest 补齐 review 四元组。
 其中两个 get 的 `readOnlyHint=true`，三个 mutation 为 false；五者仍要求 READY，
 不扩大未就绪或 DEGRADED 根的 Outcome 访问权限。
@@ -267,8 +296,9 @@ MCP 启动只解析 Config 并执行只读 `inspect_runtime()`，绝不调用历
 bootstrap、迁移、恢复或 Provider probe。未 READY 时仍保留 stdio 会话与
 `get_runtime_status`；普通业务 Tool/Resource（包括全部 Outcome v1/v2）以稳定 readiness
 issue 拒绝，不创建数据库、runtime snapshot、Provider 或文件日志。既有
-`inspect_embedding_rebuild` / `plan_embedding_rebuild` 走独立只读维护入口，按其 lifecycle
-合同取得当前同根 Config，不装配 Application；这一窄例外不授予 Outcome 读取或写入权限。
+`inspect_embedding_rebuild` / `plan_embedding_rebuild` 及 Embedding v2 inspect/plan 工具走独立
+只读维护入口，按其 lifecycle 合同取得当前同根 Config，不装配 Application；这一窄例外不授予
+Outcome 读取或写入权限。
 
 首次 READY 的后端请求才以启动时捕获的不可变 Config snapshot 配置一次
 `KnowledgeApplication`。Server 中的 `get_sqlite_store()`、`get_markdown_store()`
@@ -431,7 +461,7 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 | `__init__.py` | 模块入口,描述模块结构 |
 | `__main__.py` | 支持 `python -m src.mcp.server` 启动 |
 | `server.py` | FastMCP 主入口,单例管理,注册子模块 |
-| `tools.py` | 35 个 Tool handler 实现 |
+| `tools.py` | 41 个 Tool handler 实现 |
 | `resources.py` | 9 个 Resource handler 实现 |
 | `prompts.py` | 3 个 Prompt 模板实现 |
 | `utils.py` | 辅助工具(序列化/安全验证/参数约束) |
@@ -461,6 +491,12 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 ---
 
 ## 变更记录 (Changelog)
+
+### 2026-10-26（W4 Embedding v2 已完成范围验收）
+- 在既有 35 Tool 上兼容增加 4 个只读与 2 个写入 Tool，当前共 41（23 只读 + 18 写入）。
+- 新入口采用封闭原始 JSON 校验与 v2 envelope；v1 保留旧形状并透传 pending code/details。
+  继续发布使用原 operation、完整 sealed proof 与当前确认，零 Provider、零新 reservation。
+- SDK `0.10.0` / API `1.0.0`，`kernel.embedding-rebuild.v2` 已声明；整体门禁结果见 W4 主记录，W5 与 release hold 不变。
 
 ### 2026-10-25（W3 Outcome v2 兼容准备）
 - 增加 2 个只读与 3 个写入 v2 Tool，当前共 35 Tool（19 只读 + 16 写入）；原 30 个保留。
@@ -511,6 +547,6 @@ M13 不能启用。Developer Preview 只支持由本地 MCP Client 管理生命�
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-10-25（W3 v2 入口与兼容阶段；历史证据保持原语境）
+**最后更新**: 2026-10-26（W4 Embedding v2 已完成范围验收；历史证据保持原语境）
 
 *本文档由 Claude Code 自动生成*

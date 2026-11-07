@@ -13,6 +13,7 @@ import os
 import re
 import sqlite3
 import stat
+import sys
 import tempfile
 import uuid
 from contextlib import contextmanager, suppress
@@ -36,6 +37,52 @@ from src.storage.sqlite_connection import (
 from src.storage.sqlite_store import SQLiteStore
 
 logger = logging.getLogger(__name__)
+
+
+_MIGRATION_CODE_RESOURCES = frozenset({
+    "src/outcomes/identity.py", "src/storage/outcome_migration.py",
+})
+
+
+def _frozen_migration_code_fingerprints() -> list[dict[str, str]]:
+    """Read build-bound hashes; frozen payloads deliberately contain no .py."""
+
+    def unique_object(pairs):
+        result = {}
+        for name, value in pairs:
+            if name in result:
+                raise ValueError("duplicate migration fingerprint key")
+            result[name] = value
+        return result
+
+    path = Path(__file__).parent.parent / "migration-code-fingerprints.json"
+    with open_user_file_nofollow(path, "rb", label="迁移代码指纹") as handle:
+        raw = handle.read(4097)
+    if len(raw) > 4096:
+        raise ValueError("migration fingerprint resource is oversized")
+    payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+    if (
+        type(payload) is not dict
+        or set(payload) != {"schema", "resources"}
+        or payload["schema"] != "pkv.migration-code.v1"
+        or type(payload["resources"]) is not list
+        or len(payload["resources"]) != len(_MIGRATION_CODE_RESOURCES)
+    ):
+        raise ValueError("invalid migration fingerprint resource")
+    resources = payload["resources"]
+    for item in resources:
+        if (
+            type(item) is not dict
+            or set(item) != {"resource", "sha256"}
+            or type(item["resource"]) is not str
+            or item["resource"] not in _MIGRATION_CODE_RESOURCES
+            or type(item["sha256"]) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
+        ):
+            raise ValueError("invalid migration code fingerprint")
+    if {item["resource"] for item in resources} != _MIGRATION_CODE_RESOURCES:
+        raise ValueError("incomplete migration code fingerprint resource")
+    return resources
 
 
 _CREATE_TABLE_PATTERN = re.compile(
@@ -364,7 +411,9 @@ class MigrationManager:
 
         chain = self._migration_chain()
         resources = [(f"scripts/migrations/{path.name}", path) for _, path in chain]
-        if any(path.name == "014_add_lifecycle_consistency.sql" for _, path in chain):
+        binds_code = any(path.name == "014_add_lifecycle_consistency.sql" for _, path in chain)
+        frozen = getattr(sys, "frozen", False) is True
+        if binds_code and not frozen:
             source = Path(__file__).parent
             resources.extend((
                 ("src/storage/outcome_migration.py", source / "outcome_migration.py"),
@@ -372,14 +421,17 @@ class MigrationManager:
             ))
         manifest = []
         try:
+            if binds_code and frozen:
+                manifest.extend(_frozen_migration_code_fingerprints())
             for name, path in sorted(resources):
                 with open_user_file_nofollow(path, "rb", label="迁移绑定资源") as handle:
                     digest = hashlib.sha256(handle.read()).hexdigest()
                 manifest.append({"resource": name, "sha256": digest})
-        except OSError as exc:
+        except (OSError, UnicodeError, ValueError) as exc:
             raise PKVRuntimeError(
                 ErrorCode.RESOURCE_NOT_READABLE, "迁移绑定资源无法安全读取。",
             ) from exc
+        manifest.sort(key=lambda item: item["resource"])
         encoded = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(b"pkv.migration.manifest.v1\0" + encoded).hexdigest()
 

@@ -342,6 +342,44 @@ _OUTCOME_V2_PARAMETERS = {
     },
 }
 
+_EMBEDDING_V2_PARAMETERS = {
+    "inspect_embedding_rebuild_v2": {},
+    "plan_embedding_rebuild_v2": {"force": "optional_bool"},
+    "execute_embedding_rebuild_v2": {
+        "plan_id": "sha256", "approved": "optional_bool",
+        "allow_network": "optional_bool", "force": "optional_bool",
+    },
+    "inspect_embedding_operation_v2": {"operation_id": "operation_id"},
+    "plan_embedding_publication_v2": {"operation_id": "operation_id"},
+    "execute_embedding_publication_v2": {
+        "operation_id": "operation_id", "plan_id": "sha256", "approved": "optional_bool",
+    },
+}
+
+
+def valid_embedding_v2_arguments(name: str, arguments: object) -> bool:
+    """Reject unknown fields and coercible scalars before touching runtime."""
+
+    fields = _EMBEDDING_V2_PARAMETERS.get(name)
+    if fields is None or type(arguments) is not dict or set(arguments) - set(fields):
+        return False
+    for field, kind in fields.items():
+        if field not in arguments:
+            if kind == "optional_bool":
+                continue
+            return False
+        value = arguments[field]
+        if kind == "optional_bool":
+            if type(value) is not bool:
+                return False
+        elif kind == "sha256":
+            if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                return False
+        elif kind == "operation_id":
+            if type(value) is not str or re.fullmatch(r"embedding-rebuild-[0-9a-f]{32}", value) is None:
+                return False
+    return True
+
 
 def valid_outcome_v2_arguments(name: str, arguments: object) -> bool:
     """Validate raw JSON scalars before FastMCP can coerce or discard fields."""
@@ -376,6 +414,12 @@ class _OutcomeV2FastMCP(FastMCP):
     """Keep the new closed request contract outside legacy coercive parsing."""
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        if name in _EMBEDDING_V2_PARAMETERS:
+            from src.mcp import tools
+
+            if not valid_embedding_v2_arguments(name, arguments):
+                return tools._embedding_v2_failure_payload(ValueError("invalid embedding request"), operation=name)
+            return await getattr(tools, name)(**arguments)
         if name in _OUTCOME_V2_PARAMETERS:
             from src.mcp import tools
 
@@ -392,6 +436,8 @@ class _OutcomeV2FastMCP(FastMCP):
         for index, tool in enumerate(tools):
             fields = _OUTCOME_V2_PARAMETERS.get(tool.name)
             if fields is None:
+                fields = _EMBEDDING_V2_PARAMETERS.get(tool.name)
+            if fields is None:
                 continue
             schema = dict(tool.inputSchema)
             schema["additionalProperties"] = False
@@ -401,6 +447,8 @@ class _OutcomeV2FastMCP(FastMCP):
                     properties[field]["pattern"] = "^[a-z][a-z0-9_-]{0,95}$"
                 elif kind == "sha256":
                     properties[field]["pattern"] = "^[0-9a-f]{64}$"
+                elif kind == "operation_id":
+                    properties[field]["pattern"] = "^embedding-rebuild-[0-9a-f]{32}$"
                 elif kind == "positive_int":
                     properties[field]["minimum"] = 1
                     properties[field]["maximum"] = 2**63 - 1
@@ -424,8 +472,11 @@ mcp = _OutcomeV2FastMCP(
         "contrast（主题对比）、get_outcome（成果读取）、"
         "suggest_outcome_evidence（严格 BM25 成果证据候选）、"
         "get_outcome_v2、get_outcome_research_brief_v2（精确版本成果视图）。\n"
+        "Embedding v2 只读工具：inspect_embedding_rebuild_v2、plan_embedding_rebuild_v2、"
+        "inspect_embedding_operation_v2、plan_embedding_publication_v2（原操作继续发布计划）。\n"
         "写入工具：archive_url（归档网页）、archive_text（归档文本）、"
         "execute_embedding_rebuild（执行已确认的 generation rebuild）、"
+        "execute_embedding_rebuild_v2、execute_embedding_publication_v2（只发布，不重复 Provider）、"
         "create_outcome_topic、attach_outcome_evidence、detach_outcome_evidence、"
         "create_outcome_claim、revise_outcome_claim、link_outcome_claim_evidence、"
         "unlink_outcome_claim_evidence、render_outcome_research_brief、"

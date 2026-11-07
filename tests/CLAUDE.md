@@ -81,6 +81,10 @@
 | `test_mcp_prompts.py` | MCP Prompt 模板 |
 | `test_mcp_security.py` | MCP 安全验证（SSRF/Auth） |
 | `test_w2_contract_registry.py` | W2 capability state、fixture 与 W4 Artifact handoff 边界 |
+| `test_w4_embedding_ledger.py` / `test_w4_embedding_stage_proof.py` | 本轮生命周期 W4 的 ledger 3 分类/显式升级、预算期间和 grant 2/sealed proof；区别于 M13 Artifact W4 |
+| `test_w4_embedding_core.py` / `test_w4_embedding_publication.py` / `test_w4_embedding_completion_audit.py` | A/D 分离、publish-only、CAS 前后恢复与 durable completion 对齐 |
+| `test_w4_embedding_public.py` / `test_w4_embedding_adapters.py` | 8 SDK 函数/7 opaque handle、严格 DTO、4 CLI 叶子/6 MCP Tool 与旧 v1 兼容 |
+| `test_w4_embedding_clock_harness.py` | payload 外时钟推进与阶段屏障，禁止产品测试模式和真实等待日/月边界 |
 
 **覆盖率**: 不在静态文档中维护易漂移的百分比；以当前受控覆盖率命令及其报告为准。
 
@@ -126,10 +130,11 @@
 | `test_outcome_cli_blackbox.py` | public CLI Topic → Evidence → Claim → research brief → fresh-process read；验证 stale/missing projection 与路径脱敏 |
 | `test_outcome_mcp_blackbox.py` | real MCP stdio/JSON-RPC Topic → review → new-server read；严格 BM25/URL credential rejection 与 missing projection 合同 |
 | `test_w3_outcome_cli_blackbox.py` / `test_w3_outcome_mcp_blackbox.py` | v2 publication/review 四元组、幂等重放、漂移拒绝、v1 弃用警告与独立新进程读取 |
+| `test_w4_embedding_cli_blackbox.py` / `test_w4_embedding_mcp_blackbox.py` | Embedding v2 D 争锁、封存后关闭宿主/新进程发布、预算期间与零重复 Provider/预留的公开协议 |
 
 **MCP 黑盒测试**: 仅经 `tests/offline_entrypoint.py mcp` 启动 base-only 子进程，并由 MCP SDK 经 JSON-RPC over stdio 端到端验证；不得直接启动默认配置入口。验证:
 - 服务启动与协议初始化(MCP 握手)
-- 功能发现（当前 manifest：`list_tools=35`，其中 19 个只读、16 个写入；`list_prompts=3`、2 个静态 Resource、7 个 Resource Template；后两者分别由 `list_resources` / `list_resource_templates` 发现）
+- 功能发现（W4 当前 manifest：`list_tools=41`，其中 23 个只读、18 个写入；`list_prompts=3`、2 个静态 Resource、7 个 Resource Template；后两者分别由 `list_resources` / `list_resource_templates` 发现）
 - 只读 Tool 端到端调用 (含分页/过滤)
 - 写入 Tool 安全拦截 (SSRF/空文本/超长文本)
 - Prompt 端到端调用
@@ -153,6 +158,18 @@ StorageCoordinator、Provider Tool 返回值或产品配置。harness 保持产�
 OpenAI-compatible 配置接入；manual Provider work 期间以 barrier 证明 root writer lease
 可被另一 owner 获取。预算/授权 gate 不等待或触发 Provider，durable ledger 只作为测试拥有
 DataRoot 的事后核验，绝不替代公开入口。
+
+**生命周期 W4 source black-box 合同**：`test_w4_embedding_*_blackbox.py` 从真实 CLI/MCP
+公开 v2 入口完成 inspect/plan/confirm/execute；D 争锁后先退出宿主，再以全新进程读取原
+operation 并明确 publish-only。外置 harness 的阶段屏障证明 Provider 在 lease 外，时钟推进
+验证日/月预算恢复及跨期发布；不得加入产品 test mode、隐藏参数、固定端口或 sleep 同步。
+断言封存 proof、原 reservation/period、usage 和 pointer/audit 事实，同时以 harness 请求数
+证明没有重复 Provider。只读路径前后比较树指纹，不以直接读取 ledger 代替公开响应。
+
+W4 范围验收完成；ER-01–10、MIG-06–09、各层节点和运行指纹统一见
+[W4 主记录](../docs/overview/W4-Embedding继续发布与预算恢复实施记录-2026-10.md)。既有
+W1/W2/W3 与 CodeReview JSON 是历史证据，保持原始失败数；当前 W4 结果另行登记，重叠
+运行不相加。W5 的 R-04 旧无版本 Outcome 拒绝与 MIG-10 尚未实施，不改 skip/xfail 规避。
 
 **P1-B outcome source black-box 合同**：CLI 用例必须通过 `offline_entrypoint.py cli` 的真实
 子进程，MCP 用例必须通过 `offline_entrypoint.py mcp` 的真实 stdio 子进程与 MCP SDK/JSON-RPC。
@@ -441,6 +458,29 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 
 ## 变更记录 (Changelog)
 
+### 2026-10-25–26（生命周期 W4 范围验收完成）
+
+- 新增 Embedding ledger 3、grant 2/sealed proof、publish-only/完成对齐、SDK/adapter 与真实
+  CLI/MCP 进程回归；当前 manifest 为 41 Tool（23 只读 + 18 写入）。
+- 日/月边界使用 payload 外受控时钟，D 窗口使用阶段屏障；隔离规则和真实数据迁移禁令不变。
+  新增 W4 精确 363 项全部通过；原 P0 exit 1 保留，结合完整 MCP 908 项与 W3 public 76 项，
+  按节点去重为 4156 selected：4133 passed、21 skipped、2 项 W5 普通失败、0 errors。
+  最终 MCP 覆盖率 95.64%；Phase C 与致命 Ruff 通过。清单、原轮与去重证据见 W4 主记录，
+  不挪用下列历史计数，也不将重叠轮次相加或称单轮全仓全绿。
+
+### 2026-10-25（W1–W3 CodeReview 补充）
+
+- 新增冻结迁移指纹资源合同、原生 CLI 模块入口和 Q1 repair 提交证明恢复回归。
+  原生模块黑盒经受保护的 `python -m src.cli.commands` 路径实际执行，不由测试入口
+  预先改派到 `src.main`；没有修改离线环境、配置、网络或子进程 guard。
+- 冻结资源测试执行实际 spec 的资源构建逻辑，以轻量 Analysis/PYZ 类替代完整封包，
+  验证同一构建输入、严格摘要读取及计划漂移。它属于 packaging-contract，不冒充完整
+  PyInstaller closure 或 installed-Artifact 验证；原有缺 closure 的 skip 原样记录。
+- Q1 回归覆盖原操作证明恢复、模糊/缺失/不可读证明、旧 fence、事务回滚及独立目标进展，
+  不授权新的 Provider attempt。结果和源码指纹见
+  [修复验收记录](../docs/overview/W1-W3-CodeReview修复验收记录-2026-10.md)与
+  [独立补充登记](./contracts/w1_w3_review_repairs.v1.json)。下列 W1/W2/W3 计数保留历史语境。
+
 ### 2026-10-25（W3 Outcome 验收）
 
 - 新增 229 项全部通过，原 W1 子集为 29 passed / 5 known failures；完整 MCP 为
@@ -594,6 +634,6 @@ MCP 黑盒测试需要启动子进程并完成 MCP 协议握手,每个测试约 
 ---
 
 **模块维护者**: AI Agent
-**最后更新**: 2026-10-25
+**最后更新**: 2026-10-26
 
 *本文档由 Claude Code 自动生成*

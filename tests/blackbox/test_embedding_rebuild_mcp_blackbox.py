@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
+import sqlite3
+import stat
 
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client
@@ -14,8 +17,10 @@ from src.runtime.embedding_rebuild_ledger import (
     EmbeddingRebuildLedger,
     EmbeddingRebuildLedgerState,
 )
+from src.runtime.embedding_stage_proof import validate_publish_ready
 from src.runtime.runtime_snapshot import RuntimeSnapshotStore
 from src.runtime.write_lease import write_lease_scope
+from src.storage.derivation_patch import DerivationPatchReference, DerivationPatchSpool
 from src.storage.markdown_store import Entry, MarkdownStore
 from src.storage.sqlite_store import SQLiteStore
 from tests.blackbox.r4_fullflow_support import (
@@ -35,6 +40,32 @@ ARCHIVE_CONTENT = (
     "restart after a foreground rebuild."
 )
 SEARCH_QUERY = "public semantic generation after restart"
+
+
+def _committed_r4_facts(
+    runtime: R4BlackboxRuntime,
+) -> tuple[tuple[str, ...], dict[str, bytes], dict[str, object]]:
+    """Retain all synthetic Q2 accounting/commit and source facts across maintenance."""
+
+    with sqlite3.connect(runtime.layout.db_path.as_uri() + "?mode=ro", uri=True) as connection:
+        database = tuple(connection.iterdump())
+        references = connection.execute(
+            "SELECT patch_ref, patch_sha256 FROM ai_derivation_tasks "
+            "WHERE patch_ref IS NOT NULL"
+        ).fetchall()
+    # Reopen the original spool through its strict digest/identity validator;
+    # the unchanged SQLite snapshot also preserves every task/commit binding.
+    patches = {
+        patch_id: DerivationPatchSpool(runtime.layout).read(
+            DerivationPatchReference(patch_id, payload_sha256)
+        ).to_payload()
+        for patch_id, payload_sha256 in references
+    }
+    markdown = {
+        path.relative_to(runtime.layout.vault_dir).as_posix(): path.read_bytes()
+        for path in runtime.layout.vault_dir.rglob("*.md")
+    }
+    return database, markdown, patches
 
 
 async def _initialize(session: ClientSession) -> None:
@@ -126,6 +157,16 @@ async def test_mcp_stdio_public_rebuild_activates_and_searches_after_new_server(
                     operation_id = archive["operation_id"]
                     assert type(knowledge_id) is int and knowledge_id > 0
                     assert type(operation_id) is str and len(operation_id) == 32
+                    # Q2 must clean its temporary stage. Manual rebuilds retain
+                    # their sealed proof under the W4 recovery contract.
+                    assert_r4_success_ledger(
+                        runtime,
+                        operation_id=operation_id,
+                        knowledge_id=knowledge_id,
+                        expected_title=ARCHIVE_TITLE,
+                        expected_content=ARCHIVE_CONTENT,
+                    )
+                    original_r4_facts = _committed_r4_facts(runtime)
 
                     inspected = parse_mcp_tool_json(
                         await asyncio.wait_for(
@@ -238,13 +279,49 @@ async def test_mcp_stdio_public_rebuild_activates_and_searches_after_new_server(
                 "chunk_vectors_metadata.json",
             )
         )
-        assert_r4_success_ledger(
-            runtime,
-            operation_id=operation_id,
-            knowledge_id=knowledge_id,
-            expected_title=ARCHIVE_TITLE,
-            expected_content=ARCHIVE_CONTENT,
+        assert _committed_r4_facts(runtime) == original_r4_facts
+        vector_roots = list(runtime.layout.vector_index_dir.iterdir())
+        assert {path.name for path in vector_roots} == {"generations", "staging"}
+        for root in vector_roots:
+            root_stat = os.lstat(root)
+            assert stat.S_ISDIR(root_stat.st_mode)
+            assert not stat.S_ISLNK(root_stat.st_mode)
+            assert not bool(
+                getattr(root_stat, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            )
+        staging_root = runtime.layout.vector_index_dir / "staging"
+        assert durable.stage_key is not None
+        assert {path.name for path in staging_root.iterdir()} == {durable.stage_key}
+        sealed = validate_publish_ready(
+            runtime.layout,
+            stage_key=durable.stage_key,
+            expected={
+                **{name: getattr(durable, name) for name in (
+                    "operation_id", "plan_id", "public_plan_id", "source_revision",
+                    "data_root_identity_sha256", "runtime_snapshot_sha256", "contract_sha256",
+                    "policy_fingerprint", "grant_sha256", "proof_sha256", "generation_id",
+                )},
+                "reservation_id": durable.reservation.reservation_id,
+            },
         )
+        assert sealed.generation_id == execution["generation_id"]
+        assert sealed.proof_sha256 == durable.proof_sha256
+        artifact_names = {
+            "doc_vectors.idx", "doc_vectors_metadata.json", "chunk_vectors.idx",
+            "chunk_vectors_metadata.json", "generation-manifest.json",
+        }
+        # VectorStore retains its four one-byte advisory-lock sidecars in the
+        # private stage; only the five immutable artifacts enter generations.
+        stage_locks = {f".{name}.lock" for name in artifact_names if name != "generation-manifest.json"}
+        assert {path.name for path in sealed.stage_dir.iterdir()} == artifact_names | stage_locks | {
+            ".generation-stage-grant.json", ".publish-ready.json",
+        }
+        assert all((sealed.stage_dir / name).read_bytes() == b"\0" for name in stage_locks)
+        generation = runtime.layout.vector_index_dir / "generations" / sealed.generation_id
+        assert {path.name for path in generation.iterdir()} == artifact_names
+        assert all((sealed.stage_dir / name).read_bytes() == (generation / name).read_bytes()
+                   for name in artifact_names)
 
         second_stderr_path = runtime.layout.tmp_dir / "mcp-rebuild-second.stderr"
         with second_stderr_path.open("w+", encoding="utf-8") as second_stderr:

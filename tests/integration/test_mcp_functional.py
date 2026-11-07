@@ -204,17 +204,20 @@ class TestToolRegistration:
     """验证 Tool 注册机制是否正确。"""
 
     @pytest.mark.asyncio
-    async def test_list_tools_returns_all_35(self):
-        """list_tools() 应返回 35 个已注册的 Tool。"""
+    async def test_list_tools_returns_all_41(self):
+        """list_tools() 应返回 41 个已注册的 Tool。"""
         tools = await mcp.list_tools()
-        assert len(tools) == 35, f"期望 35 个 Tool，实际: {len(tools)}"
+        assert len(tools) == 41, f"期望 41 个 Tool，实际: {len(tools)}"
 
     @pytest.mark.asyncio
     async def test_tool_names(self):
-        """35 个 Tool 名称应正确。"""
+        """41 个 Tool 名称应正确。"""
         tools = await mcp.list_tools()
         names = {t.name for t in tools}
         expected = {
+            "inspect_embedding_rebuild_v2", "plan_embedding_rebuild_v2",
+            "execute_embedding_rebuild_v2", "inspect_embedding_operation_v2",
+            "plan_embedding_publication_v2", "execute_embedding_publication_v2",
             "get_runtime_status", "inspect_embedding_rebuild", "plan_embedding_rebuild",
             "execute_embedding_rebuild", "search_knowledge", "get_entry", "list_tags", "list_entries",
             "get_stats", "archive_url", "archive_text", "get_related",
@@ -237,6 +240,8 @@ class TestToolRegistration:
         """只读 Tool 应标注 readOnlyHint=True。"""
         tools = await mcp.list_tools()
         readonly_names = {
+            "inspect_embedding_rebuild_v2", "plan_embedding_rebuild_v2",
+            "inspect_embedding_operation_v2", "plan_embedding_publication_v2",
             "get_runtime_status", "inspect_embedding_rebuild", "plan_embedding_rebuild",
             "search_knowledge", "get_entry", "list_tags", "list_entries",
             "get_stats", "get_related", "query_subgraph", "explain_relation",
@@ -258,6 +263,7 @@ class TestToolRegistration:
         """写入 Tool 不应有 readOnlyHint=True。"""
         tools = await mcp.list_tools()
         write_names = {
+            "execute_embedding_rebuild_v2", "execute_embedding_publication_v2",
             "archive_url", "archive_text", "execute_embedding_rebuild",
             "create_outcome_topic", "attach_outcome_evidence", "detach_outcome_evidence",
             "create_outcome_claim", "revise_outcome_claim",

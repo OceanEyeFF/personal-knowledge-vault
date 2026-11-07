@@ -1127,6 +1127,7 @@ class ContentLifecycleStore:
                 ContentMutationState.PROCESSING.value,
                 ContentMutationState.CORE_COMMITTED.value,
                 ContentMutationState.AI_HANDOFF_PENDING.value,
+                ContentMutationState.REPAIR_REQUIRED.value,
             ))
         state_slots = ", ".join("?" for _ in states)
         with self._write_transaction() as connection:
@@ -1223,6 +1224,7 @@ class ContentLifecycleStore:
             if task.state not in {
                 ContentMutationState.PROCESSING, ContentMutationState.CORE_COMMITTED,
                 ContentMutationState.AI_HANDOFF_PENDING,
+                ContentMutationState.REPAIR_REQUIRED,
             }:
                 return task
             connection.execute(
@@ -1360,6 +1362,106 @@ class ContentLifecycleStore:
                     recoverable=True,
                 )
             return self._load_task(connection, task_id)
+
+    def reconcile_repair_committed(
+        self, task: ContentMutationTask, *, record: Mapping[str, Any],
+    ) -> ContentMutationTask:
+        """Reconcile a repaired operation's proof without authorizing execution.
+
+        The caller first runs StorageCoordinator recovery under the root lease.
+        Both its usable terminal journal and the corresponding SQLite proof must
+        bind this exact task.  The proof check and task/fence transition share a
+        transaction, so interruption cannot leave a retryable execution claim.
+        """
+
+        if not isinstance(task, ContentMutationTask):
+            raise TypeError("task 必须是 ContentMutationTask")
+
+        def reject() -> None:
+            raise PKVRuntimeError(
+                ErrorCode.REPAIR_REQUIRED,
+                "Q1′ repair task 尚无匹配的原操作提交证明。",
+                stage=_STAGE,
+                recoverable=True,
+            )
+
+        with self._write_transaction() as connection:
+            current = self._load_task(connection, task.task_id)
+            if current != task or current.state is not ContentMutationState.REPAIR_REQUIRED:
+                reject()
+            knowledge_id = record.get("knowledge_id")
+            projection = record.get("projection_sha256")
+            relative_path = record.get("relative_file_path")
+            terminal = (
+                {"deleted", "degraded"}
+                if task.action is ContentMutationAction.DELETE else {"ready", "degraded"}
+            )
+            if (
+                record.get("operation_id") != task.operation_id
+                or record.get("action") != task.action.value
+                or record.get("status") not in terminal
+                or record.get("core_committed") is not True
+                or type(knowledge_id) is not int or knowledge_id <= 0
+                or (task.target_knowledge_id is not None and knowledge_id != task.target_knowledge_id)
+                or not isinstance(projection, str) or _SHA256_PATTERN.fullmatch(projection) is None
+                or not isinstance(relative_path, str) or not relative_path
+            ):
+                reject()
+            expected = {
+                "operation_id": task.operation_id,
+                "action": task.action.value,
+                "knowledge_id": knowledge_id,
+                "relative_file_path": relative_path,
+            }
+            if task.action is ContentMutationAction.APPLY_AI_PATCH:
+                if (
+                    task.target_revision_sha256 is None
+                    or record.get("previous_revision_sha256") != task.target_revision_sha256
+                    # The existing-proof journal_created path predates the
+                    # duplicated resulting field; when supplied it cannot
+                    # contradict the projection bound by the SQLite proof.
+                    or record.get("resulting_revision_sha256", projection) != projection
+                ):
+                    reject()
+                expected.update({
+                    "previous_revision_sha256": task.target_revision_sha256,
+                    "resulting_revision_sha256": projection,
+                })
+                proof = connection.execute(
+                    "SELECT * FROM r4_content_operation_commits WHERE operation_id = ?",
+                    (task.operation_id,),
+                ).fetchone()
+            else:
+                if task.target_revision_sha256 not in {None, projection}:
+                    reject()
+                expected["projection_sha256"] = projection
+                proof = connection.execute(
+                    "SELECT * FROM storage_operation_commits WHERE operation_id = ?",
+                    (task.operation_id,),
+                ).fetchone()
+            if proof is None or any(proof[key] != value for key, value in expected.items()):
+                reject()
+            changed = connection.execute(
+                """
+                UPDATE content_mutation_tasks
+                SET state = ?, target_knowledge_id = ?, target_revision_sha256 = ?,
+                    owner_fence = owner_fence + 1, claim_token = NULL, claimed_until = NULL,
+                    last_error_code = NULL, not_before = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = ? AND state = ? AND owner_fence = ? AND operation_id = ?
+                """,
+                (
+                    ContentMutationState.CORE_COMMITTED.value,
+                    knowledge_id,
+                    task.target_revision_sha256 if task.action is ContentMutationAction.APPLY_AI_PATCH else projection,
+                    task.task_id,
+                    ContentMutationState.REPAIR_REQUIRED.value,
+                    task.owner_fence,
+                    task.operation_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                reject()
+            return self._load_task(connection, task.task_id)
 
     def record_core_committed(
         self,

@@ -9,6 +9,10 @@
     "scripts/migrations/*.sql",
     "src/ai/prompts/*.txt"
   ],
+  "migration_code_resources": [
+    "src/outcomes/identity.py",
+    "src/storage/outcome_migration.py"
+  ],
   "build_collections": [
     "mcp distribution metadata required by FastMCP version discovery",
     "certifi CA bundle and jieba core dictionary"

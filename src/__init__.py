@@ -4,8 +4,8 @@ Personal Knowledge Vault - AI-First Knowledge Management System
 一个AI驱动的个人知识管理系统，专注于智能归档、混合检索和知识关联。
 
 Author: 幽浮喵
-Version: 0.9.0
+Version: 0.10.0
 """
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 __author__ = "幽浮喵"

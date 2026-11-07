@@ -144,6 +144,18 @@ _PUBLIC_EMBEDDING_API_V1 = frozenset(
         "plan_embedding_rebuild",
     }
 )
+_PUBLIC_EMBEDDING_API_V2_ADDITIONS = frozenset(
+    {
+        "EmbeddingRebuildInspectionV2", "EmbeddingRebuildPlanV2",
+        "EmbeddingRebuildConfirmationV2", "EmbeddingRebuildExecutionV2",
+        "EmbeddingOperationInspectionV2", "EmbeddingPublicationPlanV2",
+        "EmbeddingPublicationConfirmationV2", "inspect_embedding_rebuild_v2",
+        "plan_embedding_rebuild_v2", "confirm_embedding_rebuild_v2",
+        "execute_embedding_rebuild_v2", "inspect_embedding_operation_v2",
+        "plan_embedding_publication_v2", "confirm_embedding_publication_v2",
+        "execute_embedding_publication_v2",
+    }
+)
 _PUBLIC_OUTCOMES_API_V1 = frozenset(
     {
         "ClaimEvidenceLink",
@@ -206,7 +218,9 @@ _KERNEL_CAPABILITIES_V1 = frozenset(
         "kernel.traceable-outcomes.v1",
     }
 )
-_KERNEL_CAPABILITIES_V2_ADDITIONS = frozenset({"kernel.traceable-outcomes.v2"})
+_KERNEL_CAPABILITIES_V2_ADDITIONS = frozenset({
+    "kernel.traceable-outcomes.v2", "kernel.embedding-rebuild.v2",
+})
 
 
 def _source_imports(path: Path) -> list[str]:
@@ -277,9 +291,10 @@ def test_pkv_kernel_v1_public_api_is_exactly_frozen() -> None:
     assert all(
         hasattr(pkv_kernel.lifecycle, name) for name in _PUBLIC_LIFECYCLE_API_V1
     )
-    assert frozenset(pkv_kernel.embedding.__all__) == _PUBLIC_EMBEDDING_API_V1
+    expected_embedding = _PUBLIC_EMBEDDING_API_V1 | _PUBLIC_EMBEDDING_API_V2_ADDITIONS
+    assert frozenset(pkv_kernel.embedding.__all__) == expected_embedding
     assert all(
-        hasattr(pkv_kernel.embedding, name) for name in _PUBLIC_EMBEDDING_API_V1
+        hasattr(pkv_kernel.embedding, name) for name in expected_embedding
     )
     expected_outcomes = _PUBLIC_OUTCOMES_API_V1 | _PUBLIC_OUTCOMES_API_V2_ADDITIONS
     assert frozenset(pkv_kernel.outcomes.__all__) == expected_outcomes
@@ -291,7 +306,7 @@ def test_pkv_kernel_v1_public_api_is_exactly_frozen() -> None:
 def test_pkv_kernel_capability_handshake_enforces_wrapper_requirements() -> None:
     capabilities = pkv_kernel.get_kernel_capabilities()
 
-    assert capabilities.sdk_version == pkv_kernel.__version__ == "0.9.0"
+    assert capabilities.sdk_version == pkv_kernel.__version__ == "0.10.0"
     assert capabilities.api_version == "1.0.0"
     expected_capabilities = _KERNEL_CAPABILITIES_V1 | _KERNEL_CAPABILITIES_V2_ADDITIONS
     assert capabilities.capabilities == expected_capabilities
@@ -306,7 +321,7 @@ def test_pkv_kernel_capability_handshake_enforces_wrapper_requirements() -> None
     assert (
         pkv_kernel.require_kernel_compatibility(
             minimum_sdk_version="0.8.0",
-            maximum_sdk_version="0.9.0",
+            maximum_sdk_version="0.10.0",
             required_capabilities=(
                 "kernel.archive.v1",
                 "kernel.configuration-snapshot-reload.v1",
@@ -323,7 +338,7 @@ def test_pkv_kernel_capability_handshake_enforces_wrapper_requirements() -> None
     )
 
     with pytest.raises(pkv_kernel.KernelCompatibilityError, match="below"):
-        pkv_kernel.require_kernel_compatibility(minimum_sdk_version="0.9.1")
+        pkv_kernel.require_kernel_compatibility(minimum_sdk_version="0.10.1")
     with pytest.raises(pkv_kernel.KernelCompatibilityError, match="exceeds"):
         pkv_kernel.require_kernel_compatibility(maximum_sdk_version="0.8.1")
     with pytest.raises(pkv_kernel.KernelCompatibilityError):

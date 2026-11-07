@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pkv-kernel"
-version = "0.9.0"
+version = "0.10.0"
 description = "Headless Personal Knowledge Vault Kernel SDK"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -30,6 +30,7 @@ dependencies = [
     "openai>=1.55.3,<2",
     "python-frontmatter==1.1.0",
     "rich==13.7.0",
+    "tzdata>=2024.1",
     "urllib3>=2.2,<3",
 ]
 

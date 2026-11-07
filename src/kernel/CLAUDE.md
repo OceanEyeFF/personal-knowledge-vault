@@ -34,7 +34,7 @@ while the Kernel remains usable without importing PySide6 or any GUI module.
   specific capabilities it needs. Current protocol/API, Python/platform range,
   compatibility and deprecation policy are normative in
   `docs/specs/interfaces/KernelSDK公开合同.md`.
-- W3 uses local SDK build `0.9.0` and API `1.0.0`. Both package-root and
+- W4 uses local SDK build `0.10.0` and API `1.0.0`. Both package-root and
   `contracts.require_kernel_compatibility` accept optional `required_api_major`:
   `None` retains the major-1 behavior, strict integer `1` succeeds, and all other
   supplied values fail before a data root is opened. Existing SDK version bounds
@@ -47,8 +47,46 @@ while the Kernel remains usable without importing PySide6 or any GUI module.
   `pkv_kernel.outcomes` façade. It exposes body-free Topic/Evidence/Claim and
   revisioned `research_brief` DTOs; adapters do not receive a Store, Layout,
   writer lease, source content, raw source URL, or Provider object.
-- All v1 capabilities remain present. Outcome v2 is the only new capability in
-  W3; `kernel.embedding-rebuild.v2` and an API-major-2 handshake are not available.
+- All v1 symbols/capabilities remain present. W3 added Outcome v2; W4 adds the
+  independent Embedding v2 surface under the compatible-addition rule in frozen
+  contract §6. `kernel.embedding-rebuild.v2` is implemented and advertised after
+  its public-chain verification; W4 scope acceptance is complete.
+  An API-major-2 handshake remains W5 work.
+
+## W4 Embedding v2 boundary (scope acceptance complete)
+
+`pkv_kernel.embedding` adds eight functions: the `inspect / plan / confirm /
+execute_embedding_rebuild_v2` chain, `inspect_embedding_operation_v2`, and the
+`plan / confirm / execute_embedding_publication_v2` chain. The seven opaque types
+are `EmbeddingRebuildInspectionV2`, `EmbeddingRebuildPlanV2`,
+`EmbeddingRebuildConfirmationV2`, `EmbeddingRebuildExecutionV2`,
+`EmbeddingOperationInspectionV2`, `EmbeddingPublicationPlanV2`, and
+`EmbeddingPublicationConfirmationV2`. Their complete signatures and closed DTO
+shapes are in the [frozen v2 contract](../../docs/specs/interfaces/生命周期一致性v2接口冻结合同-2026-10.md).
+They are facade-created process-local handles: direct construction, copy, pickle
+and JSON reconstruction do not grant execution authority. Public properties and
+`to_dict()` return independent safe DTO values.
+
+Inspection and planning take no writer lease and perform no writes or Provider
+calls. Network rebuild plans bind root, snapshot, source, policy and current
+budget period; material replay excludes `force` and that period. A complete
+sealed stage can be inspected in a fresh process and explicitly published using
+the original operation plus a current publication confirmation. Publish-only
+does not create a Provider or reservation. A/D contention have distinct results:
+A returns `write_busy` without accepting an operation; a sealed C followed by D
+contention returns `embedding_publication_pending` and safe operation details.
+
+Ledger 3 upgrades require an explicitly confirmed v2 plan under the root lease;
+readers never migrate. Legacy schema 1 has no public plan identity, so its public
+`original_plan_id` stays null. Grant 2 and sealed proof bind publication facts;
+expired grants cannot write again, but a stage sealed within its original grant
+may be adopted for publication after validation. Post-CAS completion repair uses
+the original facts without repeating Provider work. Partial reported usage is a
+known lower bound, not a complete total; unknown dimensions remain null.
+
+Implementation and completed ER/MIG scope acceptance are recorded in the
+[W4 implementation record](../../docs/overview/W4-Embedding继续发布与预算恢复实施记录-2026-10.md).
+W1–W3 counts below remain historical component evidence, not W4 acceptance.
 
 ## W3 Outcome v2 boundary
 

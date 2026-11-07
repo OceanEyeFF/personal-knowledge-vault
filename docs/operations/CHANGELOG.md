@@ -4,14 +4,25 @@
 
 ---
 
-> 版本口径说明（2026-10-25）：
+> 版本口径说明（2026-10-26）：
 >
-> - 当前源码运行时、CLI 与 SDK 兼容 build：`0.9.0`，API `1.0.0`；历史 held test candidate 仍为 `0.8.1`
+> - 当前源码运行时、CLI 与 SDK 兼容 build：`0.10.0`，API `1.0.0`；历史 held test candidate 仍为 `0.8.1`
 > - `v0.6.0` 表示 CLI 入口首次稳定引入
 > - `v0.7.0` 表示 MCP 能力层首次稳定引入
 > - `history/` 下的 `v0.8.0-beta / v0.8.0` 里程碑文档保留阶段性背景，不直接作为当前仓库发布标签
 
 ## [Unreleased] - 2026-03-11 (Phase A 收尾 / Phase B 推理基线推进)
+
+### W4 Embedding 继续发布与预算恢复（2026-10-25–26，范围验收完成）
+
+- SDK `0.10.0` / API `1.0.0` 保留 v1，兼容增加 Embedding v2 的 8 个函数、7 个 opaque handle、
+  4 个 CLI 叶子与 6 个 MCP Tool；当前共 41 Tool（23 只读 + 18 写入）。
+- ledger 3、grant 2/sealed proof、publish-only、预算恢复与合成迁移的最终状态见
+  [W4 实施记录](../overview/W4-Embedding继续发布与预算恢复实施记录-2026-10.md)。
+- 新增 W4 363 项全部通过；原 P0 exit 1 保留，三轮按节点去重为 4133 passed、21 skipped、
+  2 项 W5 普通失败、0 errors，共 4156 selected。最终 MCP 908 项通过、覆盖率 95.64%，
+  Phase C 与致命 Ruff 通过；不称单轮全仓全绿。
+  下列 W1–W3 记录保留其历史语境；W5、真实迁移和 Artifact/release hold 不变。
 
 ### W3 Outcome 一致性、版本审批与合成迁移（2026-10-25）
 
@@ -19,7 +30,7 @@
   完整 pointer CAS 支持任意版本重试。新 v2 审批绑定四元组，receipt 与 state 同事务。
 - SQLite 014/schema 1.2.8 使用经验证的私有 work database 合成迁移；旧 brief 保留
   state/pointer/字节，缺失绑定标为 `legacy_unverified`，不伪造审批历史。
-- 新增五个 Outcome v2 SDK/CLI/MCP 入口；MCP 当前为 35 Tool（19 只读、16 写入）。
+- 新增五个 Outcome v2 SDK/CLI/MCP 入口；MCP 在 W3 时点为 35 Tool（19 只读、16 写入）。
   SDK 0.9.0/API 1.0.0 保留 v1 capabilities，旧无版本审批发出弃用警告；其 R-04
   兼容缺口留待 W5。验收与已知失败见 [W3 实施记录](../overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)。
 - 本轮不推进 W4 manual rebuild 恢复/预算或 W5 major 切换，不改变 held Artifact/release hold。

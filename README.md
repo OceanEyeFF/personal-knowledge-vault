@@ -3,13 +3,14 @@
 > **AI-First Knowledge Workflow System**
 > 工作流驱动的个人知识管理系统
 
-[![Version](https://img.shields.io/badge/version-0.9.0-blue.svg)](./docs/operations/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.10.0-blue.svg)](./docs/operations/CHANGELOG.md)
 [![Python](https://img.shields.io/badge/python-3.11+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](./LICENSE)
 [![Status](https://img.shields.io/badge/status-alpha_development-yellow.svg)](./docs/history/milestones/)
 
-> 当前仓库兼容 SDK build：`0.9.0`，API `1.0.0`；历史 held candidate 的 `0.8.1` 身份保持不变。
-> 2026-10-25 W3：新增 Outcome v2 精确版本审批、输入事务、任意版本发布及 014 合成迁移；实现与验证范围见 [W3 记录](./docs/overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)。旧无版本审批处于弃用兼容阶段，W4–W5 与正式发布仍未推进。
+> 当前仓库兼容 SDK build：`0.10.0`，API `1.0.0`；历史 held candidate 的 `0.8.1` 身份保持不变。
+> 2026-10-26 W4：Embedding v2 继续发布、预算恢复与 ledger 3/grant 2 合成迁移已完成范围验收，状态见 [W4 记录](./docs/overview/W4-Embedding继续发布与预算恢复实施记录-2026-10.md)。[W3](./docs/overview/W3-Outcome一致性与版本审批实施记录-2026-10.md) Outcome 验收保留历史证据；旧无版本审批仍处于弃用兼容阶段，W5 与正式发布未推进。
+> 新增 W4 363 项全部通过；原 P0 exit 1 保留，三轮按节点去重为 4133 passed、21 skipped、2 项 W5 普通失败、0 errors，不称单轮全仓全绿。
 > 说明：`v0.6.0` 是 CLI 首次稳定引入版本，`v0.7.0` 是 MCP 首次稳定引入版本；桌面 GUI 已迁至独立的 `pkv-GUI` 仓库，本仓库只维护无头 Kernel、CLI 与 MCP。
 > 命名说明：当前路线里提到的“当前开发 Phase 1”实际对应 `Phase A：Relation Foundation`；历史文档中的旧 `Phase 1` 已归档完成，两者不是同一时间轴。
 > 2026-07-31 离线收口：Phase C 固定评测为 16 tasks / 119 checks，`overall=1.0`、`citability=1.0`、0 failed、`thresholds_met=true`；三个探索 Tool 按 `partial-v1` 口径交付，公开合同仍诚实声明 `implementation_level=partial`。
@@ -92,7 +93,7 @@ AI Agent（Claude Code、Cursor 等）通过 MCP 协议直接操作知识库：
 
 M13 只支持 `stdio`。`streamable-http` 与 Bearer Token 认证均未发布；服务入口会在初始化配置、数据或监听端口前拒绝非 stdio transport。
 
-**35 个 Tool（19 个只读 + 16 个写入）**:
+**41 个 Tool（23 个只读 + 18 个写入；W4 增量范围验收完成）**:
 - `search_knowledge` — 智能搜索（BM25/向量/混合）
 - `get_entry` / `list_entries` / `list_tags` / `get_stats` — 只读浏览
 - `get_runtime_status` — 只读检查运行时 readiness 与下一步计划，不初始化、修复或探测 Provider
@@ -100,6 +101,7 @@ M13 只支持 `stdio`。`streamable-http` 与 Bearer Token 认证均未发布；
 - `archive_text` — 归档纯文本
 - `inspect_embedding_rebuild` / `plan_embedding_rebuild` — 只读检查并展示 generation rebuild 计划
 - `execute_embedding_rebuild` — 对精确 plan id 的显式确认式 generation rebuild；独立预算、无 public Q2 resume/retry
+- W4 Embedding v2 — 新增 inspect/plan rebuild、inspect operation、plan publication 四个只读 Tool，以及 execute rebuild/publication 两个写入 Tool；原操作经精确确认只继续发布，不重复 Provider。完整名称与验收见 [W4 记录](./docs/overview/W4-Embedding继续发布与预算恢复实施记录-2026-10.md)
 - `get_related` — 关联知识推荐（向量相似度）
 - `query_subgraph` — 关系子图查询
 - `explain_relation` — 关系解释
@@ -154,7 +156,7 @@ personal-knowledge-vault/
 │   ├── kernel/                        # 稳定的无头 Kernel facade
 │   ├── mcp/                           # MCP 服务 (v0.7.0)
 │   │   ├── server.py                  # FastMCP 主入口 (M13: stdio only)
-│   │   ├── tools.py                   # 35 个 Tool handler
+│   │   ├── tools.py                   # 41 个 Tool handler
 │   │   ├── resources.py               # 9 个 Resource handler
 │   │   ├── prompts.py                 # 3 个 Prompt 模板
 │   │   └── utils.py                   # 安全验证 + 序列化
@@ -465,13 +467,13 @@ steps:
 
 ## 📊 项目状态
 
-### 🎉 当前仓库兼容 SDK build: 0.9.0
+### 🎉 当前仓库兼容 SDK build: 0.10.0
 
 **发布状态**: 🧪 拆分前的 M13 W1/W2/W3/W4 Artifact 证据已归档；当前 headless payload 仍是合规 hold 的 test candidate，尚未具备正式发布资格，真实数据验收也未执行。
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| **项目版本** | 0.9.0 | 当前运行时/CLI/SDK 兼容 build；API 1.0.0，历史 held candidate 仍为 0.8.1 |
+| **项目版本** | 0.10.0 | 当前运行时/CLI/SDK 兼容 build；API 1.0.0，W4 范围验收完成，历史 held candidate 仍为 0.8.1 |
 | **稳定能力基线** | v0.7.0 | MCP 服务 (8 Tool + 4 Resource + 3 Prompt) |
 | **开发进度** | M13 W4（hold） | 历史 W4 10/11 Artifact matrix 已归档；当前 3 项合规 blocker 使 headless candidate 保持 hold |
 | **源代码文件** | 动态维护 | 以仓库树和模块索引为准 |
@@ -646,10 +648,10 @@ W3 当前 schema 为 `1.2.8`、13 个迁移，相关兼容回归见
 <div align="center">
 
 **项目代号**: Personal Knowledge Vault
-**当前版本**: 0.9.0（兼容 SDK build，未发布）
+**当前版本**: 0.10.0（兼容 SDK build，未发布）
 **创建日期**: 2026-01-27
 **文档版本**: v4.4
-**最后更新**: 2026-10-25
+**最后更新**: 2026-10-26
 
 ---
 

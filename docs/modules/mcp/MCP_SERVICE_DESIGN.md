@@ -4,15 +4,15 @@
 >
 > **文档版本**: v1.3
 > **创建日期**: 2026-02-16
-> **最后更新**: 2026-10-25（W3 Outcome v2 兼容准备；历史设计与验收语境保留）
+> **最后更新**: 2026-10-26（W4 Embedding v2 范围验收完成；历史设计与验收语境保留）
 > **作者**: 幽浮喵 (猫娘工程师)
 > **目标版本**: v0.7.0
 
-> **当前 W3 补注（2026-10-25）**：
-> - 当前注册清单为 **35 Tool（19 只读 + 16 写入）**、9 Resource、3 Prompt。新增的五个 Outcome v2 Tool 只通过 `pkv_kernel.outcomes`；原 30 Tool 保留。
-> - SDK `0.9.0` 是本地兼容 build，Kernel API 仍为 `1.0.0`；所有 v1 capability 保留，仅新增 `kernel.traceable-outcomes.v2`，未声明 `kernel.embedding-rebuild.v2`，未执行 W5 major 切换。
-> - v2 使用精确版本四元组、严格原始 JSON 参数与统一 `pkv.lifecycle-response.v2` envelope。旧 approve/return 只发出弃用提示，仍按原签名和既有成功语义执行；R-04 的旧入口 `known_gap` 留待 W5 关闭。
-> - 新旧 Outcome CLI/MCP 黑盒的 `21 passed` 是组件运行证据。最终同树运行、默认全量、MCP coverage 和 Phase C 状态以 [W3 主记录](../../overview/W3-Outcome一致性与版本审批实施记录-2026-10.md) 为准，不据此声明全量或发布通过。
+> **当前 W4 补注（2026-10-26，范围验收完成）**：
+> - 当前注册清单为 **41 Tool（23 只读 + 18 写入）**、9 Resource、3 Prompt。W4 在 W3 的 35 Tool 上增加 Embedding v2 的 4 只读与 2 写入 Tool，均只通过 `pkv_kernel.embedding`；原 Tool 保留。
+> - SDK `0.10.0` 为本地兼容 build，Kernel API 仍为 `1.0.0`；全部 v1 capability 保留，`kernel.embedding-rebuild.v2` 已按冻结 §6 的兼容增量规则实现并声明。W4 范围验收完成，状态见 [W4 主记录](../../overview/W4-Embedding继续发布与预算恢复实施记录-2026-10.md)，W5 major 切换未推进。
+> - Outcome v2 使用精确版本四元组、严格原始 JSON 参数与统一 `pkv.lifecycle-response.v2` envelope。旧 approve/return 只发出弃用提示，仍按原签名和既有成功语义执行；R-04 的旧入口 `known_gap` 留待 W5 关闭。
+> - 新旧 Outcome CLI/MCP 黑盒的 `21 passed` 是历史 W3 组件运行证据。W3 最终同树运行、默认全量、MCP coverage 和 Phase C 状态见 [W3 主记录](../../overview/W3-Outcome一致性与版本审批实施记录-2026-10.md)，不作为 W4 或发布通过证明。
 > - Outcome v1/v2 均保持 READY 门禁和零 Provider 合同；stdio-only、配置隔离、一写多读、路径/凭据脱敏与 release hold 不变。
 
 > **历史代码补注（2026-09-04，R4-P1 时点）**：
@@ -91,7 +91,7 @@ P1-B 后续增加以下 12 个 v1 Outcome Tool（2 只读 + 10 写入），形�
 | `render_outcome_research_brief` | 写入 | 发布 immutable Markdown revision 与 SQLite pointer |
 | `approve_outcome_research_brief`、`return_outcome_research_brief` | 写入、已弃用 | 保留 `topic_id` 签名和旧成功语义，响应增加替代 v2 名与移除 major 提示 |
 
-W3 兼容 build 再增加以下五个显式 v2 Tool，当前共 35 Tool。CLI 与 MCP 的固定 operation
+W3 兼容 build 增加以下五个显式 v2 Tool，当时共 35 Tool；当前 W4 为 41。CLI 与 MCP 的固定 operation
 名称一致，具体 DTO 和错误字段遵循 [v2 冻结合同](../../specs/interfaces/生命周期一致性v2接口冻结合同-2026-10.md)。
 
 | MCP Tool | 输入 | readOnlyHint | 对应 CLI |
@@ -938,7 +938,7 @@ anyio>=4.0.0          # 异步 I/O 工具库（FastMCP 自身已依赖，通常�
 
 ## 10. 历史 M8/M9 实施路线
 
-> 下列 checkbox 是设计阶段留下的任务清单，不代表当前完成状态，也不是 M13 W2 验收证据。2026-09-04 的 R4-P1/P1-B 源码 manifest 为 30 Tool（17 只读 + 13 写入）、9 Resource、3 Prompt；该时点只具 source acceptance，历史 W2/W4 的 14 Tool candidate surface/evidence 不被追溯改写。W3 当前 35 Tool 的状态以本文开头补注、真实注册清单和 W3 主记录为准。
+> 下列 checkbox 是设计阶段留下的任务清单，不代表当前完成状态，也不是 M13 W2 验收证据。2026-09-04 的 R4-P1/P1-B 源码 manifest 为 30 Tool（17 只读 + 13 写入）、9 Resource、3 Prompt；该时点只具 source acceptance，历史 W2/W4 的 14 Tool candidate surface/evidence 不被追溯改写。W3 的 35 Tool 为历史基线，当前 W4 的 41 Tool 及验收状态以本文开头补注、真实注册清单和 W4 主记录为准。
 
 ### M8: 只读服务 (v0.7.0-alpha)
 

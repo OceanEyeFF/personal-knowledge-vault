@@ -373,8 +373,8 @@ class TestServerStartup:
                 assert caps is not None
 
     @pytest.mark.asyncio
-    async def test_list_tools_returns_35(self, empty_db_path):
-        """list_tools 应返回 35 个已发布 Tool。"""
+    async def test_list_tools_returns_41(self, empty_db_path):
+        """list_tools 应返回 41 个已发布 Tool。"""
         params = get_server_params(empty_db_path)
 
         async with stdio_client(params) as (read, write):
@@ -383,8 +383,11 @@ class TestServerStartup:
                 tools_result = await session.list_tools()
                 tool_names = {t.name for t in tools_result.tools}
 
-                assert len(tool_names) == 35, f"期望 35 个 Tool，实际: {tool_names}"
+                assert len(tool_names) == 41, f"期望 41 个 Tool，实际: {tool_names}"
                 expected = {
+                    "inspect_embedding_rebuild_v2", "plan_embedding_rebuild_v2",
+                    "execute_embedding_rebuild_v2", "inspect_embedding_operation_v2",
+                    "plan_embedding_publication_v2", "execute_embedding_publication_v2",
                     "get_runtime_status", "inspect_embedding_rebuild", "plan_embedding_rebuild",
                     "execute_embedding_rebuild", "search_knowledge", "get_entry", "list_tags", "list_entries",
                     "get_stats", "archive_url", "archive_text", "get_related",
@@ -418,7 +421,7 @@ class TestServerStartup:
         tool_names = {tool.name for tool in tools_result.tools}
         status = parse_tool_content(status_result)
         stats = parse_tool_content(stats_result)
-        assert len(tool_names) == 35
+        assert len(tool_names) == 41
         assert "get_runtime_status" in tool_names
         assert status["status"] == "success"
         # The generic offline child creates declared directories before it
@@ -1246,16 +1249,30 @@ class TestEndToEnd:
                     "render_outcome_research_brief_v2",
                     "approve_outcome_research_brief_v2", "return_outcome_research_brief_v2",
                 }
+                embedding_v2_readonly = {
+                    "inspect_embedding_rebuild_v2", "plan_embedding_rebuild_v2",
+                    "inspect_embedding_operation_v2", "plan_embedding_publication_v2",
+                }
+                embedding_v2_writes = {
+                    "execute_embedding_rebuild_v2", "execute_embedding_publication_v2",
+                }
                 expected_readonly = (
                     readonly_names | public_rebuild_readonly | p1b_readonly | outcome_v2_readonly
+                    | embedding_v2_readonly
                 )
-                assert expected_readonly == tool_names - {
+                expected_writes = {
                     "archive_url",
                     "archive_text",
                     "execute_embedding_rebuild",
                     *p1b_writes,
                     *outcome_v2_writes,
+                    *embedding_v2_writes,
                 }
+                assert len(tool_names) == 41
+                assert len(expected_readonly) == 23
+                assert len(expected_writes) == 18
+                assert expected_readonly == tool_names - expected_writes
+                assert tool_names == expected_readonly | expected_writes
                 assert {
                     tool.name for tool in tools_result.tools
                     if tool.annotations and tool.annotations.readOnlyHint is True

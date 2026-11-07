@@ -14,8 +14,8 @@ import sys
 from typing import Iterable
 
 
-# ``pkv_kernel.contracts`` is one of two supported public nested modules (the
-# other is ``pkv_kernel.lifecycle``).  The package-root aliases are
+# ``pkv_kernel.contracts`` is one of four supported public nested modules,
+# alongside ``lifecycle``, ``embedding`` and ``outcomes``.  Package-root aliases are
 # intentionally convenient, while this explicit list prevents an accidental
 # helper from becoming an SDK commitment merely because Python can import the
 # module from an installed wheel.
@@ -51,6 +51,7 @@ KERNEL_CAPABILITIES = frozenset(
         "kernel.chat-sessions.v1",
         "kernel.configuration-snapshot-reload.v1",
         "kernel.embedding-rebuild.v1",
+        "kernel.embedding-rebuild.v2",
         "kernel.traceable-outcomes.v1",
         "kernel.traceable-outcomes.v2",
     }

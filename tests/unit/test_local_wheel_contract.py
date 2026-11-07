@@ -9,9 +9,14 @@ It is evidence of source-tree independence, not a release/PyPI workflow.
 from __future__ import annotations
 
 from email.parser import Parser
+import hashlib
+from importlib import metadata as distribution_metadata
+import importlib.util
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
+import re
 import subprocess
 import sys
 import tempfile
@@ -60,6 +65,7 @@ EXPECTED_REQUIRES_DIST = (
     "openai<2,>=1.55.3",
     "python-frontmatter==1.1.0",
     "rich==13.7.0",
+    "tzdata>=2024.1",
     "urllib3<3,>=2.2",
 )
 
@@ -106,6 +112,7 @@ def _clean_environment(
         "PYTHONHOME",
         "PYTHONPATH",
         "PYTHONUSERBASE",
+        "PYTHONTZPATH",
         "VIRTUAL_ENV",
         "HOME",
         "USERPROFILE",
@@ -185,6 +192,96 @@ def _clean_environment(
 
 def _venv_python(venv_root: Path) -> Path:
     return venv_root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _copy_verified_conda_timezones(source_prefix: Path, target_prefix: Path) -> dict:
+    """Provide an explicit offline IANA dependency fixture for Conda venvs.
+
+    Conda's Windows Python derives TZPATH from each interpreter's sys.prefix;
+    system-site-packages does not carry the base environment's share/zoneinfo.
+    Copy only manifest-verified distribution bytes, never point the isolated
+    probe back at the host prefix or manufacture a Python tzdata distribution.
+    """
+    records = list((source_prefix / "conda-meta").glob("tzdata-*.json"))
+    assert len(records) == 1, "Offline wheel probe requires one verified IANA distribution"
+    manifest_bytes = records[0].read_bytes()
+    record = json.loads(manifest_bytes)
+    assert record["name"] == "tzdata"
+    assert type(record["version"]) is str and record["version"]
+    assert type(record["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", record["sha256"])
+    assert record["paths_data"]["paths_version"] == 1
+    entries = record["paths_data"]["paths"]
+    assert type(entries) is list and entries
+    verified = []
+    seen = set()
+    for entry in entries:
+        relative = entry["_path"]
+        assert type(relative) is str and "\\" not in relative
+        path = PurePosixPath(relative)
+        assert path.as_posix() == relative
+        assert not path.is_absolute() and path.parts[:2] == ("share", "zoneinfo")
+        assert len(path.parts) >= 3 and all(part not in {"", ".", ".."} and ":" not in part for part in path.parts)
+        assert relative not in seen
+        seen.add(relative)
+        expected = entry.get("sha256_in_prefix", entry.get("sha256"))
+        assert type(expected) is str and re.fullmatch(r"[0-9a-f]{64}", expected)
+        assert type(entry["size_in_bytes"]) is int and entry["size_in_bytes"] >= 0
+        source = source_prefix.joinpath(*path.parts)
+        assert source.resolve().is_relative_to(source_prefix.resolve())
+        assert not source.is_symlink() and source.is_file()
+        data = source.read_bytes()
+        assert len(data) == entry["size_in_bytes"] and hashlib.sha256(data).hexdigest() == expected
+        verified.append((path, data, expected))
+    assert "share/zoneinfo/UTC" in seen
+    # Finish validating the whole dependency before copying any payload.
+    for path, data, _ in verified:
+        destination = target_prefix.joinpath(*path.parts)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
+    payload = [[str(path), digest] for path, _, digest in sorted(verified, key=lambda item: str(item[0]))]
+    return {
+        "source": "verified-conda-iana-fixture", "version": record["version"],
+        "conda_package_sha256": record["sha256"],
+        "metadata_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "file_count": len(verified),
+        "payload_sha256": hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest(),
+        "files": dict(payload),
+    }
+
+
+def _provide_offline_timezone_dependency(venv_root: Path) -> dict:
+    if importlib.util.find_spec("tzdata") is not None:
+        # This clean venv explicitly shares the already trusted dependency
+        # environment, just like the other wheel dependencies in this test.
+        return {"source": "installed-python-distribution", "version": distribution_metadata.version("tzdata")}
+    return _copy_verified_conda_timezones(Path(sys.prefix), venv_root)
+
+
+@pytest.mark.parametrize("invalid", ["checksum", "size", "escape", "absolute", "duplicate"])
+def test_offline_timezone_fixture_rejects_unverified_distribution_before_copy(tmp_path, invalid):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    zone = source / "share" / "zoneinfo" / "UTC"
+    zone.parent.mkdir(parents=True)
+    data = b"synthetic dependency bytes"
+    zone.write_bytes(data)
+    entry = {"_path": "share/zoneinfo/UTC", "size_in_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    if invalid == "checksum":
+        entry["sha256"] = "a" * 64
+    elif invalid == "size":
+        entry["size_in_bytes"] = len(data) + 1
+    elif invalid == "escape":
+        entry["_path"] = "share/zoneinfo/../../../outside"
+    elif invalid == "absolute":
+        entry["_path"] = "/share/zoneinfo/UTC"
+    entries = [entry, entry] if invalid == "duplicate" else [entry]
+    manifest = source / "conda-meta" / "tzdata-fixture.json"
+    manifest.parent.mkdir()
+    manifest.write_text(json.dumps({"name": "tzdata", "version": "fixture", "sha256": "b" * 64,
+                                    "paths_data": {"paths_version": 1, "paths": entries}}), encoding="utf-8")
+    with pytest.raises(AssertionError):
+        _copy_verified_conda_timezones(source, target)
+    assert not target.exists()
 
 
 @pytest.mark.packaging_contract
@@ -273,6 +370,10 @@ def test_local_wheel_clean_install_uses_only_installed_kernel_and_embedded_resou
         # Do not switch this to a dependency-closure test: K1b proves package/
         # source isolation, not dependency-index or wheelhouse availability.
         venv.EnvBuilder(with_pip=True, system_site_packages=True, clear=True).create(venv_root)
+        timezone_evidence = _provide_offline_timezone_dependency(venv_root)
+        (tmp_path / "timezone-dependency.json").write_text(
+            json.dumps(timezone_evidence, indent=2, sort_keys=True), encoding="utf-8"
+        )
         interpreter = _venv_python(venv_root)
         assert interpreter.is_file()
         install_environment = _clean_environment(
@@ -369,6 +470,16 @@ def _forbid_real_profile_config(event, args):
 
 sys.addaudithook(_forbid_real_profile_config)
 
+synthetic_user_config = Path.home() / ".pkv" / "config.yaml"
+synthetic_user_config.parent.mkdir(parents=True, exist_ok=True)
+synthetic_user_config.write_text(json.dumps({
+    "ai": {"llm": {"api_key": "synthetic-wheel-key", "base_url": "https://llm.invalid/v1"},
+           "embedding": {"api_key": "synthetic-wheel-key", "base_url": "https://embedding.invalid/v1", "dim": 3},
+           "embedding_rebuild": {"schema_version": 1, "token_budget": {
+        "timezone": "UTC", "daily_total_tokens": 100, "monthly_total_tokens": 1000,
+    }}},
+}), encoding="utf-8")
+
 import pkv_kernel
 
 capabilities = pkv_kernel.require_kernel_compatibility(
@@ -381,11 +492,60 @@ capabilities = pkv_kernel.require_kernel_compatibility(
         "kernel.configuration-snapshot-reload.v1",
         "kernel.traceable-outcomes.v1",
         "kernel.traceable-outcomes.v2",
+        "kernel.embedding-rebuild.v1",
+        "kernel.embedding-rebuild.v2",
     ),
 )
 inspection = pkv_kernel.lifecycle.inspect_runtime()
 plan = pkv_kernel.lifecycle.plan_runtime(inspection)
 kernel = pkv_kernel.bootstrap_kernel()
+# Bootstrap creates the synthetic business database.  Record its missing R2
+# snapshot through the public, local-only lifecycle plan before v2 inspection.
+snapshot_plan = pkv_kernel.lifecycle.plan_runtime(pkv_kernel.lifecycle.inspect_runtime(kernel.config))
+assert not any(action["requires_network"] for action in snapshot_plan.to_dict()["actions"])
+pkv_kernel.lifecycle.execute_runtime_plan(
+    snapshot_plan, pkv_kernel.lifecycle.confirm_runtime_plan(snapshot_plan),
+)
+assert kernel.config.user_config_path == synthetic_user_config
+assert kernel.config.get("ai.embedding_rebuild.token_budget.daily_total_tokens") == 100
+from zoneinfo import ZoneInfo
+assert ZoneInfo("UTC").key == "UTC"
+embedding_v2_functions = (
+    "inspect_embedding_rebuild_v2", "plan_embedding_rebuild_v2",
+    "confirm_embedding_rebuild_v2", "execute_embedding_rebuild_v2",
+    "inspect_embedding_operation_v2", "plan_embedding_publication_v2",
+    "confirm_embedding_publication_v2", "execute_embedding_publication_v2",
+)
+assert all(callable(getattr(pkv_kernel.embedding, name)) for name in embedding_v2_functions)
+embedding_inspection = pkv_kernel.embedding.inspect_embedding_rebuild_v2(kernel.config)
+embedding_plan = pkv_kernel.embedding.plan_embedding_rebuild_v2(embedding_inspection)
+embedding_confirmation = pkv_kernel.embedding.confirm_embedding_rebuild_v2(embedding_plan)
+assert embedding_inspection.schema == "pkv.embedding.inspection.v2"
+assert embedding_confirmation.plan_id == embedding_plan.plan_id
+assert embedding_confirmation.allow_network is False
+try:
+    pkv_kernel.embedding.execute_embedding_rebuild_v2(embedding_plan, embedding_confirmation)
+except pkv_kernel.PKVRuntimeError as error:
+    assert error.code.value == "embedding_rebuild_authorization_required"
+else:
+    raise AssertionError("Installed SDK executed without network permission")
+try:
+    pkv_kernel.embedding.inspect_embedding_operation_v2("embedding-rebuild-" + "a" * 32, config=kernel.config)
+except pkv_kernel.PKVRuntimeError as error:
+    assert error.code.value == "embedding_operation_not_found"
+else:
+    raise AssertionError("A nonexistent operation must not become executable")
+for name in (
+    "EmbeddingRebuildInspectionV2", "EmbeddingRebuildPlanV2", "EmbeddingRebuildConfirmationV2",
+    "EmbeddingRebuildExecutionV2", "EmbeddingOperationInspectionV2", "EmbeddingPublicationPlanV2",
+    "EmbeddingPublicationConfirmationV2",
+):
+    try:
+        getattr(pkv_kernel.embedding, name)()
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("Installed v2 handles must be factory-only")
 topic = pkv_kernel.outcomes.create_topic(
     title="Installed compatibility build", question="Is the v2 surface installed?", kernel=kernel,
 )
@@ -420,6 +580,10 @@ print(json.dumps({
     "api_version": capabilities.api_version,
     "sdk_version": capabilities.sdk_version,
     "outcome_schema": bundle["schema"],
+    "embedding_schema": embedding_inspection.schema,
+    "embedding_v2_function_count": len(embedding_v2_functions),
+    "embedding_plan_id": embedding_plan.plan_id,
+    "embedding_file": str(Path(pkv_kernel.embedding.__file__).resolve()),
     "legacy_review_warning": str(recorded[0].message),
     "generation": kernel.configuration_generation,
     "kernel_file": str(Path(pkv_kernel.__file__).resolve()),
@@ -459,8 +623,12 @@ print(json.dumps({
         assert resource_root.name == "_resources"
         assert f"Version: {evidence['sdk_version']}" in metadata
         assert evidence["api_version"] == "1.0.0"
-        assert evidence["sdk_version"] == "0.9.0"
+        assert evidence["sdk_version"] == "0.10.0"
         assert evidence["outcome_schema"] == "pkv.outcome.bundle.v2"
+        assert evidence["embedding_schema"] == "pkv.embedding.inspection.v2"
+        assert evidence["embedding_v2_function_count"] == 8
+        assert len(evidence["embedding_plan_id"]) == 64
+        assert Path(evidence["embedding_file"]).is_relative_to(venv_resolved)
         assert "approve_research_brief_v2" in evidence["legacy_review_warning"]
         assert evidence["generation"] >= 1
         assert evidence["lifecycle_readiness"] == "setup_required"

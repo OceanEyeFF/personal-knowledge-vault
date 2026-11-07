@@ -65,13 +65,20 @@ def project_bootstrap_error(
         code = "runtime_startup_failed"
         recoverable = False
         projected_stage = fallback_stage
-    return {
+    payload = {
         "adapter": adapter,
         "code": code,
         "recoverable": recoverable,
         "stage": projected_stage,
         "status": "error",
     }
+    if isinstance(error, PKVRuntimeError):
+        # Runtime errors validate the closed public details contract.  Never
+        # copy arbitrary exception attributes or the private message here.
+        details = error.to_dict().get("details")
+        if details is not None:
+            payload["details"] = details
+    return payload
 
 
 def _configure_jieba_cache(tmp_dir: object, config: Any) -> None:
